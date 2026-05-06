@@ -1,1 +1,0 @@
-"""NYSE trading calendar utilities."""

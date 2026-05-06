@@ -1,59 +1,51 @@
-"""Application configuration — single source of truth for env-driven knobs."""
-
+"""Centralized settings — single source of truth for env-driven values."""
 from __future__ import annotations
 
-from typing import Literal
-
-from pydantic import EmailStr, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+import os
+from dataclasses import dataclass
 
 
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="forbid",
-        case_sensitive=False,
-    )
+@dataclass(frozen=True)
+class Settings:
+    # LLM provider keys
+    anthropic_api_key: str | None = None
+    google_api_key: str | None = None
 
-    # Anthropic / agno
-    anthropic_api_key: SecretStr
-    anthropic_model: str = "claude-sonnet-4-6"
-    anthropic_max_tokens: int = 4096
-    anthropic_prompt_caching: bool = True
+    # Data sources
+    tavily_api_key: str | None = None
+    snaptrade_client_id: str | None = None
+    snaptrade_consumer_key: str | None = None
+    snaptrade_user_id: str | None = None
+    snaptrade_user_secret: str | None = None
 
-    # SnapTrade
-    snaptrade_client_id: SecretStr
-    snaptrade_consumer_key: SecretStr
-    snaptrade_user_id: str
-    snaptrade_user_secret: SecretStr
-
-    # Finnhub
-    finnhub_api_key: SecretStr
-
-    # SMTP (Stalwart)
-    smtp_host: str
-    smtp_port: int = 587
-    smtp_use_tls: bool = True
-    smtp_username: str
-    smtp_password: SecretStr
-    smtp_from_address: EmailStr
-    smtp_from_name: str = "Stock Analyzer"
-    smtp_to_address: EmailStr
-
-    # Storage
-    database_url: SecretStr
-    failed_emails_dir: str = "/var/lib/stock-analyzer/failed_emails"
+    # SMTP
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_user: str | None = None
+    smtp_password: str | None = None
+    smtp_from: str | None = None
+    email_to: str | None = None
 
     # Behavior
-    run_timezone: str = "America/New_York"
-    drawdown_threshold_pct: float = 5.0
-    politician_lookback_months: int = 24
-    politician_fresh_disclosure_days: int = 2
-    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
-    log_format: Literal["json", "pretty"] = "json"
+    use_cached_analysis: bool = True
+    insider_lookback_days: int = 5
 
-    # Feature flags
-    dry_run: bool = False
-    skip_nyse_holidays: bool = True
-    stock_analyzer_env: Literal["production", "development"] = "production"
+    @classmethod
+    def from_env(cls) -> "Settings":
+        return cls(
+            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+            google_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
+            tavily_api_key=os.getenv("TAVILY_API_KEY"),
+            snaptrade_client_id=os.getenv("SNAPTRADE_CLIENT_ID"),
+            snaptrade_consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),
+            snaptrade_user_id=os.getenv("SNAPTRADE_USER_ID"),
+            snaptrade_user_secret=os.getenv("SNAPTRADE_USER_SECRET"),
+            smtp_host=os.getenv("SMTP_HOST"),
+            smtp_port=int(os.getenv("SMTP_PORT")) if os.getenv("SMTP_PORT") else None,
+            smtp_user=os.getenv("SMTP_USER"),
+            smtp_password=os.getenv("SMTP_PASSWORD"),
+            smtp_from=os.getenv("SMTP_FROM"),
+            email_to=os.getenv("EMAIL_TO"),
+            use_cached_analysis=os.getenv("USE_CACHED_ANALYSIS", "1") == "1",
+            insider_lookback_days=int(os.getenv("INSIDER_LOOKBACK_DAYS", "5")),
+        )
