@@ -86,3 +86,7 @@ plugins = ["pydantic.mypy"]
 module = "tests.*"
 disallow_untyped_defs = false
 disallow_untyped_decorators = false
+
+[[tool.mypy.overrides]]
+module = "pandas_market_calendars.*"
+ignore_missing_imports = true
