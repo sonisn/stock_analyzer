@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     smtp_to_address: EmailStr
 
     # Storage
-    database_url: str
+    database_url: SecretStr
     failed_emails_dir: str = "/var/lib/stock-analyzer/failed_emails"
 
     # Behavior
@@ -50,10 +50,10 @@ class Settings(BaseSettings):
     drawdown_threshold_pct: float = 5.0
     politician_lookback_months: int = 24
     politician_fresh_disclosure_days: int = 2
-    log_level: str = "INFO"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     log_format: Literal["json", "pretty"] = "json"
 
-    # Optional
+    # Feature flags
     dry_run: bool = False
     skip_nyse_holidays: bool = True
     stock_analyzer_env: Literal["production", "development"] = "production"
