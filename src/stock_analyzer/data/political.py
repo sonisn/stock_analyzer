@@ -37,6 +37,7 @@ POLITICAL_DOMAINS: list[str] = [
     "capitoltrades.com",
     "quiverquant.com",
     "insidermonkey.com",
+    "unusualwhales.com",
 ]
 
 

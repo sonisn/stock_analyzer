@@ -14,6 +14,7 @@ INSIDER_DOMAINS: list[str] = [
     "insidermonkey.com",
     "openinsider.com",
     "quiverquant.com",
+    "unusualwhales.com",
 ]
 
 
