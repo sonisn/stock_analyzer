@@ -48,3 +48,4 @@ logs/
 # uv
 .uv/
 .cache/
+logs/
