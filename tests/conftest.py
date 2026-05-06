@@ -6,6 +6,7 @@ import os
 from collections.abc import Iterator
 
 import pytest
+import structlog
 
 
 @pytest.fixture(autouse=True)
@@ -15,3 +16,10 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         if key.startswith(("ANTHROPIC_", "SNAPTRADE_", "FINNHUB_", "SMTP_", "STOCK_ANALYZER_")):
             monkeypatch.delenv(key, raising=False)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_structlog() -> Iterator[None]:
+    """Reset structlog config so each test gets a fresh setup."""
+    yield
+    structlog.reset_defaults()
