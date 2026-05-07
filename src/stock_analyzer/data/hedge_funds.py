@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from tavily import TavilyClient
 
 from ..logging import get_logger
+
+_TAVILY_MAX_WORKERS = 5
 
 logger = get_logger(__name__)
 
@@ -77,12 +80,9 @@ def fetch_hedge_fund_trades(days: int = 5, max_results: int = 20) -> list[dict[s
         "billionaire hedge fund manager top stock pick recent",
     ]
 
-    seen_urls: set[str] = set()
-    out: list[dict[str, Any]] = []
-
-    for q in queries:
+    def _search(q: str) -> dict[str, Any] | None:
         try:
-            res = client.search(
+            return client.search(
                 query=q,
                 search_depth="advanced",
                 max_results=8,
@@ -91,8 +91,17 @@ def fetch_hedge_fund_trades(days: int = 5, max_results: int = 20) -> list[dict[s
             )
         except Exception as e:
             logger.warning("Hedge fund query failed (%r): %s", q, e)
-            continue
+            return None
 
+    with ThreadPoolExecutor(max_workers=_TAVILY_MAX_WORKERS) as ex:
+        responses = list(ex.map(_search, queries))
+
+    seen_urls: set[str] = set()
+    out: list[dict[str, Any]] = []
+
+    for res in responses:
+        if res is None:
+            continue
         for r in res.get("results", []):
             url = r.get("url")
             title = r.get("title")

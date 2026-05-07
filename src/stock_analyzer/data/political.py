@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from tavily import TavilyClient
 
 from ..logging import get_logger
+
+# Concurrency cap for Tavily fan-out. Stays well within rate limits across
+# Tavily plans while still parallelizing the bulk of the wall-clock cost.
+_TAVILY_MAX_WORKERS = 5
 
 logger = get_logger(__name__)
 
@@ -68,12 +73,9 @@ def fetch_political_trades(days: int = 5, max_results: int = 20) -> list[dict[st
         "congressional stock trades disclosure this week",
     ]
 
-    seen_urls: set[str] = set()
-    out: list[dict[str, Any]] = []
-
-    for q in queries:
+    def _search(q: str) -> dict[str, Any] | None:
         try:
-            res = client.search(
+            return client.search(
                 query=q,
                 search_depth="advanced",
                 max_results=8,
@@ -82,8 +84,17 @@ def fetch_political_trades(days: int = 5, max_results: int = 20) -> list[dict[st
             )
         except Exception as e:
             logger.warning("Political query failed (%r): %s", q, e)
-            continue
+            return None
 
+    with ThreadPoolExecutor(max_workers=_TAVILY_MAX_WORKERS) as ex:
+        responses = list(ex.map(_search, queries))
+
+    seen_urls: set[str] = set()
+    out: list[dict[str, Any]] = []
+
+    for res in responses:
+        if res is None:
+            continue
         for r in res.get("results", []):
             url = r.get("url")
             title = r.get("title")

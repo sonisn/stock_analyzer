@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 from ..data.market_news import fetch_market_sentiment_news
@@ -11,6 +12,12 @@ from ..logging import get_logger
 from .news_reranker import NewsReranker
 
 logger = get_logger(__name__)
+
+# Per-ticker work runs in parallel: each ticker does ~6 yfinance HTTP calls
+# plus 2 LLM calls. Cap concurrency to bound load on yfinance and the LLM
+# provider while still cutting wall-clock time roughly proportionally to
+# this value for portfolios above _TICKER_MAX_WORKERS holdings.
+_TICKER_MAX_WORKERS = 5
 
 SENTIMENT_INSTRUCTIONS = f"""\
 You are a macro/market analyst. The user provides recent US-market news headlines
@@ -111,11 +118,24 @@ class PortfolioAgent:
         holdings: dict[str, list[dict]] | None = None,
     ) -> str:
         self._positions_by_ticker = self._aggregate_positions(holdings or {})
-        logger.info("Running analysis for %d tickers", len(stocks))
-        parts = [self._run_sentiment()]
-        for t in stocks:
-            parts.append(self._run_ticker(t))
-        return "\n\n".join(parts)
+        logger.info(
+            "Running analysis for %d tickers (max_workers=%d)",
+            len(stocks),
+            _TICKER_MAX_WORKERS,
+        )
+
+        # Run sentiment in parallel with ticker fan-out: it's a separate
+        # data + LLM round-trip that doesn't depend on ticker data, so the
+        # whole pipeline can finish in roughly max(sentiment, slowest-batch)
+        # rather than the sum.
+        with ThreadPoolExecutor(
+            max_workers=_TICKER_MAX_WORKERS + 1
+        ) as ex:
+            sentiment_future = ex.submit(self._run_sentiment)
+            ticker_results = list(ex.map(self._run_ticker, stocks))
+            sentiment = sentiment_future.result()
+
+        return "\n\n".join([sentiment, *ticker_results])
 
     @staticmethod
     def _aggregate_positions(

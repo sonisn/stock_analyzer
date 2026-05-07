@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 from tavily import TavilyClient
 
 from ..logging import get_logger
+
+_TAVILY_MAX_WORKERS = 3
 
 logger = get_logger(__name__)
 
@@ -36,11 +40,10 @@ def fetch_market_sentiment_news(*, max_results: int = 10) -> list[dict]:
         "geopolitical news affecting US markets today",
     ]
     client = TavilyClient(api_key=api_key)
-    seen: set[str] = set()
-    out: list[dict] = []
-    for q in queries:
+
+    def _search(q: str) -> dict[str, Any] | None:
         try:
-            res = client.search(
+            return client.search(
                 query=q,
                 topic="news",
                 search_depth="basic",
@@ -50,6 +53,15 @@ def fetch_market_sentiment_news(*, max_results: int = 10) -> list[dict]:
             )
         except Exception as e:
             logger.warning("Tavily sentiment query failed (%r): %s", q, e)
+            return None
+
+    with ThreadPoolExecutor(max_workers=_TAVILY_MAX_WORKERS) as ex:
+        responses = list(ex.map(_search, queries))
+
+    seen: set[str] = set()
+    out: list[dict] = []
+    for res in responses:
+        if res is None:
             continue
         for r in res.get("results", []):
             url = r.get("url")
