@@ -1,4 +1,4 @@
-"""Insider + political trade synthesis agent."""
+"""Insider + political + hedge fund trade synthesis agent."""
 from __future__ import annotations
 
 from datetime import date
@@ -9,17 +9,21 @@ from ..logging import get_logger
 logger = get_logger(__name__)
 
 INSIDER_INSTRUCTIONS = f"""\
-You are a financial intelligence analyst. The user provides two lists:
+You are a financial intelligence analyst. The user provides three lists:
 1. Recent congressional trade coverage (politicians on a high-profile watchlist)
-2. Recent insider trade coverage (corporate executives)
+2. Recent insider trade coverage (corporate executives, Form 4 filings)
+3. Recent billionaire-investor coverage — only managers with documented
+   significant-profit track records (Buffett, Icahn, Ackman, Tepper, Burry,
+   Druckenmiller, Klarman, Loeb, Singer, Einhorn, Griffin, Cohen, Englander)
 
 DO NOT make tool calls. Use ONLY the data provided. Never invent values.
-The data is article-level — extract concrete trades (politician/insider, ticker,
-buy/sell, approx value, date) from the snippets when stated.
+The data is article-level — extract concrete trades (politician / insider /
+fund, ticker, buy/sell or new-position/exit, approx value or size, date)
+from the snippets when stated.
 
 Output format (plain text only, no markdown headings, no bold):
 
-=== INSIDER & POLITICAL TRADING — {date.today().strftime('%b %d, %Y')} ===
+=== INSIDER, POLITICAL & BILLIONAIRE TRADING — {date.today().strftime('%b %d, %Y')} ===
 
 Notable Congressional Trades:
 List up to 5 most material trades. Each as one line:
@@ -30,9 +34,17 @@ Recent Insider Activity:
 List up to 5 notable insider trades. Each as one line:
 - <Executive name + role> at <COMPANY/TICKER>: <BUY/SELL> (<size or value>) — <date if known>
 
+Top Billionaire Investor Moves:
+List up to 5 notable moves, ONLY from the watchlist managers above. Skip items that
+mention non-watchlist funds or generic "hedge fund" coverage with no named billionaire.
+Each as one line:
+- <Manager (Fund)>: <NEW POSITION/ADD/TRIM/EXIT/BUY/SELL> <TICKER> (<size, % of portfolio, or value>) — <date or filing period if known>
+If a snippet only describes a theme or thesis (no concrete trade), summarize the theme in one line.
+
 Tickers to Watch:
-Identify 3-5 tickers that appear most active across both sources, with one-line rationale each:
-- <TICKER>: <why it stands out>
+Identify 3-5 tickers that appear most active across the three sources, with one-line rationale each.
+Flag tickers where multiple source types converge (e.g. politician + insider + fund) — those are the highest-signal entries:
+- <TICKER>: <why it stands out (note convergence across sources)>
 
 CRITICAL:
 - Only use facts present in the snippets. If unsure, omit.
@@ -54,9 +66,10 @@ class InsiderAgent:
         self,
         political_items: list[dict],
         insider_items: list[dict],
+        hedge_fund_items: list[dict],
     ) -> str:
-        if not political_items and not insider_items:
-            return "No recent insider or political trade data available."
+        if not political_items and not insider_items and not hedge_fund_items:
+            return "No recent insider, political, or hedge fund trade data available."
 
         political_block = (
             "\n".join(
@@ -75,15 +88,27 @@ class InsiderAgent:
             or "(none)"
         )
 
+        hedge_fund_block = (
+            "\n".join(
+                f"- [{i}] ({', '.join(h.get('funds', []))}) "
+                f"{h['title']} — {h.get('snippet', '')[:300]} ({h['link']})"
+                for i, h in enumerate(hedge_fund_items)
+            )
+            or "(none)"
+        )
+
         prompt = (
             "Congressional trade coverage:\n"
             f"{political_block}\n\n"
             "Insider trade coverage:\n"
-            f"{insider_block}"
+            f"{insider_block}\n\n"
+            "Hedge fund trade coverage:\n"
+            f"{hedge_fund_block}"
         )
         logger.info(
-            "Synthesizing insider report (%d political, %d insider items)",
+            "Synthesizing insider report (%d political, %d insider, %d hedge fund items)",
             len(political_items),
             len(insider_items),
+            len(hedge_fund_items),
         )
         return self.agent.run(prompt).content

@@ -1,4 +1,4 @@
-"""Insider + political trade analysis pipeline."""
+"""Insider + political + hedge fund trade analysis pipeline."""
 from __future__ import annotations
 
 from datetime import date
@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from ..agents.insider import InsiderAgent
 from ..config import Settings
+from ..data.hedge_funds import fetch_hedge_fund_trades
 from ..data.insider import fetch_insider_trades
 from ..data.political import fetch_political_trades
 from ..logging import get_logger
@@ -25,9 +26,10 @@ logger = get_logger(__name__)
 def run_analysis(settings: Settings) -> str:
     political = fetch_political_trades(days=settings.insider_lookback_days)
     insider = fetch_insider_trades(days=settings.insider_lookback_days)
+    hedge_funds = fetch_hedge_fund_trades(days=settings.insider_lookback_days)
 
     agent = InsiderAgent("claude", "claude-haiku-4-5")
-    return agent.run(political, insider)
+    return agent.run(political, insider, hedge_funds)
 
 
 def main() -> None:
@@ -40,7 +42,7 @@ def main() -> None:
         print(result)
         return
 
-    subject = f"Insider & Political Trades - {date.today().strftime('%b-%d')}"
+    subject = f"Insider, Political & Billionaire Trades - {date.today().strftime('%b-%d')}"
     SmtpServer().send_email(
         settings.email_to,
         subject,
