@@ -53,14 +53,43 @@ class SmtpServer:
         content: str,
         *,
         content_type: str = "plain",
+        inline_images: dict[str, bytes] | None = None,
     ) -> None:
+        """Send an email. If `inline_images` is given (keyed by CID → PNG bytes),
+        the message is built as multipart/alternative with a related part so the
+        HTML body can reference the images via `cid:<key>`.
+        """
         msg = EmailMessage()
         msg["From"] = self.sender
         msg["To"] = to
         msg["Subject"] = subject
-        msg.set_content(content, subtype=content_type)
 
-        logger.info("Sending email to %s (subject=%r)", to, subject)
+        if inline_images and content_type == "html":
+            msg.set_content(
+                "This message contains images. View it in an HTML-capable client."
+            )
+            msg.add_alternative(content, subtype="html")
+            html_part = next(
+                p for p in msg.iter_parts()
+                if isinstance(p, EmailMessage)
+                and p.get_content_type() == "text/html"
+            )
+            for cid, img_bytes in inline_images.items():
+                html_part.add_related(
+                    img_bytes,
+                    maintype="image",
+                    subtype="png",
+                    cid=f"<{cid}>",
+                )
+        else:
+            msg.set_content(content, subtype=content_type)
+
+        logger.info(
+            "Sending email to %s (subject=%r, inline_images=%d)",
+            to,
+            subject,
+            len(inline_images) if inline_images else 0,
+        )
         context = self._ssl_context()
         if self.use_ssl:
             with smtplib.SMTP_SSL(

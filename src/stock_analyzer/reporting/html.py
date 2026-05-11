@@ -24,12 +24,23 @@ class TickerSection:
     fields: list[tuple[str, str]] = field(default_factory=list)
 
 
-def format_html(report: str, *, title: str = "Portfolio Analysis") -> str:
+def format_html(
+    report: str,
+    *,
+    title: str = "Portfolio Analysis",
+    chart_cids: dict[str, str] | None = None,
+) -> str:
+    """Render the analyst report as HTML.
+
+    `chart_cids` maps ticker symbol → CID (without angle brackets). When present,
+    the matching ticker section gets a <img src="cid:..."> rendered above the
+    metrics table. CIDs must be attached as inline images by the SMTP layer.
+    """
     sentiment, tickers = _parse(report)
     body_parts: list[str] = []
     if sentiment:
         body_parts.append(_render_sentiment(sentiment))
-    body_parts.extend(_render_ticker(t) for t in tickers)
+    body_parts.extend(_render_ticker(t, chart_cids or {}) for t in tickers)
     return _wrap_html(title, "\n".join(body_parts))
 
 
@@ -104,16 +115,24 @@ def _render_sentiment(text: str) -> str:
     )
 
 
-def _render_ticker(t: TickerSection) -> str:
+def _render_ticker(t: TickerSection, chart_cids: dict[str, str]) -> str:
     rows = "".join(
         f'<tr><th>{html.escape(label)}</th>'
         f'<td>{html.escape(value)}</td></tr>'
         for label, value in t.fields
     )
+    cid = chart_cids.get(t.symbol)
+    chart_img = (
+        f'<img class="chart" src="cid:{html.escape(cid)}" '
+        f'alt="{html.escape(t.symbol)} chart">'
+        if cid
+        else ""
+    )
     return (
         '<section class="ticker">'
         f'<h2>{html.escape(t.symbol)} '
         f'<span class="company">{html.escape(t.name)}</span></h2>'
+        f"{chart_img}"
         f"<table>{rows}</table>"
         "</section>"
     )
@@ -185,6 +204,8 @@ def _wrap_html(title: str, body: str) -> str:
         "h3{font-size:15px;margin:18px 0 6px;color:#374151;}"
         "ul{margin:6px 0 14px 20px;padding:0;}"
         "li{margin:3px 0;font-size:14px;}"
+        "img.chart{display:block;max-width:100%;height:auto;margin:8px 0 14px;"
+        "border:1px solid #1f2937;border-radius:6px;background:#111;}"
     )
     return (
         "<!doctype html>"

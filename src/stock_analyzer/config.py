@@ -17,6 +17,7 @@ class Settings:
     snaptrade_consumer_key: str | None = None
     snaptrade_user_id: str | None = None
     snaptrade_user_secret: str | None = None
+    chart_img_api_key: str | None = None
 
     # SMTP
     smtp_host: str | None = None
@@ -40,6 +41,7 @@ class Settings:
             snaptrade_consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),
             snaptrade_user_id=os.getenv("SNAPTRADE_USER_ID"),
             snaptrade_user_secret=os.getenv("SNAPTRADE_USER_SECRET"),
+            chart_img_api_key=os.getenv("CHART_IMG_API_KEY"),
             smtp_host=os.getenv("SMTP_HOST"),
             smtp_port=int(os.getenv("SMTP_PORT")) if os.getenv("SMTP_PORT") else None,
             smtp_user=os.getenv("SMTP_USER"),

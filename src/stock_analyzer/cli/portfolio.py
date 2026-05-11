@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from ..agents.portfolio import PortfolioAgent
 from ..config import Settings
 from ..data.brokerage import fetch_portfolio_holdings
+from ..data.chart_img import fetch_charts
 from ..logging import get_logger
 from ..reporting.html import format_html
 from ..reporting.smtp import SmtpServer
@@ -36,7 +37,9 @@ def _build_agent() -> PortfolioAgent:
     )
 
 
-def run_analysis(settings: Settings) -> str:
+def run_analysis(settings: Settings) -> tuple[str, list[str]]:
+    """Return (report_text, tickers). Tickers are exposed so callers can fetch
+    per-ticker chart images for the email."""
     holdings = fetch_portfolio_holdings()
     tickers = sorted(
         {h["ticker"] for items in holdings.values() for h in items if h.get("ticker")}
@@ -48,25 +51,35 @@ def run_analysis(settings: Settings) -> str:
     logger.info("Analyzing %d tickers: %s", len(tickers), ", ".join(tickers))
 
     agent = _build_agent()
-    return agent.run_analysis(tickers, holdings=holdings)
+    return agent.run_analysis(tickers, holdings=holdings), tickers
+
+
+def _chart_cid(ticker: str) -> str:
+    # Periods/dashes are valid in CIDs but normalize for safety.
+    return "chart-" + ticker.replace(".", "-").replace("/", "-")
 
 
 def main() -> None:
     load_dotenv()
     settings = Settings.from_env()
 
-    result = run_analysis(settings)
+    result, tickers = run_analysis(settings)
     if not settings.email_to:
         logger.error("EMAIL_TO not set; printing report instead of emailing")
         print(result)
         return
 
+    charts = fetch_charts(tickers)
+    chart_cids = {t: _chart_cid(t) for t in charts}
+    inline_images = {_chart_cid(t): data for t, data in charts.items()}
+
     subject = f"Portfolio Analysis - {date.today().strftime('%b-%d')}"
     SmtpServer().send_email(
         settings.email_to,
         subject,
-        format_html(result, title=subject),
+        format_html(result, title=subject, chart_cids=chart_cids),
         content_type="html",
+        inline_images=inline_images or None,
     )
 
 
