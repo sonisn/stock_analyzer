@@ -1,0 +1,79 @@
+"""Portfolio sizing (Opus, single call).
+
+Allocate new capital across picks given conviction scores, fragility ranks
+from the red-team, and the user's current holdings (for sector concentration).
+"""
+from __future__ import annotations
+
+from ..llm import AgnoAgent, Provider
+from ..logging import get_logger
+
+logger = get_logger(__name__)
+
+SIZER_INSTRUCTIONS = """\
+You are a portfolio manager allocating new capital across a set of picks
+that have already passed bull + bear analysis. The user provides the picks,
+their bear-case fragility ranks, their conviction scores, the user's
+current holdings, and either a cash budget (dollars) or a request for
+percentage allocations.
+
+DO NOT make tool calls. Use ONLY the data provided.
+
+For each pick, output:
+
+---
+TICKER: <symbol>
+Allocation: <dollars if budget given, else % of new capital>
+Rationale: <1-2 sentences citing conviction, fragility, correlation to existing holdings>
+---
+
+End with a "Concentration warnings:" block listing any sector or theme
+where the new picks + existing holdings would exceed 30% combined.
+
+Allocation principles to follow:
+- Higher conviction → larger position, up to ~30% of new capital
+- Higher fragility (bear-case rank 1-2) → smaller position
+- Highly correlated picks (same sector/theme) → underweight one or split
+- Never recommend more than 35% in any single pick
+
+CRITICAL:
+- Plain text only. No markdown headings or bold.
+- Allocations must sum to 100% (or the full dollar budget).\
+"""
+
+
+class Sizer:
+    def __init__(
+        self, provider: Provider, model: str, *, thinking_budget: int = 4000
+    ):
+        self.agent = AgnoAgent(
+            "Sizer",
+            provider,
+            model,
+            model_kwargs={
+                "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
+                "max_tokens": thinking_budget + 4000,
+            },
+            instructions=SIZER_INSTRUCTIONS,
+        )
+
+    def allocate(
+        self,
+        picks_text: str,
+        bear_case_text: str,
+        holdings_summary: str,
+        cash_budget: float | None,
+    ) -> str:
+        budget_line = (
+            f"Cash budget: ${cash_budget:,.0f}"
+            if cash_budget is not None
+            else "No dollar budget — output percentages of new capital."
+        )
+        prompt = (
+            f"{budget_line}\n\n"
+            f"Current holdings:\n{holdings_summary or '(none)'}\n\n"
+            f"Picks (with bull theses):\n{picks_text}\n\n"
+            f"Bear cases:\n{bear_case_text}"
+        )
+        logger.info("Sizing picks with Opus")
+        return self.agent.run(prompt).content

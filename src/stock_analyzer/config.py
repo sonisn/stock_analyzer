@@ -10,6 +10,10 @@ from .llm import Provider
 _VALID_PROVIDERS = ("claude", "gemini")
 
 
+def _optional_float(value: str | None) -> float | None:
+    return float(value) if value else None
+
+
 def _provider(name: str, value: str | None) -> Provider | None:
     if not value:
         return None
@@ -56,6 +60,16 @@ class Settings:
     smtp_from: str | None = None
     email_to: str | None = None
 
+    # Discover pipeline (cli/discover.py)
+    # Models per stage — Opus for big-stakes reasoning, Sonnet for per-candidate
+    # analysis, Haiku for any cheap data prep.
+    discover_opus_model: str = "claude-opus-4-7"
+    discover_sonnet_model: str = "claude-sonnet-4-6"
+    discover_watchlist: tuple[str, ...] = ()
+    discover_cash_budget: float | None = None
+    discover_db_path: str = "~/.stock_analyzer/discover.db"
+    fred_api_key: str | None = None
+
     # Behavior
     use_cached_analysis: bool = True
     insider_lookback_days: int = 5
@@ -89,4 +103,14 @@ class Settings:
             email_to=os.getenv("EMAIL_TO"),
             use_cached_analysis=os.getenv("USE_CACHED_ANALYSIS", "1") == "1",
             insider_lookback_days=int(os.getenv("INSIDER_LOOKBACK_DAYS", "5")),
+            discover_opus_model=os.getenv("DISCOVER_OPUS_MODEL", "claude-opus-4-7"),
+            discover_sonnet_model=os.getenv("DISCOVER_SONNET_MODEL", "claude-sonnet-4-6"),
+            discover_watchlist=tuple(
+                t.strip().upper()
+                for t in (os.getenv("DISCOVER_WATCHLIST") or "").split(",")
+                if t.strip()
+            ),
+            discover_cash_budget=_optional_float(os.getenv("DISCOVER_CASH_BUDGET")),
+            discover_db_path=os.getenv("DISCOVER_DB_PATH", "~/.stock_analyzer/discover.db"),
+            fred_api_key=os.getenv("FRED_API_KEY"),
         )

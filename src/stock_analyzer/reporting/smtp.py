@@ -54,10 +54,14 @@ class SmtpServer:
         *,
         content_type: str = "plain",
         inline_images: dict[str, bytes] | None = None,
+        attachments: list[tuple[str, bytes, str]] | None = None,
     ) -> None:
-        """Send an email. If `inline_images` is given (keyed by CID → PNG bytes),
-        the message is built as multipart/alternative with a related part so the
-        HTML body can reference the images via `cid:<key>`.
+        """Send an email.
+
+        - `inline_images` (CID → PNG bytes) renders inside the HTML body via `cid:<key>`.
+        - `attachments` is a list of (filename, bytes, mime_subtype) tuples;
+          each becomes a downloadable attachment. mime_subtype is the slash-suffix,
+          e.g. "pdf" for application/pdf, "csv" for text/csv.
         """
         msg = EmailMessage()
         msg["From"] = self.sender
@@ -84,11 +88,23 @@ class SmtpServer:
         else:
             msg.set_content(content, subtype=content_type)
 
+        for filename, data, mime_subtype in attachments or []:
+            maintype = "application"
+            subtype = mime_subtype
+            if mime_subtype.startswith("text/"):
+                maintype, subtype = "text", mime_subtype.removeprefix("text/")
+            elif mime_subtype.startswith("image/"):
+                maintype, subtype = "image", mime_subtype.removeprefix("image/")
+            msg.add_attachment(
+                data, maintype=maintype, subtype=subtype, filename=filename
+            )
+
         logger.info(
-            "Sending email to %s (subject=%r, inline_images=%d)",
+            "Sending email to %s (subject=%r, inline_images=%d, attachments=%d)",
             to,
             subject,
             len(inline_images) if inline_images else 0,
+            len(attachments) if attachments else 0,
         )
         context = self._ssl_context()
         if self.use_ssl:
