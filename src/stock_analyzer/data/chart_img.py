@@ -104,7 +104,6 @@ def _build_payload(symbol: str) -> dict:
         "timezone": "America/New_York",
         "studies": [
             {"name": "Volume", "forceOverlay": False},
-            {"name": "Relative Strength Index", "input": {"in_0": 14}},
             {"name": "Moving Average", "input": {
                 "length": 50,
                 "source": "close",
