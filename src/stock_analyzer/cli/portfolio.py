@@ -23,17 +23,17 @@ from ..reporting.smtp import SmtpServer
 logger = get_logger(__name__)
 
 
-def _build_agent() -> PortfolioAgent:
+def _build_agent(settings: Settings) -> PortfolioAgent:
     return PortfolioAgent(
         "Portfolio Manager",
-        "claude",
-        "claude-sonnet-4-6",
-        sentiment_provider="claude",
-        sentiment_model="claude-haiku-4-5",
-        ticker_provider="claude",
-        ticker_model="claude-haiku-4-5",
-        rerank_provider="claude",
-        rerank_model="claude-haiku-4-5",
+        settings.llm_provider,
+        settings.llm_model,
+        sentiment_provider=settings.sentiment_provider,
+        sentiment_model=settings.sentiment_model,
+        ticker_provider=settings.ticker_provider,
+        ticker_model=settings.ticker_model,
+        rerank_provider=settings.rerank_provider,
+        rerank_model=settings.rerank_model,
     )
 
 
@@ -50,7 +50,7 @@ def run_analysis(settings: Settings) -> tuple[str, list[str]]:
         )
     logger.info("Analyzing %d tickers: %s", len(tickers), ", ".join(tickers))
 
-    agent = _build_agent()
+    agent = _build_agent(settings)
     return agent.run_analysis(tickers, holdings=holdings), tickers
 
 

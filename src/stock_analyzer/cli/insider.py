@@ -28,7 +28,10 @@ def run_analysis(settings: Settings) -> str:
     insider = fetch_insider_trades(days=settings.insider_lookback_days)
     hedge_funds = fetch_hedge_fund_trades(days=settings.insider_lookback_days)
 
-    agent = InsiderAgent("claude", "claude-haiku-4-5")
+    agent = InsiderAgent(
+        settings.insider_provider or settings.llm_provider,
+        settings.insider_model or settings.llm_model,
+    )
     return agent.run(political, insider, hedge_funds)
 
 

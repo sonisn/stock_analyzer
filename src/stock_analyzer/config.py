@@ -3,6 +3,21 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import cast
+
+from .llm import Provider
+
+_VALID_PROVIDERS = ("claude", "gemini")
+
+
+def _provider(name: str, value: str | None) -> Provider | None:
+    if not value:
+        return None
+    if value not in _VALID_PROVIDERS:
+        raise ValueError(
+            f"{name}={value!r} — expected one of {_VALID_PROVIDERS}"
+        )
+    return cast(Provider, value)
 
 
 @dataclass(frozen=True)
@@ -10,6 +25,20 @@ class Settings:
     # LLM provider keys
     anthropic_api_key: str | None = None
     google_api_key: str | None = None
+
+    # LLM selection — `llm_provider` + `llm_model` are the defaults used by
+    # every agent. Override any single role via the `*_provider`/`*_model`
+    # vars below; unset ones fall back to the defaults.
+    llm_provider: Provider = "claude"
+    llm_model: str = "claude-haiku-4-5"
+    sentiment_provider: Provider | None = None
+    sentiment_model: str | None = None
+    ticker_provider: Provider | None = None
+    ticker_model: str | None = None
+    rerank_provider: Provider | None = None
+    rerank_model: str | None = None
+    insider_provider: Provider | None = None
+    insider_model: str | None = None
 
     # Data sources
     tavily_api_key: str | None = None
@@ -36,6 +65,16 @@ class Settings:
         return cls(
             anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
             google_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
+            llm_provider=_provider("LLM_PROVIDER", os.getenv("LLM_PROVIDER")) or "claude",
+            llm_model=os.getenv("LLM_MODEL", "claude-haiku-4-5"),
+            sentiment_provider=_provider("SENTIMENT_PROVIDER", os.getenv("SENTIMENT_PROVIDER")),
+            sentiment_model=os.getenv("SENTIMENT_MODEL") or None,
+            ticker_provider=_provider("TICKER_PROVIDER", os.getenv("TICKER_PROVIDER")),
+            ticker_model=os.getenv("TICKER_MODEL") or None,
+            rerank_provider=_provider("RERANK_PROVIDER", os.getenv("RERANK_PROVIDER")),
+            rerank_model=os.getenv("RERANK_MODEL") or None,
+            insider_provider=_provider("INSIDER_PROVIDER", os.getenv("INSIDER_PROVIDER")),
+            insider_model=os.getenv("INSIDER_MODEL") or None,
             tavily_api_key=os.getenv("TAVILY_API_KEY"),
             snaptrade_client_id=os.getenv("SNAPTRADE_CLIENT_ID"),
             snaptrade_consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),
