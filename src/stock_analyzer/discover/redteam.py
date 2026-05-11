@@ -48,15 +48,18 @@ CRITICAL:
 
 class RedTeam:
     def __init__(
-        self, provider: Provider, model: str, *, thinking_budget: int = 8000
+        self, provider: Provider, model: str, *, effort: str = "high"
     ):
+        # Opus 4.7+ adaptive thinking — Claude self-allocates thinking budget,
+        # gated by output_config.effort. high = deep adversarial reasoning.
         self.agent = AgnoAgent(
             "RedTeam",
             provider,
             model,
             model_kwargs={
-                "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
-                "max_tokens": thinking_budget + 6000,
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": effort},
+                "max_tokens": 6000,
             },
             instructions=REDTEAM_INSTRUCTIONS,
         )

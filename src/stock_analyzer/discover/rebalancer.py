@@ -88,15 +88,18 @@ CRITICAL:
 
 class Rebalancer:
     def __init__(
-        self, provider: Provider, model: str, *, thinking_budget: int = 12000
+        self, provider: Provider, model: str, *, effort: str = "high"
     ):
+        # Opus 4.7+ adaptive thinking — high effort for the deepest synthesis
+        # (combining holdings reviews + new picks + cash math + concentration).
         self.agent = AgnoAgent(
             "Rebalancer",
             provider,
             model,
             model_kwargs={
-                "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
-                "max_tokens": thinking_budget + 8000,
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": effort},
+                "max_tokens": 8000,
             },
             instructions=REBALANCER_INSTRUCTIONS,
         )
@@ -124,8 +127,8 @@ class Rebalancer:
             f"New discover picks:\n\n{picks_text}"
         )
         logger.info(
-            "Generating rebalance plan with Opus + extended thinking "
-            "(%d holdings, cash=%s)",
+            "Generating rebalance plan with Opus (adaptive thinking, "
+            "%d holdings, cash=%s)",
             len(holdings_reviews),
             f"${cash_available:,.0f}" if cash_available is not None else "unknown",
         )

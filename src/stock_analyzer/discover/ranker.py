@@ -56,15 +56,19 @@ CRITICAL:
 
 class Ranker:
     def __init__(
-        self, provider: Provider, model: str, *, thinking_budget: int = 16000
+        self, provider: Provider, model: str, *, effort: str = "high"
     ):
+        # Opus 4.7+ moved from `thinking.type=enabled` + budget_tokens to the
+        # adaptive thinking API: Claude decides how much thinking to spend,
+        # gated by `output_config.effort` (low | medium | high).
         self.agent = AgnoAgent(
             "Ranker",
             provider,
             model,
             model_kwargs={
-                "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
-                "max_tokens": thinking_budget + 8000,
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": effort},
+                "max_tokens": 8000,
             },
             instructions=RANKER_INSTRUCTIONS,
         )
@@ -87,7 +91,7 @@ class Ranker:
             f"Candidate analyses:\n\n{candidates_block}"
         )
         logger.info(
-            "Ranking %d candidates with Opus + extended thinking (macro=%s)",
+            "Ranking %d candidates with Opus (adaptive thinking, macro=%s)",
             len(analyses),
             bool(macro_context),
         )

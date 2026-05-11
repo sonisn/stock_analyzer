@@ -44,15 +44,18 @@ CRITICAL:
 
 class Sizer:
     def __init__(
-        self, provider: Provider, model: str, *, thinking_budget: int = 4000
+        self, provider: Provider, model: str, *, effort: str = "medium"
     ):
+        # Adaptive thinking is sufficient for sizing (constraint optimization,
+        # not open-ended reasoning). Medium effort.
         self.agent = AgnoAgent(
             "Sizer",
             provider,
             model,
             model_kwargs={
-                "thinking": {"type": "enabled", "budget_tokens": thinking_budget},
-                "max_tokens": thinking_budget + 4000,
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": effort},
+                "max_tokens": 4000,
             },
             instructions=SIZER_INSTRUCTIONS,
         )
