@@ -101,10 +101,24 @@ def _build_payload(symbol: str) -> dict:
         "symbol": symbol,
         "interval": "1D",
         "theme": "dark",
+        "timezone": "America/New_York",
         "studies": [
+            {"name": "Volume", "forceOverlay": False},
             {"name": "Relative Strength Index", "input": {"in_0": 14}},
-            {"name": "Moving Average", "input": {"in_0": 50}},
-            {"name": "Moving Average", "input": {"in_0": 200}},
+            {"name": "Moving Average", "input": {
+                "length": 50,
+                "source": "close",
+                "offset": 0,
+                "smoothingLine": "SMA",
+                "smoothingLength": 50
+            }},
+            {"name": "Moving Average", "input": {
+                "length": 200,
+                "source": "close",
+                "offset": 0,
+                "smoothingLine": "SMA",
+                "smoothingLength": 200
+            }},
         ],
     }
 
