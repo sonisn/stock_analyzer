@@ -24,6 +24,7 @@ dev = [
 analyze-portfolio = "stock_analyzer.cli.portfolio:main"
 analyze-insiders = "stock_analyzer.cli.insider:main"
 discover-stocks = "stock_analyzer.cli.discover:main"
+rebalance-portfolio = "stock_analyzer.cli.rebalance:main"
 
 [build-system]
 requires = ["hatchling"]

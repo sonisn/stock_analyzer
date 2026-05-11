@@ -329,3 +329,53 @@ def test_orchestrator_imports():
     """If the orchestrator can be imported, all module wiring is consistent."""
     from stock_analyzer.cli.discover import run
     assert callable(run)
+
+
+def test_rebalance_pipeline_imports_and_assembles():
+    """RebalancePipeline must construct and produce a 10-step workflow."""
+    from stock_analyzer.cli.rebalance import RebalancePipeline
+    from stock_analyzer.config import Settings
+
+    pipeline = RebalancePipeline(Settings.from_env())
+    wf = pipeline.build_workflow()
+    assert wf.name == "Portfolio Rebalance"
+    step_names = [
+        getattr(step, "name", type(step).__name__) for step in wf.steps
+    ]
+    # Rebalance adds 3 steps vs discover's 10; persist step is renamed.
+    assert "review_holdings" in step_names
+    assert "rebalance" in step_names
+    assert "persist_and_email_rebalance" in step_names
+
+
+def test_rebalance_section_layout():
+    """Rebalance sections must put plan + reviews before the discover appendix."""
+    from stock_analyzer.cli.rebalance import _build_rebalance_sections
+
+    sections = _build_rebalance_sections(
+        rebalance_text="REBALANCE PLAN\n\nSummary: ...\n\nAction 1: SELL XYZ",
+        holdings_reviews={
+            "ABC": "TICKER: ABC\nVerdict: HOLD\nReasoning: solid",
+            "XYZ": "TICKER: XYZ\nVerdict: SELL\nReasoning: broken",
+        },
+        ranker_text=RANKER_OUTPUT,
+        redteam_text=REDTEAM_OUTPUT,
+        sizer_text=SIZER_OUTPUT,
+        candidates=_fixture_candidates(),
+        cash_balance=5000.0,
+        macro_summary="Curve flat",
+        sector_rotation=None,
+    )
+    # First heading must be the rebalance title
+    assert sections[0].text.startswith("Portfolio Rebalance")
+    # Plan must appear before reviews must appear before discover appendix
+    plan_idx = next(i for i, s in enumerate(sections) if "Rebalance plan" in s.text)
+    reviews_idx = next(i for i, s in enumerate(sections) if "Per-holding reviews" in s.text)
+    discover_idx = next(
+        i for i, s in enumerate(sections) if "Discover picks" in s.text
+    )
+    assert plan_idx < reviews_idx < discover_idx
+    # All holding tickers appear as headings
+    headings = [s.text for s in sections if s.kind == "heading"]
+    assert "ABC" in headings
+    assert "XYZ" in headings

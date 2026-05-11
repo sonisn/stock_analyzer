@@ -100,6 +100,60 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
     return out
 
 
+def fetch_total_cash() -> float | None:
+    """Sum cash balances across all connected SnapTrade accounts.
+
+    Returns total in USD-equivalent or None if the API call fails or no
+    balance data is returned. Used by the rebalancer to size BUYs from
+    cash + sale proceeds.
+    """
+    try:
+        user_id, user_secret = _credentials()
+        client = _client()
+        accounts = _unwrap(
+            client.account_information.list_user_accounts(
+                user_id=user_id, user_secret=user_secret
+            )
+        ) or []
+    except Exception as e:
+        logger.warning("Could not list accounts for cash balance: %s", e)
+        return None
+
+    total: float = 0.0
+    found_any = False
+    for account in accounts:
+        account_id = account.get("id")
+        if not account_id:
+            continue
+        try:
+            balances = (
+                _unwrap(
+                    client.account_information.get_user_account_balance(
+                        user_id=user_id,
+                        user_secret=user_secret,
+                        account_id=account_id,
+                    )
+                )
+                or []
+            )
+        except Exception as e:
+            logger.warning("Balance fetch failed for account %s: %s", account_id, e)
+            continue
+        # SnapTrade returns a list of balances per currency. Sum cash entries.
+        if isinstance(balances, dict):
+            balances = [balances]
+        for b in balances:
+            cash = b.get("cash") if isinstance(b, dict) else None
+            if cash is None:
+                continue
+            try:
+                total += float(cash)
+                found_any = True
+            except (ValueError, TypeError):
+                continue
+    return total if found_any else None
+
+
 def fetch_portfolio_tickers() -> list[str]:
     """Return de-duplicated, sorted list of tickers across all connected accounts."""
     holdings = fetch_portfolio_holdings()
