@@ -1,38 +1,47 @@
-"""Centralized settings — single source of truth for env-driven values."""
+"""Centralized settings — single source of truth for env-driven values.
+
+Built on `pydantic-settings.BaseSettings` so every field is:
+  - typed (no manual `int(...)` / `float(...)` casts at the boundary)
+  - validated (bad provider/aggressiveness fails fast at startup)
+  - env-name-mapped automatically (field `anthropic_api_key`
+    binds to env `ANTHROPIC_API_KEY`)
+
+Override behavior with env vars or a `.env` file at the project root.
+"""
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
-from typing import cast
+from typing import Annotated, Literal
+
+from pydantic import AliasChoices, Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from .llm import Provider
 
-_VALID_PROVIDERS = ("claude", "gemini")
+Aggressiveness = Literal["conservative", "balanced", "aggressive"]
 
 
-def _optional_float(value: str | None) -> float | None:
-    return float(value) if value else None
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        env_ignore_empty=True,  # treat `FOO=` as unset (use the default)
+        case_sensitive=False,
+        extra="ignore",
+        frozen=True,
+    )
 
-
-def _provider(name: str, value: str | None) -> Provider | None:
-    if not value:
-        return None
-    if value not in _VALID_PROVIDERS:
-        raise ValueError(
-            f"{name}={value!r} — expected one of {_VALID_PROVIDERS}"
-        )
-    return cast(Provider, value)
-
-
-@dataclass(frozen=True)
-class Settings:
-    # LLM provider keys
+    # ---- LLM provider keys ------------------------------------------------
     anthropic_api_key: str | None = None
-    google_api_key: str | None = None
+    # GOOGLE_API_KEY is preferred; fall back to GEMINI_API_KEY for back-compat.
+    google_api_key: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+    )
 
-    # LLM selection — `llm_provider` + `llm_model` are the defaults used by
-    # every agent. Override any single role via the `*_provider`/`*_model`
-    # vars below; unset ones fall back to the defaults.
+    # ---- LLM selection ----------------------------------------------------
+    # `llm_provider` + `llm_model` are the defaults used by every agent.
+    # Override any single role via the `*_provider`/`*_model` vars below;
+    # unset roles fall back to the defaults.
     llm_provider: Provider = "claude"
     llm_model: str = "claude-haiku-4-5"
     sentiment_provider: Provider | None = None
@@ -44,15 +53,16 @@ class Settings:
     insider_provider: Provider | None = None
     insider_model: str | None = None
 
-    # Data sources
+    # ---- Data sources -----------------------------------------------------
     tavily_api_key: str | None = None
     snaptrade_client_id: str | None = None
     snaptrade_consumer_key: str | None = None
     snaptrade_user_id: str | None = None
     snaptrade_user_secret: str | None = None
     chart_img_api_key: str | None = None
+    fred_api_key: str | None = None
 
-    # SMTP
+    # ---- SMTP -------------------------------------------------------------
     smtp_host: str | None = None
     smtp_port: int | None = None
     smtp_user: str | None = None
@@ -60,15 +70,16 @@ class Settings:
     smtp_from: str | None = None
     email_to: str | None = None
 
-    # Discover pipeline (cli/discover.py)
-    # Models per stage — Opus for big-stakes reasoning, Sonnet for per-candidate
-    # analysis, Haiku for any cheap data prep.
+    # ---- Discover pipeline (cli/discover.py) ------------------------------
+    # Models per stage — Opus for big-stakes reasoning, Sonnet for
+    # per-candidate analysis, Haiku for any cheap data prep.
     discover_opus_model: str = "claude-opus-4-7"
     discover_sonnet_model: str = "claude-sonnet-4-6"
-    discover_watchlist: tuple[str, ...] = ()
+    # `NoDecode` tells pydantic-settings to skip its default JSON parse for
+    # complex types so the raw "AAPL,NVDA" string reaches our validator below.
+    discover_watchlist: Annotated[tuple[str, ...], NoDecode] = ()
     discover_cash_budget: float | None = None
     discover_db_path: str = "~/.stock_analyzer/discover.db"
-    fred_api_key: str | None = None
     # Run the ranker N times and consensus-vote on picks (N >= 2). With
     # temperature=0 set in all stages, runs should agree near-perfectly,
     # but this catches any residual variance from data freshness.
@@ -82,53 +93,33 @@ class Settings:
     #                  forward signal is meaningfully better (0% bar)
     # The report ALWAYS includes a "tax-agnostic alternative" section so the
     # user sees the opportunity cost regardless of which mode is selected.
-    discover_rebalance_aggressiveness: str = "balanced"
+    discover_rebalance_aggressiveness: Aggressiveness = "balanced"
 
-    # Behavior
+    # ---- Behavior ---------------------------------------------------------
     use_cached_analysis: bool = True
     insider_lookback_days: int = 5
 
+    # ---- Coercers ---------------------------------------------------------
+    @field_validator("discover_watchlist", mode="before")
+    @classmethod
+    def _split_watchlist(cls, v: object) -> object:
+        # Env vars arrive as comma-separated strings: "AAPL,NVDA,googl".
+        # Already-tuple/list values pass through untouched.
+        if isinstance(v, str):
+            return tuple(t.strip().upper() for t in v.split(",") if t.strip())
+        return v
+
+    @field_validator("discover_rebalance_aggressiveness", mode="before")
+    @classmethod
+    def _lower_aggressiveness(cls, v: object) -> object:
+        # Accept "Balanced", " AGGRESSIVE " etc.; normalize so the Literal
+        # check below succeeds without surprising the user.
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
+
     @classmethod
     def from_env(cls) -> "Settings":
-        return cls(
-            anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-            google_api_key=os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
-            llm_provider=_provider("LLM_PROVIDER", os.getenv("LLM_PROVIDER")) or "claude",
-            llm_model=os.getenv("LLM_MODEL", "claude-haiku-4-5"),
-            sentiment_provider=_provider("SENTIMENT_PROVIDER", os.getenv("SENTIMENT_PROVIDER")),
-            sentiment_model=os.getenv("SENTIMENT_MODEL") or None,
-            ticker_provider=_provider("TICKER_PROVIDER", os.getenv("TICKER_PROVIDER")),
-            ticker_model=os.getenv("TICKER_MODEL") or None,
-            rerank_provider=_provider("RERANK_PROVIDER", os.getenv("RERANK_PROVIDER")),
-            rerank_model=os.getenv("RERANK_MODEL") or None,
-            insider_provider=_provider("INSIDER_PROVIDER", os.getenv("INSIDER_PROVIDER")),
-            insider_model=os.getenv("INSIDER_MODEL") or None,
-            tavily_api_key=os.getenv("TAVILY_API_KEY"),
-            snaptrade_client_id=os.getenv("SNAPTRADE_CLIENT_ID"),
-            snaptrade_consumer_key=os.getenv("SNAPTRADE_CONSUMER_KEY"),
-            snaptrade_user_id=os.getenv("SNAPTRADE_USER_ID"),
-            snaptrade_user_secret=os.getenv("SNAPTRADE_USER_SECRET"),
-            chart_img_api_key=os.getenv("CHART_IMG_API_KEY"),
-            smtp_host=os.getenv("SMTP_HOST"),
-            smtp_port=int(os.getenv("SMTP_PORT")) if os.getenv("SMTP_PORT") else None,
-            smtp_user=os.getenv("SMTP_USER"),
-            smtp_password=os.getenv("SMTP_PASSWORD"),
-            smtp_from=os.getenv("SMTP_FROM"),
-            email_to=os.getenv("EMAIL_TO"),
-            use_cached_analysis=os.getenv("USE_CACHED_ANALYSIS", "1") == "1",
-            insider_lookback_days=int(os.getenv("INSIDER_LOOKBACK_DAYS", "5")),
-            discover_opus_model=os.getenv("DISCOVER_OPUS_MODEL", "claude-opus-4-7"),
-            discover_sonnet_model=os.getenv("DISCOVER_SONNET_MODEL", "claude-sonnet-4-6"),
-            discover_watchlist=tuple(
-                t.strip().upper()
-                for t in (os.getenv("DISCOVER_WATCHLIST") or "").split(",")
-                if t.strip()
-            ),
-            discover_cash_budget=_optional_float(os.getenv("DISCOVER_CASH_BUDGET")),
-            discover_db_path=os.getenv("DISCOVER_DB_PATH", "~/.stock_analyzer/discover.db"),
-            fred_api_key=os.getenv("FRED_API_KEY"),
-            discover_consensus_runs=int(os.getenv("DISCOVER_CONSENSUS_RUNS") or "3"),
-            discover_rebalance_aggressiveness=(
-                os.getenv("DISCOVER_REBALANCE_AGGRESSIVENESS") or "balanced"
-            ).strip().lower(),
-        )
+        # Back-compat shim — `Settings()` already loads from env. Existing
+        # callers (`Settings.from_env()`) keep working without churn.
+        return cls()

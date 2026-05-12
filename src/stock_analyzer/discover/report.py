@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import html
 import re
-from dataclasses import dataclass
 from datetime import date
 from io import BytesIO
 from typing import Any, Literal
+
+from pydantic import BaseModel
 
 from reportlab.graphics.charts.legends import Legend
 from reportlab.graphics.charts.piecharts import Pie
@@ -150,8 +151,7 @@ SectionKind = Literal[
 ]
 
 
-@dataclass
-class Section:
+class Section(BaseModel):
     kind: SectionKind
     text: str = ""
     level: int = 2
@@ -191,52 +191,54 @@ def build_sections(
 
     s: list[Section] = []
 
-    s.append(Section("heading", f"Stock discovery picks — {today}", level=1))
+    s.append(Section(kind="heading", text=f"Stock discovery picks — {today}", level=1))
     s.append(Section(
-        "para",
-        f"{universe_size} candidates considered, {len(survivors)} survived "
-        f"hard filters, {len(pick_order)} picks.",
+        kind="para",
+        text=(
+            f"{universe_size} candidates considered, {len(survivors)} survived "
+            f"hard filters, {len(pick_order)} picks."
+        ),
     ))
 
     if macro_summary:
-        s.append(Section("heading", "Macro regime", level=2))
-        s.append(Section("blockquote", macro_summary))
+        s.append(Section(kind="heading", text="Macro regime", level=2))
+        s.append(Section(kind="blockquote", text=macro_summary))
 
     if sector_rotation and sector_rotation.get("leaders"):
         leaders = ", ".join(sector_rotation.get("leaders", []))
         laggards = ", ".join(sector_rotation.get("laggards", []))
-        s.append(Section("heading", "Sector rotation (6-month returns)", level=2))
-        s.append(Section("para", f"Leaders: {leaders}"))
-        s.append(Section("para", f"Laggards: {laggards}"))
+        s.append(Section(kind="heading", text="Sector rotation (6-month returns)", level=2))
+        s.append(Section(kind="para", text=f"Leaders: {leaders}"))
+        s.append(Section(kind="para", text=f"Laggards: {laggards}"))
 
-    s.append(Section("heading", "Current holdings (concentration context)", level=2))
-    s.append(Section("preformatted", holdings_summary or "(none)"))
+    s.append(Section(kind="heading", text="Current holdings (concentration context)", level=2))
+    s.append(Section(kind="preformatted", text=holdings_summary or "(none)"))
 
     for ticker in pick_order:
-        s.append(Section("page_break"))
-        s.append(Section("heading", ticker, level=2))
-        s.append(Section("image", image_ticker=ticker))
-        s.append(Section("heading", "Bull case", level=3))
-        s.append(Section("preformatted", pick_blocks.get(ticker, "(missing)")))
-        s.append(Section("heading", "Bear case (red-team)", level=3))
-        s.append(Section("preformatted", bear_blocks.get(ticker, "(missing)")))
-        s.append(Section("heading", "Position sizing", level=3))
-        s.append(Section("preformatted", alloc_blocks.get(ticker, "(missing)")))
+        s.append(Section(kind="page_break"))
+        s.append(Section(kind="heading", text=ticker, level=2))
+        s.append(Section(kind="image",image_ticker=ticker))
+        s.append(Section(kind="heading", text="Bull case", level=3))
+        s.append(Section(kind="preformatted", text=pick_blocks.get(ticker, "(missing)")))
+        s.append(Section(kind="heading", text="Bear case (red-team)", level=3))
+        s.append(Section(kind="preformatted", text=bear_blocks.get(ticker, "(missing)")))
+        s.append(Section(kind="heading", text="Position sizing", level=3))
+        s.append(Section(kind="preformatted", text=alloc_blocks.get(ticker, "(missing)")))
 
-    s.append(Section("page_break"))
-    s.append(Section("heading", "Ranker correlation notes", level=2))
+    s.append(Section(kind="page_break"))
+    s.append(Section(kind="heading", text="Ranker correlation notes", level=2))
     trailing = re.split(_PICK_RE, ranker_text)[-1].strip()
-    s.append(Section("preformatted", trailing or "(none)"))
+    s.append(Section(kind="preformatted", text=trailing or "(none)"))
 
-    s.append(Section("heading", "Red-team summary", level=2))
-    s.append(Section("preformatted", redteam_text.split("---")[-1].strip() or "(none)"))
+    s.append(Section(kind="heading", text="Red-team summary", level=2))
+    s.append(Section(kind="preformatted", text=redteam_text.split("---")[-1].strip() or "(none)"))
 
-    s.append(Section("heading", "Sizer concentration warnings", level=2))
-    s.append(Section("preformatted", sizer_text.split("---")[-1].strip() or "(none)"))
+    s.append(Section(kind="heading", text="Sizer concentration warnings", level=2))
+    s.append(Section(kind="preformatted", text=sizer_text.split("---")[-1].strip() or "(none)"))
 
     if survivors:
-        s.append(Section("page_break"))
-        s.append(Section("heading", "All candidates that passed filters", level=2))
+        s.append(Section(kind="page_break"))
+        s.append(Section(kind="heading", text="All candidates that passed filters", level=2))
         rows: list[list[str]] = []
         for c in sorted(survivors, key=lambda x: x.get("score") or 0, reverse=True):
             comp = c.get("score_components") or {}
@@ -249,16 +251,16 @@ def build_sections(
                 c.get("sector") or "—",
             ])
         s.append(Section(
-            "table",
+            kind="table",
             table_header=["Ticker", "Score", "Fund.", "Trend", "Conv.", "Sector"],
             table_rows=rows,
         ))
 
     if rejected:
-        s.append(Section("heading", "Rejected candidates", level=2))
+        s.append(Section(kind="heading", text="Rejected candidates", level=2))
         for c in sorted(rejected, key=lambda x: x["ticker"]):
             reasons = ", ".join(c.get("fail_reasons") or [])
-            s.append(Section("para", f"{c['ticker']}: {reasons}"))
+            s.append(Section(kind="para", text=f"{c['ticker']}: {reasons}"))
 
     return s
 

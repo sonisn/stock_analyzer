@@ -553,7 +553,7 @@ def _build_rebalance_sections(
 
     # ---- Build sections ---------------------------------------------------
     sections: list[Section] = [
-        Section("heading", f"Portfolio Rebalance — {today}", level=1),
+        Section(kind="heading", text=f"Portfolio Rebalance — {today}", level=1),
         Section(kind="status_banner", text=status_label, status=status),
     ]
 
@@ -566,29 +566,29 @@ def _build_rebalance_sections(
     sections.append(Section(kind="metric_strip", metrics=metrics))
 
     if dashboard_rows:
-        sections.append(Section("heading", "Holdings dashboard", level=2))
+        sections.append(Section(kind="heading", text="Holdings dashboard", level=2))
         sections.append(
             Section(kind="holdings_dashboard", holdings=dashboard_rows)
         )
 
     if sector_value:
         pie_data = sorted(sector_value.items(), key=lambda x: x[1], reverse=True)
-        sections.append(Section("heading", "Sector allocation", level=2))
+        sections.append(Section(kind="heading", text="Sector allocation", level=2))
         sections.append(Section(kind="sector_pie", pie_data=pie_data))
 
     if macro_summary:
-        sections.append(Section("heading", "Macro regime", level=2))
-        sections.append(Section("blockquote", macro_summary))
+        sections.append(Section(kind="heading", text="Macro regime", level=2))
+        sections.append(Section(kind="blockquote", text=macro_summary))
 
-    sections.append(Section("page_break"))
-    sections.append(Section("heading", "Rebalance plan (action list)", level=1))
-    sections.append(Section("preformatted", rebalance_text))
+    sections.append(Section(kind="page_break"))
+    sections.append(Section(kind="heading", text="Rebalance plan (action list)", level=1))
+    sections.append(Section(kind="preformatted", text=rebalance_text))
 
-    sections.append(Section("page_break"))
-    sections.append(Section("heading", "Per-holding reviews", level=1))
+    sections.append(Section(kind="page_break"))
+    sections.append(Section(kind="heading", text="Per-holding reviews", level=1))
     for ticker in sorted(holdings_reviews.keys()):
-        sections.append(Section("heading", ticker, level=2))
-        sections.append(Section("preformatted", holdings_reviews[ticker]))
+        sections.append(Section(kind="heading", text=ticker, level=2))
+        sections.append(Section(kind="preformatted", text=holdings_reviews[ticker]))
 
     # Discover picks as appendix — drop their own H1 + summary since we have ours.
     discover_sections = build_sections(
@@ -601,9 +601,9 @@ def _build_rebalance_sections(
         macro_summary="",
         sector_rotation=sector_rotation,
     )
-    sections.append(Section("page_break"))
+    sections.append(Section(kind="page_break"))
     sections.append(
-        Section("heading", "Discover picks (input to rebalancer)", level=1)
+        Section(kind="heading", text="Discover picks (input to rebalancer)", level=1)
     )
     sections.extend(discover_sections[2:])
     return sections

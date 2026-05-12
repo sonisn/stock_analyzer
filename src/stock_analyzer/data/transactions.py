@@ -14,9 +14,10 @@ about which specific lots to sell per recommendation.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from ..logging import get_logger
 from .brokerage import _client, _credentials, _extract_ticker, _unwrap
@@ -44,9 +45,10 @@ def _coerce_date(value: Any) -> date | None:
     return None
 
 
-@dataclass
-class Lot:
+class Lot(BaseModel):
     """A single BUY transaction — i.e. one tax lot."""
+
+    model_config = ConfigDict(frozen=True)
 
     date: str          # ISO date of purchase
     units: float       # shares acquired
@@ -88,10 +90,9 @@ class Lot:
             return None
 
 
-@dataclass
-class TickerTaxSummary:
+class TickerTaxSummary(BaseModel):
     ticker: str
-    lots: list[Lot] = field(default_factory=list)
+    lots: list[Lot] = Field(default_factory=list)
     total_units_bought: float = 0.0
     total_units_sold: float = 0.0
     total_cost_basis: float = 0.0
@@ -102,7 +103,7 @@ class TickerTaxSummary:
     # SELL transactions within the last 60 days — used by the rebalancer
     # for wash-sale awareness (re-buying within 30 days of a loss-sale
     # disallows the loss for tax purposes).
-    recent_sells_60d: list[dict[str, Any]] = field(default_factory=list)
+    recent_sells_60d: list[dict[str, Any]] = Field(default_factory=list)
 
     @property
     def current_units(self) -> float:
