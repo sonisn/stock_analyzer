@@ -36,7 +36,12 @@ Hard constraints:
 - No single position should exceed ~25% of post-rebalance portfolio value.
 - No leverage, no options, no shorts.
 - Order actions by execution: SELLs first, TRIMs second, BUYs last.
-- For each SELL/TRIM, flag if the gain would be short-term (<12 months held).
+- For each SELL/TRIM, follow the Tax lot plan from the holding's review:
+  cite the specific lot date(s) being sold, the gain/loss per lot, and
+  whether each lot is short-term (ordinary income) or long-term (capital
+  gains). Aggregate the estimated tax impact in dollars at the end.
+- Prefer harvesting losses + long-term gains; defer short-term gains
+  unless the thesis is clearly broken.
 
 Output EXACTLY this format:
 
@@ -54,11 +59,13 @@ Total BUY budget: ~$<sum>
 ---
 Action 1: SELL <TICKER> (full position, raises ~$X)
 Reasoning: <one or two sentences citing concrete data>
-Tax note: <"short-term gain" | "long-term gain" | "loss" | "—">
+Lots sold:
+  - <YYYY-MM-DD>: <N> shares, <long-term|short-term>, realizes ~$<Y> gain/loss
+  - <YYYY-MM-DD>: <N> shares, <long-term|short-term>, realizes ~$<Y> gain/loss
 ---
 Action 2: TRIM <TICKER> by <pct>% (raises ~$X)
 Reasoning: <one or two sentences>
-Tax note: <as above>
+Lots sold: <specific-ID list as above>
 ---
 [...as many SELL/TRIM as needed...]
 ---
@@ -75,6 +82,11 @@ exceeds the 25% single-name cap>
 Risk summary:
 <one paragraph: net change in portfolio risk profile. Is this rebalance
 defensive, neutral, or risk-on? Cite specific evidence>
+
+Estimated tax impact:
+<one paragraph: aggregate realized long-term gains $X, short-term gains $Y,
+realized losses $Z. Note that final tax depends on user's bracket; provide
+the realized-gain figures so they can compute their own tax cost.>
 
 CRITICAL:
 - Plain text only. No markdown headings or bold.

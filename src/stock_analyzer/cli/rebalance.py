@@ -36,6 +36,7 @@ from ..data.insider_selling import insider_selling_mentions
 from ..data.sec_edgar import batch_risk_factors
 from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
+from ..data.transactions import fetch_transaction_history, to_tax_payloads
 from ..discover.persistence import (
     connect,
     insert_candidate,
@@ -117,6 +118,19 @@ class RebalancePipeline(DiscoverPipeline):
         self.state["holdings_risk_factors"] = batch_risk_factors(tickers)
         return StepOutput(content=f"Holdings data fetched for {len(tickers)} tickers")
 
+    def step_transaction_history(self, step_input: StepInput) -> StepOutput:
+        """Pull 3yr of SnapTrade activities and build per-ticker tax lot summaries.
+        Runs independently of survivors — relies only on SnapTrade auth."""
+        summaries = fetch_transaction_history(years_back=3)
+        self.state["tax_lots"] = to_tax_payloads(summaries)
+        n_lots = sum(s.get("lot_count", 0) for s in self.state["tax_lots"].values())
+        return StepOutput(
+            content=(
+                f"Tax lots: {len(self.state['tax_lots'])} tickers, "
+                f"{n_lots} total lots over 3yr lookback"
+            )
+        )
+
     def step_insider_selling(self, step_input: StepInput) -> StepOutput:
         """Override: include holdings tickers so reviewer sees selling on them too."""
         tickers = set(self.state["survivor_tickers"])
@@ -169,6 +183,7 @@ class RebalancePipeline(DiscoverPipeline):
                 "insider_selling_mentions": selling.get(ticker, 0),
                 "share_trades": self.state.get("share_trades", {}).get(ticker),
                 "risk_factors_10k": (rfs.get(ticker) or {}).get("risk_factors"),
+                "tax_lots": self.state.get("tax_lots", {}).get(ticker),
             }
 
         reviewer = Reviewer("claude", self.settings.discover_sonnet_model)
@@ -320,6 +335,10 @@ class RebalancePipeline(DiscoverPipeline):
                     Step(name="sector_rotation", executor=self.step_sector_rotation),
                     Step(name="macro_regime", executor=self.step_macro_regime),
                     Step(name="holdings_fetch", executor=self.step_holdings_fetch),
+                    Step(
+                        name="transaction_history",
+                        executor=self.step_transaction_history,
+                    ),
                     name="market_data",
                 ),
                 Step(name="screen", executor=self.step_screen),
