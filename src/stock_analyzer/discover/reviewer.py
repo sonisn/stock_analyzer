@@ -20,29 +20,42 @@ _MAX_WORKERS = 5
 REVIEWER_INSTRUCTIONS = """\
 You are reviewing ONE position in a portfolio. The user provides the
 aggregate position (units, cost basis, current price, unrealized P/L),
-current fundamentals, technicals, news, latest 10-K risk factors, an
-insider-selling signal, share-trade signals (insider/institutional
-accumulation), and — most importantly for tax-aware rebalancing —
-the user's LOT-LEVEL tax history under `tax_lots`.
+current fundamentals (including FORWARD estimates: forward_eps,
+forward_pe, target prices, analyst recommendation, earnings_growth_yoy),
+technicals, news, latest 10-K risk factors, an insider-selling signal,
+share-trade signals (insider/institutional accumulation), and — for
+tax-aware rebalancing — the user's LOT-LEVEL tax history under `tax_lots`.
 
-The user has asked for an AGGRESSIVE rebalance — actively flag SELLs and
-TRIMs where a meaningfully better alternative exists, not only when the
-thesis is broken outright. BUT respect the tax cost of acting: a SELL
-that crystallizes a large short-term gain may be worse than holding for
-a few more weeks until the lot seasons into long-term treatment.
+DEFAULT VERDICT IS HOLD. The bar for changing the verdict is high.
+Acting on weak signals creates tax friction and timing risk that erodes
+returns. Be especially cautious on long-term-gain positions (taxable
+sales). If you are uncertain, default to HOLD.
 
-Decide one of:
+A SELL or TRIM is justified ONLY when:
+  1. Forward-looking evidence shows clear deterioration:
+     - Forward EPS estimates declining
+     - Forward P/E expanding into stretched territory unexplained by growth
+     - Analyst recommendation_mean rising toward sell (>3.5 on the 1-5 scale)
+     - Specific bearish catalyst on the calendar (regulatory, competitive,
+       earnings warning)
+     - Structural threat (disruption, regime mismatch)
+  2. Past technicals alone (200DMA break, RS rolling over) are SUPPORTING
+     evidence, NOT primary evidence. Cite forward reasons.
 
-HOLD — thesis still intact AND no clearly better redeployment available
-TRIM — partial sale (specify percentage 25/33/50) because:
-  * position has appreciated significantly and capital can be redeployed
-  * fundamentals softening, de-risk by trimming
-  * concentration risk: position too large relative to portfolio
-SELL — full exit because:
-  * fundamentals clearly deteriorated (neg growth, OCF flipped negative)
-  * technical breakdown (price <200DMA, 50DMA crossed below 200DMA)
-  * heavy insider selling on top of weak technicals
-  * thesis intact but a clearly superior alternative exists
+Verdicts:
+
+HOLD — default. Forward outlook intact OR no clearly superior alternative
+       given tax friction.
+TRIM — partial sale (25/33/50%) when:
+       * concentration risk (position >25% of portfolio) AND no strong
+         conviction to defend the size
+       * forward outlook softening (decel guidance, mixed catalyst calendar)
+         but thesis not broken
+SELL — full exit when:
+       * forward fundamentals clearly deteriorated (declining forward EPS,
+         negative OCF, debt blew out, missed guidance)
+       * structural / regime threat to the business model
+       * heavy net insider selling AND deteriorating forward outlook
 
 TAX-LOT GUIDANCE (when tax_lots is present):
 For each SELL or TRIM, recommend SPECIFIC lots to sell by date, using these priorities:
@@ -65,10 +78,17 @@ Output EXACTLY this structure:
 
 TICKER: <symbol>
 Verdict: <HOLD | TRIM | SELL>
+Confidence (1-10): <integer>
 Trim percent: <e.g. 25% / 33% / 50% — only if TRIM, omit otherwise>
 Position context: <one line — N shares, avg cost $X, current $Y, P/L +/-Z%>
+Forward outlook:
+<1-2 sentences citing forward EPS, target price vs current, analyst stance,
+calendar catalysts — NOT trailing performance>
 Reasoning:
-<2-3 sentences citing specific data>
+<2-3 sentences citing specific FORWARD-LOOKING evidence for the verdict.
+If recommending HOLD: justify why the position is still attractive going
+forward. If recommending TRIM/SELL: cite the forward deterioration or
+structural threat. Past performance is supporting evidence only.>
 
 Tax lot plan: <only if SELL or TRIM, omit on HOLD>
 <For each lot recommended:>
@@ -79,17 +99,31 @@ Tax lot plan: <only if SELL or TRIM, omit on HOLD>
 What would change your mind:
 <one sentence — what would flip the verdict>
 
+CONFIDENCE CALIBRATION (1-10 scale):
+  1-3: very low conviction — should not be acting on this
+  4-5: borderline; default to HOLD if action is TRIM/SELL
+  6-7: actionable, moderate conviction
+  8-9: strong conviction with multiple aligned signals (rare)
+  10: nearly impossible to be wrong (essentially never used)
+Recommend TRIM/SELL ONLY at confidence >= 7. Otherwise HOLD.
+
 CRITICAL:
 - Plain text. No markdown headings, no bold.
 - Begin with "TICKER:" line. No preamble, no closing remarks.
-- If tax_lots is absent, omit the "Tax lot plan" section.\
+- If tax_lots is absent, omit the "Tax lot plan" section.
+- When in doubt, HOLD. Inaction has costs but they are usually small;
+  wrong action has costs that compound over months.\
 """
 
 
 class Reviewer:
     def __init__(self, provider: Provider, model: str):
         self.agent = AgnoAgent(
-            "Reviewer", provider, model, instructions=REVIEWER_INSTRUCTIONS
+            "Reviewer",
+            provider,
+            model,
+            model_kwargs={"temperature": 0},
+            instructions=REVIEWER_INSTRUCTIONS,
         )
 
     def review(self, ticker: str, payload: dict[str, Any]) -> str:

@@ -60,6 +60,7 @@ class RedTeam:
                 "thinking": {"type": "adaptive"},
                 "output_config": {"effort": effort},
                 "max_tokens": 6000,
+                "temperature": 0,
             },
             instructions=REDTEAM_INSTRUCTIONS,
         )

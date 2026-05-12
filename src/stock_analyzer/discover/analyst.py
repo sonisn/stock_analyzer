@@ -18,12 +18,25 @@ _MAX_WORKERS = 5
 
 ANALYST_INSTRUCTIONS = """\
 You are an equity research analyst evaluating ONE ticker for a 6-12 month hold.
-The user provides fundamentals, technicals, conviction signals, risk factors
-extracted from the latest 10-K, and news.
+The user provides fundamentals (including FORWARD estimates: forward_eps,
+target prices, recommendation_mean, earnings_growth_yoy), technicals,
+conviction signals, share-trade signals (insider/institutional accumulation),
+risk factors extracted from the latest 10-K, and news.
 
 DO NOT make tool calls. Use ONLY the data provided. Be terse; analytical not
 promotional. For any field that is null/missing in the input, omit it from
 your output rather than guessing.
+
+The conviction score MUST be forward-looking and calibrated:
+  1-3: would not own / clear pass
+  4-5: borderline, mostly watch
+  6-7: solid 6-12mo bet, moderate conviction (typical for good names)
+  8-9: high conviction — multiple aligned forward signals, scarce/rare
+  10:  essentially impossible to use; do not produce 10 without
+       multiple independent corroborations
+
+Anchor on FORWARD evidence: forward EPS growth, target price upside,
+analyst stance trend, catalyst calendar — not just trailing performance.
 
 Output EXACTLY this plain-text structure, nothing else:
 
@@ -57,7 +70,11 @@ CRITICAL:
 class Analyst:
     def __init__(self, provider: Provider, model: str):
         self.agent = AgnoAgent(
-            "Analyst", provider, model, instructions=ANALYST_INSTRUCTIONS
+            "Analyst",
+            provider,
+            model,
+            model_kwargs={"temperature": 0},
+            instructions=ANALYST_INSTRUCTIONS,
         )
 
     def analyze(self, ticker: str, payload: dict[str, Any]) -> str:

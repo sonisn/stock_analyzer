@@ -69,6 +69,10 @@ class Settings:
     discover_cash_budget: float | None = None
     discover_db_path: str = "~/.stock_analyzer/discover.db"
     fred_api_key: str | None = None
+    # Run the ranker N times and consensus-vote on picks (N >= 2). With
+    # temperature=0 set in all stages, runs should agree near-perfectly,
+    # but this catches any residual variance from data freshness.
+    discover_consensus_runs: int = 3
 
     # Behavior
     use_cached_analysis: bool = True
@@ -113,4 +117,5 @@ class Settings:
             discover_cash_budget=_optional_float(os.getenv("DISCOVER_CASH_BUDGET")),
             discover_db_path=os.getenv("DISCOVER_DB_PATH", "~/.stock_analyzer/discover.db"),
             fred_api_key=os.getenv("FRED_API_KEY"),
+            discover_consensus_runs=int(os.getenv("DISCOVER_CONSENSUS_RUNS") or "3"),
         )

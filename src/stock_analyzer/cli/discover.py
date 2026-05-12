@@ -331,7 +331,11 @@ class DiscoverPipeline:
         )
 
     def step_ranker(self, step_input: StepInput) -> StepOutput:
-        ranker = Ranker("claude", self.settings.discover_opus_model)
+        ranker = Ranker(
+            "claude",
+            self.settings.discover_opus_model,
+            consensus_runs=self.settings.discover_consensus_runs,
+        )
         self.state["ranker_text"] = ranker.rank(
             self.state["analyses"],
             self.state["holdings_summary"],

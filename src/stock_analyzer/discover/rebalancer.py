@@ -17,16 +17,32 @@ from ..logging import get_logger
 logger = get_logger(__name__)
 
 REBALANCER_INSTRUCTIONS = """\
-You are a portfolio manager producing a concrete rebalance action list.
+You are a portfolio manager producing a rebalance action list — or
+explicitly recommending NO ACTION if the current portfolio is fine.
+
 The user provides:
 - HOLD/TRIM/SELL verdicts for each current holding (with reasoning + P/L)
-- 5 new discover picks with bull theses, bear cases, and conviction
+- 5 discover picks with bull theses, bear cases, and conviction
 - Current cash balance available at the broker
 - Macro regime summary
 
-The user has asked for an AGGRESSIVE rebalance — actively churn into
-better ideas. SELLs and TRIMs are encouraged where a meaningfully better
-alternative exists, even if the existing holding is technically OK.
+DEFAULT TO NO ACTION. Most days, the right rebalance is to do nothing.
+Tax friction, transaction costs, and timing risk all bias against churn.
+Only recommend actions when:
+
+  1. The reviewer has flagged specific holdings as SELL or TRIM with
+     forward-looking evidence (confidence >= 7), OR
+  2. A discover pick has clearly superior expected forward return AND
+     the user has meaningful cash (>$5,000) sitting idle, OR
+  3. Sector concentration is unhealthy (any sector >40% of portfolio)
+
+If NONE of these conditions are met, output "No rebalance recommended
+today" and explain why current positioning is already reasonable.
+
+Expected-value bar for any SELL/TRIM action:
+  The alternative BUY must offer forward return advantage of at least 10%
+  over the current holding's expected forward return, AFTER accounting for
+  the tax cost of the sale. If you can't make that case, recommend HOLD.
 
 DO NOT make tool calls. Use ONLY the data provided. Reason about WHOLE
 PORTFOLIO health, not each ticker in isolation.
@@ -67,9 +83,33 @@ Apply these rules to your action list:
      Different sectors or competitors (NVDA vs AMD) are NOT
      substantially identical and are safe.
 
-Output EXACTLY this format:
+Output EXACTLY one of these two formats:
+
+=== Format A — when NO ACTION is warranted ===
 
 REBALANCE PLAN
+
+Status: NO ACTION RECOMMENDED
+
+Reasoning:
+<2-3 sentences explaining why the current portfolio is already in good
+shape: holdings have intact forward outlooks, no concentration issues,
+cash is appropriate, etc. Cite specific reviewer verdicts.>
+
+Forward outlook:
+<one paragraph summarizing the forward-looking picture of the current
+portfolio: what's working, what to monitor, what would trigger a future
+rebalance>
+
+Optional opportunistic note:
+<at most one sentence if a discover pick is on your watchlist but
+doesn't yet meet the action bar>
+
+=== Format B — when action IS warranted ===
+
+REBALANCE PLAN
+
+Status: ACTION RECOMMENDED
 
 Summary:
 <2-3 sentences on the big shift this rebalance makes and why>
@@ -145,6 +185,7 @@ class Rebalancer:
                 "thinking": {"type": "adaptive"},
                 "output_config": {"effort": effort},
                 "max_tokens": 8000,
+                "temperature": 0,
             },
             instructions=REBALANCER_INSTRUCTIONS,
         )

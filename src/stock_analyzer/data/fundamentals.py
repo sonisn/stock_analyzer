@@ -58,6 +58,16 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
     fcf = info.get("freeCashflow")
     fcf_yield = (fcf / market_cap) if (fcf and market_cap) else None
 
+    current_price = info.get("currentPrice") or info.get("regularMarketPrice")
+    target_mean = info.get("targetMeanPrice")
+    # Forward upside helps the LLM reason: positive = analysts see upside.
+    target_upside_pct = None
+    if current_price and target_mean:
+        try:
+            target_upside_pct = (target_mean - current_price) / current_price
+        except (TypeError, ZeroDivisionError):
+            target_upside_pct = None
+
     return {
         "ticker": ticker,
         "name": info.get("shortName") or info.get("longName"),
@@ -73,11 +83,19 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
         "gross_margin": info.get("grossMargins"),
         "operating_margin": info.get("operatingMargins"),
         "profit_margin": info.get("profitMargins"),
+        # Forward-looking fields used by analyst + reviewer for forward thesis.
         "forward_pe": info.get("forwardPE"),
         "trailing_pe": info.get("trailingPE"),
         "peg_ratio": info.get("pegRatio"),
-        "analyst_target_mean": info.get("targetMeanPrice"),
+        "forward_eps": info.get("forwardEps"),
+        "trailing_eps": info.get("trailingEps"),
+        "analyst_target_mean": target_mean,
+        "analyst_target_high": info.get("targetHighPrice"),
+        "analyst_target_low": info.get("targetLowPrice"),
+        "analyst_target_upside_pct": target_upside_pct,
         "analyst_recommendation": info.get("recommendationKey"),
+        "analyst_recommendation_mean": info.get("recommendationMean"),
+        "analyst_count": info.get("numberOfAnalystOpinions"),
         "shares_short_pct": info.get("shortPercentOfFloat"),
     }
 

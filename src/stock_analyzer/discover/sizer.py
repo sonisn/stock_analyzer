@@ -56,6 +56,7 @@ class Sizer:
                 "thinking": {"type": "adaptive"},
                 "output_config": {"effort": effort},
                 "max_tokens": 4000,
+                "temperature": 0,
             },
             instructions=SIZER_INSTRUCTIONS,
         )
