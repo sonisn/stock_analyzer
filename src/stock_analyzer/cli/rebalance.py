@@ -59,7 +59,7 @@ from ..discover.report import (
     render_pdf,
 )
 from ..discover.reviewer import Reviewer, review_batch
-from ..logging import get_logger
+from ..logging import current_log_file, get_logger
 from ..reporting.smtp import SmtpServer
 from .discover import (
     DiscoverPipeline,
@@ -70,6 +70,50 @@ from .discover import (
 )
 
 logger = get_logger(__name__)
+
+
+def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
+    """Persist the PDF to ~/.stock_analyzer/reports/ so a missed email
+    never costs the user the report. Override via REPORTS_DIR env."""
+    reports_dir = Path(
+        os.path.expanduser(os.getenv("REPORTS_DIR", "~/.stock_analyzer/reports"))
+    )
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    path = reports_dir / filename
+    path.write_bytes(pdf_bytes)
+    return path
+
+
+def _log_full_analysis(
+    *,
+    delivered: bool,
+    delivery_error: str | None,
+    local_pdf_path: str,
+    rebalance_text: str,
+    ranker_text: str,
+    redteam_text: str,
+    sizer_text: str,
+    holdings_reviews: dict[str, str],
+) -> None:
+    """Dump every analyst-produced section to the logger so the user can
+    recover the full report from the log file when email fails."""
+    bar = "=" * 70
+    if not delivered:
+        logger.error(
+            "%s\nEMAIL NOT DELIVERED — full analysis follows in this log.\n"
+            "Reason: %s\nPDF: %s\n%s",
+            bar,
+            delivery_error or "EMAIL_TO not configured",
+            local_pdf_path,
+            bar,
+        )
+    logger.info("%s\nREBALANCE PLAN\n%s\n%s", bar, bar, rebalance_text)
+    logger.info("%s\nRANKER — discover picks\n%s\n%s", bar, bar, ranker_text)
+    logger.info("%s\nRED TEAM — bear cases\n%s\n%s", bar, bar, redteam_text)
+    logger.info("%s\nSIZER — allocation\n%s\n%s", bar, bar, sizer_text)
+    for ticker in sorted(holdings_reviews):
+        review = holdings_reviews.get(ticker) or "(review unavailable)"
+        logger.info("%s\nHOLDING REVIEW — %s\n%s\n%s", bar, ticker, bar, review)
 
 
 def _aggregate_positions(
@@ -329,7 +373,13 @@ class RebalancePipeline(DiscoverPipeline):
         subject = f"Portfolio Rebalance — {today.strftime('%b-%d')}"
         pdf_filename = f"rebalance-{today.isoformat()}.pdf"
 
+        # Save PDF locally BEFORE the email attempt so a delivery failure
+        # (SMTP outage, wrong creds, etc.) never costs the user the report.
+        local_pdf_path = _save_local_pdf(pdf_bytes, pdf_filename)
+        logger.info("Saved rebalance PDF locally: %s", local_pdf_path)
+
         delivered = False
+        delivery_error: str | None = None
         if self.settings.email_to:
             try:
                 SmtpServer().send_email(
@@ -347,21 +397,43 @@ class RebalancePipeline(DiscoverPipeline):
                     "Sent rebalance email to %s", self.settings.email_to
                 )
             except Exception as e:
+                delivery_error = str(e)
                 logger.error("Email delivery failed: %s", e)
         else:
             logger.warning("EMAIL_TO not set; skipping email")
+
+        # Always dump the full analysis to the log so the user can recover
+        # every section — even when email is offline or wasn't configured.
+        _log_full_analysis(
+            delivered=delivered,
+            delivery_error=delivery_error,
+            local_pdf_path=str(local_pdf_path),
+            rebalance_text=self.state["rebalance_text"],
+            ranker_text=self.state["ranker_text"],
+            redteam_text=self.state["redteam_text"],
+            sizer_text=self.state["sizer_text"],
+            holdings_reviews=self.state["holdings_reviews"],
+        )
 
         print_terminal_summary(self.state["ranker_text"], self.state["sizer_text"])
         print("\n" + "=" * 60)
         print("REBALANCE PLAN")
         print("=" * 60)
         print(self.state["rebalance_text"])
+        print(f"\nPDF saved: {local_pdf_path}")
+        log_path = current_log_file()
+        if log_path:
+            print(f"Log file:  {log_path}")
 
         self.state["run_id"] = run_id
         self.state["pdf_bytes"] = pdf_bytes
+        self.state["local_pdf_path"] = str(local_pdf_path)
         status = "emailed" if delivered else "persisted (no email)"
         return StepOutput(
-            content=f"Rebalance run #{run_id} {status}; PDF {len(pdf_bytes)} bytes"
+            content=(
+                f"Rebalance run #{run_id} {status}; PDF {len(pdf_bytes)} bytes "
+                f"(saved to {local_pdf_path})"
+            )
         )
 
     # --- workflow assembly -------------------------------------------------
@@ -457,7 +529,7 @@ def _build_rebalance_sections(
         pos = holdings_positions[ticker]
         tech = holdings_technicals.get(ticker, {})
         fund = holdings_fundamentals.get(ticker, {})
-        review = holdings_reviews.get(ticker, "")
+        review = holdings_reviews.get(ticker) or ""
         current = tech.get("price")
         units = pos.get("units", 0)
         cost = pos.get("cost_basis", 0)

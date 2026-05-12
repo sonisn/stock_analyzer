@@ -155,7 +155,14 @@ class Reviewer:
             f"```json\n{json.dumps(payload, default=str, indent=2)}\n```"
         )
         logger.info("Reviewing holding %s", ticker)
-        return self.agent.run(prompt).content
+        content = self.agent.run(prompt).content
+        if not content:
+            logger.warning(
+                "Reviewer returned empty content for %s — using empty review",
+                ticker,
+            )
+            return ""
+        return content
 
 
 def review_batch(

@@ -69,10 +69,49 @@ from ..discover.report import (
 from ..discover.screen import passes_hard_filter, score_candidate
 from ..discover.sizer import Sizer
 from ..discover.universe import build_universe
-from ..logging import get_logger
+from ..logging import current_log_file, get_logger
 from ..reporting.smtp import SmtpServer
 
 logger = get_logger(__name__)
+
+
+def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
+    """Persist the PDF to ~/.stock_analyzer/reports/ so a missed email
+    never costs the user the report. Override via REPORTS_DIR env."""
+    reports_dir = Path(
+        os.path.expanduser(os.getenv("REPORTS_DIR", "~/.stock_analyzer/reports"))
+    )
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    path = reports_dir / filename
+    path.write_bytes(pdf_bytes)
+    return path
+
+
+def _log_discover_analysis(
+    *,
+    delivered: bool,
+    delivery_error: str | None,
+    local_pdf_path: str,
+    ranker_text: str,
+    redteam_text: str,
+    sizer_text: str,
+) -> None:
+    """Dump every analyst-produced section to the logger so the user can
+    recover the full report from the log file when email fails."""
+    bar = "=" * 70
+    if not delivered:
+        logger.error(
+            "%s\nEMAIL NOT DELIVERED — full analysis follows in this log.\n"
+            "Reason: %s\nPDF: %s\n%s",
+            bar,
+            delivery_error or "EMAIL_TO not configured",
+            local_pdf_path,
+            bar,
+        )
+    logger.info("%s\nRANKER — discover picks\n%s\n%s", bar, bar, ranker_text)
+    logger.info("%s\nRED TEAM — bear cases\n%s\n%s", bar, bar, redteam_text)
+    logger.info("%s\nSIZER — allocation\n%s\n%s", bar, bar, sizer_text)
+
 
 MAX_CANDIDATES_FOR_LLM = 25
 
@@ -495,7 +534,13 @@ class DiscoverPipeline:
         )
         pdf_filename = f"discover-{today.isoformat()}.pdf"
 
+        # Save PDF locally BEFORE the email attempt so a delivery failure
+        # (SMTP outage, wrong creds, etc.) never costs the user the report.
+        local_pdf_path = _save_local_pdf(pdf_bytes, pdf_filename)
+        logger.info("Saved discover PDF locally: %s", local_pdf_path)
+
         delivered = False
+        delivery_error: str | None = None
         if self.settings.email_to:
             try:
                 SmtpServer().send_email(
@@ -511,6 +556,7 @@ class DiscoverPipeline:
                 delivered = True
                 logger.info("Sent discovery email to %s", self.settings.email_to)
             except Exception as e:
+                delivery_error = str(e)
                 logger.error("Email delivery failed: %s", e)
         else:
             logger.warning(
@@ -519,12 +565,33 @@ class DiscoverPipeline:
                 run_id,
             )
 
+        # Always dump the full analysis to the log so the user can recover
+        # every section — even when email is offline or wasn't configured.
+        _log_discover_analysis(
+            delivered=delivered,
+            delivery_error=delivery_error,
+            local_pdf_path=str(local_pdf_path),
+            ranker_text=self.state["ranker_text"],
+            redteam_text=self.state["redteam_text"],
+            sizer_text=self.state["sizer_text"],
+        )
+
         self.state["run_id"] = run_id
         self.state["pdf_bytes"] = pdf_bytes
         self.state["html_body"] = html_body
+        self.state["local_pdf_path"] = str(local_pdf_path)
         print_terminal_summary(self.state["ranker_text"], self.state["sizer_text"])
+        print(f"\nPDF saved: {local_pdf_path}")
+        log_path = current_log_file()
+        if log_path:
+            print(f"Log file:  {log_path}")
         status = "emailed" if delivered else "persisted (no email)"
-        return StepOutput(content=f"Run #{run_id} {status}; PDF {len(pdf_bytes)} bytes")
+        return StepOutput(
+            content=(
+                f"Run #{run_id} {status}; PDF {len(pdf_bytes)} bytes "
+                f"(saved to {local_pdf_path})"
+            )
+        )
 
     # --- workflow assembly --------------------------------------------
 

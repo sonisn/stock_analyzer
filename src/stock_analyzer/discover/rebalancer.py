@@ -353,4 +353,10 @@ class Rebalancer:
             f"${cash_available:,.0f}" if cash_available is not None else "unknown",
             agg,
         )
-        return self.agent.run(prompt).content
+        content = self.agent.run(prompt).content
+        if not content:
+            raise RuntimeError(
+                "Rebalancer LLM returned empty content — the rebalance plan "
+                "cannot be rendered. Check provider rate limits and retry."
+            )
+        return content

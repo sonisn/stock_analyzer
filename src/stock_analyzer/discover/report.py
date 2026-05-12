@@ -86,25 +86,33 @@ _ACTION_RE = re.compile(
 )
 
 
-def parse_verdict(review_text: str) -> str:
+def parse_verdict(review_text: str | None) -> str:
+    if not review_text:
+        return "HOLD"
     m = _VERDICT_RE.search(review_text)
     return m.group(1).upper() if m else "HOLD"
 
 
-def parse_confidence(review_text: str) -> int | None:
+def parse_confidence(review_text: str | None) -> int | None:
+    if not review_text:
+        return None
     m = _CONFIDENCE_RE.search(review_text)
     return int(m.group(1)) if m else None
 
 
-def parse_rebalance_status(rebalance_text: str) -> str:
+def parse_rebalance_status(rebalance_text: str | None) -> str:
+    if not rebalance_text:
+        return "UNKNOWN"
     m = _STATUS_RE.search(rebalance_text)
     if not m:
         return "UNKNOWN"
     return "NO_ACTION" if "NO ACTION" in m.group(1) else "ACTION"
 
 
-def parse_actions(rebalance_text: str) -> list[tuple[str, str]]:
+def parse_actions(rebalance_text: str | None) -> list[tuple[str, str]]:
     """Return [(action_type, ticker), ...] preserving order from the plan."""
+    if not rebalance_text:
+        return []
     return [(m.group(1), m.group(2)) for m in _ACTION_RE.finditer(rebalance_text)]
 
 
