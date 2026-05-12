@@ -34,6 +34,7 @@ from ..data.chart_img import fetch_charts
 from ..data.fundamentals import batch_fundamentals
 from ..data.insider_selling import insider_selling_mentions
 from ..data.sec_edgar import batch_risk_factors
+from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
 from ..discover.persistence import (
     connect,
@@ -126,6 +127,16 @@ class RebalancePipeline(DiscoverPipeline):
             content=f"Insider selling: {len(self.state['insider_selling'])} flagged"
         )
 
+    def step_share_trades(self, step_input: StepInput) -> StepOutput:
+        """Override: fetch insider/institutional data for both survivors AND holdings."""
+        tickers = set(self.state["survivor_tickers"])
+        if self.state.get("holdings_tickers"):
+            tickers |= set(self.state["holdings_tickers"])
+        self.state["share_trades"] = batch_share_trade_data(list(tickers))
+        return StepOutput(
+            content=f"Share trades fetched for {len(self.state['share_trades'])}/{len(tickers)}"
+        )
+
     def step_review_holdings(self, step_input: StepInput) -> StepOutput:
         positions = self.state["holdings_positions"]
         fund = self.state["holdings_fundamentals"]
@@ -156,6 +167,7 @@ class RebalancePipeline(DiscoverPipeline):
                 "fundamentals": fund.get(ticker) or {},
                 "technicals": t,
                 "insider_selling_mentions": selling.get(ticker, 0),
+                "share_trades": self.state.get("share_trades", {}).get(ticker),
                 "risk_factors_10k": (rfs.get(ticker) or {}).get("risk_factors"),
             }
 
@@ -316,6 +328,7 @@ class RebalancePipeline(DiscoverPipeline):
                     Step(name="news", executor=self.step_news),
                     Step(name="earnings", executor=self.step_earnings),
                     Step(name="insider_selling", executor=self.step_insider_selling),
+                    Step(name="share_trades", executor=self.step_share_trades),
                     Step(name="holdings_data", executor=self.step_holdings_data),
                     name="enrichment",
                 ),

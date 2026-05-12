@@ -44,6 +44,7 @@ from ..data.fundamentals import batch_fundamentals
 from ..data.insider_selling import insider_selling_mentions
 from ..data.sec_edgar import batch_risk_factors
 from ..data.sector_rotation import sector_bias, sector_rotation_summary
+from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
 from ..discover.analyst import Analyst, analyze_batch
 from ..discover.persistence import (
@@ -260,6 +261,20 @@ class DiscoverPipeline:
             content=f"Insider selling: {len(self.state['insider_selling'])} survivors flagged"
         )
 
+    def step_share_trades(self, step_input: StepInput) -> StepOutput:
+        tickers = self.state["survivor_tickers"]
+        self.state["share_trades"] = batch_share_trade_data(tickers)
+        signals = {
+            (data.get("insider_summary_6mo") or {}).get("insider_signal", "neutral")
+            for data in self.state["share_trades"].values()
+        }
+        return StepOutput(
+            content=(
+                f"Share trades fetched for {len(self.state['share_trades'])}"
+                f"/{len(tickers)}; signals seen: {sorted(signals)}"
+            )
+        )
+
     def step_analyst(self, step_input: StepInput) -> StepOutput:
         survivors = self.state["survivors"]
         fundamentals = self.state["fundamentals"]
@@ -269,6 +284,7 @@ class DiscoverPipeline:
 
         earnings_alerts = self.state.get("earnings_alerts", {})
         insider_selling = self.state.get("insider_selling", {})
+        share_trades = self.state.get("share_trades", {})
 
         payloads: dict[str, dict[str, Any]] = {}
         for c in survivors:
@@ -285,6 +301,7 @@ class DiscoverPipeline:
                 "sector_bias": c.get("sector_bias"),
                 "earnings_alert": earnings_alerts.get(ticker),
                 "insider_selling_mentions": insider_selling.get(ticker, 0),
+                "share_trades": share_trades.get(ticker),
                 "risk_factors_10k": (risk_factors.get(ticker) or {}).get(
                     "risk_factors"
                 ),
@@ -479,6 +496,7 @@ class DiscoverPipeline:
                     Step(name="news", executor=self.step_news),
                     Step(name="earnings", executor=self.step_earnings),
                     Step(name="insider_selling", executor=self.step_insider_selling),
+                    Step(name="share_trades", executor=self.step_share_trades),
                     name="enrichment",
                 ),
                 Step(name="analyst", executor=self.step_analyst),
