@@ -32,6 +32,12 @@ _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 _TICKER_TO_CIK: dict[str, int] | None = None
 
 
+def load_ticker_cik_map() -> dict[str, int]:
+    """Public alias — returns the SEC's authoritative ticker→CIK mapping.
+    Used by the discover universe builder to filter regex-extracted noise."""
+    return _load_ticker_map()
+
+
 def _load_ticker_map() -> dict[str, int]:
     global _TICKER_TO_CIK
     if _TICKER_TO_CIK is not None:

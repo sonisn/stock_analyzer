@@ -27,6 +27,23 @@ logger = get_logger(__name__)
 LONG_TERM_DAYS = 365
 
 
+def _coerce_date(value: Any) -> date | None:
+    """SnapTrade activity dates come back as datetime, date, or ISO string —
+    normalize to a plain `date`."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        except ValueError:
+            return None
+    return None
+
+
 @dataclass
 class Lot:
     """A single BUY transaction — i.e. one tax lot."""
@@ -45,15 +62,11 @@ class Lot:
         cls, activity: dict[str, Any], account_name: str, today: date
     ) -> "Lot | None":
         try:
-            trade_date_str = (
+            d = _coerce_date(
                 activity.get("trade_date") or activity.get("settlement_date")
             )
-            if not trade_date_str:
+            if d is None:
                 return None
-            # Normalize to date (strip time + Z suffix if present).
-            d = datetime.fromisoformat(
-                trade_date_str.replace("Z", "+00:00")
-            ).date()
             units = float(activity.get("units") or 0)
             price = float(activity.get("price") or 0)
             fee = float(activity.get("fee") or 0)
@@ -140,8 +153,32 @@ class TickerTaxSummary:
         }
 
 
+def _activity_account_name(
+    activity: dict[str, Any], account_id_to_name: dict[str, str]
+) -> str:
+    """Pull a friendly account name from an activity. The activity's `account`
+    field may be a nested dict (AccountSimple) or an id string depending on
+    how the SDK deserializes."""
+    acc = activity.get("account")
+    if isinstance(acc, dict):
+        return (
+            acc.get("name")
+            or acc.get("number")
+            or account_id_to_name.get(acc.get("id") or "", "")
+            or "unknown"
+        )
+    if isinstance(acc, str):
+        return account_id_to_name.get(acc, acc)
+    return "unknown"
+
+
 def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary]:
-    """Pull BUY/SELL transactions over the lookback window, group by ticker."""
+    """Pull BUY/SELL transactions over the lookback window, group by ticker.
+
+    SnapTrade's get_activities is a single endpoint across all connected
+    accounts (filter with the `accounts` query param if you want a subset);
+    no per-account loop needed.
+    """
     try:
         user_id, user_secret = _credentials()
         client = _client()
@@ -150,8 +187,10 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
         return {}
 
     today = date.today()
-    start_date = today - timedelta(days=years_back * 365)
+    start_date_ = today - timedelta(days=years_back * 365)
 
+    # List accounts only to build the id→name map; the activities endpoint
+    # itself returns activities for all accounts in one call.
     try:
         accounts = _unwrap(
             client.account_information.list_user_accounts(
@@ -160,86 +199,81 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
         ) or []
     except Exception as e:
         logger.warning("Could not list accounts for transactions: %s", e)
-        return {}
-
-    summaries: dict[str, TickerTaxSummary] = {}
-
-    for account in accounts:
-        account_id = account.get("id")
-        account_name = (
-            account.get("name")
-            or account.get("institution_name")
-            or account_id
+        accounts = []
+    account_id_to_name: dict[str, str] = {
+        str(a.get("id")): (
+            a.get("name")
+            or a.get("institution_name")
+            or str(a.get("id"))
             or "unknown"
         )
-        if not account_id:
-            continue
-        try:
-            activities = _unwrap(
-                client.transactions_and_reporting.get_user_account_activities(
-                    user_id=user_id,
-                    user_secret=user_secret,
-                    account_id=account_id,
-                    start_date=start_date.isoformat(),
-                    end_date=today.isoformat(),
-                )
-            ) or []
-        except Exception as e:
-            logger.warning(
-                "Could not fetch activities for %r: %s", account_name, e
-            )
-            continue
+        for a in accounts
+        if a.get("id")
+    }
 
-        logger.info("Account %r: %d activities", account_name, len(activities))
-        for activity in activities:
-            ticker = _extract_ticker(activity)
-            if not ticker:
-                continue
-            activity_type = (activity.get("type") or "").upper()
-            summary = summaries.setdefault(
-                ticker, TickerTaxSummary(ticker=ticker)
+    try:
+        activities = _unwrap(
+            client.transactions_and_reporting.get_activities(
+                user_id=user_id,
+                user_secret=user_secret,
+                start_date=start_date_,
+                end_date=today,
             )
-            if activity_type == "BUY":
-                lot = Lot.from_activity(activity, account_name, today)
-                if lot:
-                    summary.lots.append(lot)
-                    summary.total_units_bought += lot.units
-                    summary.total_cost_basis += lot.total_cost
-                    if lot.is_long_term:
-                        summary.long_term_lot_count += 1
-                        summary.long_term_units += lot.units
-                    else:
-                        summary.short_term_lot_count += 1
-                        summary.short_term_units += lot.units
-            elif activity_type == "SELL":
-                try:
-                    units_sold = abs(float(activity.get("units") or 0))
-                    sell_price = float(activity.get("price") or 0)
-                except (ValueError, TypeError):
-                    continue
-                summary.total_units_sold += units_sold
-                # Track recent sells (last 60 days) for wash-sale reasoning.
-                trade_date_str = (
-                    activity.get("trade_date") or activity.get("settlement_date")
-                )
-                if trade_date_str and units_sold > 0:
-                    try:
-                        sell_date = datetime.fromisoformat(
-                            trade_date_str.replace("Z", "+00:00")
-                        ).date()
-                        days_ago = (today - sell_date).days
-                    except (ValueError, TypeError):
-                        continue
-                    if 0 <= days_ago <= 60:
-                        summary.recent_sells_60d.append(
-                            {
-                                "date": sell_date.isoformat(),
-                                "units": units_sold,
-                                "sale_price": sell_price,
-                                "days_ago": days_ago,
-                                "account": account_name,
-                            }
-                        )
+        ) or []
+    except Exception as e:
+        logger.warning("Could not fetch activities: %s", e)
+        return {}
+
+    logger.info(
+        "Fetched %d activities over %d-year lookback (from %s)",
+        len(activities),
+        years_back,
+        start_date_.isoformat(),
+    )
+
+    summaries: dict[str, TickerTaxSummary] = {}
+    for activity in activities:
+        ticker = _extract_ticker(activity)
+        if not ticker:
+            continue
+        activity_type = (activity.get("type") or "").upper()
+        account_name = _activity_account_name(activity, account_id_to_name)
+        summary = summaries.setdefault(ticker, TickerTaxSummary(ticker=ticker))
+
+        if activity_type == "BUY":
+            lot = Lot.from_activity(activity, account_name, today)
+            if lot:
+                summary.lots.append(lot)
+                summary.total_units_bought += lot.units
+                summary.total_cost_basis += lot.total_cost
+                if lot.is_long_term:
+                    summary.long_term_lot_count += 1
+                    summary.long_term_units += lot.units
+                else:
+                    summary.short_term_lot_count += 1
+                    summary.short_term_units += lot.units
+        elif activity_type == "SELL":
+            try:
+                units_sold = abs(float(activity.get("units") or 0))
+                sell_price = float(activity.get("price") or 0)
+            except (ValueError, TypeError):
+                continue
+            summary.total_units_sold += units_sold
+            sell_date = _coerce_date(
+                activity.get("trade_date") or activity.get("settlement_date")
+            )
+            if sell_date and units_sold > 0:
+                days_ago = (today - sell_date).days
+                if 0 <= days_ago <= 60:
+                    summary.recent_sells_60d.append(
+                        {
+                            "date": sell_date.isoformat(),
+                            "units": units_sold,
+                            "sale_price": sell_price,
+                            "days_ago": days_ago,
+                            "account": account_name,
+                        }
+                    )
 
     logger.info(
         "Built tax summaries for %d tickers over %d-year lookback",

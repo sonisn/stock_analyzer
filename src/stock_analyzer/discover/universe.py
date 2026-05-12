@@ -19,6 +19,7 @@ from typing import Any
 
 from ..data.hedge_funds import fetch_hedge_fund_trades
 from ..data.insider import fetch_insider_trades
+from ..data.sec_edgar import load_ticker_cik_map
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -96,9 +97,34 @@ def build_universe(watchlist: tuple[str, ...] = ()) -> dict[str, dict[str, Any]]
             u["sources"].append("watchlist")
             u["conviction"] += 5
 
+    # Validate against the SEC's authoritative ticker→CIK map. The regex-based
+    # extraction catches a lot of English words (HOME, TABLE, OFF, LP, LLC, etc.)
+    # that aren't real listings; this drops them before they hit yfinance.
+    # Tickers with share classes appear in SEC data with a dash (e.g. BRK-B);
+    # accept both BRK.B and BRK-B forms.
+    sec_tickers = load_ticker_cik_map()
+    if sec_tickers:
+        before = len(universe)
+        valid = set(sec_tickers.keys())
+        universe = {
+            t: data
+            for t, data in universe.items()
+            if t in valid or t.replace(".", "-") in valid
+        }
+        logger.info(
+            "Universe: %d candidates after SEC validation (was %d)",
+            len(universe),
+            before,
+        )
+    else:
+        logger.warning(
+            "SEC ticker map unavailable — keeping all %d regex-extracted "
+            "candidates; expect yfinance 404s for noise",
+            len(universe),
+        )
+
     logger.info(
-        "Universe built: %d candidates (insider %d, billionaire %d, watchlist %d)",
-        len(universe),
+        "Sources: insider %d, billionaire %d, watchlist %d",
         len(insider_counts),
         len(hedge_counts),
         len(watchlist),
