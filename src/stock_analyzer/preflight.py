@@ -11,6 +11,7 @@ problems if anything is broken.
 """
 from __future__ import annotations
 
+import finnhub
 from anthropic import Anthropic
 from snaptrade_client import SnapTrade
 
@@ -77,6 +78,21 @@ def _check_snaptrade(settings: Settings) -> str | None:
     return None
 
 
+def _check_finnhub(settings: Settings) -> str | None:
+    if not settings.finnhub_api_key:
+        return "FINNHUB_API_KEY is empty"
+    try:
+        client = finnhub.Client(api_key=settings.finnhub_api_key)
+        # company_profile2 on a known ticker is the cheapest auth check.
+        client.company_profile2(symbol="AAPL")
+    except Exception as e:
+        msg = str(e)
+        if "401" in msg or "auth" in msg.lower() or "api_key" in msg.lower():
+            return "FINNHUB_API_KEY rejected by finnhub.io (401)"
+        return f"could not reach Finnhub: {msg}"
+    return None
+
+
 def _check_email(settings: Settings) -> str | None:
     # Only a coherence check — we don't open an SMTP session at startup
     # because that's slow and most providers throttle connection attempts.
@@ -93,6 +109,7 @@ def preflight(
     *,
     needs_llm: bool = True,
     needs_brokerage: bool = False,
+    needs_finnhub: bool = False,
     needs_email: bool = False,
 ) -> None:
     """Verify required external services are reachable and creds work.
@@ -107,6 +124,9 @@ def preflight(
     if needs_brokerage:
         if err := _check_snaptrade(settings):
             errors.append(err)
+    if needs_finnhub:
+        if err := _check_finnhub(settings):
+            errors.append(err)
     if needs_email:
         if err := _check_email(settings):
             errors.append(err)
@@ -116,8 +136,9 @@ def preflight(
         raise PreflightError(f"Preflight failed:\n  - {bullets}")
 
     logger.info(
-        "Preflight OK (llm=%s, brokerage=%s, email=%s)",
+        "Preflight OK (llm=%s, brokerage=%s, finnhub=%s, email=%s)",
         needs_llm,
         needs_brokerage,
+        needs_finnhub,
         needs_email,
     )

@@ -41,6 +41,7 @@ from ..data.chart_img import fetch_charts
 from ..data.earnings_calendar import batch_earnings_flags
 from ..data.fred_macro import fetch_regime_data, regime_summary_text
 from ..data.fundamentals import batch_fundamentals
+from ..data.finnhub import batch_finnhub_signals
 from ..data.insider_selling import insider_selling_mentions
 from ..data.sec_edgar import batch_quarterly_mda, batch_risk_factors
 from ..data.sector_rotation import sector_bias, sector_rotation_summary
@@ -310,10 +311,21 @@ class DiscoverPipeline:
         )
 
     def step_insider_selling(self, step_input: StepInput) -> StepOutput:
+        # Kept for back-compat when FINNHUB_API_KEY is unset; the new
+        # Finnhub-backed insider activity in `step_finnhub_signals` is
+        # strictly richer (real Form 4 filings vs news-mention heuristic).
         tickers = set(self.state["survivor_tickers"])
         self.state["insider_selling"] = insider_selling_mentions(tickers, days=14)
         return StepOutput(
             content=f"Insider selling: {len(self.state['insider_selling'])} survivors flagged"
+        )
+
+    def step_finnhub_signals(self, step_input: StepInput) -> StepOutput:
+        tickers = list(self.state["survivor_tickers"])
+        self.state["finnhub_signals"] = batch_finnhub_signals(tickers)
+        n = sum(1 for v in self.state["finnhub_signals"].values() if v)
+        return StepOutput(
+            content=f"Finnhub signals: {n}/{len(tickers)} tickers covered"
         )
 
     def step_quarterly_mda(self, step_input: StepInput) -> StepOutput:
@@ -369,10 +381,17 @@ class DiscoverPipeline:
         earnings_alerts = self.state.get("earnings_alerts", {})
         insider_selling = self.state.get("insider_selling", {})
         share_trades = self.state.get("share_trades", {})
+        finnhub_signals = self.state.get("finnhub_signals", {})
 
         payloads: dict[str, dict[str, Any]] = {}
         for c in survivors:
             ticker = c["ticker"]
+            fh = finnhub_signals.get(ticker) or {}
+            # Prefer Finnhub's Form 4 record when available; fall back to
+            # the Tavily news-mention count for tickers Finnhub doesn't cover.
+            insider_activity: Any = fh.get("insider_activity") or {
+                "mention_count": insider_selling.get(ticker, 0)
+            }
             payloads[ticker] = {
                 "fundamentals": fundamentals.get(ticker) or {},
                 "technicals": technicals.get(ticker) or {},
@@ -384,7 +403,10 @@ class DiscoverPipeline:
                 "score_breakdown": c["score_breakdown"],
                 "sector_bias": c.get("sector_bias"),
                 "earnings_alert": earnings_alerts.get(ticker),
-                "insider_selling_mentions": insider_selling.get(ticker, 0),
+                "insider_activity": insider_activity,
+                "earnings_surprise_history": fh.get("earnings_surprise") or [],
+                "recommendation_trend": fh.get("recommendation_trend") or [],
+                "analyst_price_targets": fh.get("price_targets") or {},
                 "share_trades": share_trades.get(ticker),
                 "risk_factors_10k": _trim(
                     (risk_factors.get(ticker) or {}).get("risk_factors"),
@@ -626,6 +648,7 @@ class DiscoverPipeline:
                     Step(name="share_trades", executor=self.step_share_trades),
                     Step(name="peer_comparison", executor=self.step_peer_comparison),
                     Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
+                    Step(name="finnhub_signals", executor=self.step_finnhub_signals),
                     name="enrichment",
                 ),
                 Step(name="analyst", executor=self.step_analyst),
@@ -648,6 +671,7 @@ def run() -> None:
             settings,
             needs_llm=True,
             needs_brokerage=True,
+            needs_finnhub=bool(settings.finnhub_api_key),
             needs_email=bool(settings.email_to),
         )
     except PreflightError as e:

@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     snaptrade_user_secret: str | None = None
     chart_img_api_key: str | None = None
     fred_api_key: str | None = None
+    finnhub_api_key: str | None = None
 
     # ---- SMTP -------------------------------------------------------------
     smtp_host: str | None = None

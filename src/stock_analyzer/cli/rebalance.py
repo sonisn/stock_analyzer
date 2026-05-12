@@ -31,6 +31,7 @@ from dotenv import load_dotenv
 from ..config import Settings
 from ..data.brokerage import fetch_portfolio_holdings, fetch_total_cash
 from ..data.chart_img import fetch_charts
+from ..data.finnhub import batch_finnhub_signals
 from ..data.fundamentals import batch_fundamentals
 from ..data.insider_selling import insider_selling_mentions
 from ..data.sec_edgar import batch_quarterly_mda, batch_risk_factors
@@ -227,12 +228,25 @@ class RebalancePipeline(DiscoverPipeline):
             content=f"Share trades fetched for {len(self.state['share_trades'])}/{len(tickers)}"
         )
 
+    def step_finnhub_signals(self, step_input: StepInput) -> StepOutput:
+        """Earnings surprise + recommendation trend + price targets +
+        Form-4 insider activity for survivors AND current holdings."""
+        tickers = set(self.state["survivor_tickers"])
+        if self.state.get("holdings_tickers"):
+            tickers |= set(self.state["holdings_tickers"])
+        self.state["finnhub_signals"] = batch_finnhub_signals(list(tickers))
+        n = sum(1 for v in self.state["finnhub_signals"].values() if v)
+        return StepOutput(
+            content=f"Finnhub signals: {n}/{len(tickers)} tickers covered"
+        )
+
     def step_review_holdings(self, step_input: StepInput) -> StepOutput:
         positions = self.state["holdings_positions"]
         fund = self.state["holdings_fundamentals"]
         tech = self.state["holdings_technicals"]
         rfs = self.state["holdings_risk_factors"]
         selling = self.state.get("insider_selling", {})
+        finnhub_signals = self.state.get("finnhub_signals", {})
 
         payloads: dict[str, dict[str, Any]] = {}
         for ticker, pos in positions.items():
@@ -245,6 +259,10 @@ class RebalancePipeline(DiscoverPipeline):
             if current and avg:
                 pnl = (current - avg) * units
                 pnl_pct = (current - avg) / avg * 100
+            fh = finnhub_signals.get(ticker) or {}
+            insider_activity: Any = fh.get("insider_activity") or {
+                "mention_count": selling.get(ticker, 0)
+            }
             payloads[ticker] = {
                 "position": {
                     "units": units,
@@ -256,7 +274,10 @@ class RebalancePipeline(DiscoverPipeline):
                 },
                 "fundamentals": fund.get(ticker) or {},
                 "technicals": t,
-                "insider_selling_mentions": selling.get(ticker, 0),
+                "insider_activity": insider_activity,
+                "earnings_surprise_history": fh.get("earnings_surprise") or [],
+                "recommendation_trend": fh.get("recommendation_trend") or [],
+                "analyst_price_targets": fh.get("price_targets") or {},
                 "share_trades": self.state.get("share_trades", {}).get(ticker),
                 "risk_factors_10k": _trim(
                     (rfs.get(ticker) or {}).get("risk_factors"),
@@ -476,6 +497,7 @@ class RebalancePipeline(DiscoverPipeline):
                     Step(name="share_trades", executor=self.step_share_trades),
                     Step(name="peer_comparison", executor=self.step_peer_comparison),
                     Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
+                    Step(name="finnhub_signals", executor=self.step_finnhub_signals),
                     Step(name="holdings_data", executor=self.step_holdings_data),
                     name="enrichment",
                 ),
@@ -618,6 +640,7 @@ def run() -> None:
             settings,
             needs_llm=True,
             needs_brokerage=True,
+            needs_finnhub=bool(settings.finnhub_api_key),
             needs_email=bool(settings.email_to),
         )
     except PreflightError as e:
