@@ -55,8 +55,9 @@ def _load_ticker_map() -> dict[str, int]:
     return _TICKER_TO_CIK
 
 
-def _latest_10k_url(cik: int) -> tuple[str, str] | None:
-    """Return (filing_date, primary_doc_url) for the latest 10-K, or None."""
+def _latest_filing_url(cik: int, form_type: str) -> tuple[str, str] | None:
+    """Return (filing_date, primary_doc_url) for the latest filing of the
+    given form type (e.g. '10-K' or '10-Q'), or None."""
     try:
         resp = requests.get(
             _SUBMISSIONS_URL.format(cik=cik), headers=_HEADERS, timeout=15
@@ -72,13 +73,17 @@ def _latest_10k_url(cik: int) -> tuple[str, str] | None:
     docs = recent.get("primaryDocument", [])
     dates = recent.get("filingDate", [])
     for form, acc, doc, date in zip(forms, accessions, docs, dates):
-        if form == "10-K":
+        if form == form_type:
             acc_clean = acc.replace("-", "")
             return (
                 date,
                 f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{doc}",
             )
     return None
+
+
+def _latest_10k_url(cik: int) -> tuple[str, str] | None:
+    return _latest_filing_url(cik, "10-K")
 
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -144,6 +149,71 @@ def batch_risk_factors(tickers: list[str]) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         for ticker, r in zip(tickers, ex.map(fetch_risk_factors, tickers)):
+            if r:
+                results[ticker] = r
+    return results
+
+
+# --- 10-Q MD&A (Item 2: Management's Discussion and Analysis) ---------------
+# The MD&A is the current-quarter forward-looking narrative — much more
+# current than the annual 10-K. We extract Item 2 between the next item
+# header (typically "Item 3. Quantitative and Qualitative Disclosures").
+
+_ITEM_2_MDA_RE = re.compile(
+    r"item\s*2[.\s]+management.{0,40}discussion", re.IGNORECASE
+)
+_ITEM_3_RE = re.compile(r"item\s*3\.?\s+quantitative", re.IGNORECASE)
+_ITEM_4_RE = re.compile(r"item\s*4\.?\s+controls", re.IGNORECASE)
+
+
+def _extract_item_2_mda(text: str, max_chars: int = 6000) -> str | None:
+    matches = list(_ITEM_2_MDA_RE.finditer(text))
+    if not matches:
+        return None
+    start = matches[-1].end()
+    end_match = (
+        _ITEM_3_RE.search(text, start) or _ITEM_4_RE.search(text, start)
+    )
+    end = end_match.start() if end_match else start + max_chars
+    section = text[start:end].strip()
+    if len(section) < 300:
+        return None
+    return section[:max_chars]
+
+
+def fetch_quarterly_mda(ticker: str) -> dict[str, Any] | None:
+    """Best-effort latest-10-Q Item 2 MD&A. None on any failure."""
+    mapping = _load_ticker_map()
+    cik = mapping.get(ticker.upper())
+    if cik is None:
+        return None
+    pair = _latest_filing_url(cik, "10-Q")
+    if pair is None:
+        return None
+    filing_date, url = pair
+    try:
+        resp = requests.get(url, headers=_HEADERS, timeout=30)
+        resp.raise_for_status()
+    except Exception as e:
+        logger.warning("SEC 10-Q fetch failed for %s: %s", ticker, e)
+        return None
+    section = _extract_item_2_mda(_strip_html(resp.text))
+    if not section:
+        logger.debug("SEC: Item 2 MD&A not extractable for %s", ticker)
+        return None
+    return {
+        "ticker": ticker,
+        "filing_date": filing_date,
+        "filing_url": url,
+        "mda": section,
+    }
+
+
+def batch_quarterly_mda(tickers: list[str]) -> dict[str, dict[str, Any]]:
+    _load_ticker_map()
+    results: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+        for ticker, r in zip(tickers, ex.map(fetch_quarterly_mda, tickers)):
             if r:
                 results[ticker] = r
     return results

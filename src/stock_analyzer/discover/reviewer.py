@@ -18,13 +18,27 @@ logger = get_logger(__name__)
 _MAX_WORKERS = 5
 
 REVIEWER_INSTRUCTIONS = """\
-You are reviewing ONE position in a portfolio. The user provides the
-aggregate position (units, cost basis, current price, unrealized P/L),
-current fundamentals (including FORWARD estimates: forward_eps,
-forward_pe, target prices, analyst recommendation, earnings_growth_yoy),
-technicals, news, latest 10-K risk factors, an insider-selling signal,
-share-trade signals (insider/institutional accumulation), and — for
-tax-aware rebalancing — the user's LOT-LEVEL tax history under `tax_lots`.
+You are reviewing ONE position in a portfolio. The user provides:
+  - position (units, cost basis, current price, unrealized P/L)
+  - fundamentals (forward + trailing)
+  - technicals
+  - share-trade signals (insider/institutional accumulation)
+  - insider_selling_mentions count
+  - risk_factors_10k (annual 10-K Item 1A)
+  - quarterly_mda (LATEST 10-Q Management Discussion — most current narrative)
+  - peers (3-4 closest competitors with their forward fundamentals — for
+    relative-valuation judgment)
+  - earnings_transcript (excerpt from the most recent earnings call —
+    management tone + Q&A pushback)
+  - tax_lots (lot-level cost basis history for SPECIFIC-ID lot selection
+    on any SELL/TRIM recommendation)
+
+GROUND your forward outlook in this hierarchy:
+  1. quarterly_mda — what management said LAST QUARTER (most current)
+  2. earnings_transcript — guidance changes + Q&A signals
+  3. peers — is this holding the BEST name in its competitive set, or has
+     a peer's forward setup gotten cleaner?
+  4. forward fundamentals + analyst stance trend
 
 DEFAULT VERDICT IS HOLD. The bar for changing the verdict is high.
 Acting on weak signals creates tax friction and timing risk that erodes

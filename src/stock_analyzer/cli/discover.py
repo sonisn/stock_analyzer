@@ -42,11 +42,13 @@ from ..data.earnings_calendar import batch_earnings_flags
 from ..data.fred_macro import fetch_regime_data, regime_summary_text
 from ..data.fundamentals import batch_fundamentals
 from ..data.insider_selling import insider_selling_mentions
-from ..data.sec_edgar import batch_risk_factors
+from ..data.sec_edgar import batch_quarterly_mda, batch_risk_factors
 from ..data.sector_rotation import sector_bias, sector_rotation_summary
 from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
+from ..data.transcripts import batch_transcript_snippets
 from ..discover.analyst import Analyst, analyze_batch
+from ..discover.peers import batch_peer_comparison
 from ..discover.persistence import (
     connect,
     insert_candidate,
@@ -261,6 +263,35 @@ class DiscoverPipeline:
             content=f"Insider selling: {len(self.state['insider_selling'])} survivors flagged"
         )
 
+    def step_quarterly_mda(self, step_input: StepInput) -> StepOutput:
+        tickers = self.state["survivor_tickers"]
+        self.state["quarterly_mda"] = batch_quarterly_mda(tickers)
+        return StepOutput(
+            content=f"10-Q MD&A: {len(self.state['quarterly_mda'])}/{len(tickers)}"
+        )
+
+    def step_peer_comparison(self, step_input: StepInput) -> StepOutput:
+        tickers = self.state["survivor_tickers"]
+        fundamentals = self.state.get("fundamentals", {})
+        target_meta = {
+            t: {
+                "name": (fundamentals.get(t) or {}).get("name"),
+                "sector": (fundamentals.get(t) or {}).get("sector"),
+            }
+            for t in tickers
+        }
+        self.state["peer_comparison"] = batch_peer_comparison(tickers, target_meta)
+        return StepOutput(
+            content=f"Peer comparison: {len(self.state['peer_comparison'])}/{len(tickers)}"
+        )
+
+    def step_earnings_transcripts(self, step_input: StepInput) -> StepOutput:
+        tickers = self.state["survivor_tickers"]
+        self.state["earnings_transcripts"] = batch_transcript_snippets(tickers)
+        return StepOutput(
+            content=f"Transcripts: {len(self.state['earnings_transcripts'])}/{len(tickers)}"
+        )
+
     def step_share_trades(self, step_input: StepInput) -> StepOutput:
         tickers = self.state["survivor_tickers"]
         self.state["share_trades"] = batch_share_trade_data(tickers)
@@ -305,6 +336,11 @@ class DiscoverPipeline:
                 "risk_factors_10k": (risk_factors.get(ticker) or {}).get(
                     "risk_factors"
                 ),
+                "quarterly_mda": (self.state.get("quarterly_mda", {}).get(ticker) or {}).get("mda"),
+                "peers": self.state.get("peer_comparison", {}).get(ticker),
+                "earnings_transcript": (
+                    self.state.get("earnings_transcripts", {}).get(ticker) or {}
+                ).get("snippet"),
                 "news": news.get(ticker, []),
             }
 
@@ -497,10 +533,13 @@ class DiscoverPipeline:
                 Step(name="screen", executor=self.step_screen),
                 Parallel(
                     Step(name="risk_factors", executor=self.step_risk_factors),
+                    Step(name="quarterly_mda", executor=self.step_quarterly_mda),
                     Step(name="news", executor=self.step_news),
                     Step(name="earnings", executor=self.step_earnings),
                     Step(name="insider_selling", executor=self.step_insider_selling),
                     Step(name="share_trades", executor=self.step_share_trades),
+                    Step(name="peer_comparison", executor=self.step_peer_comparison),
+                    Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
                     name="enrichment",
                 ),
                 Step(name="analyst", executor=self.step_analyst),

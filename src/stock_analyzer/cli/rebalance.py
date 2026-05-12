@@ -33,10 +33,12 @@ from ..data.brokerage import fetch_portfolio_holdings, fetch_total_cash
 from ..data.chart_img import fetch_charts
 from ..data.fundamentals import batch_fundamentals
 from ..data.insider_selling import insider_selling_mentions
-from ..data.sec_edgar import batch_risk_factors
+from ..data.sec_edgar import batch_quarterly_mda, batch_risk_factors
 from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
 from ..data.transactions import fetch_transaction_history, to_tax_payloads
+from ..data.transcripts import batch_transcript_snippets
+from ..discover.peers import batch_peer_comparison
 from ..discover.persistence import (
     connect,
     insert_candidate,
@@ -119,7 +121,27 @@ class RebalancePipeline(DiscoverPipeline):
         self.state["holdings_fundamentals"] = batch_fundamentals(tickers)
         self.state["holdings_technicals"] = batch_technicals(tickers)
         self.state["holdings_risk_factors"] = batch_risk_factors(tickers)
-        return StepOutput(content=f"Holdings data fetched for {len(tickers)} tickers")
+        # Forward-narrative + peers + transcript for holdings — same data the
+        # discover pipeline fetches for survivors. Reviewer uses these to
+        # judge whether the current holding still ranks against peers.
+        self.state["holdings_quarterly_mda"] = batch_quarterly_mda(tickers)
+        target_meta = {
+            t: {
+                "name": (self.state["holdings_fundamentals"].get(t) or {}).get("name"),
+                "sector": (self.state["holdings_fundamentals"].get(t) or {}).get("sector"),
+            }
+            for t in tickers
+        }
+        self.state["holdings_peers"] = batch_peer_comparison(tickers, target_meta)
+        self.state["holdings_transcripts"] = batch_transcript_snippets(tickers)
+        return StepOutput(
+            content=(
+                f"Holdings enrichment: fundamentals={len(self.state['holdings_fundamentals'])}, "
+                f"10-Q MD&A={len(self.state['holdings_quarterly_mda'])}, "
+                f"peers={len(self.state['holdings_peers'])}, "
+                f"transcripts={len(self.state['holdings_transcripts'])}"
+            )
+        )
 
     def step_transaction_history(self, step_input: StepInput) -> StepOutput:
         """Pull 3yr of SnapTrade activities and build per-ticker tax lot summaries.
@@ -186,6 +208,13 @@ class RebalancePipeline(DiscoverPipeline):
                 "insider_selling_mentions": selling.get(ticker, 0),
                 "share_trades": self.state.get("share_trades", {}).get(ticker),
                 "risk_factors_10k": (rfs.get(ticker) or {}).get("risk_factors"),
+                "quarterly_mda": (
+                    self.state.get("holdings_quarterly_mda", {}).get(ticker) or {}
+                ).get("mda"),
+                "peers": self.state.get("holdings_peers", {}).get(ticker),
+                "earnings_transcript": (
+                    self.state.get("holdings_transcripts", {}).get(ticker) or {}
+                ).get("snippet"),
                 "tax_lots": self.state.get("tax_lots", {}).get(ticker),
             }
 
@@ -350,10 +379,13 @@ class RebalancePipeline(DiscoverPipeline):
                 Step(name="screen", executor=self.step_screen),
                 Parallel(
                     Step(name="risk_factors", executor=self.step_risk_factors),
+                    Step(name="quarterly_mda", executor=self.step_quarterly_mda),
                     Step(name="news", executor=self.step_news),
                     Step(name="earnings", executor=self.step_earnings),
                     Step(name="insider_selling", executor=self.step_insider_selling),
                     Step(name="share_trades", executor=self.step_share_trades),
+                    Step(name="peer_comparison", executor=self.step_peer_comparison),
+                    Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
                     Step(name="holdings_data", executor=self.step_holdings_data),
                     name="enrichment",
                 ),
