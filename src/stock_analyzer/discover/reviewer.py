@@ -15,7 +15,11 @@ from ..logging import get_logger
 
 logger = get_logger(__name__)
 
-_MAX_WORKERS = 5
+# Throttle to stay under Sonnet's 30k input-tokens/min rate limit.
+# Holdings reviewer payloads are ~6-7k tokens each (10-K + 10-Q MD&A +
+# transcript + peers + tax_lots). 5 workers × 7k = 35k → 429. 2 workers
+# + retry-with-backoff is the safe sustained-throughput point.
+_MAX_WORKERS = 2
 
 REVIEWER_INSTRUCTIONS = """\
 You are reviewing ONE position in a portfolio. The user provides:
@@ -136,7 +140,12 @@ class Reviewer:
             "Reviewer",
             provider,
             model,
-            model_kwargs={"temperature": 0},
+            model_kwargs={
+                "temperature": 0,
+                "retries": 3,
+                "exponential_backoff": True,
+                "delay_between_retries": 10,
+            },
             instructions=REVIEWER_INSTRUCTIONS,
         )
 

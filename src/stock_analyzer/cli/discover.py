@@ -76,6 +76,19 @@ logger = get_logger(__name__)
 
 MAX_CANDIDATES_FOR_LLM = 25
 
+# Per-field char caps applied to analyst/reviewer payloads to keep each call
+# well under Sonnet's 30k input-tokens/min rate limit. 10-K text is mostly
+# boilerplate; MD&A and transcripts retain most signal at these sizes.
+_RISK_FACTORS_CHARS = 3500
+_QUARTERLY_MDA_CHARS = 4000
+_TRANSCRIPT_CHARS = 2500
+
+
+def _trim(text: str | None, max_chars: int) -> str | None:
+    if not text:
+        return text
+    return text[:max_chars]
+
 
 # --- small helpers (used by step executors) ----------------------------------
 
@@ -333,14 +346,19 @@ class DiscoverPipeline:
                 "earnings_alert": earnings_alerts.get(ticker),
                 "insider_selling_mentions": insider_selling.get(ticker, 0),
                 "share_trades": share_trades.get(ticker),
-                "risk_factors_10k": (risk_factors.get(ticker) or {}).get(
-                    "risk_factors"
+                "risk_factors_10k": _trim(
+                    (risk_factors.get(ticker) or {}).get("risk_factors"),
+                    _RISK_FACTORS_CHARS,
                 ),
-                "quarterly_mda": (self.state.get("quarterly_mda", {}).get(ticker) or {}).get("mda"),
+                "quarterly_mda": _trim(
+                    (self.state.get("quarterly_mda", {}).get(ticker) or {}).get("mda"),
+                    _QUARTERLY_MDA_CHARS,
+                ),
                 "peers": self.state.get("peer_comparison", {}).get(ticker),
-                "earnings_transcript": (
-                    self.state.get("earnings_transcripts", {}).get(ticker) or {}
-                ).get("snippet"),
+                "earnings_transcript": _trim(
+                    (self.state.get("earnings_transcripts", {}).get(ticker) or {}).get("snippet"),
+                    _TRANSCRIPT_CHARS,
+                ),
                 "news": news.get(ticker, []),
             }
 

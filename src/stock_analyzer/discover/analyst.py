@@ -14,7 +14,11 @@ from ..logging import get_logger
 
 logger = get_logger(__name__)
 
-_MAX_WORKERS = 5
+# Sonnet has tight per-minute input-token rate limits (~30k/min on standard
+# tier). With ~7k-token payloads per call, 5 workers burst through the
+# quota immediately. Throttle to 2 + lean on retry-with-backoff for residual
+# bursts. Slightly slower wall clock, but no 429s.
+_MAX_WORKERS = 2
 
 ANALYST_INSTRUCTIONS = """\
 You are an equity research analyst evaluating ONE ticker for a 6-12 month hold.
@@ -87,7 +91,12 @@ class Analyst:
             "Analyst",
             provider,
             model,
-            model_kwargs={"temperature": 0},
+            model_kwargs={
+                "temperature": 0,
+                "retries": 3,
+                "exponential_backoff": True,
+                "delay_between_retries": 10,
+            },
             instructions=ANALYST_INSTRUCTIONS,
         )
 

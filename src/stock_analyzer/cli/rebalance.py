@@ -61,7 +61,13 @@ from ..discover.report import (
 from ..discover.reviewer import Reviewer, review_batch
 from ..logging import get_logger
 from ..reporting.smtp import SmtpServer
-from .discover import DiscoverPipeline
+from .discover import (
+    DiscoverPipeline,
+    _QUARTERLY_MDA_CHARS,
+    _RISK_FACTORS_CHARS,
+    _TRANSCRIPT_CHARS,
+    _trim,
+)
 
 logger = get_logger(__name__)
 
@@ -207,14 +213,19 @@ class RebalancePipeline(DiscoverPipeline):
                 "technicals": t,
                 "insider_selling_mentions": selling.get(ticker, 0),
                 "share_trades": self.state.get("share_trades", {}).get(ticker),
-                "risk_factors_10k": (rfs.get(ticker) or {}).get("risk_factors"),
-                "quarterly_mda": (
-                    self.state.get("holdings_quarterly_mda", {}).get(ticker) or {}
-                ).get("mda"),
+                "risk_factors_10k": _trim(
+                    (rfs.get(ticker) or {}).get("risk_factors"),
+                    _RISK_FACTORS_CHARS,
+                ),
+                "quarterly_mda": _trim(
+                    (self.state.get("holdings_quarterly_mda", {}).get(ticker) or {}).get("mda"),
+                    _QUARTERLY_MDA_CHARS,
+                ),
                 "peers": self.state.get("holdings_peers", {}).get(ticker),
-                "earnings_transcript": (
-                    self.state.get("holdings_transcripts", {}).get(ticker) or {}
-                ).get("snippet"),
+                "earnings_transcript": _trim(
+                    (self.state.get("holdings_transcripts", {}).get(ticker) or {}).get("snippet"),
+                    _TRANSCRIPT_CHARS,
+                ),
                 "tax_lots": self.state.get("tax_lots", {}).get(ticker),
             }
 
