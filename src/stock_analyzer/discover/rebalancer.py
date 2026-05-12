@@ -63,6 +63,34 @@ Expected-value bar for any SELL/TRIM/ADD action:
   forward return, AFTER accounting for the tax cost of the sale.
   If you can't make that case, recommend HOLD.
 
+DEPLOYMENT ORDER (when proceeds or cash become available):
+Always exhaust ADD opportunities before falling back to BUY-new.
+Existing positions are cheaper to deploy into — no new tax basis to
+track, no ticker complexity, you already understand the company.
+
+  STEP 1: Pool the available capital — SELL proceeds + TRIM proceeds +
+          idle cash. This is the total BUDGET to deploy.
+
+  STEP 2: ADD-first allocation. Rank existing HOLD-verdict holdings by
+          reviewer confidence DESCENDING. Walk the list and ADD to each
+          high-conviction (>= 7) holding that has not yet hit the 25%
+          single-position cap AND has a clean forward setup (RSI 40-65,
+          price <= analyst mean target, positive forward EPS revisions).
+          Continue until BUDGET is exhausted or no eligible ADD remains.
+
+  STEP 3: Only if BUDGET still has capacity AND a discover pick has
+          materially higher conviction (>= 2 points above the best
+          remaining eligible ADD destination), THEN recommend a BUY of
+          that discover pick for the residual budget.
+
+  STEP 4: If BUDGET remains after STEP 2 and STEP 3 (no eligible ADDs
+          left, no discover pick clearly outranks them), leave the
+          residual as CASH. Do not force-deploy.
+
+Rationale: an ADD to an existing 8-confidence holding will typically
+beat a BUY of a new 8-confidence discover pick on a risk-adjusted basis
+because of lower friction, familiarity, and avoided basis fragmentation.
+
 DO NOT make tool calls. Use ONLY the data provided. Reason about WHOLE
 PORTFOLIO health, not each ticker in isolation.
 
@@ -111,12 +139,28 @@ REBALANCE PLAN
 
 Status: NO ACTION RECOMMENDED
 
+ADD-first walk (deployment-order audit):
+<one short paragraph listing what STEP 2 / STEP 3 of the deployment
+order produced. Examples:
+  "Cash $53, no TRIM/SELL proceeds — BUDGET essentially zero. No ADD
+   feasible." OR
+  "BUDGET $4,200 from idle cash. Walked ADD candidates by confidence:
+   NVDA (conf 8) already at 28% concentration — skip. GOOGL (conf 8,
+   RSI 55) eligible — would ADD ~$3,400. AVGO (conf 7) — would
+   ADD ~$800 residual. Recommended action moved to ACTION RECOMMENDED
+   format." OR
+  "BUDGET $1,200 from idle cash. All HOLD-verdict positions either
+   above 25% cap, or have RSI > 75 / above analyst target — no
+   eligible ADD. Discover pick NVDA conf 8 not >= 2 points above the
+   best existing (NVDA conf 8) — no clear BUY. Residual stays CASH.">
+
 Intra-portfolio check:
 <one sentence — list every (source, destination) pair you considered for
-intra-portfolio rebalance and the confidence gap. Example: "Considered
-TRIM MRVL (conf 5, RSI 96) → ADD GOOGL (conf 8, RSI 55) — rejected
-because the 3-point gap doesn't clear the 10% forward-return advantage
-bar after tax friction." If no pair was even close, say so explicitly.>
+INTRA-PORTFOLIO REBALANCE (trigger #4: TRIM weak holding → ADD strong
+holding) and the confidence gap. Example: "Considered TRIM MRVL
+(conf 5, RSI 96) → ADD GOOGL (conf 8, RSI 55) — rejected because the
+3-point gap doesn't clear the 10% forward-return advantage bar after
+tax friction." If no pair was even close, say so explicitly.>
 
 Reasoning:
 <2-3 sentences explaining why the current portfolio is already in good
