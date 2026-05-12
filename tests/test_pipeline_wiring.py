@@ -311,6 +311,38 @@ def test_pdf_renders_bytes_with_charts():
     assert len(pdf_bytes) > 2000  # Sanity: non-trivial document
 
 
+def test_html_renders_visual_sections():
+    """Status banner, metric strip, holdings dashboard, sector pie all render."""
+    from stock_analyzer.discover.report import Section, render_html_email
+
+    sections = [
+        Section(kind="status_banner", text="STATUS: NO ACTION RECOMMENDED",
+                status="NO_ACTION"),
+        Section(kind="metric_strip", metrics=[
+            ("Holdings", "13"), ("Cash", "$53"), ("P/L", "+18.4%"),
+        ]),
+        Section(kind="holdings_dashboard", holdings=[
+            {"ticker": "NVDA", "verdict": "HOLD", "confidence": 8,
+             "pnl_pct": 85.4, "sector": "Technology", "note": ""},
+            {"ticker": "MRVL", "verdict": "TRIM", "confidence": 5,
+             "pnl_pct": 120.2, "sector": "Technology",
+             "note": "RSI overbought"},
+        ]),
+        Section(kind="sector_pie", pie_data=[
+            ("Technology", 50_000), ("Energy", 12_000), ("Industrials", 8_000),
+        ]),
+    ]
+    out = render_html_email(sections, chart_cids={})
+    assert "STATUS: NO ACTION RECOMMENDED" in out
+    assert "Holdings" in out and "Cash" in out
+    # Verdict badges rendered with their colors
+    assert "HOLD" in out and "TRIM" in out
+    # Pie SVG renders
+    assert "<svg" in out and "Technology" in out and "Energy" in out
+    # P/L coloring class applied
+    assert "pl-pos" in out or "pl-neg" in out
+
+
 def test_pdf_renders_without_charts():
     """Chart-fetch failures must not crash PDF generation."""
     sections = build_sections(
@@ -353,10 +385,10 @@ def test_rebalance_section_layout():
     from stock_analyzer.cli.rebalance import _build_rebalance_sections
 
     sections = _build_rebalance_sections(
-        rebalance_text="REBALANCE PLAN\n\nSummary: ...\n\nAction 1: SELL XYZ",
+        rebalance_text="REBALANCE PLAN\n\nStatus: NO ACTION RECOMMENDED\n\nSummary: ...",
         holdings_reviews={
-            "ABC": "TICKER: ABC\nVerdict: HOLD\nReasoning: solid",
-            "XYZ": "TICKER: XYZ\nVerdict: SELL\nReasoning: broken",
+            "ABC": "TICKER: ABC\nVerdict: HOLD\nConfidence (1-10): 8\nReasoning: solid",
+            "XYZ": "TICKER: XYZ\nVerdict: SELL\nConfidence (1-10): 3\nReasoning: broken",
         },
         ranker_text=RANKER_OUTPUT,
         redteam_text=REDTEAM_OUTPUT,
@@ -365,6 +397,18 @@ def test_rebalance_section_layout():
         cash_balance=5000.0,
         macro_summary="Curve flat",
         sector_rotation=None,
+        holdings_positions={
+            "ABC": {"units": 100, "avg_buy_price": 50, "cost_basis": 5000},
+            "XYZ": {"units": 50, "avg_buy_price": 80, "cost_basis": 4000},
+        },
+        holdings_technicals={
+            "ABC": {"price": 65},
+            "XYZ": {"price": 60},
+        },
+        holdings_fundamentals={
+            "ABC": {"sector": "Technology"},
+            "XYZ": {"sector": "Energy"},
+        },
     )
     # First heading must be the rebalance title
     assert sections[0].text.startswith("Portfolio Rebalance")

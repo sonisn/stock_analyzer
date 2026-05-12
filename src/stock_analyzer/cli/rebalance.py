@@ -49,6 +49,9 @@ from ..discover.rebalancer import Rebalancer
 from ..discover.report import (
     Section,
     build_sections,
+    parse_confidence,
+    parse_rebalance_status,
+    parse_verdict,
     print_terminal_summary,
     render_html_email,
     render_pdf,
@@ -269,6 +272,9 @@ class RebalancePipeline(DiscoverPipeline):
             cash_balance=self.state.get("cash_balance"),
             macro_summary=self.state.get("macro_summary", ""),
             sector_rotation=self.state.get("sector_rotation"),
+            holdings_positions=self.state.get("holdings_positions", {}),
+            holdings_technicals=self.state.get("holdings_technicals", {}),
+            holdings_fundamentals=self.state.get("holdings_fundamentals", {}),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -377,22 +383,78 @@ def _build_rebalance_sections(
     cash_balance: float | None,
     macro_summary: str,
     sector_rotation: dict[str, Any] | None,
+    holdings_positions: dict[str, dict[str, Any]],
+    holdings_technicals: dict[str, dict[str, Any]],
+    holdings_fundamentals: dict[str, dict[str, Any]],
 ) -> list[Section]:
-    """Rebalance-specific section layout: action plan first, then reviews,
-    then the discover picks as appendix."""
+    """Rebalance-specific layout — status banner + metrics + dashboard +
+    sector pie at the top, then the LLM's plan + per-holding reviews +
+    discover-picks appendix."""
     today = date.today().isoformat()
-    cash_line = (
-        f"Cash available: ${cash_balance:,.0f}."
-        if cash_balance is not None
-        else "Cash: unknown."
+
+    # ---- Parse status + collect dashboard rows ----------------------------
+    status = parse_rebalance_status(rebalance_text)
+    status_label = (
+        "STATUS: NO ACTION RECOMMENDED" if status == "NO_ACTION"
+        else "STATUS: ACTION RECOMMENDED" if status == "ACTION"
+        else "STATUS: REVIEW REQUIRED"
     )
+
+    dashboard_rows: list[dict[str, Any]] = []
+    total_value = 0.0
+    total_cost = 0.0
+    sector_value: dict[str, float] = {}
+    for ticker in sorted(holdings_positions.keys()):
+        pos = holdings_positions[ticker]
+        tech = holdings_technicals.get(ticker, {})
+        fund = holdings_fundamentals.get(ticker, {})
+        review = holdings_reviews.get(ticker, "")
+        current = tech.get("price")
+        units = pos.get("units", 0)
+        cost = pos.get("cost_basis", 0)
+        value = (current or 0) * units
+        total_value += value
+        total_cost += cost
+        pnl_pct = ((value - cost) / cost * 100) if cost else None
+        sector = fund.get("sector") or "Unknown"
+        if value > 0:
+            sector_value[sector] = sector_value.get(sector, 0) + value
+        dashboard_rows.append({
+            "ticker": ticker,
+            "verdict": parse_verdict(review),
+            "confidence": parse_confidence(review),
+            "pnl_pct": pnl_pct,
+            "sector": sector,
+            "note": "",
+        })
+
+    total_pnl_pct = ((total_value - total_cost) / total_cost * 100) if total_cost else None
+
+    # ---- Build sections ---------------------------------------------------
     sections: list[Section] = [
         Section("heading", f"Portfolio Rebalance — {today}", level=1),
-        Section(
-            "para",
-            f"Holdings reviewed: {len(holdings_reviews)}. {cash_line}",
-        ),
+        Section(kind="status_banner", text=status_label, status=status),
     ]
+
+    metrics: list[tuple[str, str]] = [
+        ("Holdings", f"{len(holdings_positions)}"),
+        ("Portfolio value", f"${total_value:,.0f}" if total_value else "—"),
+        ("Total P/L", f"{total_pnl_pct:+.1f}%" if total_pnl_pct is not None else "—"),
+        ("Cash", f"${cash_balance:,.0f}" if cash_balance is not None else "—"),
+    ]
+    sections.append(Section(kind="metric_strip", metrics=metrics))
+
+    if dashboard_rows:
+        sections.append(Section("heading", "Holdings dashboard", level=2))
+        sections.append(
+            Section(kind="holdings_dashboard", holdings=dashboard_rows)
+        )
+
+    if sector_value:
+        pie_data = sorted(sector_value.items(), key=lambda x: x[1], reverse=True)
+        sections.append(Section("heading", "Sector allocation", level=2))
+        sections.append(Section(kind="sector_pie", pie_data=pie_data))
+
     if macro_summary:
         sections.append(Section("heading", "Macro regime", level=2))
         sections.append(Section("blockquote", macro_summary))
