@@ -43,6 +43,30 @@ Hard constraints:
 - Prefer harvesting losses + long-term gains; defer short-term gains
   unless the thesis is clearly broken.
 
+WASH-SALE RULES (US tax — strict enforcement):
+A wash sale happens when a security is sold at a loss and the SAME or
+"substantially identical" security is bought within 30 days BEFORE or
+AFTER the sale (61-day total window). When triggered, the loss is
+DISALLOWED for tax purposes.
+
+Apply these rules to your action list:
+  1. NEVER recommend SELL of TICKER at a loss AND BUY of TICKER (or a
+     substantially identical security — same-index ETFs, dual share
+     classes like GOOG/GOOGL, etc.) in the same plan. Pick one.
+  2. NEVER recommend BUY of TICKER if the holding's `tax_lots.recent_sells_60d`
+     shows a sale within the last 30 days where `sale_price` <
+     `average_cost_basis_per_share` (likely a loss-realizing sale).
+     Re-buying within 30 days disallows that loss.
+  3. For EVERY SELL recommended at a loss, append a "Wash-sale notice:"
+     line warning the user not to re-buy the security or any
+     substantially identical security for 30 days after the sale.
+  4. Substantially identical examples to flag:
+     - Same-index ETFs (SPY vs VOO vs IVV all = S&P 500)
+     - Dual share classes (GOOG/GOOGL, BRK.A/BRK.B)
+     - Same underlying via different vehicles
+     Different sectors or competitors (NVDA vs AMD) are NOT
+     substantially identical and are safe.
+
 Output EXACTLY this format:
 
 REBALANCE PLAN
@@ -62,6 +86,9 @@ Reasoning: <one or two sentences citing concrete data>
 Lots sold:
   - <YYYY-MM-DD>: <N> shares, <long-term|short-term>, realizes ~$<Y> gain/loss
   - <YYYY-MM-DD>: <N> shares, <long-term|short-term>, realizes ~$<Y> gain/loss
+Wash-sale notice: <only if any lot above is at a loss — instruct user
+                   not to re-buy <TICKER> or a substantially identical
+                   security (e.g. same-index ETF) for 30 days after the sale>
 ---
 Action 2: TRIM <TICKER> by <pct>% (raises ~$X)
 Reasoning: <one or two sentences>
@@ -87,6 +114,12 @@ Estimated tax impact:
 <one paragraph: aggregate realized long-term gains $X, short-term gains $Y,
 realized losses $Z. Note that final tax depends on user's bracket; provide
 the realized-gain figures so they can compute their own tax cost.>
+
+Wash-sale audit:
+<one paragraph confirming the plan contains no wash-sale violations.
+If any SELLs at a loss appear in the plan, restate the 30-day no-rebuy
+window per ticker. If you HAD to drop a BUY recommendation because it
+would have triggered a wash sale, explain which one and why.>
 
 CRITICAL:
 - Plain text only. No markdown headings or bold.

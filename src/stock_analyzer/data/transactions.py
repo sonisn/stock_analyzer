@@ -86,6 +86,10 @@ class TickerTaxSummary:
     long_term_lot_count: int = 0
     short_term_units: float = 0.0
     long_term_units: float = 0.0
+    # SELL transactions within the last 60 days — used by the rebalancer
+    # for wash-sale awareness (re-buying within 30 days of a loss-sale
+    # disallows the loss for tax purposes).
+    recent_sells_60d: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def current_units(self) -> float:
@@ -125,6 +129,14 @@ class TickerTaxSummary:
                 }
                 for lot in lots_sorted
             ],
+            # Wash-sale flag data. Compare sale_price to avg_cost to estimate
+            # whether the sell was at a loss; the LLM uses this to avoid
+            # recommending re-purchase within 30 days.
+            "recent_sells_60d": sorted(
+                self.recent_sells_60d,
+                key=lambda x: x.get("date", ""),
+                reverse=True,
+            ),
         }
 
 
@@ -201,11 +213,33 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
                         summary.short_term_units += lot.units
             elif activity_type == "SELL":
                 try:
-                    summary.total_units_sold += abs(
-                        float(activity.get("units") or 0)
-                    )
+                    units_sold = abs(float(activity.get("units") or 0))
+                    sell_price = float(activity.get("price") or 0)
                 except (ValueError, TypeError):
                     continue
+                summary.total_units_sold += units_sold
+                # Track recent sells (last 60 days) for wash-sale reasoning.
+                trade_date_str = (
+                    activity.get("trade_date") or activity.get("settlement_date")
+                )
+                if trade_date_str and units_sold > 0:
+                    try:
+                        sell_date = datetime.fromisoformat(
+                            trade_date_str.replace("Z", "+00:00")
+                        ).date()
+                        days_ago = (today - sell_date).days
+                    except (ValueError, TypeError):
+                        continue
+                    if 0 <= days_ago <= 60:
+                        summary.recent_sells_60d.append(
+                            {
+                                "date": sell_date.isoformat(),
+                                "units": units_sold,
+                                "sale_price": sell_price,
+                                "days_ago": days_ago,
+                                "account": account_name,
+                            }
+                        )
 
     logger.info(
         "Built tax summaries for %d tickers over %d-year lookback",

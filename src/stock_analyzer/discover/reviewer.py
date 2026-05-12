@@ -54,6 +54,11 @@ For each SELL or TRIM, recommend SPECIFIC lots to sell by date, using these prio
      WAITING explicitly: "delay sale until <date>; lot crosses long-term"
   5. Always state realized gain in dollars per lot recommended for sale.
 
+WASH-SALE GUIDANCE:
+If you recommend SELL at a loss, append a one-line "Wash-sale notice"
+warning not to re-buy this security (or a substantially identical one
+like a same-index ETF) within 30 days of the sale.
+
 DO NOT make tool calls. Use ONLY data provided. Cite concrete numbers.
 
 Output EXACTLY this structure:
