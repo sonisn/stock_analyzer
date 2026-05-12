@@ -172,12 +172,62 @@ def _activity_account_name(
     return "unknown"
 
 
+def _fetch_account_activities(
+    client: Any,
+    user_id: str,
+    user_secret: str,
+    account_id: str,
+    start_date_: date,
+    end_date_: date,
+    *,
+    page_size: int = 1000,
+    max_pages: int = 20,
+) -> list[dict[str, Any]]:
+    """Paginate get_account_activities until exhausted. Returns a flat list."""
+    all_activities: list[dict[str, Any]] = []
+    offset = 0
+    for _ in range(max_pages):
+        try:
+            resp = _unwrap(
+                client.account_information.get_account_activities(
+                    user_id=user_id,
+                    user_secret=user_secret,
+                    account_id=account_id,
+                    start_date=start_date_,
+                    end_date=end_date_,
+                    offset=offset,
+                    limit=page_size,
+                )
+            )
+        except Exception as e:
+            logger.warning(
+                "Could not fetch activities for account %s (offset=%d): %s",
+                account_id, offset, e,
+            )
+            return all_activities
+        # SnapTrade may return either a paginated dict {data: [...], pagination: ...}
+        # or a flat list depending on SDK version. Handle both.
+        if isinstance(resp, dict):
+            page = resp.get("data") or []
+        elif isinstance(resp, list):
+            page = resp
+        else:
+            page = []
+        if not page:
+            break
+        all_activities.extend(page)
+        if len(page) < page_size:
+            break
+        offset += page_size
+    return all_activities
+
+
 def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary]:
     """Pull BUY/SELL transactions over the lookback window, group by ticker.
 
-    SnapTrade's get_activities is a single endpoint across all connected
-    accounts (filter with the `accounts` query param if you want a subset);
-    no per-account loop needed.
+    Uses SnapTrade's per-account get_account_activities (the top-level
+    get_activities was deprecated and returns 410 Gone). Loops over
+    every connected account and paginates within each.
     """
     try:
         user_id, user_secret = _credentials()
@@ -189,8 +239,6 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
     today = date.today()
     start_date_ = today - timedelta(days=years_back * 365)
 
-    # List accounts only to build the id→name map; the activities endpoint
-    # itself returns activities for all accounts in one call.
     try:
         accounts = _unwrap(
             client.account_information.list_user_accounts(
@@ -199,7 +247,8 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
         ) or []
     except Exception as e:
         logger.warning("Could not list accounts for transactions: %s", e)
-        accounts = []
+        return {}
+
     account_id_to_name: dict[str, str] = {
         str(a.get("id")): (
             a.get("name")
@@ -211,21 +260,16 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
         if a.get("id")
     }
 
-    try:
-        activities = _unwrap(
-            client.transactions_and_reporting.get_activities(
-                user_id=user_id,
-                user_secret=user_secret,
-                start_date=start_date_,
-                end_date=today,
-            )
-        ) or []
-    except Exception as e:
-        logger.warning("Could not fetch activities: %s", e)
-        return {}
+    activities: list[dict[str, Any]] = []
+    for acc_id, acc_name in account_id_to_name.items():
+        acc_activities = _fetch_account_activities(
+            client, user_id, user_secret, acc_id, start_date_, today
+        )
+        logger.info("Account %r: %d activities", acc_name, len(acc_activities))
+        activities.extend(acc_activities)
 
     logger.info(
-        "Fetched %d activities over %d-year lookback (from %s)",
+        "Fetched %d total activities over %d-year lookback (from %s)",
         len(activities),
         years_back,
         start_date_.isoformat(),
