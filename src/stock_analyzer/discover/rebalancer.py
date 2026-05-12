@@ -28,30 +28,50 @@ The user provides:
 
 DEFAULT TO NO ACTION. Most days, the right rebalance is to do nothing.
 Tax friction, transaction costs, and timing risk all bias against churn.
-Only recommend actions when:
+Only recommend actions when ONE of these conditions is met:
 
   1. The reviewer has flagged specific holdings as SELL or TRIM with
      forward-looking evidence (confidence >= 7), OR
   2. A discover pick has clearly superior expected forward return AND
      the user has meaningful cash (>$5,000) sitting idle, OR
-  3. Sector concentration is unhealthy (any sector >40% of portfolio)
+  3. Sector concentration is unhealthy (any sector >40% of portfolio), OR
+  4. INTRA-PORTFOLIO REBALANCE: a holding can be trimmed and the
+     proceeds redeployed into a higher-conviction EXISTING holding when
+     ALL of the following are true:
+       a. Confidence GAP of >= 2 points (e.g. TRIM a 5 → ADD a 7+)
+       b. The source holding has at least one bearish signal — weekly
+          RSI > 75 (overbought), price > analyst mean target, declining
+          forward EPS estimate, or sector cluster getting heavy
+       c. The destination holding has cleaner forward setup — RSI in
+          40-65 band, price below or near analyst target, forward EPS
+          revisions positive
+     This is often the best action because it doesn't need new cash
+     and stays within the user's established positions.
 
-If NONE of these conditions are met, output "No rebalance recommended
-today" and explain why current positioning is already reasonable.
+Examples of intra-portfolio rebalance:
+  - Confidence 4 holding "X" is overbought (weekly RSI > 80) and trading
+    above analyst mean target → TRIM X by 25-33% → ADD to existing
+    confidence 8 holding "Y" that has cleaner forward setup.
+  - Two holdings in same theme, X has weaker forward EPS revisions than
+    Y → TRIM X, ADD to Y to consolidate conviction.
 
-Expected-value bar for any SELL/TRIM action:
-  The alternative BUY must offer forward return advantage of at least 10%
-  over the current holding's expected forward return, AFTER accounting for
-  the tax cost of the sale. If you can't make that case, recommend HOLD.
+If NONE of conditions 1-4 are met, output Format A (no action).
+
+Expected-value bar for any SELL/TRIM/ADD action:
+  The destination position (a new BUY or an existing ADD) must offer
+  forward return advantage of at least 10% over the source position's
+  forward return, AFTER accounting for the tax cost of the sale.
+  If you can't make that case, recommend HOLD.
 
 DO NOT make tool calls. Use ONLY the data provided. Reason about WHOLE
 PORTFOLIO health, not each ticker in isolation.
 
 Hard constraints:
-- Total BUYs must NOT exceed (SELL proceeds + TRIM proceeds + available cash).
+- Total BUYs + ADDs must NOT exceed (SELL proceeds + TRIM proceeds + available cash).
 - No single position should exceed ~25% of post-rebalance portfolio value.
 - No leverage, no options, no shorts.
-- Order actions by execution: SELLs first, TRIMs second, BUYs last.
+- Order actions by execution: SELLs first, TRIMs second, ADDs/BUYs last
+  (you need the cash from sells before you can buy).
 - For each SELL/TRIM, follow the Tax lot plan from the holding's review:
   cite the specific lot date(s) being sold, the gain/loss per lot, and
   whether each lot is short-term (ordinary income) or long-term (capital
@@ -91,10 +111,18 @@ REBALANCE PLAN
 
 Status: NO ACTION RECOMMENDED
 
+Intra-portfolio check:
+<one sentence — list every (source, destination) pair you considered for
+intra-portfolio rebalance and the confidence gap. Example: "Considered
+TRIM MRVL (conf 5, RSI 96) → ADD GOOGL (conf 8, RSI 55) — rejected
+because the 3-point gap doesn't clear the 10% forward-return advantage
+bar after tax friction." If no pair was even close, say so explicitly.>
+
 Reasoning:
 <2-3 sentences explaining why the current portfolio is already in good
 shape: holdings have intact forward outlooks, no concentration issues,
-cash is appropriate, etc. Cite specific reviewer verdicts.>
+cash is appropriate, intra-portfolio swaps don't clear the EV bar.
+Cite specific reviewer verdicts.>
 
 Forward outlook:
 <one paragraph summarizing the forward-looking picture of the current
@@ -136,7 +164,14 @@ Lots sold: <specific-ID list as above>
 ---
 [...as many SELL/TRIM as needed...]
 ---
-Action N: BUY <TICKER> (~$X, ~<pct>% of new capital)
+Action N: ADD <TICKER> (~<N> shares, ~$X) <-- existing holding, intra-portfolio rebalance
+Reasoning: <one or two sentences citing reviewer confidence + forward outlook
+advantage over the trimmed position(s) that fund this ADD>
+Source of funds: <which TRIM/SELL action(s) above provide the cash>
+---
+[...as many ADDs as needed...]
+---
+Action M: BUY <TICKER> (~$X, ~<pct>% of new capital) <-- new position from discover picks
 Reasoning: <one sentence, citing which discover pick this is and its conviction>
 ---
 [...as many BUYs as needed...]
