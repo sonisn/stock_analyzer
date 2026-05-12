@@ -5,12 +5,12 @@ risks (extracted from 10-K + news), valuation context, catalyst calendar.
 """
 from __future__ import annotations
 
-import json
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from ..serialization import dumps_pretty
 
 logger = get_logger(__name__)
 
@@ -103,7 +103,7 @@ class Analyst:
     def analyze(self, ticker: str, payload: dict[str, Any]) -> str:
         prompt = (
             f"Candidate ticker: {ticker}\n\n"
-            f"```json\n{json.dumps(payload, default=str, indent=2)}\n```"
+            f"```json\n{dumps_pretty(payload)}\n```"
         )
         logger.info("Analyzing %s", ticker)
         return self.agent.run(prompt).content

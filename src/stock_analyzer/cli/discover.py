@@ -70,6 +70,7 @@ from ..discover.screen import passes_hard_filter, score_candidate
 from ..discover.sizer import Sizer
 from ..discover.universe import build_universe
 from ..logging import current_log_file, get_logger
+from ..preflight import PreflightError, preflight
 from ..reporting.smtp import SmtpServer
 
 logger = get_logger(__name__)
@@ -642,6 +643,16 @@ class DiscoverPipeline:
 def run() -> None:
     load_dotenv()
     settings = Settings.from_env()
+    try:
+        preflight(
+            settings,
+            needs_llm=True,
+            needs_brokerage=True,
+            needs_email=bool(settings.email_to),
+        )
+    except PreflightError as e:
+        logger.error("%s", e)
+        raise SystemExit(2) from e
     pipeline = DiscoverPipeline(settings)
     workflow = pipeline.build_workflow()
     logger.info("=== Stock discovery pipeline starting ===")

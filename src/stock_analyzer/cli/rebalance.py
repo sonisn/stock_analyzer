@@ -60,6 +60,7 @@ from ..discover.report import (
 )
 from ..discover.reviewer import Reviewer, review_batch
 from ..logging import current_log_file, get_logger
+from ..preflight import PreflightError, preflight
 from ..reporting.smtp import SmtpServer
 from .discover import (
     DiscoverPipeline,
@@ -612,6 +613,16 @@ def _build_rebalance_sections(
 def run() -> None:
     load_dotenv()
     settings = Settings.from_env()
+    try:
+        preflight(
+            settings,
+            needs_llm=True,
+            needs_brokerage=True,
+            needs_email=bool(settings.email_to),
+        )
+    except PreflightError as e:
+        logger.error("%s", e)
+        raise SystemExit(2) from e
     pipeline = RebalancePipeline(settings)
     workflow = pipeline.build_workflow()
     logger.info("=== Portfolio rebalance pipeline starting ===")

@@ -1,7 +1,6 @@
 """Portfolio analysis agent: market sentiment + per-ticker synthesis."""
 from __future__ import annotations
 
-import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
@@ -9,6 +8,7 @@ from ..data.market_news import fetch_market_sentiment_news
 from ..data.ticker import fetch_ticker_data
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from ..serialization import dumps_pretty
 from .news_reranker import NewsReranker
 
 logger = get_logger(__name__)
@@ -183,7 +183,7 @@ class PortfolioAgent:
         if position:
             data["position"] = position
         prompt = (
-            f"Ticker data:\n```json\n{json.dumps(data, default=str, indent=2)}\n```"
+            f"Ticker data:\n```json\n{dumps_pretty(data)}\n```"
         )
         logger.info("Synthesizing block for %s", ticker)
         return self.ticker_agent.run(prompt).content
