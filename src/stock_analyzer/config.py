@@ -73,6 +73,16 @@ class Settings:
     # temperature=0 set in all stages, runs should agree near-perfectly,
     # but this catches any residual variance from data freshness.
     discover_consensus_runs: int = 3
+    # Rebalance aggressiveness:
+    #   conservative — strict tax-after-EV bar (10%), forward deterioration
+    #                  required for any SELL/TRIM
+    #   balanced     — risk-reduction trims allowed on overbought + above-
+    #                  target positions even with short-term tax cost (5% bar)
+    #   aggressive   — tax-aware but not tax-blocked; recommend churn where
+    #                  forward signal is meaningfully better (0% bar)
+    # The report ALWAYS includes a "tax-agnostic alternative" section so the
+    # user sees the opportunity cost regardless of which mode is selected.
+    discover_rebalance_aggressiveness: str = "balanced"
 
     # Behavior
     use_cached_analysis: bool = True
@@ -118,4 +128,7 @@ class Settings:
             discover_db_path=os.getenv("DISCOVER_DB_PATH", "~/.stock_analyzer/discover.db"),
             fred_api_key=os.getenv("FRED_API_KEY"),
             discover_consensus_runs=int(os.getenv("DISCOVER_CONSENSUS_RUNS") or "3"),
+            discover_rebalance_aggressiveness=(
+                os.getenv("DISCOVER_REBALANCE_AGGRESSIVENESS") or "balanced"
+            ).strip().lower(),
         )

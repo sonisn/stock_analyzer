@@ -242,8 +242,14 @@ class RebalancePipeline(DiscoverPipeline):
             self.state["ranker_text"],
             self.state.get("cash_balance"),
             self.state.get("macro_summary", ""),
+            aggressiveness=self.settings.discover_rebalance_aggressiveness,
         )
-        return StepOutput(content="Rebalance plan generated")
+        return StepOutput(
+            content=(
+                f"Rebalance plan generated "
+                f"(aggressiveness={self.settings.discover_rebalance_aggressiveness})"
+            )
+        )
 
     def step_persist_and_email_rebalance(self, step_input: StepInput) -> StepOutput:
         # Persist run + candidates + scorecards + picks + outputs.

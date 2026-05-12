@@ -57,11 +57,30 @@ Examples of intra-portfolio rebalance:
 
 If NONE of conditions 1-4 are met, output Format A (no action).
 
-Expected-value bar for any SELL/TRIM/ADD action:
-  The destination position (a new BUY or an existing ADD) must offer
-  forward return advantage of at least 10% over the source position's
-  forward return, AFTER accounting for the tax cost of the sale.
-  If you can't make that case, recommend HOLD.
+AGGRESSIVENESS MODE (the user message will specify one):
+
+  conservative — Strict tax-after-EV bar. The destination position must
+                 offer forward return advantage of at least 10% over the
+                 source position, AFTER accounting for the tax cost. If
+                 you can't make that case, recommend HOLD. Forward
+                 deterioration required for any SELL/TRIM.
+
+  balanced     — Risk-reduction trims allowed on overbought (weekly RSI >
+                 80) + above-analyst-target positions even with short-term
+                 tax cost. Bar is 5% forward-return advantage after tax —
+                 OR — pure risk-management trim (no destination required)
+                 when a position has run extreme. Less strict than
+                 conservative; still anchored in tax awareness.
+
+  aggressive   — Tax-aware but not tax-blocked. Recommend churn where
+                 forward signal is meaningfully better. 0% post-tax bar —
+                 as long as the alternative is genuinely better forward,
+                 recommend it. The user has explicitly accepted higher
+                 tax friction in exchange for opportunistic rebalancing.
+
+When in doubt about which to apply, follow the mode specified in the
+user message verbatim. Quote the realized tax cost in dollars for every
+SELL/TRIM regardless of mode.
 
 DEPLOYMENT ORDER (when proceeds or cash become available):
 Always exhaust ADD opportunities before falling back to BUY-new.
@@ -161,6 +180,30 @@ holding) and the confidence gap. Example: "Considered TRIM MRVL
 (conf 5, RSI 96) → ADD GOOGL (conf 8, RSI 55) — rejected because the
 3-point gap doesn't clear the 10% forward-return advantage bar after
 tax friction." If no pair was even close, say so explicitly.>
+
+Tax-agnostic alternative (ALWAYS include — informational):
+<This section is mandatory in every NO ACTION output. It shows what the
+rebalance WOULD look like if you ignored tax friction entirely. The
+user wants to see opportunity cost.
+
+For each pair you rejected in the Intra-portfolio check section, state
+what action you WOULD have recommended absent tax, with the tax cost
+that the user would need to absorb to execute it. Format per pair:
+
+  - TRIM <SRC> by <pct>% → ADD <DEST>
+    Tax cost if executed today: ~$<X> (<short-term/long-term>)
+    Forward-return edge (pre-tax): ~<pct>%
+    Net edge (post-tax): ~<pct>% — <still positive | wiped out by tax>
+
+If aggressiveness is `aggressive` AND any tax-agnostic alternative has
+positive net post-tax edge, escalate the plan to ACTION RECOMMENDED
+(Format B) instead of staying in Format A.>
+
+Conclusion:
+<one sentence: under <conservative|balanced|aggressive> mode, the
+current portfolio is in good standing because <reason>. The user can
+review the Tax-agnostic alternative section above to see what trades
+would be available if they were willing to absorb the tax friction.>
 
 Reasoning:
 <2-3 sentences explaining why the current portfolio is already in good
@@ -275,6 +318,7 @@ class Rebalancer:
         picks_text: str,
         cash_available: float | None,
         macro_summary: str = "",
+        aggressiveness: str = "balanced",
     ) -> str:
         reviews_block = "\n\n".join(
             f"=== {ticker} ===\n{text}" for ticker, text in holdings_reviews.items()
@@ -285,7 +329,18 @@ class Rebalancer:
             else "Available cash: unknown (size BUYs from SELL+TRIM proceeds only)"
         )
         macro_block = f"Macro regime:\n{macro_summary}\n\n" if macro_summary else ""
+        agg = aggressiveness.lower() if aggressiveness else "balanced"
+        if agg not in ("conservative", "balanced", "aggressive"):
+            logger.warning(
+                "Unknown aggressiveness=%r — defaulting to 'balanced'",
+                aggressiveness,
+            )
+            agg = "balanced"
         prompt = (
+            f"AGGRESSIVENESS: {agg}\n"
+            f"(Apply the {agg} rule set from your instructions. The "
+            f"'Tax-agnostic alternative' section is MANDATORY in any "
+            f"NO ACTION output.)\n\n"
             f"{macro_block}"
             f"{cash_line}\n\n"
             f"Current holdings reviews ({len(holdings_reviews)}):\n\n{reviews_block}\n\n"
@@ -293,8 +348,9 @@ class Rebalancer:
         )
         logger.info(
             "Generating rebalance plan with Opus (adaptive thinking, "
-            "%d holdings, cash=%s)",
+            "%d holdings, cash=%s, aggressiveness=%s)",
             len(holdings_reviews),
             f"${cash_available:,.0f}" if cash_available is not None else "unknown",
+            agg,
         )
         return self.agent.run(prompt).content
