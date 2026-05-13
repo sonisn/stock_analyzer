@@ -78,12 +78,45 @@ def _q(sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         return list(cur.fetchall())
 
 
+@st.cache_resource
+def _columns_by_table() -> dict[str, set[str]]:
+    """Reflect each table's columns so queries can degrade gracefully on
+    older DBs that haven't been migrated to include `kind` / `rebalance_text`
+    / `dashboard_data`."""
+    out: dict[str, set[str]] = {}
+    for table in ("runs", "run_outputs", "picks", "candidates", "scorecards"):
+        try:
+            rows = list(_conn().execute(f"PRAGMA table_info({table})"))
+            out[table] = {r[1] for r in rows}
+        except sqlite3.OperationalError:
+            out[table] = set()
+    return out
+
+
+def _has_col(table: str, col: str) -> bool:
+    return col in _columns_by_table().get(table, set())
+
+
+def _row_get(row: sqlite3.Row | None, key: str, default: Any = None) -> Any:
+    """Safe attribute-style access — returns default if the column is absent
+    (legacy DB) instead of raising IndexError."""
+    if row is None:
+        return default
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return default
+
+
 def _list_runs(limit: int = 100) -> list[sqlite3.Row]:
-    return _q(
-        "SELECT id, run_at, kind, picks, survivors, universe_size, cash_budget "
-        "FROM runs ORDER BY id DESC LIMIT ?",
-        (limit,),
+    cols = ["id", "run_at"]
+    if _has_col("runs", "kind"):
+        cols.append("kind")
+    cols.extend(["picks", "survivors", "universe_size", "cash_budget"])
+    sql = (
+        f"SELECT {', '.join(cols)} FROM runs ORDER BY id DESC LIMIT ?"
     )
+    return _q(sql, (limit,))
 
 
 def _run(run_id: int) -> sqlite3.Row | None:
@@ -105,8 +138,10 @@ def _picks(run_id: int) -> list[sqlite3.Row]:
 
 def _dashboard_data(run_id: int) -> dict[str, Any]:
     """Parse the dashboard_data JSON column; return {} if absent (older run)."""
+    if not _has_col("run_outputs", "dashboard_data"):
+        return {}
     out = _run_outputs(run_id)
-    if not out or not out["dashboard_data"]:
+    if not out or not _row_get(out, "dashboard_data"):
         return {}
     try:
         return json.loads(out["dashboard_data"])
@@ -131,16 +166,17 @@ def _page_run_history() -> None:
 
     rows = []
     for r in runs:
+        kind = _row_get(r, "kind", "—")
         rows.append(
             {
                 "Run ID": r["id"],
                 "Date": r["run_at"],
-                "Type": r["kind"],
+                "Type": kind,
                 "Picks": r["picks"],
                 "Survivors": r["survivors"],
                 "Universe": r["universe_size"],
                 "Status": (
-                    _status_from_outputs(r["id"]) if r["kind"] == "rebalance" else "—"
+                    _status_from_outputs(r["id"]) if kind == "rebalance" else "—"
                 ),
             }
         )
@@ -150,7 +186,8 @@ def _page_run_history() -> None:
     st.subheader("Drill in")
     run_ids = [r["id"] for r in runs]
     labels = [
-        f"#{r['id']}  {r['run_at']}  ({r['kind']}, {r['picks']} picks)"
+        f"#{r['id']}  {r['run_at']}  "
+        f"({_row_get(r, 'kind', 'run')}, {r['picks']} picks)"
         for r in runs
     ]
     choice = st.selectbox(
@@ -198,19 +235,20 @@ def _page_run_detail(run_id: int) -> None:
     data = _dashboard_data(run_id)
     outputs = _run_outputs(run_id)
 
+    kind = _row_get(run, "kind", "run")
     title_status = data.get("status") or ""
     title_suffix = f"  ·  Status: {title_status}" if title_status else ""
-    st.header(f"Run #{run_id}  ·  {run['run_at']}  ·  {run['kind']}{title_suffix}")
+    st.header(f"Run #{run_id}  ·  {run['run_at']}  ·  {kind}{title_suffix}")
 
     _render_metrics(run, data)
-    if run["kind"] == "rebalance" and data.get("holdings"):
+    if kind == "rebalance" and data.get("holdings"):
         _render_holdings_dashboard(data["holdings"])
     if data.get("sector_breakdown"):
         _render_sector_breakdown(data["sector_breakdown"])
 
     _render_picks_section(run_id)
     _render_outputs_sections(outputs, data)
-    _render_pdf_link(data, run["kind"], run["run_at"])
+    _render_pdf_link(data, kind, run["run_at"])
 
 
 def _render_metrics(run: sqlite3.Row, data: dict[str, Any]) -> None:
@@ -277,16 +315,17 @@ def _render_outputs_sections(
 ) -> None:
     if not outputs:
         return
-    if outputs["rebalance_text"]:
+    rebalance_text = _row_get(outputs, "rebalance_text")
+    if rebalance_text:
         with st.expander("Rebalance plan", expanded=False):
-            st.text(outputs["rebalance_text"])
-    if outputs["ranker_full"]:
+            st.text(rebalance_text)
+    if _row_get(outputs, "ranker_full"):
         with st.expander("Ranker (discover picks)", expanded=False):
             st.text(outputs["ranker_full"])
-    if outputs["redteam_full"]:
+    if _row_get(outputs, "redteam_full"):
         with st.expander("Red team (bear cases)", expanded=False):
             st.text(outputs["redteam_full"])
-    if outputs["sizer_full"]:
+    if _row_get(outputs, "sizer_full"):
         with st.expander("Sizer (allocation)", expanded=False):
             st.text(outputs["sizer_full"])
     holdings = data.get("holdings") or {}
