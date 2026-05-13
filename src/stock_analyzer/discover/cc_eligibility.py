@@ -55,3 +55,49 @@ def eligible_holdings(
             max_contracts=available // 100,
         )
     return out
+
+
+@dataclass(frozen=True)
+class RoundLotCoverage:
+    """Round-lot decomposition of a single holding.
+
+    Used by the stub-consolidation prompt rule and by the reporting
+    layer's `RoundLotCoverage` section.
+    """
+    ticker: str
+    shares: int
+    round_lots: int
+    stub_shares: int             # shares - round_lots × 100
+    stub_dollar_value: float     # stub_shares × spot (0 when spot unknown)
+    to_next_lot_shares: int      # (100 - stub_shares) if stub_shares else 0
+    to_next_lot_cost: float      # to_next_lot_shares × spot
+
+
+def round_lot_coverage(
+    positions: dict[str, dict[str, float]],
+    *,
+    spots: dict[str, float],
+) -> dict[str, RoundLotCoverage]:
+    """Compute round-lot / stub decomposition for every held ticker.
+
+    `spots` is the current price per ticker (from the technicals stage).
+    Missing spots collapse dollar values to 0 — the report layer can
+    still show share counts even when price data is stale.
+    """
+    out: dict[str, RoundLotCoverage] = {}
+    for ticker, pos in positions.items():
+        shares = int(pos.get("units") or 0)
+        if shares <= 0:
+            continue
+        round_lots = shares // 100
+        stub = shares - round_lots * 100
+        spot = float(spots.get(ticker) or 0.0)
+        to_next_shares = (100 - stub) if stub else 0
+        out[ticker] = RoundLotCoverage(
+            ticker=ticker, shares=shares,
+            round_lots=round_lots, stub_shares=stub,
+            stub_dollar_value=stub * spot,
+            to_next_lot_shares=to_next_shares,
+            to_next_lot_cost=to_next_shares * spot,
+        )
+    return out
