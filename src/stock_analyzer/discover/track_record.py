@@ -551,7 +551,12 @@ def _spot_at(ticker: str, on: str) -> float | None:
         if df is None or df.empty:
             return None
         return float(df["Close"].iloc[-1])
-    except Exception:
+    except Exception as e:
+        from ..logging import get_logger as _gl
+        _gl(__name__).info(
+            "score_covered_call: spot lookup failed for %s on %s (%s); "
+            "outcome will be UNKNOWN.", ticker, on, e,
+        )
         return None
 
 

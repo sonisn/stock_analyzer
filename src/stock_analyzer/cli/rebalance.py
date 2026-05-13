@@ -512,6 +512,16 @@ class RebalancePipeline(DiscoverPipeline):
                 round_lot_coverage,
             )
 
+            logger.info(
+                "CC pipeline starting: CC_ENABLED=%s, delta_band=[%.2f, %.2f], "
+                "DTE_band=[%d, %d], min_premium=$%.0f, slippage_buffer=%.0f%%",
+                self.settings.cc_enabled,
+                self.settings.cc_target_delta_min, self.settings.cc_target_delta_max,
+                self.settings.cc_dte_min, self.settings.cc_dte_max,
+                self.settings.cc_min_premium_usd,
+                self.settings.cc_slippage_buffer * 100,
+            )
+
             positions = self.state.get("holdings_positions") or {}
             denylist = self.settings.cc_denylist
 
@@ -521,9 +531,29 @@ class RebalancePipeline(DiscoverPipeline):
                 logger.warning("open option position fetch failed: %s", e)
                 open_short_calls = {}
 
+            if open_short_calls:
+                logger.info(
+                    "CC: %d ticker(s) already collateralizing short calls: %s",
+                    len(open_short_calls), dict(open_short_calls),
+                )
+            else:
+                logger.info("CC: no existing short-call coverage detected")
+
             eligible = eligible_holdings(
                 positions, open_short_calls=open_short_calls, denylist=denylist,
             )
+
+            logger.info(
+                "CC eligibility: %d/%d positions eligible (≥100 shares, not denylisted, "
+                "post-short-call coverage). Eligible: %s",
+                len(eligible), len(positions), sorted(eligible.keys()),
+            )
+            if not eligible:
+                logger.warning(
+                    "CC: NO eligible holdings — rebalancer will produce NO WRITE_CALL "
+                    "recommendations. Reasons: positions < 100 shares OR all in denylist "
+                    "OR fully collateralized by existing short calls."
+                )
 
             spots = {
                 t: (self.state.get("holdings_technicals", {}).get(t) or {}).get("price") or 0.0
@@ -534,11 +564,35 @@ class RebalancePipeline(DiscoverPipeline):
                 rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares
             )
 
+            stub_eligible = sum(1 for rec in coverage.values() if rec.stub_dollar_value >= self.settings.cc_min_stub_usd)
+            logger.info(
+                "CC round-lot coverage: %d holding(s) have stubs, $%,.0f total stub pool; "
+                "%d stub(s) exceed CC_MIN_STUB_USD=$%,.0f threshold",
+                sum(1 for r in coverage.values() if r.stub_shares > 0),
+                stub_pool,
+                stub_eligible,
+                self.settings.cc_min_stub_usd,
+            )
+
             chains = fetch_chains(
                 list(eligible),
                 dte_min=self.settings.cc_dte_min,
                 dte_max=self.settings.cc_dte_max,
             )
+
+            chain_sources = {}
+            for c in chains.values():
+                chain_sources[c.source] = chain_sources.get(c.source, 0) + 1
+            logger.info(
+                "CC chain fetch: %d eligible ticker(s); sources: %s",
+                len(chains), dict(chain_sources),
+            )
+            if chains and all(c.source == "missing" for c in chains.values()):
+                logger.error(
+                    "CC: ALL chain fetches failed (SnapTrade + yfinance both miss). "
+                    "Opus will see UNAVAILABLE for every ticker and won't emit "
+                    "WRITE_CALL. Check yfinance connectivity + SnapTrade tier."
+                )
 
             finnhub_signals = self.state.get("finnhub_signals") or {}
             earnings_map: dict[str, date] = {}
@@ -550,6 +604,11 @@ class RebalancePipeline(DiscoverPipeline):
                         earnings_map[ticker] = date.fromisoformat(raw[:10])
                 elif isinstance(raw, date):
                     earnings_map[ticker] = raw
+
+            logger.info(
+                "CC earnings dates: %d/%d eligible tickers have known earnings date(s)",
+                len(earnings_map), len(eligible),
+            )
 
             filtered_chains: dict[str, object] = {}
             for ticker, chain in chains.items():
@@ -568,13 +627,15 @@ class RebalancePipeline(DiscoverPipeline):
             self.state["cc_round_lot_coverage"] = coverage
             self.state["cc_stub_pool_total_usd"] = stub_pool
 
-            sources = {c.source for c in filtered_chains.values() if hasattr(c, "source")}
-            n_missing = sum(1 for c in filtered_chains.values() if getattr(c, "source", "") == "missing")
+            logger.info(
+                "CC context block built: %d chars (will be fed to rebalancer Opus)",
+                len(block),
+            )
             return StepOutput(content=(
                 f"cc_data: {len(eligible)} eligible holding(s); "
-                f"chain sources {sorted(sources)}; "
-                f"{n_missing} missing; "
-                f"stub pool ${stub_pool:,.0f}"
+                f"chain sources {sorted(chain_sources.keys())}; "
+                f"stub pool ${stub_pool:,.0f}; "
+                f"context block {len(block)} chars"
             ))
         except Exception as e:
             logger.error(
@@ -621,6 +682,42 @@ class RebalancePipeline(DiscoverPipeline):
                 self.state["cc_warnings"] = cc_warnings
                 for w in cc_warnings:
                     logger.warning("CC plan validation: %s", w)
+
+            n_write_calls = sum(1 for a in plan.actions if a.action == "WRITE_CALL")
+            if n_write_calls > 0:
+                total_premium = sum(
+                    ow.contracts * ow.est_premium_per_share * 100.0
+                    for ow in plan.option_writes
+                )
+                logger.info(
+                    "CC validation passed: %d WRITE_CALL action(s), "
+                    "$%,.0f gross premium estimated. Details:",
+                    n_write_calls, total_premium,
+                )
+                for ow in plan.option_writes:
+                    contract_premium = ow.contracts * ow.est_premium_per_share * 100.0
+                    logger.info(
+                        "  - %s: %d contracts @ $%.2f strike, expires %s, "
+                        "Δ=%.2f, ~$%,.0f premium, assignment %.0f%%",
+                        ow.ticker, ow.contracts, ow.strike, ow.expiry,
+                        ow.delta, contract_premium, ow.assignment_probability * 100,
+                    )
+            else:
+                # Distinguish "rebalancer chose not to" from "CC was disabled / data missing"
+                cc_block = self.state.get("cc_context_block") or ""
+                if not cc_block:
+                    logger.info(
+                        "CC: no WRITE_CALL recommendations — CC context was empty "
+                        "this run (no eligible holdings or CC_ENABLED=false)."
+                    )
+                else:
+                    logger.warning(
+                        "CC: rebalancer received CC context (%d chars) but emitted "
+                        "0 WRITE_CALL actions. Possible reasons: every eligible chain "
+                        "failed the liquidity guard (bid<$0.20, OI<100, spread>15%%), "
+                        "every eligible position is a SELL verdict, or Opus declined.",
+                        len(cc_block),
+                    )
         except Exception as e:
             logger.error(
                 "CC validation crashed (%s) — using unvalidated plan. "
@@ -808,6 +905,15 @@ class RebalancePipeline(DiscoverPipeline):
                 for ow in plan.option_writes
             )
         action_count = len(plan.actions) if plan else 0
+
+        if gross_premium > 0:
+            logger.info(
+                "CC summary at email time: %d WRITE_CALL(s), $%,.0f gross premium "
+                "across %d total action(s)",
+                sum(1 for a in plan.actions if a.action == "WRITE_CALL"),
+                gross_premium, action_count,
+            )
+
         subject = build_email_subject(
             action_count=action_count, gross_premium_usd=gross_premium,
         )
@@ -854,6 +960,36 @@ class RebalancePipeline(DiscoverPipeline):
             sizer_text=sizer_text,
             holdings_reviews=self.state.get("holdings_reviews", {}),
         )
+
+        # CC summary — visible in terminal so the user sees at-a-glance
+        # whether the covered-call flow triggered.
+        plan = self.state.get("rebalance_plan")
+        if plan is not None:
+            n_writes = sum(1 for a in plan.actions if a.action == "WRITE_CALL")
+            print("\n" + "=" * 60)
+            print("COVERED-CALL SUMMARY")
+            print("=" * 60)
+            if n_writes > 0:
+                gross = sum(
+                    ow.contracts * ow.est_premium_per_share * 100.0
+                    for ow in plan.option_writes
+                )
+                print(f"  Recommendations: {n_writes} WRITE_CALL action(s)")
+                print(f"  Gross premium:   ${gross:,.0f}")
+                for ow in plan.option_writes:
+                    print(
+                        f"    {ow.ticker}: {ow.contracts}x ${ow.strike:.2f}C "
+                        f"expires {ow.expiry}, Δ={ow.delta:.2f}, "
+                        f"premium ${ow.contracts * ow.est_premium_per_share * 100:,.0f}"
+                    )
+            else:
+                cc_block = self.state.get("cc_context_block") or ""
+                if not cc_block:
+                    print("  No recommendations: CC context was empty.")
+                    print("  (No eligible ≥100-share holdings, CC_ENABLED=0, or chain fetch failed.)")
+                else:
+                    print("  No recommendations: rebalancer declined to write calls this run.")
+                    print(f"  CC context ({len(cc_block)} chars) WAS provided to Opus.")
 
         print_terminal_summary(ranker_text, sizer_text)
         print("\n" + "=" * 60)

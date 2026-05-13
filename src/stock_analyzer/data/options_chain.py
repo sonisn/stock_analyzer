@@ -135,10 +135,18 @@ def _snaptrade_client() -> Any:
         s.snaptrade_client_id, s.snaptrade_consumer_key,
         s.snaptrade_user_id, s.snaptrade_user_secret,
     ]):
+        logger.info(
+            "SnapTrade chain provider unavailable: missing one or more of "
+            "SNAPTRADE_CLIENT_ID/CONSUMER_KEY/USER_ID/USER_SECRET — "
+            "falling back to yfinance only."
+        )
         return None
     try:
         from snaptrade_client import SnapTrade
     except ImportError:
+        logger.warning(
+            "SnapTrade SDK not installed — falling back to yfinance only."
+        )
         return None
     client = SnapTrade(
         client_id=s.snaptrade_client_id,
