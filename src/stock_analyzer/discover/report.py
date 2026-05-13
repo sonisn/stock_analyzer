@@ -199,7 +199,7 @@ SectionKind = Literal[
     # New structured-output kinds (Phase 4f) — renderer pulls fields from
     # `data` and produces a styled card / table instead of dumping prose.
     "pick_card", "allocation_table", "rebalance_action_table",
-    "holding_review_card",
+    "holding_review_card", "market_themes_panel",
 ]
 
 
@@ -238,6 +238,7 @@ def build_sections(
     ranker_output: object = None,
     redteam_output: object = None,
     sizer_output: object = None,
+    market_themes: object = None,
 ) -> list[Section]:
     # Prefer the structured Phase 4 objects when present; fall back to
     # parsing the free-text variants so legacy callers / partial runs
@@ -271,6 +272,26 @@ def build_sections(
     if track_record_block:
         s.append(Section(kind="heading", text="Track record", level=2))
         s.append(Section(kind="preformatted", text=track_record_block))
+
+    # Market themes panel — what's hot right now (drives ranker bias).
+    from .schemas import MarketThemes
+    if isinstance(market_themes, MarketThemes) and market_themes.themes:
+        s.append(Section(kind="heading", text="Current market themes", level=2))
+        s.append(Section(
+            kind="market_themes_panel",
+            data={
+                "themes": [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "strength": t.strength,
+                        "trending": t.trending,
+                        "member_tickers": list(t.member_tickers),
+                    }
+                    for t in market_themes.themes
+                ],
+            },
+        ))
 
     if macro_summary:
         s.append(Section(kind="heading", text="Macro regime", level=2))
@@ -744,6 +765,78 @@ def _allocation_table_html(d: dict[str, Any]) -> str:
     return table_html + warnings_html
 
 
+_TREND_GLYPHS: dict[str, tuple[str, str]] = {
+    "up":   ("▲", "#0e6432"),
+    "flat": ("●", "#6b7280"),
+    "down": ("▼", "#9c1010"),
+}
+
+
+def _theme_strength_color(strength: int | None) -> str:
+    """Color-grade a 1-10 theme strength for visual pills."""
+    if strength is None:
+        return "#9ca3af"
+    if strength >= 8:
+        return "#0e6432"
+    if strength >= 6:
+        return "#3b8fde"
+    if strength >= 4:
+        return "#a3550b"
+    return "#9c1010"
+
+
+def _market_themes_panel_html(d: dict[str, Any]) -> str:
+    """Render the detected market themes as a side-by-side grid of
+    compact cards — one per theme with strength badge + trend arrow +
+    description + member tickers."""
+    themes = d.get("themes") or []
+    if not themes:
+        return ""
+    cards: list[str] = []
+    for theme in themes:
+        name = html.escape(str(theme.get("name") or ""))
+        description = html.escape(str(theme.get("description") or ""))
+        strength = theme.get("strength")
+        trending = str(theme.get("trending") or "flat")
+        members = theme.get("member_tickers") or []
+        glyph, glyph_color = _TREND_GLYPHS.get(trending, _TREND_GLYPHS["flat"])
+        strength_color = _theme_strength_color(
+            strength if isinstance(strength, int) else None
+        )
+        strength_pill = (
+            f"<span style='background:{strength_color};color:#fff;"
+            f"padding:2px 10px;border-radius:10px;font-size:11px;"
+            f"font-weight:700'>{strength}/10</span>"
+            if isinstance(strength, int) else ""
+        )
+        trend_pill = (
+            f"<span style='color:{glyph_color};font-weight:700;"
+            f"font-size:13px'>{glyph}</span>"
+        )
+        # Pack member tickers into a tight monospace strip.
+        member_strip = ", ".join(
+            f"<span style='font-family:ui-monospace,SFMono-Regular,"
+            f"monospace;color:#374151'>{html.escape(str(t))}</span>"
+            for t in members[:18]
+        )
+        if len(members) > 18:
+            member_strip += f" <span style='color:#6b7280'>+{len(members)-18} more</span>"
+        cards.append(
+            f"<div style='border:1px solid #e5e7eb;border-radius:8px;"
+            f"padding:12px 14px;margin:8px 0;background:#fafbfc'>"
+            f"<div style='display:flex;flex-wrap:wrap;align-items:center;"
+            f"gap:8px;margin-bottom:6px'>"
+            f"<b style='font-size:14px;color:#111827'>{name}</b>"
+            f"{strength_pill}{trend_pill}</div>"
+            f"<div style='color:#374151;font-size:13px;margin-bottom:6px'>"
+            f"{description}</div>"
+            f"<div style='font-size:12px;color:#6b7280'>"
+            f"<b>Members:</b> {member_strip}</div>"
+            f"</div>"
+        )
+    return "".join(cards)
+
+
 def _holding_review_card_html(d: dict[str, Any]) -> str:
     """Render a per-holding review (HoldingReview schema) as a structured
     card: ticker + verdict pill + confidence pill + position context,
@@ -990,6 +1083,9 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
 
         elif s.kind == "holding_review_card" and s.data:
             parts.append(_holding_review_card_html(s.data))
+
+        elif s.kind == "market_themes_panel" and s.data:
+            parts.append(_market_themes_panel_html(s.data))
 
         elif s.kind == "page_break":
             parts.append("<hr/>")
@@ -1358,6 +1454,63 @@ def _pdf_allocation_table(d: dict[str, Any], styles) -> list[Any]:
     return flow
 
 
+def _pdf_market_themes_panel(d: dict[str, Any], styles) -> list[Any]:
+    """PDF: per-theme bordered block with strength pill + trend arrow +
+    description + member tickers."""
+    themes = d.get("themes") or []
+    if not themes:
+        return []
+    flow: list[Any] = []
+    for theme in themes:
+        name = str(theme.get("name") or "")
+        description = str(theme.get("description") or "")
+        strength = theme.get("strength")
+        trending = str(theme.get("trending") or "flat")
+        members = theme.get("member_tickers") or []
+        glyph, glyph_color = _TREND_GLYPHS.get(trending, _TREND_GLYPHS["flat"])
+        strength_color = _theme_strength_color(
+            strength if isinstance(strength, int) else None
+        )
+        strength_text = f"{strength}/10" if strength is not None else ""
+
+        header_cells: list[Paragraph] = [
+            Paragraph(
+                f"<b>{html.escape(name)}</b>",
+                styles["BodyText"],
+            ),
+            _pdf_pill(strength_text, "#fff", strength_color, styles),
+            Paragraph(
+                f"<font color='{glyph_color}' size='12'><b>{glyph}</b></font>",
+                styles["BodyText"],
+            ),
+        ]
+        while len(header_cells) < 3:
+            header_cells.append(Paragraph("", styles["BodyText"]))
+        header = Table(
+            [header_cells],
+            colWidths=[3.5 * inch, 1.0 * inch, 0.5 * inch],
+            hAlign="LEFT",
+        )
+        header.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+        ]))
+        flow.append(header)
+        flow.append(Paragraph(
+            f"<font size='9' color='#374151'>{html.escape(description)}</font>",
+            styles["BodyText"],
+        ))
+        member_strip = ", ".join(str(t) for t in members[:18])
+        suffix = f" +{len(members)-18} more" if len(members) > 18 else ""
+        flow.append(Paragraph(
+            f"<font size='8' color='#6b7280'><b>Members:</b> "
+            f"{html.escape(member_strip + suffix)}</font>",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 8))
+    return flow
+
+
 def _pdf_holding_review_card(d: dict[str, Any], styles) -> list[Any]:
     """PDF counterpart of `_holding_review_card_html` — ticker header
     with verdict + confidence pills, then labeled sections."""
@@ -1604,6 +1757,10 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
 
         elif s.kind == "holding_review_card" and s.data:
             for el in _pdf_holding_review_card(s.data, styles):
+                flow.append(el)
+
+        elif s.kind == "market_themes_panel" and s.data:
+            for el in _pdf_market_themes_panel(s.data, styles):
                 flow.append(el)
 
         elif s.kind == "page_break":

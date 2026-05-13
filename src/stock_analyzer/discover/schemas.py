@@ -242,6 +242,78 @@ class RedTeamOutput(BaseModel):
     )
 
 
+# --- Market themes --------------------------------------------------------
+
+
+class MarketTheme(BaseModel):
+    """One macro/sector theme that's currently driving prices."""
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(
+        ...,
+        description=(
+            "Short theme name, e.g. 'AI compute capex', 'GLP-1 weight-loss', "
+            "'energy transition', 'defense rearmament', 'cybersecurity'."
+        ),
+    )
+    description: str = Field(
+        ...,
+        description="1-2 sentences on why this theme is hot now and what's driving it.",
+    )
+    strength: int = Field(
+        ...,
+        ge=1,
+        le=10,
+        description=(
+            "Theme strength right now. 10 = dominant secular trend with "
+            "broad price + earnings tailwind; 5 = real but contested; "
+            "1 = waning / topping out."
+        ),
+    )
+    trending: Literal["up", "flat", "down"] = Field(
+        ...,
+        description=(
+            "Direction over the LAST 30 DAYS. 'up' = accelerating, "
+            "'down' = decelerating / rolling over, 'flat' = sideways."
+        ),
+    )
+    member_tickers: list[str] = Field(
+        ...,
+        min_length=3,
+        description=(
+            "10-25 tickers that meaningfully benefit from this theme. "
+            "Be liberal — include direct beneficiaries (e.g. NVDA for AI "
+            "compute) AND adjacent ones (e.g. ANET for AI networking, "
+            "VST/CEG for AI power)."
+        ),
+    )
+
+
+class MarketThemes(BaseModel):
+    """Snapshot of dominant market themes for one pipeline run."""
+
+    model_config = ConfigDict(frozen=True)
+
+    themes: list[MarketTheme] = Field(
+        ...,
+        min_length=3,
+        max_length=10,
+        description=(
+            "5-8 themes that are materially moving stocks right now. "
+            "Skip stale/long-faded themes; include rising ones."
+        ),
+    )
+    full_text: str = Field(
+        ...,
+        description=(
+            "Plain-text rendering of all themes for downstream LLM prompts: "
+            "one named theme per block with strength + trend + description "
+            "+ exemplar tickers. The ranker and rebalancer read this verbatim."
+        ),
+    )
+
+
 # --- Sizer ----------------------------------------------------------------
 
 
@@ -364,4 +436,6 @@ __all__ = [
     "RedTeamOutput",
     "Allocation",
     "SizerOutput",
+    "MarketTheme",
+    "MarketThemes",
 ]

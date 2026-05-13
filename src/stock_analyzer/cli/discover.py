@@ -58,6 +58,11 @@ from ..discover.persistence import (
     insert_run_outputs,
     insert_scorecard,
 )
+from ..discover.market_themes import (
+    MarketThemesAgent,
+    theme_score_bonus,
+    themes_by_ticker,
+)
 from ..discover.ranker import Ranker
 from ..discover.redteam import RedTeam
 from ..discover.track_record import (
@@ -265,10 +270,31 @@ class DiscoverPipeline:
         self.state["track_record_block"] = format_track_record_block(record)
         return StepOutput(content=self.state["track_record_summary"])
 
+    def step_market_themes(self, step_input: StepInput) -> StepOutput:
+        """Detect 5-8 named market themes that are moving prices right now.
+        Bias the screen + analyst + ranker toward theme members."""
+        agent = MarketThemesAgent("claude", self.settings.discover_sonnet_model)
+        themes = agent.detect(
+            macro_summary=self.state.get("macro_summary", ""),
+            sector_rotation=self.state.get("sector_rotation"),
+        )
+        self.state["market_themes"] = themes
+        self.state["themes_by_ticker"] = themes_by_ticker(themes)
+        if themes is None:
+            self.state["market_themes_block"] = ""
+            return StepOutput(content="market_themes: detection failed; skipping bias")
+        self.state["market_themes_block"] = themes.full_text
+        names = [t.name for t in themes.themes]
+        return StepOutput(
+            content=f"Market themes: {len(themes.themes)} detected ({', '.join(names[:5])})"
+        )
+
     def step_screen(self, step_input: StepInput) -> StepOutput:
         universe = self.state["universe"]
         fundamentals = self.state["fundamentals"]
         technicals = self.state["technicals"]
+
+        themes_by_t = self.state.get("themes_by_ticker") or {}
 
         candidates: list[dict[str, Any]] = []
         for ticker in self.state["tickers"]:
@@ -287,12 +313,20 @@ class DiscoverPipeline:
                 "score": None,
                 "score_components": None,
                 "score_breakdown": None,
+                "themes": [m["name"] for m in (themes_by_t.get(ticker.upper()) or [])],
             }
             if passes and f and t:
                 scored = score_candidate(f, t, u)
-                cand["score"] = scored["score"]
-                cand["score_components"] = scored["components"]
-                cand["score_breakdown"] = scored["breakdown"]
+                bonus, theme_meta = theme_score_bonus(ticker, themes_by_t)
+                cand["score"] = round(scored["score"] + bonus, 1)
+                cand["score_components"] = {
+                    **scored["components"],
+                    "theme_bonus": bonus,
+                }
+                cand["score_breakdown"] = {
+                    **scored["breakdown"],
+                    "theme": theme_meta,
+                }
             cand["sector_bias"] = sector_bias(
                 cand["sector"], self.state.get("sector_rotation", {})
             )
@@ -475,6 +509,7 @@ class DiscoverPipeline:
                 "score": c["score"],
                 "score_breakdown": c["score_breakdown"],
                 "sector_bias": c.get("sector_bias"),
+                "market_themes": c.get("themes") or [],
                 "earnings_alert": earnings_alerts.get(ticker),
                 "insider_activity": insider_activity,
                 "earnings_surprise_history": fh.get("earnings_surprise") or [],
@@ -539,6 +574,7 @@ class DiscoverPipeline:
             self.state.get("holdings_summary", ""),
             macro_context=self.state.get("macro_summary", ""),
             track_record_block=self.state.get("track_record_block", ""),
+            market_themes_block=self.state.get("market_themes_block", ""),
         )
         self.state["ranker_output"] = output
         self.state["ranker_text"] = output.full_text
@@ -650,6 +686,7 @@ class DiscoverPipeline:
             ranker_output=self.state.get("ranker_output"),
             redteam_output=self.state.get("redteam_output"),
             sizer_output=self.state.get("sizer_output"),
+            market_themes=self.state.get("market_themes"),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -746,6 +783,9 @@ class DiscoverPipeline:
                     Step(name="track_record", executor=self.step_track_record),
                     name="market_data",
                 ),
+                # Market themes need sector_rotation + macro_regime as input,
+                # so it runs sequentially after the market_data block.
+                Step(name="market_themes", executor=self.step_market_themes),
                 Step(name="screen", executor=self.step_screen),
                 Parallel(
                     Step(name="risk_factors", executor=self.step_risk_factors),

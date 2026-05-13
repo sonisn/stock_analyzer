@@ -365,6 +365,7 @@ class RebalancePipeline(DiscoverPipeline):
             self.state.get("macro_summary", ""),
             aggressiveness=self.settings.discover_rebalance_aggressiveness,
             history_block=history_block,
+            market_themes_block=self.state.get("market_themes_block", ""),
         )
         self.state["rebalance_plan"] = plan
         # `rebalance_text` is the prose rendering, kept under the same key
@@ -478,6 +479,7 @@ class RebalancePipeline(DiscoverPipeline):
             holdings_fundamentals=self.state.get("holdings_fundamentals", {}),
             track_record_block=self.state.get("track_record_block", ""),
             rebalance_plan=self.state.get("rebalance_plan"),
+            market_themes=self.state.get("market_themes"),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -579,6 +581,9 @@ class RebalancePipeline(DiscoverPipeline):
                     ),
                     name="market_data",
                 ),
+                # Market themes after market_data (depends on sector_rotation +
+                # macro_regime from inside the parallel block).
+                Step(name="market_themes", executor=self.step_market_themes),
                 Step(name="screen", executor=self.step_screen),
                 Parallel(
                     Step(name="risk_factors", executor=self.step_risk_factors),
@@ -624,6 +629,7 @@ def _build_rebalance_sections(
     holdings_fundamentals: dict[str, dict[str, Any]],
     track_record_block: str = "",
     rebalance_plan: object = None,
+    market_themes: object = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -702,6 +708,25 @@ def _build_rebalance_sections(
     if track_record_block:
         sections.append(Section(kind="heading", text="Track record", level=2))
         sections.append(Section(kind="preformatted", text=track_record_block))
+
+    from ..discover.schemas import MarketThemes
+    if isinstance(market_themes, MarketThemes) and market_themes.themes:
+        sections.append(Section(kind="heading", text="Current market themes", level=2))
+        sections.append(Section(
+            kind="market_themes_panel",
+            data={
+                "themes": [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "strength": t.strength,
+                        "trending": t.trending,
+                        "member_tickers": list(t.member_tickers),
+                    }
+                    for t in market_themes.themes
+                ],
+            },
+        ))
 
     if macro_summary:
         sections.append(Section(kind="heading", text="Macro regime", level=2))

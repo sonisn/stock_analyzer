@@ -406,6 +406,7 @@ class Rebalancer:
         macro_summary: str = "",
         aggressiveness: str = "balanced",
         history_block: str = "",
+        market_themes_block: str = "",
     ) -> RebalancePlan:
         # Accept either the new structured form ({ticker: HoldingReview})
         # or the legacy free-text form ({ticker: str}). For the LLM prompt
@@ -433,12 +434,19 @@ class Rebalancer:
             f"{history_block}\n\n"
             if history_block else ""
         )
+        themes_section = (
+            f"Current dominant market themes (use to validate continued "
+            f"holding of theme members vs trimming positions in fading "
+            f"themes):\n{market_themes_block}\n\n"
+            if market_themes_block else ""
+        )
         prompt = (
             f"AGGRESSIVENESS: {agg}\n"
             f"(Apply the {agg} rule set from your instructions. The "
             f"'Tax-agnostic alternative' section is MANDATORY in any "
             f"NO ACTION output.)\n\n"
             f"{macro_block}"
+            f"{themes_section}"
             f"{cash_line}\n\n"
             f"{history_section}"
             f"Current holdings reviews ({len(holdings_reviews)}):\n\n{reviews_block}\n\n"

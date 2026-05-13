@@ -103,6 +103,7 @@ class Ranker:
         top_n: int,
         macro_context: str,
         track_record_block: str = "",
+        market_themes_block: str = "",
     ) -> RankerOutput:
         # `analyses` is dict[ticker, AnalystReport] from Phase 4b; for
         # legacy callers it may be dict[ticker, str]. Unwrap to prose for
@@ -112,12 +113,19 @@ class Ranker:
             for ticker, analysis in analyses.items()
         )
         macro_block = f"Macro regime:\n{macro_context}\n\n" if macro_context else ""
+        themes_block = (
+            f"Current dominant market themes (favor candidates that ride a "
+            f"strong theme trending up; flag if a candidate is in a fading "
+            f"or rolling-over theme):\n{market_themes_block}\n\n"
+            if market_themes_block else ""
+        )
         track_block = (
             f"Historical track record (your own past picks):\n{track_record_block}\n\n"
             if track_record_block else ""
         )
         prompt = (
             f"{macro_block}"
+            f"{themes_block}"
             f"{track_block}"
             f"You will pick the top {top_n} from {len(analyses)} candidates.\n\n"
             f"Current holdings summary:\n{holdings_summary or '(none)'}\n\n"
@@ -141,6 +149,7 @@ class Ranker:
         top_n: int = 5,
         macro_context: str = "",
         track_record_block: str = "",
+        market_themes_block: str = "",
     ) -> RankerOutput:
         """Single call when consensus_runs=1; otherwise run N times and
         return the run whose picks best overlap the majority-consensus set."""
@@ -153,14 +162,16 @@ class Ranker:
         )
         if self.consensus_runs <= 1:
             return self._rank_once(
-                analyses, holdings_summary, top_n, macro_context, track_record_block
+                analyses, holdings_summary, top_n, macro_context,
+                track_record_block, market_themes_block,
             )
 
         outputs: list[RankerOutput] = []
         pick_sets: list[set[str]] = []
         for i in range(self.consensus_runs):
             output = self._rank_once(
-                analyses, holdings_summary, top_n, macro_context, track_record_block
+                analyses, holdings_summary, top_n, macro_context,
+                track_record_block, market_themes_block,
             )
             outputs.append(output)
             picks = {p.ticker for p in output.picks}
