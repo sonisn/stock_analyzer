@@ -107,3 +107,42 @@ def test_fetch_open_option_positions_returns_empty_when_no_accounts():
     with patch("stock_analyzer.data.brokerage._client", return_value=fake_client), \
          patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")):
         assert fetch_open_option_positions() == {}
+
+
+def test_fetch_portfolio_holdings_skips_option_symbols():
+    """Regression: option positions must NOT show up in equity holdings —
+    they're handled separately by fetch_open_option_positions. Daily digest
+    + discover + rebalance all consume fetch_portfolio_holdings and would
+    waste API/LLM calls trying to look up OCC symbols."""
+    from stock_analyzer.data.brokerage import fetch_portfolio_holdings
+
+    fake_accounts = [{"id": "acct-1", "name": "Test Acct"}]
+    fake_positions = [
+        # Equity rows
+        {"symbol": {"symbol": {"symbol": "NVDA"}},
+         "units": 400, "average_purchase_price": 200.0},
+        {"symbol": {"symbol": {"symbol": "AAPL"}},
+         "units": 200, "average_purchase_price": 150.0},
+        # Option rows — must be filtered out
+        {"symbol": {"symbol": {"symbol": "NVDA  260620C00260000"}},
+         "units": -3, "average_purchase_price": 2.40},
+        {"symbol": {"symbol": {"symbol": "TSLA  260815C00300000"}},
+         "units": 1, "average_purchase_price": 5.0},
+    ]
+    fake_client = MagicMock()
+    fake_client.account_information.list_user_accounts.return_value = MagicMock(
+        body=fake_accounts
+    )
+    fake_client.account_information.get_user_account_positions.return_value = MagicMock(
+        body=fake_positions
+    )
+    with patch("stock_analyzer.data.brokerage._client", return_value=fake_client), \
+         patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")):
+        holdings = fetch_portfolio_holdings()
+
+    # All accounts collapsed into one for assertion clarity:
+    all_tickers = {h["ticker"] for acct in holdings.values() for h in acct}
+    assert "NVDA" in all_tickers
+    assert "AAPL" in all_tickers
+    # Option symbols MUST NOT appear:
+    assert not any(" " in t for t in all_tickers), f"Option symbol leaked: {all_tickers}"

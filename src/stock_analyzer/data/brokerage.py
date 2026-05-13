@@ -7,7 +7,7 @@ from typing import Any, Literal
 from snaptrade_client import SnapTrade
 
 from ..logging import get_logger
-from .options_symbols import OCCParseError, parse_occ
+from .options_symbols import OCCParseError, is_option_symbol, parse_occ
 
 logger = get_logger(__name__)
 
@@ -207,9 +207,13 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
         )
 
         holdings: list[dict] = []
+        option_skip_count: int = 0
         for p in positions:
             ticker = _extract_ticker(p)
             if not ticker:
+                continue
+            if is_option_symbol(ticker):
+                option_skip_count += 1
                 continue
             holdings.append(
                 {
@@ -220,6 +224,11 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
                 }
             )
         logger.info("Account %r: %d positions", account_name, len(holdings))
+        if option_skip_count > 0:
+            logger.info(
+                "Skipped %d option position(s) from %s — handled separately by fetch_open_option_positions",
+                option_skip_count, account_name
+            )
         out[account_name] = holdings
 
     return out
