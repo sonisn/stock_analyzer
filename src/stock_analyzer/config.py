@@ -100,12 +100,31 @@ class Settings(BaseSettings):
     use_cached_analysis: bool = True
     insider_lookback_days: int = 5
 
+    # ---- Covered-call writing (cli/rebalance.py extension) ---------------
+    cc_enabled: bool = True
+    cc_target_delta_min: float = 0.35
+    cc_target_delta_max: float = 0.45
+    cc_dte_min: int = 30
+    cc_dte_max: int = 45
+    cc_denylist: Annotated[tuple[str, ...], NoDecode] = ()
+    cc_min_premium_usd: float = 500.0
+    cc_slippage_buffer: float = 0.10
+    cc_stub_optimization: bool = True
+    cc_min_stub_usd: float = 1000.0
+
     # ---- Coercers ---------------------------------------------------------
     @field_validator("discover_watchlist", mode="before")
     @classmethod
     def _split_watchlist(cls, v: object) -> object:
         # Env vars arrive as comma-separated strings: "AAPL,NVDA,googl".
         # Already-tuple/list values pass through untouched.
+        if isinstance(v, str):
+            return tuple(t.strip().upper() for t in v.split(",") if t.strip())
+        return v
+
+    @field_validator("cc_denylist", mode="before")
+    @classmethod
+    def _split_cc_denylist(cls, v: object) -> object:
         if isinstance(v, str):
             return tuple(t.strip().upper() for t in v.split(",") if t.strip())
         return v
