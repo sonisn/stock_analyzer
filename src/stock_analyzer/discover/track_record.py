@@ -29,7 +29,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 import yfinance as yf
 from pydantic import BaseModel, ConfigDict
@@ -527,3 +527,77 @@ __all__ = [
 
 def _ages_for_test() -> tuple[int, int]:
     return _MIN_AGE_DAYS, _MEASUREMENT_WINDOW_DAYS
+
+
+# --- Covered call scoring --------------------------------------------------
+
+
+def _spot_at(ticker: str, on: str) -> float | None:
+    """Look up historical spot for `ticker` on ISO date `on`.
+
+    Default impl uses yfinance; patched in tests. Returns None when the
+    lookup fails so the caller can mark the outcome UNKNOWN rather than
+    crash the track-record block.
+    """
+    try:
+        import yfinance as yf
+        end = date.fromisoformat(on)
+        # Wider start so non-trading-day expiries still pick up a prior close.
+        start_day = max(1, end.day - 5)
+        df = yf.Ticker(ticker).history(
+            start=end.replace(day=start_day).isoformat(),
+            end=end.isoformat(),
+            auto_adjust=False,
+        )
+        if df is None or df.empty:
+            return None
+        return float(df["Close"].iloc[-1])
+    except Exception:
+        return None
+
+
+def score_covered_call(
+    *,
+    ticker: str,
+    strike: float,
+    expiry: str,
+    contracts: int,
+    est_premium_per_share: float,
+) -> dict[str, Any]:
+    """Score one WRITE_CALL after `expiry` has passed.
+
+    Returns:
+      {
+        "outcome": "EXPIRED_OTM" | "ASSIGNED" | "UNKNOWN",
+        "spot_at_expiry": float | None,
+        "pnl_usd": float | None,            # net of opportunity cost
+        "premium_collected_usd": float,
+        "opportunity_cost_usd": float,
+      }
+    """
+    spot = _spot_at(ticker, expiry)
+    premium = contracts * est_premium_per_share * 100.0
+    if spot is None:
+        return {
+            "outcome": "UNKNOWN",
+            "spot_at_expiry": None,
+            "pnl_usd": None,
+            "premium_collected_usd": premium,
+            "opportunity_cost_usd": 0.0,
+        }
+    if spot < strike:
+        return {
+            "outcome": "EXPIRED_OTM",
+            "spot_at_expiry": spot,
+            "pnl_usd": premium,
+            "premium_collected_usd": premium,
+            "opportunity_cost_usd": 0.0,
+        }
+    opportunity_cost = (spot - strike) * contracts * 100.0
+    return {
+        "outcome": "ASSIGNED",
+        "spot_at_expiry": spot,
+        "pnl_usd": premium - opportunity_cost,
+        "premium_collected_usd": premium,
+        "opportunity_cost_usd": opportunity_cost,
+    }
