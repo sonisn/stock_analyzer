@@ -43,9 +43,22 @@ _PICK_RE = re.compile(
 _TICKER_BLOCK_RE = re.compile(r"^TICKER:\s*([A-Z][A-Z.\-]{0,5})\s*$", re.MULTILINE)
 
 
-def parse_picks(ranker_text: str) -> list[tuple[int, str, str]]:
+def parse_picks(ranker_text_or_output: object) -> list[tuple[int, str, str]]:
+    """Return [(rank, ticker, one_liner), ...] sorted by rank.
+
+    Accepts a structured `RankerOutput` (preferred — field reads) OR a
+    free-text ranker output (legacy / discover-pipeline-output that
+    hasn't been migrated yet)."""
+    from .schemas import RankerOutput
+    if isinstance(ranker_text_or_output, RankerOutput):
+        return [
+            (p.rank, p.ticker, p.one_liner)
+            for p in sorted(ranker_text_or_output.picks, key=lambda p: p.rank)
+        ]
+    if not ranker_text_or_output or not isinstance(ranker_text_or_output, str):
+        return []
     out: list[tuple[int, str, str]] = []
-    for m in _PICK_RE.finditer(ranker_text):
+    for m in _PICK_RE.finditer(ranker_text_or_output):
         out.append((int(m.group(1)), m.group(2), m.group(3).strip()))
     return out
 

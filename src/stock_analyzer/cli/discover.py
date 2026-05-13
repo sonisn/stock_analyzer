@@ -464,13 +464,15 @@ class DiscoverPipeline:
             self.settings.discover_opus_model,
             consensus_runs=self.settings.discover_consensus_runs,
         )
-        self.state["ranker_text"] = ranker.rank(
+        output = ranker.rank(
             self.state["analyses"],
             self.state["holdings_summary"],
             macro_context=self.state.get("macro_summary", ""),
             track_record_block=self.state.get("track_record_block", ""),
         )
-        self.state["picks"] = parse_picks(self.state["ranker_text"])
+        self.state["ranker_output"] = output
+        self.state["ranker_text"] = output.full_text
+        self.state["picks"] = parse_picks(output)
         picked = [t for _, t, _ in self.state["picks"]]
         return StepOutput(content=f"Ranker picked {len(picked)}: {picked}")
 

@@ -6,24 +6,13 @@ Opus's reasoning depth pays off here vs N isolated per-ticker calls.
 """
 from __future__ import annotations
 
-import re
 from typing import Any
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from .schemas import RankerOutput
 
 logger = get_logger(__name__)
-
-# Minimal pick-line regex; mirrors discover.report._PICK_RE without depending
-# on the report module (avoids any future import cycles).
-_PICK_RE = re.compile(
-    r"^PICK\s+(\d+):\s+([A-Z][A-Z.\-]{0,5})\s+[—–-]", re.MULTILINE
-)
-
-
-def _pick_set(text: str) -> set[str]:
-    """Extract the set of ticker symbols from a ranker output."""
-    return {m.group(2) for m in _PICK_RE.finditer(text)}
 
 RANKER_INSTRUCTIONS = """\
 You are a portfolio manager picking 5 stocks for a 6-12 month hold from a
@@ -64,7 +53,18 @@ CRITICAL:
 - Pick exactly 5 unless fewer than 5 candidates were provided.
 - Order picks by conviction descending.
 - The "Why this over alternatives" section is non-optional — name the
-  alternatives by ticker.\
+  alternatives by ticker.
+
+STRUCTURED OUTPUT:
+Your response is validated against a Pydantic schema (RankerOutput).
+Populate `picks` with one RankerPick per pick (rank, ticker, one_liner,
+why_over_alternatives, conviction, time_horizon, sector_concentration_check,
+bull_thesis, what_youre_betting_on). Populate `pairs_not_to_hold_together`
+with any correlated pairs (empty list if none). Put the complete prose
+rendering described above into `full_text` — the RedTeam, Sizer, and
+Rebalancer all read full_text from their prompt input. The structured
+fields must agree with `full_text` — same picks, same order, same
+conviction numbers.\
 """
 
 
@@ -93,6 +93,7 @@ class Ranker:
                 "temperature": 0,
             },
             instructions=RANKER_INSTRUCTIONS,
+            output_schema=RankerOutput,
         )
 
     def _rank_once(
@@ -102,7 +103,7 @@ class Ranker:
         top_n: int,
         macro_context: str,
         track_record_block: str = "",
-    ) -> str:
+    ) -> RankerOutput:
         # `analyses` is dict[ticker, AnalystReport] from Phase 4b; for
         # legacy callers it may be dict[ticker, str]. Unwrap to prose for
         # the prompt without depending on the type.
@@ -122,7 +123,16 @@ class Ranker:
             f"Current holdings summary:\n{holdings_summary or '(none)'}\n\n"
             f"Candidate analyses:\n\n{candidates_block}"
         )
-        return self.agent.run(prompt).content
+        result = self.agent.run(prompt).content
+        if result is None:
+            raise RuntimeError("Ranker returned no content.")
+        if isinstance(result, RankerOutput):
+            return result
+        if isinstance(result, str):
+            return RankerOutput.model_validate_json(result)
+        raise RuntimeError(
+            f"Ranker returned unexpected type {type(result).__name__}."
+        )
 
     def rank(
         self,
@@ -131,7 +141,7 @@ class Ranker:
         top_n: int = 5,
         macro_context: str = "",
         track_record_block: str = "",
-    ) -> str:
+    ) -> RankerOutput:
         """Single call when consensus_runs=1; otherwise run N times and
         return the run whose picks best overlap the majority-consensus set."""
         logger.info(
@@ -146,16 +156,19 @@ class Ranker:
                 analyses, holdings_summary, top_n, macro_context, track_record_block
             )
 
-        texts: list[str] = []
+        outputs: list[RankerOutput] = []
         pick_sets: list[set[str]] = []
         for i in range(self.consensus_runs):
-            text = self._rank_once(
+            output = self._rank_once(
                 analyses, holdings_summary, top_n, macro_context, track_record_block
             )
-            texts.append(text)
-            picks = _pick_set(text)
+            outputs.append(output)
+            picks = {p.ticker for p in output.picks}
             pick_sets.append(picks)
-            logger.info("Ranker run %d/%d picked %s", i + 1, self.consensus_runs, sorted(picks))
+            logger.info(
+                "Ranker run %d/%d picked %s",
+                i + 1, self.consensus_runs, sorted(picks),
+            )
 
         # Majority threshold = ceil(N/2). With N=3 → 2 runs agreeing.
         threshold = (self.consensus_runs + 1) // 2
@@ -175,9 +188,8 @@ class Ranker:
                 "returning first run's output verbatim",
                 self.consensus_runs,
             )
-            return texts[0]
+            return outputs[0]
 
-        # Return the single run whose pick set overlaps the consensus most.
         best_idx = max(
             range(self.consensus_runs),
             key=lambda i: len(pick_sets[i] & consensus),
@@ -186,4 +198,4 @@ class Ranker:
             "Using run %d's output (overlaps consensus by %d picks)",
             best_idx + 1, len(pick_sets[best_idx] & consensus),
         )
-        return texts[best_idx]
+        return outputs[best_idx]

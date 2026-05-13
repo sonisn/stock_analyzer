@@ -102,6 +102,83 @@ class HoldingReview(BaseModel):
     )
 
 
+# --- Ranker ---------------------------------------------------------------
+
+
+class RankerPick(BaseModel):
+    """One of the Ranker's top-N picks, structured."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rank: int = Field(..., ge=1, description="1-indexed pick rank, descending by conviction.")
+    ticker: str
+    one_liner: str = Field(..., description="Single sentence thesis.")
+    why_over_alternatives: str = Field(
+        ...,
+        description=(
+            "2-3 sentences citing other candidates that lost out and why. "
+            "Name the alternatives by ticker."
+        ),
+    )
+    conviction: int = Field(..., ge=1, le=10)
+    time_horizon: str = Field(default="6-12 months")
+    sector_concentration_check: str = Field(
+        ...,
+        description=(
+            "Does this overlap with current holdings? Flag concentration risk."
+        ),
+    )
+    bull_thesis: str = Field(
+        ...,
+        description="3-4 sentences synthesizing fundamentals + trend + catalysts.",
+    )
+    what_youre_betting_on: str = Field(
+        ...,
+        description="1-2 sentences making the core assumption explicit.",
+    )
+
+
+class CorrelatedPair(BaseModel):
+    """Two picks that share too much factor exposure to size as independent bets."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ticker_a: str
+    ticker_b: str
+    shared_driver: str = Field(
+        ...,
+        description="Brief: 'same hyperscaler AI capex cycle', 'same gold-price tape', etc.",
+    )
+
+
+class RankerOutput(BaseModel):
+    """Structured output of the Ranker agent. Replaces _PICK_RE regex
+    in the consensus-run majority logic and parse_picks downstream."""
+
+    model_config = ConfigDict(frozen=True)
+
+    picks: list[RankerPick] = Field(
+        ...,
+        min_length=1,
+        description="Top N picks ordered by conviction descending (rank 1 = highest).",
+    )
+    pairs_not_to_hold_together: list[CorrelatedPair] = Field(
+        default_factory=list,
+        description=(
+            "Highly-correlated pairs among your picks (same sector + similar "
+            "drivers). Empty if no problematic pairs."
+        ),
+    )
+    full_text: str = Field(
+        ...,
+        description=(
+            "Plain-text rendering matching the prose template ('---' "
+            "separators, 'PICK N: TICKER — ...' headers, etc.). What the "
+            "RedTeam / Sizer / Rebalancer read as prompt input."
+        ),
+    )
+
+
 # --- Analyst ---------------------------------------------------------------
 
 
@@ -159,4 +236,7 @@ __all__ = [
     "FragilityRank",
     "HoldingReview",
     "AnalystReport",
+    "RankerPick",
+    "CorrelatedPair",
+    "RankerOutput",
 ]
