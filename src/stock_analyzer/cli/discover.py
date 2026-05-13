@@ -41,6 +41,7 @@ from ..data.chart_img import fetch_charts
 from ..data.earnings_calendar import batch_earnings_flags
 from ..data.fred_macro import fetch_regime_data, regime_summary_text
 from ..data.fundamentals import batch_fundamentals
+from ..data.eps_revisions import batch_eps_revisions
 from ..data.finnhub import batch_finnhub_signals
 from ..data.insider_selling import insider_selling_mentions
 from ..data.sec_edgar import batch_quarterly_mda, batch_risk_factors
@@ -418,6 +419,27 @@ class DiscoverPipeline:
             content=f"Finnhub signals: {n}/{len(tickers)} tickers covered"
         )
 
+    def step_eps_revisions(self, step_input: StepInput) -> StepOutput:
+        """Analyst EPS-estimate revisions over the last 7 and 30 days.
+        One of the strongest forward-thesis signals available — when
+        analysts are raising estimates across a cohort the stock
+        typically outperforms."""
+        tickers = list(self.state.get("survivor_tickers") or [])
+        if not tickers:
+            self.state["eps_revisions"] = {}
+            return StepOutput(content="eps_revisions: no survivors; skipping")
+        self.state["eps_revisions"] = batch_eps_revisions(tickers)
+        raising = sum(
+            1 for v in self.state["eps_revisions"].values()
+            if v.get("direction_30d") == "raising"
+        )
+        return StepOutput(
+            content=(
+                f"EPS revisions: {len(self.state['eps_revisions'])}/{len(tickers)} "
+                f"covered, {raising} raising in last 30d"
+            )
+        )
+
     def step_quarterly_mda(self, step_input: StepInput) -> StepOutput:
         tickers = self.state.get("survivor_tickers") or []
         if not tickers:
@@ -489,6 +511,7 @@ class DiscoverPipeline:
         insider_selling = self.state.get("insider_selling", {})
         share_trades = self.state.get("share_trades", {})
         finnhub_signals = self.state.get("finnhub_signals", {})
+        eps_revisions = self.state.get("eps_revisions", {})
 
         payloads: dict[str, dict[str, Any]] = {}
         for c in survivors:
@@ -515,6 +538,7 @@ class DiscoverPipeline:
                 "earnings_surprise_history": fh.get("earnings_surprise") or [],
                 "recommendation_trend": fh.get("recommendation_trend") or [],
                 "analyst_price_targets": fh.get("price_targets") or {},
+                "eps_revisions": eps_revisions.get(ticker) or {},
                 "share_trades": share_trades.get(ticker),
                 "risk_factors_10k": _trim(
                     (risk_factors.get(ticker) or {}).get("risk_factors"),
@@ -797,6 +821,7 @@ class DiscoverPipeline:
                     Step(name="peer_comparison", executor=self.step_peer_comparison),
                     Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
                     Step(name="finnhub_signals", executor=self.step_finnhub_signals),
+                    Step(name="eps_revisions", executor=self.step_eps_revisions),
                     name="enrichment",
                 ),
                 Step(name="analyst", executor=self.step_analyst),

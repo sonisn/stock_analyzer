@@ -296,6 +296,7 @@ class RebalancePipeline(DiscoverPipeline):
         rfs = self.state["holdings_risk_factors"]
         selling = self.state.get("insider_selling", {})
         finnhub_signals = self.state.get("finnhub_signals", {})
+        eps_revisions = self.state.get("eps_revisions", {})
 
         payloads: dict[str, dict[str, Any]] = {}
         for ticker, pos in positions.items():
@@ -327,6 +328,7 @@ class RebalancePipeline(DiscoverPipeline):
                 "earnings_surprise_history": fh.get("earnings_surprise") or [],
                 "recommendation_trend": fh.get("recommendation_trend") or [],
                 "analyst_price_targets": fh.get("price_targets") or {},
+                "eps_revisions": eps_revisions.get(ticker) or {},
                 "share_trades": self.state.get("share_trades", {}).get(ticker),
                 "risk_factors_10k": _trim(
                     (rfs.get(ticker) or {}).get("risk_factors"),
@@ -595,6 +597,7 @@ class RebalancePipeline(DiscoverPipeline):
                     Step(name="peer_comparison", executor=self.step_peer_comparison),
                     Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
                     Step(name="finnhub_signals", executor=self.step_finnhub_signals),
+                    Step(name="eps_revisions", executor=self.step_eps_revisions),
                     Step(name="holdings_data", executor=self.step_holdings_data),
                     name="enrichment",
                 ),

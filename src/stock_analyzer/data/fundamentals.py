@@ -97,6 +97,10 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
         "analyst_recommendation_mean": info.get("recommendationMean"),
         "analyst_count": info.get("numberOfAnalystOpinions"),
         "shares_short_pct": info.get("shortPercentOfFloat"),
+        # Days-to-cover (short ratio): how many days of average volume it
+        # would take all short sellers to buy back. >5 = squeezable;
+        # <1 = shorts can exit on any news.
+        "short_ratio_days": info.get("shortRatio"),
     }
 
 
