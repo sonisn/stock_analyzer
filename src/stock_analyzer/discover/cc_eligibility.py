@@ -1,0 +1,241 @@
+"""Pure-Python eligibility, round-lot coverage, earnings filter, and
+prompt-context assembly for the covered-call extension to the
+rebalancer.
+
+No I/O here — every function is testable as a pure transformation of
+its inputs. CLI wiring (`cli/rebalance.py`) is responsible for fetching
+holdings, chains, open short-call positions, and earnings dates, then
+passing them in.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, timedelta
+
+from ..data.options_chain import OptionChain, OptionQuote
+from .schemas import HoldingReview
+
+
+@dataclass(frozen=True)
+class EligibleHolding:
+    """A position that's eligible to write covered calls against."""
+    ticker: str
+    shares_held: int
+    open_short_call_contracts: int
+    available_shares: int   # shares_held - 100 × open_short_call_contracts
+    max_contracts: int      # available_shares // 100
+
+
+def eligible_holdings(
+    positions: dict[str, dict[str, float]],
+    *,
+    open_short_calls: dict[str, int],
+    denylist: tuple[str, ...],
+) -> dict[str, EligibleHolding]:
+    """Return {ticker: EligibleHolding} for every position that:
+      - holds ≥ 100 shares
+      - has ≥ 100 shares NOT already collateralizing an open short call
+      - is not in `denylist`
+
+    `positions` matches the shape produced by `_aggregate_positions`
+    in `cli/rebalance.py` — {ticker: {"units": float, ...}}.
+    """
+    denyset = {t.upper() for t in denylist}
+    out: dict[str, EligibleHolding] = {}
+    for ticker, pos in positions.items():
+        if ticker.upper() in denyset:
+            continue
+        shares = int(pos.get("units") or 0)
+        if shares < 100:
+            continue
+        short_contracts = int(open_short_calls.get(ticker, 0))
+        available = shares - 100 * short_contracts
+        if available < 100:
+            continue
+        out[ticker] = EligibleHolding(
+            ticker=ticker, shares_held=shares,
+            open_short_call_contracts=short_contracts,
+            available_shares=available,
+            max_contracts=available // 100,
+        )
+    return out
+
+
+@dataclass(frozen=True)
+class RoundLotCoverage:
+    """Round-lot decomposition of a single holding.
+
+    Used by the stub-consolidation prompt rule and by the reporting
+    layer's `RoundLotCoverage` section.
+    """
+    ticker: str
+    shares: int
+    round_lots: int
+    stub_shares: int             # shares - round_lots × 100
+    stub_dollar_value: float     # stub_shares × spot (0 when spot unknown)
+    to_next_lot_shares: int      # (100 - stub_shares) if stub_shares else 0
+    to_next_lot_cost: float      # to_next_lot_shares × spot
+
+
+def round_lot_coverage(
+    positions: dict[str, dict[str, float]],
+    *,
+    spots: dict[str, float],
+) -> dict[str, RoundLotCoverage]:
+    """Compute round-lot / stub decomposition for every held ticker.
+
+    `spots` is the current price per ticker (from the technicals stage).
+    Missing spots collapse dollar values to 0 — the report layer can
+    still show share counts even when price data is stale.
+    """
+    out: dict[str, RoundLotCoverage] = {}
+    for ticker, pos in positions.items():
+        shares = int(pos.get("units") or 0)
+        if shares <= 0:
+            continue
+        round_lots = shares // 100
+        stub = shares - round_lots * 100
+        spot = float(spots.get(ticker) or 0.0)
+        to_next_shares = (100 - stub) if stub else 0
+        out[ticker] = RoundLotCoverage(
+            ticker=ticker, shares=shares,
+            round_lots=round_lots, stub_shares=stub,
+            stub_dollar_value=stub * spot,
+            to_next_lot_shares=to_next_shares,
+            to_next_lot_cost=to_next_shares * spot,
+        )
+    return out
+
+
+EARNINGS_BLACKLIST_DAYS = 7
+
+
+def apply_earnings_filter(
+    chain: OptionChain,
+    *,
+    earnings_date: date | None,
+) -> tuple[OptionChain, tuple[date, date] | None]:
+    """Drop expiries that fall within ±EARNINGS_BLACKLIST_DAYS of
+    earnings_date. Returns the filtered chain and the blacklist window
+    (for prompt display) or None when no earnings date was provided.
+    """
+    if earnings_date is None:
+        return chain, None
+    lo = earnings_date - timedelta(days=EARNINGS_BLACKLIST_DAYS)
+    hi = earnings_date + timedelta(days=EARNINGS_BLACKLIST_DAYS)
+    survived = [q for q in chain.calls if q.expiry < lo or q.expiry > hi]
+    return (
+        OptionChain(
+            ticker=chain.ticker, spot=chain.spot, asof=chain.asof,
+            calls=survived, source=chain.source,
+        ),
+        (lo, hi),
+    )
+
+
+_CHAIN_ROW_CAP_PER_TICKER = 8
+
+
+def _format_chain_row(q: OptionQuote) -> str:
+    """Single-line chain row used inside the per-ticker context block."""
+    delta_str = f"Δ {q.delta:.2f}" if q.delta is not None else "Δ —"
+    iv_str = f"IV {q.iv:.2f}" if q.iv is not None else "IV —"
+    oi_str = f"OI {q.open_interest}" if q.open_interest else "OI —"
+    return (
+        f"    {q.expiry.isoformat()} ${q.strike:>6.2f} strike  "
+        f"bid {q.bid:.2f} / ask {q.ask:.2f}  "
+        f"{delta_str}  {iv_str}  {oi_str}"
+    )
+
+
+def _format_ticker_block(
+    *, ticker: str,
+    review: HoldingReview | str | None,
+    eligible: EligibleHolding,
+    chain: OptionChain | None,
+    earnings_date: date | None,
+) -> str:
+    lines: list[str] = [f"TICKER: {ticker}"]
+    if isinstance(review, HoldingReview):
+        verdict_line = (
+            f"  Reviewer verdict:        {review.verdict} "
+            f"(confidence {review.confidence}/10)"
+        )
+    else:
+        verdict_line = "  Reviewer verdict:        UNKNOWN"
+    lines.append(verdict_line)
+    lines.append(f"  Shares held:             {eligible.shares_held}")
+    if eligible.open_short_call_contracts:
+        plural = "s" if eligible.open_short_call_contracts > 1 else ""
+        lines.append(
+            f"  Available for CC:        {eligible.available_shares} "
+            f"({100 * eligible.open_short_call_contracts} already "
+            f"collateralizing open short call{plural})"
+        )
+    else:
+        lines.append(f"  Available for CC:        {eligible.available_shares}")
+    if earnings_date is not None:
+        lo = earnings_date - timedelta(days=EARNINGS_BLACKLIST_DAYS)
+        hi = earnings_date + timedelta(days=EARNINGS_BLACKLIST_DAYS)
+        lines.append(
+            f"  Earnings-blacklist:      {earnings_date.isoformat()} "
+            f"(skip expiries {lo.isoformat()} .. {hi.isoformat()})"
+        )
+    else:
+        lines.append(
+            "  Earnings-blacklist:      earnings_unknown — be conservative on DTE"
+        )
+    if not isinstance(chain, OptionChain) or chain.source == "missing" or not chain.calls:
+        lines.append("  Option chain: UNAVAILABLE")
+    else:
+        lines.append("  Option chain (OTM calls):")
+        for q in chain.calls[:_CHAIN_ROW_CAP_PER_TICKER]:
+            lines.append(_format_chain_row(q))
+    return "\n".join(lines)
+
+
+def build_cc_context_block(
+    *,
+    eligible: dict[str, EligibleHolding],
+    chains: dict[str, OptionChain],
+    coverage: dict[str, RoundLotCoverage],
+    reviews: dict[str, HoldingReview | str],
+    earnings: dict[str, date],
+    stub_pool_total_usd: float,
+) -> str:
+    """Compose the COVERED-CALL CONTEXT block consumed by the rebalancer
+    prompt. Returns the empty string when no positions are eligible
+    (in which case the rebalancer prompt simply doesn't include a CC
+    section)."""
+    if not eligible:
+        return ""
+
+    per_ticker: list[str] = []
+    for ticker in sorted(eligible):
+        per_ticker.append(_format_ticker_block(
+            ticker=ticker,
+            review=reviews.get(ticker),
+            eligible=eligible[ticker],
+            chain=chains.get(ticker),
+            earnings_date=earnings.get(ticker),
+        ))
+
+    rlc_lines: list[str] = [
+        "",
+        "ROUND-LOT COVERAGE (every holding, for stub-consolidation reasoning):",
+        f"  {'Position':<8} {'Shares':>6} {'Round lots':>10} {'Stub':>5} "
+        f"{'Stub $':>12} {'To-next-lot':>14}",
+    ]
+    for ticker in sorted(coverage):
+        rec = coverage[ticker]
+        rlc_lines.append(
+            f"  {ticker:<8} {rec.shares:>6d} "
+            f"{rec.round_lots:>4d} ({rec.round_lots * 100:>3d}) "
+            f"{rec.stub_shares:>5d} "
+            f"${rec.stub_dollar_value:>10,.0f} "
+            f"${rec.to_next_lot_cost:>13,.0f}"
+        )
+    rlc_lines.append(f"  Stub pool total: ${stub_pool_total_usd:,.0f}")
+
+    header = "=" * 70 + "\nCOVERED-CALL CONTEXT\n" + "=" * 70
+    return header + "\n\n" + "\n\n".join(per_ticker) + "\n" + "\n".join(rlc_lines)

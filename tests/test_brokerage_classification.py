@@ -7,7 +7,9 @@ tests pin that down + the broader detection contract.
 """
 from __future__ import annotations
 
-from stock_analyzer.data.brokerage import classify_tax_status
+from unittest.mock import MagicMock, patch
+
+from stock_analyzer.data.brokerage import classify_tax_status, fetch_open_option_positions
 
 # --- account `type` wins over name ----------------------------------------
 
@@ -54,3 +56,54 @@ def test_empty_inputs_default_to_taxable():
     assert classify_tax_status(None, None) == "taxable"
     assert classify_tax_status("", "") == "taxable"
     assert classify_tax_status(None, "Brokerage") == "taxable"
+
+
+# --- open short-call position parsing -----------
+
+
+def test_fetch_open_option_positions_groups_short_calls_by_underlying():
+    """3 short calls NVDA + 2 short calls AAPL + 1 LONG call TSLA + 1 equity.
+    Output: only short calls counted; long calls and equity skipped."""
+    fake_positions = [
+        # 3 contracts short on NVDA Jun-260 call (units = -3)
+        {"symbol": {"symbol": {"symbol": "NVDA  260620C00260000"}}, "units": -3},
+        # 2 contracts short on AAPL Jul-230 call (units = -2)
+        {"symbol": {"symbol": {"symbol": "AAPL  260718C00230000"}}, "units": -2},
+        # 1 contract LONG on TSLA Aug-300 call (units = +1) — long, skip
+        {"symbol": {"symbol": {"symbol": "TSLA  260815C00300000"}}, "units": 1},
+        # Equity row — not an OCC symbol, skip
+        {"symbol": {"symbol": {"symbol": "GOOG"}}, "units": 50},
+    ]
+    fake_accounts = [{"id": "acct-1", "name": "Test Acct"}]
+
+    fake_client = MagicMock()
+    fake_client.account_information.list_user_accounts.return_value = MagicMock(
+        body=fake_accounts
+    )
+    fake_client.account_information.get_user_account_positions.return_value = MagicMock(
+        body=fake_positions
+    )
+
+    with patch("stock_analyzer.data.brokerage._client", return_value=fake_client), \
+         patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")):
+        coverage = fetch_open_option_positions()
+
+    assert coverage == {"NVDA": 3, "AAPL": 2}
+    assert "TSLA" not in coverage
+    assert "GOOG" not in coverage
+
+
+def test_fetch_open_option_positions_returns_empty_on_credential_error():
+    with patch(
+        "stock_analyzer.data.brokerage._credentials",
+        side_effect=RuntimeError("creds missing"),
+    ):
+        assert fetch_open_option_positions() == {}
+
+
+def test_fetch_open_option_positions_returns_empty_when_no_accounts():
+    fake_client = MagicMock()
+    fake_client.account_information.list_user_accounts.return_value = MagicMock(body=[])
+    with patch("stock_analyzer.data.brokerage._client", return_value=fake_client), \
+         patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")):
+        assert fetch_open_option_positions() == {}

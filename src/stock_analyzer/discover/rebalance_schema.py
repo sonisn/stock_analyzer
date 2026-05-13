@@ -16,12 +16,34 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class OptionWrite(BaseModel):
+    """Structured detail for one WRITE_CALL action.
+
+    Joined to its corresponding RebalanceAction by ticker. Premium is
+    quoted PER SHARE (the standard options convention); multiply by 100
+    to get dollars per contract."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ticker: str
+    strike: float
+    expiry: str = Field(..., description="ISO date YYYY-MM-DD.")
+    contracts: int = Field(..., gt=0, description="Number of contracts to write.")
+    est_premium_per_share: float = Field(
+        ..., ge=0,
+        description="Mid of bid/ask in dollars per share. ×100 = per contract.",
+    )
+    delta: float = Field(..., ge=0.0, le=1.0)
+    assignment_probability: float = Field(..., ge=0.0, le=1.0)
+    notes: str = ""
+
+
 class RebalanceAction(BaseModel):
     """One action line in an ACTION plan."""
 
     model_config = ConfigDict(frozen=True)
 
-    action: Literal["SELL", "TRIM", "ADD", "BUY"]
+    action: Literal["SELL", "TRIM", "ADD", "BUY", "WRITE_CALL"]
     ticker: str
     sizing: str = Field(..., description="e.g. 'full position', '25%', '~$3,400'.")
 
@@ -57,6 +79,14 @@ class RebalancePlan(BaseModel):
             "user reads in the PDF/email — keep all prose detail here."
         ),
     )
+    option_writes: list[OptionWrite] = Field(
+        default_factory=list,
+        description=(
+            "Parallel to WRITE_CALL actions. Each entry MUST have a "
+            "matching WRITE_CALL in `actions` with the same ticker. "
+            "Empty list when no calls are recommended."
+        ),
+    )
 
 
 def status_from_plan(plan: RebalancePlan | None) -> str:
@@ -75,6 +105,7 @@ def actions_from_plan(plan: RebalancePlan | None) -> list[tuple[str, str]]:
 
 
 __all__ = [
+    "OptionWrite",
     "RebalanceAction",
     "RebalancePlan",
     "status_from_plan",

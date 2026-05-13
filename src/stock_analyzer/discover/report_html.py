@@ -584,6 +584,99 @@ def _rebalance_action_table_html(d: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def _render_premium_income(data: dict) -> str:
+    rows_html = "".join(
+        f"<tr>"
+        f"<td>{r['ticker']}</td>"
+        f"<td>${r['strike']:,.2f}</td>"
+        f"<td>{r['expiry']}</td>"
+        f"<td>{r['contracts']}</td>"
+        f"<td>${r['premium_usd']:,.0f}</td>"
+        f"<td>{r['delta']:.2f}</td>"
+        f"<td>{r['assignment_pct']}%</td>"
+        f"</tr>"
+        for r in data.get("rows") or []
+    )
+    return (
+        '<div style="border:1px solid #d1d5db; padding:12px; '
+        'margin:16px 0; background:#f0fdfa;">'
+        '<h3 style="margin:0 0 8px 0;">Premium Income</h3>'
+        '<table style="width:100%; border-collapse:collapse;">'
+        '<thead><tr style="text-align:left; border-bottom:1px solid #d1d5db;">'
+        '<th>Ticker</th><th>Strike</th><th>Expiry</th><th>Qty</th>'
+        '<th>Premium</th><th>Δ</th><th>Assign %</th>'
+        '</tr></thead>'
+        f'<tbody>{rows_html}</tbody>'
+        '</table>'
+        f'<p style="margin:8px 0 0 0;">'
+        f'Gross premium: <strong>${data.get("gross_premium_usd", 0):,.0f}</strong>'
+        f' &nbsp; Slippage buffer (10%): -${data.get("slippage_buffer_usd", 0):,.0f}'
+        f' &nbsp; Deployable: <strong>${data.get("deployable_premium_usd", 0):,.0f}</strong>'
+        f'</p>'
+        '</div>'
+    )
+
+
+def _render_round_lot_coverage(data: dict) -> str:
+    rows = data.get("rows") or []
+    rows_html = "".join(
+        f"<tr>"
+        f"<td>{r['ticker']}</td>"
+        f"<td>{r['shares']}</td>"
+        f"<td>{r['round_lots']} ({r['round_lot_shares']})</td>"
+        f"<td>{r['stub_shares']}</td>"
+        f"<td>${r['stub_dollar_value']:,.0f}</td>"
+        f"<td>${r['to_next_lot_cost']:,.0f}</td>"
+        f"</tr>"
+        for r in rows
+    )
+    return (
+        '<div style="border:1px solid #d1d5db; padding:12px; '
+        'margin:16px 0; background:#fefce8;">'
+        '<h3 style="margin:0 0 8px 0;">Round-Lot Coverage</h3>'
+        '<table style="width:100%; border-collapse:collapse;">'
+        '<thead><tr style="text-align:left; border-bottom:1px solid #d1d5db;">'
+        '<th>Position</th><th>Shares</th><th>Round Lots</th>'
+        '<th>Stub</th><th>Stub $</th><th>To-next-lot</th>'
+        '</tr></thead>'
+        f'<tbody>{rows_html}</tbody>'
+        '</table>'
+        f'<p style="margin:8px 0 0 0;">'
+        f'Stub pool total: <strong>${data.get("stub_pool_total_usd", 0):,.0f}</strong>'
+        f'</p>'
+        '</div>'
+    )
+
+
+def _render_premium_deployment(data: dict) -> str:
+    deps_html = "".join(
+        f"<li>{d['action']} <strong>{d['ticker']}</strong> {d['sizing']}</li>"
+        for d in (data.get("deployments") or [])
+    )
+    stub_usd = data.get("stub_consolidation_usd", 0)
+    stub_row = (
+        f'<tr><td>Stub consolidation:</td>'
+        f'<td>${stub_usd:,.0f}</td></tr>'
+        if stub_usd else ""
+    )
+    return (
+        '<div style="border:1px solid #d1d5db; padding:12px; '
+        'margin:16px 0; background:#eff6ff;">'
+        '<h3 style="margin:0 0 8px 0;">Premium → Deployment</h3>'
+        '<table style="margin:0;">'
+        f'<tr><td>Deployable premium:</td>'
+        f'<td>${data.get("deployable_premium_usd", 0):,.0f}</td></tr>'
+        f'<tr><td>Existing cash:</td>'
+        f'<td>${data.get("existing_cash_usd", 0):,.0f}</td></tr>'
+        f'{stub_row}'
+        f'<tr><td><strong>Total dry powder:</strong></td>'
+        f'<td><strong>${data.get("total_dry_powder_usd", 0):,.0f}</strong></td></tr>'
+        '</table>'
+        f'<ul style="margin:8px 0 0 16px;">{deps_html}</ul>'
+        '</div>'
+    )
+
+
 def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> str:
     parts: list[str] = [_HTML_HEAD]
     for s in sections:
@@ -684,6 +777,15 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
 
         elif s.kind == "premortem_panel" and s.data:
             parts.append(_premortem_panel_html(s.data))
+
+        elif s.kind == "premium_income" and s.data:
+            parts.append(_render_premium_income(s.data))
+
+        elif s.kind == "round_lot_coverage" and s.data:
+            parts.append(_render_round_lot_coverage(s.data))
+
+        elif s.kind == "premium_deployment" and s.data:
+            parts.append(_render_premium_deployment(s.data))
 
         elif s.kind == "page_break":
             parts.append("<hr/>")

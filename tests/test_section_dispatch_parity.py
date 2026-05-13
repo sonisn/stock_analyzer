@@ -59,6 +59,9 @@ _FIXTURES: dict[str, dict[str, Any]] = {
                                                      "triggering_action": "a",
                                                      "failure_narrative": "n",
                                                      "early_warning": "w"}]}},
+    "premium_income":        {"data": {"rows": []}},
+    "round_lot_coverage":    {"data": {"rows": []}},
+    "premium_deployment":    {"data": {"rows": []}},
 }
 
 
@@ -102,3 +105,9 @@ def test_every_section_kind_renders_in_both_html_and_pdf():
         # dispatch would still produce a minimal document, so this is
         # mostly a "didn't crash" assertion.
         assert len(pdf_out) > 800
+
+
+def test_section_accepts_new_cc_kinds():
+    for kind in ("premium_income", "round_lot_coverage", "premium_deployment"):
+        s = Section(kind=kind, data={"rows": []})  # type: ignore[arg-type]
+        assert s.kind == kind

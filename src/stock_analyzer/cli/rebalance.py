@@ -18,6 +18,7 @@ Run history shares the discover.db SQLite file.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from datetime import date
 from pathlib import Path
@@ -184,6 +185,16 @@ def _aggregate_positions(
                 "cost_basis": v["cost"],
             }
     return out
+
+
+def build_email_subject(*, action_count: int, gross_premium_usd: float) -> str:
+    """Subject line for the rebalance email. Annotates premium total
+    only when WRITE_CALL actions produced a non-trivial credit."""
+    today = date.today()
+    base = f"Portfolio Rebalance — {today.strftime('%b-%d')}"
+    if gross_premium_usd >= 1.0:
+        return f"{base} ({action_count} actions + ${gross_premium_usd:,.0f} premium)"
+    return base
 
 
 def _build_position_splits(
@@ -466,6 +477,99 @@ class RebalancePipeline(DiscoverPipeline):
             content=f"Reviewed {len(self.state['holdings_reviews'])} holdings"
         )
 
+    def step_cc_data(self, step_input: StepInput) -> StepOutput:
+        """Build the COVERED-CALL CONTEXT block consumed by the rebalancer.
+
+        Pulls option chains, parses open short-call positions, computes
+        eligibility + round-lot coverage + earnings-filtered chains,
+        and stashes the assembled prompt block in
+        `self.state['cc_context_block']`.
+
+        Gracefully degrades: if CC_ENABLED is false or no holdings are
+        eligible, `cc_context_block` is "" and the rebalancer prompt
+        simply omits the CC section.
+        """
+        if not self.settings.cc_enabled:
+            self.state["cc_context_block"] = ""
+            self.state["cc_eligibility"] = {}
+            self.state["cc_round_lot_coverage"] = {}
+            self.state["cc_stub_pool_total_usd"] = 0.0
+            return StepOutput(content="cc_data: disabled via CC_ENABLED=0")
+
+        from ..data.brokerage import fetch_open_option_positions
+        from ..data.options_chain import fetch_chains
+        from ..discover.cc_eligibility import (
+            apply_earnings_filter,
+            build_cc_context_block,
+            eligible_holdings,
+            round_lot_coverage,
+        )
+
+        positions = self.state.get("holdings_positions") or {}
+        denylist = self.settings.cc_denylist
+
+        try:
+            open_short_calls = fetch_open_option_positions()
+        except Exception as e:
+            logger.warning("open option position fetch failed: %s", e)
+            open_short_calls = {}
+
+        eligible = eligible_holdings(
+            positions, open_short_calls=open_short_calls, denylist=denylist,
+        )
+
+        spots = {
+            t: (self.state.get("holdings_technicals", {}).get(t) or {}).get("price") or 0.0
+            for t in positions
+        }
+        coverage = round_lot_coverage(positions, spots=spots)
+        stub_pool = sum(
+            rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares
+        )
+
+        chains = fetch_chains(
+            list(eligible),
+            dte_min=self.settings.cc_dte_min,
+            dte_max=self.settings.cc_dte_max,
+        )
+
+        finnhub_signals = self.state.get("finnhub_signals") or {}
+        earnings_map: dict[str, date] = {}
+        for ticker in eligible:
+            sig = finnhub_signals.get(ticker) or {}
+            raw = sig.get("next_earnings_date") or sig.get("earnings_date")
+            if isinstance(raw, str):
+                with contextlib.suppress(ValueError):
+                    earnings_map[ticker] = date.fromisoformat(raw[:10])
+            elif isinstance(raw, date):
+                earnings_map[ticker] = raw
+
+        filtered_chains: dict[str, object] = {}
+        for ticker, chain in chains.items():
+            filtered, _ = apply_earnings_filter(
+                chain, earnings_date=earnings_map.get(ticker),
+            )
+            filtered_chains[ticker] = filtered
+
+        block = build_cc_context_block(
+            eligible=eligible, chains=filtered_chains,
+            coverage=coverage, reviews=self.state.get("holdings_reviews", {}),
+            earnings=earnings_map, stub_pool_total_usd=stub_pool,
+        )
+        self.state["cc_context_block"] = block
+        self.state["cc_eligibility"] = eligible
+        self.state["cc_round_lot_coverage"] = coverage
+        self.state["cc_stub_pool_total_usd"] = stub_pool
+
+        sources = {c.source for c in filtered_chains.values() if hasattr(c, "source")}
+        n_missing = sum(1 for c in filtered_chains.values() if getattr(c, "source", "") == "missing")
+        return StepOutput(content=(
+            f"cc_data: {len(eligible)} eligible holding(s); "
+            f"chain sources {sorted(sources)}; "
+            f"{n_missing} missing; "
+            f"stub pool ${stub_pool:,.0f}"
+        ))
+
     def step_rebalance(self, step_input: StepInput) -> StepOutput:
         history_block = _build_history_block(self.settings.discover_db_path)
         if history_block:
@@ -492,7 +596,16 @@ class RebalancePipeline(DiscoverPipeline):
             aggressiveness=self.settings.discover_rebalance_aggressiveness,
             history_block=history_block,
             market_themes_block=self.state.get("market_themes_block", ""),
+            cc_context_block=self.state.get("cc_context_block", ""),
         )
+        from ..discover.cc_validation import validate_option_writes
+        plan, cc_warnings = validate_option_writes(
+            plan, eligibility=self.state.get("cc_eligibility") or {},
+        )
+        if cc_warnings:
+            self.state["cc_warnings"] = cc_warnings
+            for w in cc_warnings:
+                logger.warning("CC plan validation: %s", w)
         self.state["rebalance_plan"] = plan
         # `rebalance_text` is the prose rendering, kept under the same key
         # so the PDF/email layer and the log-dump fallback need no change.
@@ -655,12 +768,27 @@ class RebalancePipeline(DiscoverPipeline):
             market_themes=self.state.get("market_themes"),
             premortem=self.state.get("premortem"),
             holdings_news=self.state.get("news"),
+            cc_eligibility=self.state.get("cc_eligibility") or {},
+            cc_round_lot_coverage=self.state.get("cc_round_lot_coverage") or {},
+            cc_stub_pool_total_usd=self.state.get("cc_stub_pool_total_usd") or 0.0,
+            cc_warnings=self.state.get("cc_warnings") or [],
+            cc_slippage_buffer=self.settings.cc_slippage_buffer,
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
 
         today = date.today()
-        subject = f"Portfolio Rebalance — {today.strftime('%b-%d')}"
+        plan = self.state.get("rebalance_plan")
+        gross_premium = 0.0
+        if plan is not None and getattr(plan, "option_writes", None):
+            gross_premium = sum(
+                ow.contracts * ow.est_premium_per_share * 100.0
+                for ow in plan.option_writes
+            )
+        action_count = len(plan.actions) if plan else 0
+        subject = build_email_subject(
+            action_count=action_count, gross_premium_usd=gross_premium,
+        )
         pdf_filename = f"rebalance-{today.isoformat()}.pdf"
 
         # Save PDF locally BEFORE the email attempt so a delivery failure
@@ -780,6 +908,7 @@ class RebalancePipeline(DiscoverPipeline):
                 Step(name="redteam", executor=self.step_redteam),
                 Step(name="sizer", executor=self.step_sizer),
                 Step(name="review_holdings", executor=self.step_review_holdings),
+                Step(name="cc_data", executor=self.step_cc_data),
                 Step(name="rebalance", executor=self.step_rebalance),
                 Step(name="premortem", executor=self.step_premortem),
                 Step(
@@ -809,6 +938,11 @@ def _build_rebalance_sections(
     market_themes: object = None,
     premortem: object = None,
     holdings_news: dict[str, list[dict[str, Any]]] | None = None,
+    cc_eligibility: dict[str, Any] | None = None,
+    cc_round_lot_coverage: dict[str, Any] | None = None,
+    cc_stub_pool_total_usd: float = 0.0,
+    cc_warnings: list[str] | None = None,
+    cc_slippage_buffer: float = 0.10,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -981,6 +1115,53 @@ def _build_rebalance_sections(
                     for f in premortem.failures
                 ],
             },
+        ))
+
+    # Covered-call report sections — rendered only when relevant.
+    from ..discover.cc_render import (
+        compute_premium_deployment,
+        compute_premium_income,
+        compute_round_lot_summary,
+    )
+    if plan is not None and plan.option_writes:
+        sections.append(Section(
+            kind="premium_income",
+            data=compute_premium_income(plan, slippage_buffer=cc_slippage_buffer),
+        ))
+    if cc_round_lot_coverage:
+        rls = compute_round_lot_summary(cc_round_lot_coverage)
+        if rls["rows"]:
+            sections.append(Section(kind="round_lot_coverage", data=rls))
+    if plan is not None and (
+        plan.option_writes
+        or any(
+            a.action in ("ADD", "BUY")
+            or (a.action == "TRIM" and "stub" in a.sizing.lower())
+            for a in plan.actions
+        )
+    ):
+        stub_usd = 0.0
+        if cc_round_lot_coverage:
+            for a in plan.actions:
+                if a.action == "TRIM" and "stub" in a.sizing.lower():
+                    rec = cc_round_lot_coverage.get(a.ticker)
+                    if rec is not None:
+                        stub_usd += getattr(rec, "stub_dollar_value", 0.0)
+        deployment = compute_premium_deployment(
+            plan, cash_balance=cash_balance, slippage_buffer=cc_slippage_buffer,
+            stub_consolidation_usd=stub_usd,
+        )
+        if (
+            deployment["gross_premium_usd"] > 0
+            or deployment["deployments"]
+            or stub_usd > 0
+        ):
+            sections.append(Section(kind="premium_deployment", data=deployment))
+
+    if cc_warnings:
+        sections.append(Section(
+            kind="para",
+            text="CC plan adjustments: " + "; ".join(cc_warnings),
         ))
 
     sections.append(Section(kind="preformatted", text=rebalance_text))

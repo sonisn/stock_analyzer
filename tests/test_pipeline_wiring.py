@@ -17,6 +17,7 @@ from stock_analyzer.discover.persistence import (
     insert_run_outputs,
     insert_scorecard,
 )
+from stock_analyzer.discover.rebalancer import REBALANCER_INSTRUCTIONS
 from stock_analyzer.discover.report import (
     build_sections,
     parse_picks,
@@ -422,3 +423,164 @@ def test_rebalance_section_layout():
     headings = [s.text for s in sections if s.kind == "heading"]
     assert "ABC" in headings
     assert "XYZ" in headings
+
+
+def test_rebalancer_prompt_includes_cc_rules():
+    s = REBALANCER_INSTRUCTIONS
+    assert "COVERED-CALL WRITING" in s
+    assert "WRITE_CALL" in s
+    assert "0.35" in s and "0.45" in s
+    assert "STUB CONSOLIDATION" in s
+    assert "PREMIUM REINVESTMENT" in s
+    assert "option_writes" in s
+
+
+def test_decide_includes_cc_context_in_prompt():
+    from unittest.mock import MagicMock
+
+    from stock_analyzer.discover.rebalance_schema import RebalancePlan
+    from stock_analyzer.discover.rebalancer import Rebalancer
+
+    captured: dict[str, str] = {}
+
+    class _StubAgent:
+        def run(self, prompt):
+            captured["prompt"] = prompt
+            return MagicMock(
+                content=RebalancePlan(
+                    status="NO_ACTION",
+                    aggressiveness_applied="balanced",
+                    full_text="…",
+                )
+            )
+
+    r = Rebalancer.__new__(Rebalancer)
+    r.agent = _StubAgent()
+    cc_block = "===\nCOVERED-CALL CONTEXT\n===\nTICKER: NVDA\n  Shares held: 400"
+    r.decide(
+        holdings_reviews={},
+        picks_text="",
+        cash_available=1000.0,
+        cc_context_block=cc_block,
+    )
+    assert "COVERED-CALL CONTEXT" in captured["prompt"]
+    assert "TICKER: NVDA" in captured["prompt"]
+
+
+def test_decide_omits_cc_block_when_empty():
+    from unittest.mock import MagicMock
+
+    from stock_analyzer.discover.rebalance_schema import RebalancePlan
+    from stock_analyzer.discover.rebalancer import Rebalancer
+
+    captured: dict[str, str] = {}
+
+    class _StubAgent:
+        def run(self, prompt):
+            captured["prompt"] = prompt
+            return MagicMock(
+                content=RebalancePlan(
+                    status="NO_ACTION",
+                    aggressiveness_applied="balanced",
+                    full_text="…",
+                )
+            )
+
+    r = Rebalancer.__new__(Rebalancer)
+    r.agent = _StubAgent()
+    r.decide(
+        holdings_reviews={},
+        picks_text="",
+        cash_available=1000.0,
+        cc_context_block="",
+    )
+    assert "COVERED-CALL CONTEXT" not in captured["prompt"]
+
+
+def test_premortem_prompt_includes_cc_redteam_paragraph():
+    from stock_analyzer.discover.premortem import PREMORTEM_INSTRUCTIONS
+    assert "WRITE_CALL" in PREMORTEM_INSTRUCTIONS
+    assert "assignment lock-in" in PREMORTEM_INSTRUCTIONS
+    assert "IV crush" in PREMORTEM_INSTRUCTIONS
+
+
+def test_subject_without_premium():
+    from stock_analyzer.cli.rebalance import build_email_subject
+    subject = build_email_subject(action_count=2, gross_premium_usd=0.0)
+    assert subject.startswith("Portfolio Rebalance")
+    assert "premium" not in subject
+
+
+def test_subject_with_premium_annotates():
+    from stock_analyzer.cli.rebalance import build_email_subject
+    subject = build_email_subject(action_count=4, gross_premium_usd=1550.0)
+    assert "$1,550 premium" in subject
+
+
+def test_end_to_end_with_write_call_action():
+    from stock_analyzer.cli.rebalance import _build_rebalance_sections
+    from stock_analyzer.discover.cc_eligibility import (
+        EligibleHolding,
+        RoundLotCoverage,
+    )
+    from stock_analyzer.discover.rebalance_schema import (
+        OptionWrite,
+        RebalanceAction,
+        RebalancePlan,
+    )
+
+    plan = RebalancePlan(
+        status="ACTION", aggressiveness_applied="aggressive",
+        actions=[
+            RebalanceAction(action="WRITE_CALL", ticker="NVDA",
+                            sizing="3 contracts $260C 2026-06-20"),
+            RebalanceAction(action="ADD", ticker="AMZN", sizing="$1,400"),
+        ],
+        option_writes=[OptionWrite(
+            ticker="NVDA", strike=260.0, expiry="2026-06-20",
+            contracts=3, est_premium_per_share=2.40,
+            delta=0.36, assignment_probability=0.36,
+            notes="HOLD-8, near-band lower",
+        )],
+        summary="Write NVDA Jun-260 and deploy premium to AMZN.",
+        full_text="…",
+    )
+
+    # Persistence round-trip: model_dump → model_validate.
+    blob = plan.model_dump(mode="json")
+    restored = RebalancePlan.model_validate(blob)
+    assert restored.option_writes[0].ticker == "NVDA"
+    assert restored.actions[0].action == "WRITE_CALL"
+
+    coverage = {
+        "NVDA": RoundLotCoverage(
+            ticker="NVDA", shares=400, round_lots=4, stub_shares=0,
+            stub_dollar_value=0.0, to_next_lot_shares=0, to_next_lot_cost=0.0,
+        ),
+    }
+    eligibility = {
+        "NVDA": EligibleHolding(
+            ticker="NVDA", shares_held=400, open_short_call_contracts=0,
+            available_shares=400, max_contracts=4,
+        ),
+    }
+    sections = _build_rebalance_sections(
+        rebalance_text="…",
+        holdings_reviews={},
+        ranker_text="", redteam_text="", sizer_text="",
+        candidates=[], cash_balance=850.0, macro_summary="",
+        sector_rotation=None,
+        holdings_positions={"NVDA": {"units": 400, "avg_buy_price": 200.0, "cost_basis": 80000.0}},
+        holdings_technicals={"NVDA": {"price": 235.0}},
+        holdings_fundamentals={"NVDA": {"sector": "Tech"}},
+        rebalance_plan=plan,
+        cc_eligibility=eligibility,
+        cc_round_lot_coverage=coverage,
+        cc_stub_pool_total_usd=0.0,
+        cc_warnings=[],
+    )
+    kinds = [s.kind for s in sections]
+    assert "premium_income" in kinds
+    assert "premium_deployment" in kinds
+    # No stubs → round_lot_coverage section should NOT be emitted.
+    assert "round_lot_coverage" not in kinds

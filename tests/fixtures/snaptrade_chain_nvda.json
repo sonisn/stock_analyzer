@@ -1,0 +1,35 @@
+{
+  "underlying_price": 235.0,
+  "options": [
+    {
+      "strike_price": 250.0,
+      "option_chain": [
+        {
+          "expiration_date": "2026-06-20",
+          "call": {
+            "symbol": "NVDA  260620C00250000",
+            "bid_price": 3.10, "ask_price": 3.30,
+            "implied_volatility": 0.31,
+            "delta": 0.42,
+            "open_interest": 4210, "volume": 850
+          }
+        }
+      ]
+    },
+    {
+      "strike_price": 260.0,
+      "option_chain": [
+        {
+          "expiration_date": "2026-06-20",
+          "call": {
+            "symbol": "NVDA  260620C00260000",
+            "bid_price": 2.20, "ask_price": 2.40,
+            "implied_volatility": 0.29,
+            "delta": 0.36,
+            "open_interest": 2890, "volume": 540
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -7,6 +7,7 @@ from typing import Any, Literal
 from snaptrade_client import SnapTrade
 
 from ..logging import get_logger
+from .options_symbols import OCCParseError, parse_occ
 
 logger = get_logger(__name__)
 
@@ -222,6 +223,67 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
         out[account_name] = holdings
 
     return out
+
+
+def fetch_open_option_positions() -> dict[str, int]:
+    """Return {underlying_ticker: open_short_call_contracts} across every
+    connected SnapTrade account.
+
+    Only SHORT calls (units < 0) are counted — these are the positions
+    that reduce the share count available to back NEW covered calls.
+    Long calls and short puts are ignored. Returns {} when SnapTrade is
+    unavailable or no positions are found (graceful degradation — the
+    eligibility filter then simply subtracts zero).
+    """
+    try:
+        user_id, user_secret = _credentials()
+        client = _client()
+    except Exception as e:
+        logger.info("SnapTrade unavailable for option-position lookup: %s", e)
+        return {}
+
+    try:
+        accounts = _unwrap(
+            client.account_information.list_user_accounts(
+                user_id=user_id, user_secret=user_secret,
+            )
+        ) or []
+    except Exception as e:
+        logger.info("SnapTrade list_user_accounts failed: %s", e)
+        return {}
+
+    coverage: dict[str, int] = {}
+    for account in accounts:
+        account_id = account.get("id") if isinstance(account, dict) else getattr(account, "id", None)
+        if not account_id:
+            continue
+        try:
+            positions = _unwrap(
+                client.account_information.get_user_account_positions(
+                    user_id=user_id,
+                    user_secret=user_secret,
+                    account_id=account_id,
+                )
+            ) or []
+        except Exception as e:
+            logger.info("SnapTrade positions fetch failed for %s: %s", account_id, e)
+            continue
+
+        for pos in positions:
+            symbol = _extract_ticker(pos)
+            if not isinstance(symbol, str):
+                continue
+            try:
+                parsed = parse_occ(symbol)
+            except OCCParseError:
+                continue  # equity row, skip
+            if parsed.option_type != "C":
+                continue  # short puts and long puts don't reduce CC coverage
+            units = float(pos.get("units") or 0)
+            if units >= 0:
+                continue  # only SHORT calls reduce coverage
+            coverage[parsed.ticker] = coverage.get(parsed.ticker, 0) + int(-units)
+    return coverage
 
 
 def fetch_total_cash() -> float | None:
