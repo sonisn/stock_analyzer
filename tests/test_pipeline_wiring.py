@@ -645,3 +645,51 @@ def test_validation_summary_log_includes_per_call_details(caplog):
     cleaned, warnings = validate_option_writes(plan, eligibility=elig)
     assert warnings == []
     assert cleaned.option_writes[0].ticker == "NVDA"
+
+
+def test_rebalancer_instructions_template_respects_overrides():
+    """Setting CC_* knobs must flow into the rebalancer prompt text."""
+    from stock_analyzer.discover.rebalancer import _build_rebalancer_instructions
+
+    s = _build_rebalancer_instructions(
+        cc_target_delta_min=0.25,
+        cc_target_delta_max=0.55,
+        cc_dte_min=14,
+        cc_dte_max=60,
+        cc_min_premium_usd=250.0,
+        cc_slippage_buffer=0.05,
+        cc_min_stub_usd=500.0,
+        cc_stub_optimization=True,
+    )
+    # The new band values must appear; the old hardcoded ones must NOT.
+    assert "0.25" in s
+    assert "0.55" in s
+    assert "14" in s and "60" in s
+    assert "$250" in s
+    # Slippage buffer should appear as both fraction (0.05) and percent (5%).
+    assert "0.05" in s
+    assert "5%" in s
+    assert "$500" in s  # cc_min_stub_usd
+    # Defaults must NOT leak — search for the explicit substrings we changed.
+    assert "$1,000" not in s
+    assert "$1000" not in s
+
+
+def test_rebalancer_instructions_omit_stub_section_when_disabled():
+    from stock_analyzer.discover.rebalancer import _build_rebalancer_instructions
+    s = _build_rebalancer_instructions(cc_stub_optimization=False)
+    assert "STUB CONSOLIDATION" not in s
+
+
+def test_rebalancer_instructions_default_constant_intact():
+    """The module-level REBALANCER_INSTRUCTIONS constant must keep working
+    for any existing import — equals the builder called with defaults."""
+    from stock_analyzer.discover.rebalancer import (
+        REBALANCER_INSTRUCTIONS,
+        _build_rebalancer_instructions,
+    )
+    assert _build_rebalancer_instructions() == REBALANCER_INSTRUCTIONS
+    # The existing assertion in test_rebalancer_prompt_includes_cc_rules
+    # still passes against the defaults.
+    assert "0.35" in REBALANCER_INSTRUCTIONS
+    assert "0.45" in REBALANCER_INSTRUCTIONS

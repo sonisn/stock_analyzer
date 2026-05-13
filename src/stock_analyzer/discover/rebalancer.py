@@ -18,7 +18,49 @@ from .schemas import HoldingReview
 
 logger = get_logger(__name__)
 
-REBALANCER_INSTRUCTIONS = """\
+
+def _build_rebalancer_instructions(
+    *,
+    cc_target_delta_min: float = 0.35,
+    cc_target_delta_max: float = 0.45,
+    cc_dte_min: int = 30,
+    cc_dte_max: int = 45,
+    cc_min_premium_usd: float = 500.0,
+    cc_slippage_buffer: float = 0.10,
+    cc_min_stub_usd: float = 1000.0,
+    cc_stub_optimization: bool = True,
+) -> str:
+    """Build the rebalancer prompt. CC params are templated from Settings
+    so `.env` overrides actually flow into the LLM context.
+    """
+    buffer_pct = int(round(cc_slippage_buffer * 100))
+    stub_section = "" if not cc_stub_optimization else f"""
+========================================================================
+STUB CONSOLIDATION (round-lot optimization)
+========================================================================
+A ROUND-LOT COVERAGE table shows each holding's shares = lots*100 + stub,
+stub $ value, and to-next-lot cost. Each round lot of 100 shares unlocks
+one more WRITE_CALL contract — stub shares earn nothing.
+
+Consider stub consolidation when ALL of:
+  1. stub value > ${cc_min_stub_usd:,.0f} (trade friction floor)
+  2. selling the stub does NOT violate a confidence->=7 HOLD
+  3. freed capital + other dry powder can complete a round lot
+     elsewhere (ADD existing-with-stub OR BUY new at a 100-multiple)
+
+Express as paired actions:
+  - TRIM N on the stub holding,
+    sizing="<N> shares — stub consolidation"
+  - matching ADD or BUY sized to land on a round lot
+
+BUY sizing for future CC capacity: when BUYing partly to enable future
+CC writing, size to a 100-multiple. State the multiple in sizing,
+e.g. "100 shares (1 lot)".
+
+Tax-aware: prefer LTCG lots for stub sales (see existing tax-lot
+guidance)."""
+
+    return f"""\
 You are a portfolio manager producing a rebalance action list — or
 explicitly recommending NO ACTION if the current portfolio is fine.
 
@@ -397,7 +439,7 @@ Your response is validated against a small Pydantic schema
 (RebalancePlan) with FIVE fields only:
   - status: "NO_ACTION" or "ACTION".
   - aggressiveness_applied: "conservative" | "balanced" | "aggressive".
-  - actions: list of {action: SELL/TRIM/ADD/BUY/WRITE_CALL, ticker, sizing}.
+  - actions: list of {{action: SELL/TRIM/ADD/BUY/WRITE_CALL, ticker, sizing}}.
     Empty when status=NO_ACTION. Ordered SELLs first, TRIMs second,
     ADDs/BUYs last when status=ACTION.
   - summary: one sentence (the NO_ACTION rationale or the big shift
@@ -413,7 +455,7 @@ Your response is validated against a small Pydantic schema
     Empty list when no calls are recommended.
 
 Structured `actions` must agree with `full_text` — if full_text says
-"Action 1: SELL MRVL", actions[0] must be {SELL, MRVL, ...}.
+"Action 1: SELL MRVL", actions[0] must be {{SELL, MRVL, ...}}.
 
 ========================================================================
 COVERED-CALL WRITING (when a COVERED-CALL CONTEXT block is present)
@@ -422,12 +464,12 @@ Style: aggressive premium. You may emit WRITE_CALL actions on positions
 listed under COVERED-CALL CONTEXT.
 
 TARGET BAND
-  Δ 0.35-0.45, DTE 30-45 days. Stay inside the band.
+  Δ {cc_target_delta_min:.2f}-{cc_target_delta_max:.2f}, DTE {cc_dte_min}-{cc_dte_max} days. Stay inside the band.
 
 STRIKE WITHIN BAND
-  - HOLD verdict with confidence >= 7  → pick Δ closer to 0.35
+  - HOLD verdict with confidence >= 7  → pick Δ closer to {cc_target_delta_min:.2f}
     (lower assignment chance, accept smaller premium).
-  - TRIM verdict, or HOLD with confidence <= 5  → pick Δ closer to 0.45
+  - TRIM verdict, or HOLD with confidence <= 5  → pick Δ closer to {cc_target_delta_max:.2f}
     (assignment is a clean exit).
   - SELL verdict  → DO NOT emit WRITE_CALL. Sell the stock outright.
 
@@ -462,10 +504,10 @@ After choosing WRITE_CALL actions, compute:
 
   expected_premium_total = sum(contracts × est_premium_per_share × 100)
   deployable = existing_cash
-             + (1 - 0.10) × expected_premium_total
+             + (1 - {cc_slippage_buffer:.2f}) × expected_premium_total
              + sum(stub_consolidation_proceeds)
 
-If expected_premium_total < $500, leave premium as cash; state the
+If expected_premium_total < ${cc_min_premium_usd:,.0f}, leave premium as cash; state the
 reason in full_text. Otherwise route deployable capital via ADD/BUY
 actions, priority:
   1. ADD on high-confidence (>= 7) HOLD positions
@@ -475,7 +517,7 @@ actions, priority:
 Show the math explicitly in full_text:
 
   Premium income (gross):     $X
-  Slippage buffer (10%):       -$Y
+  Slippage buffer ({buffer_pct}%):       -$Y
   Deployable premium:          $Z
   Existing cash:               $C
   Stub consolidation:          $S   <- only when consolidating
@@ -487,37 +529,39 @@ Show the math explicitly in full_text:
 Note trade linkages, e.g. "If you skip the NVDA write, shrink the
 AMZN ADD by $340."
 
-========================================================================
-STUB CONSOLIDATION (round-lot optimization)
-========================================================================
-A ROUND-LOT COVERAGE table shows each holding's shares = lots*100 + stub,
-stub $ value, and to-next-lot cost. Each round lot of 100 shares unlocks
-one more WRITE_CALL contract — stub shares earn nothing.
-
-Consider stub consolidation when ALL of:
-  1. stub value > $1,000 (trade friction floor)
-  2. selling the stub does NOT violate a confidence->=7 HOLD
-  3. freed capital + other dry powder can complete a round lot
-     elsewhere (ADD existing-with-stub OR BUY new at a 100-multiple)
-
-Express as paired actions:
-  - TRIM N on the stub holding,
-    sizing="<N> shares — stub consolidation"
-  - matching ADD or BUY sized to land on a round lot
-
-BUY sizing for future CC capacity: when BUYing partly to enable future
-CC writing, size to a 100-multiple. State the multiple in sizing,
-e.g. "100 shares (1 lot)".
-
-Tax-aware: prefer LTCG lots for stub sales (see existing tax-lot
-guidance).\
+{stub_section}
 """
+
+
+REBALANCER_INSTRUCTIONS = _build_rebalancer_instructions()
 
 
 class Rebalancer:
     def __init__(
-        self, provider: Provider, model: str, *, effort: str = "high"
+        self,
+        provider: Provider,
+        model: str,
+        *,
+        effort: str = "high",
+        cc_target_delta_min: float = 0.35,
+        cc_target_delta_max: float = 0.45,
+        cc_dte_min: int = 30,
+        cc_dte_max: int = 45,
+        cc_min_premium_usd: float = 500.0,
+        cc_slippage_buffer: float = 0.10,
+        cc_min_stub_usd: float = 1000.0,
+        cc_stub_optimization: bool = True,
     ):
+        instructions = _build_rebalancer_instructions(
+            cc_target_delta_min=cc_target_delta_min,
+            cc_target_delta_max=cc_target_delta_max,
+            cc_dte_min=cc_dte_min,
+            cc_dte_max=cc_dte_max,
+            cc_min_premium_usd=cc_min_premium_usd,
+            cc_slippage_buffer=cc_slippage_buffer,
+            cc_min_stub_usd=cc_min_stub_usd,
+            cc_stub_optimization=cc_stub_optimization,
+        )
         # Opus 4.7+ adaptive thinking — high effort for the deepest synthesis
         # (combining holdings reviews + new picks + cash math + concentration).
         # output_schema=RebalancePlan gets agno to validate the model's
@@ -533,7 +577,7 @@ class Rebalancer:
                 "max_tokens": 8000,
                 "temperature": 0,
             },
-            instructions=REBALANCER_INSTRUCTIONS,
+            instructions=instructions,
             output_schema=RebalancePlan,
         )
 

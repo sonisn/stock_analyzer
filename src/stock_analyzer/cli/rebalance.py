@@ -662,7 +662,18 @@ class RebalancePipeline(DiscoverPipeline):
                 "Rebalance: no ranker_text in state (Ranker step likely "
                 "failed). Producing holdings-only plan from reviews."
             )
-        rebalancer = Rebalancer("claude", self.settings.discover_opus_model)
+        rebalancer = Rebalancer(
+            "claude",
+            self.settings.discover_opus_model,
+            cc_target_delta_min=self.settings.cc_target_delta_min,
+            cc_target_delta_max=self.settings.cc_target_delta_max,
+            cc_dte_min=self.settings.cc_dte_min,
+            cc_dte_max=self.settings.cc_dte_max,
+            cc_min_premium_usd=self.settings.cc_min_premium_usd,
+            cc_slippage_buffer=self.settings.cc_slippage_buffer,
+            cc_min_stub_usd=self.settings.cc_min_stub_usd,
+            cc_stub_optimization=self.settings.cc_stub_optimization,
+        )
         plan = rebalancer.decide(
             self.state.get("holdings_reviews", {}),
             ranker_text,
