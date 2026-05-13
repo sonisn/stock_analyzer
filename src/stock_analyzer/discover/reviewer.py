@@ -137,14 +137,32 @@ them. When recommending TRIM/SELL:
      in tax-advantaged account)."
 
 TAX-LOT GUIDANCE (when tax_lots is present):
-For each SELL or TRIM, recommend SPECIFIC lots to sell by date, using these priorities:
-  1. Prefer lots with LOSSES (harvest losses to offset gains)
-  2. Then prefer LONG-TERM lots with gains (15-20% federal rate)
-  3. Avoid SHORT-TERM lots with gains unless thesis is truly broken
-     (those are taxed as ordinary income, 22-37% federal)
-  4. If a short-term lot is days away from becoming long-term, recommend
-     WAITING explicitly: "delay sale until <date>; lot crosses long-term"
-  5. Always state realized gain in dollars per lot recommended for sale.
+The tax_lots payload now includes a PRE-COMPUTED `if_sold_today` field
+on each lot — proceeds, realized gain/loss, tax treatment, estimated
+tax dollars, and a free_to_trim flag. ALWAYS read this field; never
+compute realized gains yourself.
+
+For each SELL or TRIM, recommend SPECIFIC lots by date using these
+priorities (the helper has already done the math; you just rank):
+
+  1. Free-to-trim lots first (account_tax_status='tax_advantaged'),
+     in any order — zero tax cost, no holding-period concern.
+  2. Then taxable LOSSES (harvest_benefit_or_cost='benefit') — these
+     generate harvest savings shown in if_sold_today.estimated_tax_dollars
+     (negative number).
+  3. Then taxable LONG-TERM gains (treatment='long_term',
+     harvest_benefit_or_cost='cost') — lower rate than short-term.
+  4. Avoid taxable SHORT-TERM gains unless thesis is truly broken.
+     Quote the estimated_tax_dollars from the helper as your cost.
+  5. If a short-term lot is within ~30 days of becoming long-term
+     (days_held >= 335 and treatment still 'short_term'), recommend
+     WAITING explicitly: "delay sale ~<N> days; lot crosses long-term
+     on <date>" — the long-term rate is materially lower.
+
+Per-lot output format (cite the helper's numbers, don't invent):
+  - Lot dated YYYY-MM-DD: sell N shares
+    if_sold_today says: proceeds $X, realized $Y (gain/loss),
+    treatment <st|lt>, estimated tax $Z (or harvest saving $|Z|).
 
 WASH-SALE GUIDANCE:
 If you recommend SELL at a loss, append a one-line "Wash-sale notice"

@@ -62,6 +62,7 @@ from ..discover.report import (
     render_pdf,
 )
 from ..discover.reviewer import Reviewer, review_batch
+from ..discover.tax_lot_helper import enrich_tax_lots_with_impact
 from ..logging import current_log_file, get_logger
 from ..preflight import PreflightError, preflight
 from ..reporting.smtp import SmtpServer
@@ -377,6 +378,8 @@ class RebalancePipeline(DiscoverPipeline):
         finnhub_signals = self.state.get("finnhub_signals", {})
         eps_revisions = self.state.get("eps_revisions", {})
         position_splits = self.state.get("position_splits", {})
+        account_meta = self.state.get("account_meta", {})
+        tax_lots_raw = self.state.get("tax_lots", {})
 
         payloads: dict[str, dict[str, Any]] = {}
         for ticker, pos in positions.items():
@@ -436,7 +439,11 @@ class RebalancePipeline(DiscoverPipeline):
                     (self.state.get("holdings_transcripts", {}).get(ticker) or {}).get("snippet"),
                     _TRANSCRIPT_CHARS,
                 ),
-                "tax_lots": self.state.get("tax_lots", {}).get(ticker),
+                "tax_lots": enrich_tax_lots_with_impact(
+                    tax_lots_raw.get(ticker) or {},
+                    current or 0.0,
+                    account_meta,
+                ),
             }
 
         reviewer = Reviewer("claude", self.settings.discover_sonnet_model)
