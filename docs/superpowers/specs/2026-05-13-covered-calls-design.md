@@ -69,7 +69,7 @@ rebalance-portfolio
 - `src/stock_analyzer/data/transactions.py` *(or holdings module)* — parse open option positions from SnapTrade for the coverage subtraction.
 - `src/stock_analyzer/discover/report_sections.py` — new section types: `RoundLotCoverage` + `PremiumIncome` + `PremiumDeployment`.
 - `src/stock_analyzer/discover/report_html.py` / `report_pdf.py` — renderers for the two new sections.
-- `src/stock_analyzer/discover/persistence.py` — six new nullable columns on `actions` table (strike, expiry, contracts, est_premium, delta, assignment_prob) with `ALTER TABLE` migration; track-record extension for CC outcomes.
+- `src/stock_analyzer/discover/persistence.py` — **no schema migration needed**. Actions are already stored as JSON in `run_outputs.dashboard_data` via `RebalancePlan.model_dump(mode="json")`, so adding `option_writes` to the Pydantic model automatically persists it. Track-record code reads from this JSON blob.
 - `src/stock_analyzer/discover/track_record.py` — WRITE_CALL scoring branch (EXPIRED_OTM vs ASSIGNED, opportunity-cost math).
 - `src/stock_analyzer/config.py` — new optional CC settings.
 - `src/stock_analyzer/preflight.py` — no required new checks; `CC_ENABLED` toggles whether to attempt chain fetch.
@@ -317,17 +317,9 @@ The deployment math is computed deterministically in the renderer from `option_w
 
 ## Persistence
 
-### Migration
-```sql
-ALTER TABLE actions ADD COLUMN strike            REAL;
-ALTER TABLE actions ADD COLUMN expiry            TEXT;
-ALTER TABLE actions ADD COLUMN contracts         INTEGER;
-ALTER TABLE actions ADD COLUMN est_premium       REAL;   -- per share (dollars; ×100 → per contract)
-ALTER TABLE actions ADD COLUMN delta             REAL;
-ALTER TABLE actions ADD COLUMN assignment_prob   REAL;
-```
+**No schema migration.** Actions are persisted as JSON in `run_outputs.dashboard_data` (populated by `plan.model_dump(mode="json")` in `cli/rebalance.py`). Adding `option_writes: list[OptionWrite]` to `RebalancePlan` means it automatically rides along in the same JSON blob — both the structured action list and the parallel option-write list end up persisted with zero SQL change.
 
-All nullable; legacy rows unaffected. For WRITE_CALL rows, the six columns are populated from the matching `OptionWrite`. SELL/TRIM/ADD/BUY rows leave them NULL.
+For historical record-keeping, the track-record code reads `run_outputs.dashboard_data` JSON and pulls `option_writes` out alongside `actions`.
 
 ### Track-record scoring (extension in `track_record.py`)
 After `expiry` date passes, the scorer pulls historical spot via yfinance and:
