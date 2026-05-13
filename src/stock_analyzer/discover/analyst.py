@@ -98,22 +98,63 @@ Your response is validated against a Pydantic schema (AnalystReport).
 Populate every required field. The prose plan you would have emitted
 goes into `full_text` — make it match the format described above
 exactly. The structured fields must agree with `full_text` — if
-`full_text` says "Score: 7" then `score` MUST be 7.\
+`full_text` says "Score: 7" then `score` MUST be 7.
+
+WORKED EXAMPLE — what GOOD looks like (fictional ticker ACME):
+
+TICKER: ACME
+Score: 7
+One-liner: Niche industrial automation supplier with sticky OEM contracts, trading at a discount to peers on resilient forward EPS.
+
+Competitive position:
+ACME holds 38% share in factory-floor motion controllers, a category with multi-year switching costs once installed into a line. Two of the three largest auto OEMs have just renewed framework agreements through 2028.
+
+Growth runway:
+Management guided 12-14% revenue CAGR through 2028 driven by China reshoring and a software-attach motion (subscription unlocks). Forward EPS revisions up 6% in the last 90 days per fundamentals.recommendation_mean.
+
+Top 3 risks:
+1. Single-customer concentration: top OEM accounts for 22% of revenue (10-K Item 1A); a single-line audit failure would dent FY guide.
+2. China macro: 28% of revenue is mainland China; a sharper PMI contraction would compress 2026 EPS by ~9% based on segment elasticity disclosed in quarterly_mda.
+3. Software-attach margin slipped 180bps YoY per latest earnings_transcript Q&A — pricing power on the subscription tier is unproven.
+
+Valuation context:
+17.4x forward P/E vs peer median 22.1x; FCF yield 5.8% vs peer 4.2%. Discount is justified partly by customer concentration but appears overdone relative to forward EPS revisions.
+
+Catalyst calendar:
+Next earnings 2026-07-22. Q3 product launch (vision-system add-on) is the largest near-term swing factor; analyst day pre-print expected in June.
+
+WHY THIS IS GOOD: every numeric claim ties back to a named input field
+(fundamentals.forward_eps, quarterly_mda, earnings_transcript). Risks are
+specific (22% concentration, 180bps margin slip), not boilerplate
+("regulatory risk", "competition", "macro headwinds"). Score 7 — not 9 —
+because real risks remain unresolved.
+
+COMMON FAILURE MODES TO AVOID:
+- "Faces competition in a rapidly evolving market" — boilerplate, no signal.
+  Better: "Competitor X disclosed a 30% price cut in Q4 transcript."
+- "Margins may compress due to inflation" — generic. Better: "Gross margin
+  guided down 120bps for Q3 per latest 10-Q MD&A."
+- Citing a P/E without comparing to peers — incomplete. Always anchor on
+  the peer set provided in the payload.
+- Score 8-10 on a name with a single forward signal — overcalibrated.\
 """
 
 
 class Analyst:
     def __init__(self, provider: Provider, model: str):
+        model_kwargs: dict[str, Any] = {
+            "temperature": 0,
+            "retries": 3,
+            "exponential_backoff": True,
+            "delay_between_retries": 10,
+        }
+        if provider == "claude":
+            model_kwargs["cache_system_prompt"] = True
         self.agent = AgnoAgent(
             "Analyst",
             provider,
             model,
-            model_kwargs={
-                "temperature": 0,
-                "retries": 3,
-                "exponential_backoff": True,
-                "delay_between_retries": 10,
-            },
+            model_kwargs=model_kwargs,
             instructions=ANALYST_INSTRUCTIONS,
             output_schema=AnalystReport,
         )

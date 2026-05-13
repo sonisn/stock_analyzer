@@ -329,6 +329,18 @@ class RebalancePipeline(DiscoverPipeline):
             )
         )
 
+    def step_news(self, step_input: StepInput) -> StepOutput:
+        """Override: include holdings tickers so reviewer sees recent catalysts."""
+        from .discover import _batch_news
+        tickers = set(self.state.get("survivor_tickers") or [])
+        if self.state.get("holdings_tickers"):
+            tickers |= set(self.state["holdings_tickers"])
+        if not tickers:
+            self.state["news"] = {}
+            return StepOutput(content="news: no tickers; skipping")
+        self.state["news"] = _batch_news(list(tickers))
+        return StepOutput(content=f"News fetched for {len(tickers)} tickers")
+
     def step_insider_selling(self, step_input: StepInput) -> StepOutput:
         """Override: include holdings tickers so reviewer sees selling on them too."""
         tickers = set(self.state.get("survivor_tickers") or [])
@@ -440,6 +452,7 @@ class RebalancePipeline(DiscoverPipeline):
                     (self.state.get("holdings_transcripts", {}).get(ticker) or {}).get("snippet"),
                     _TRANSCRIPT_CHARS,
                 ),
+                "news": (self.state.get("news") or {}).get(ticker, []),
                 "tax_lots": enrich_tax_lots_with_impact(
                     tax_lots_raw.get(ticker) or {},
                     current or 0.0,
@@ -641,6 +654,7 @@ class RebalancePipeline(DiscoverPipeline):
             rebalance_plan=self.state.get("rebalance_plan"),
             market_themes=self.state.get("market_themes"),
             premortem=self.state.get("premortem"),
+            holdings_news=self.state.get("news"),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -794,6 +808,7 @@ def _build_rebalance_sections(
     rebalance_plan: object = None,
     market_themes: object = None,
     premortem: object = None,
+    holdings_news: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -863,6 +878,36 @@ def _build_rebalance_sections(
         sections.append(
             Section(kind="holdings_dashboard", holdings=dashboard_rows)
         )
+
+    # Recent catalysts — informational only. Surfaces fresh headlines per
+    # holding so the user can spot catalysts that postdate the latest 10-Q
+    # or earnings transcript. Does NOT drive sizing or verdicts — those
+    # decisions stay with the Reviewer / Rebalancer.
+    catalyst_rows: list[list[str]] = []
+    if holdings_news:
+        for ticker in sorted(holdings_positions.keys()):
+            items = holdings_news.get(ticker) or []
+            for item in items[:2]:
+                title = (item.get("title") or "").strip()
+                if title:
+                    catalyst_rows.append([ticker, title])
+    if catalyst_rows:
+        sections.append(Section(
+            kind="heading", text="Recent catalysts (informational)", level=2,
+        ))
+        sections.append(Section(
+            kind="para",
+            text=(
+                "Headlines worth scanning. Not used to compute verdicts or "
+                "position sizing — your Reviewer/Rebalancer reads news as "
+                "qualitative context only."
+            ),
+        ))
+        sections.append(Section(
+            kind="table",
+            table_header=["Ticker", "Headline"],
+            table_rows=catalyst_rows,
+        ))
 
     if sector_value:
         pie_data = sorted(sector_value.items(), key=lambda x: x[1], reverse=True)

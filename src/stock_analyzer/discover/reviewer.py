@@ -36,15 +36,24 @@ You are reviewing ONE position in a portfolio. The user provides:
     relative-valuation judgment)
   - earnings_transcript (excerpt from the most recent earnings call —
     management tone + Q&A pushback)
+  - news (recent headlines — may include regulatory approvals/rejections,
+    M&A, executive changes, product launches, earnings pre-announcements)
   - tax_lots (lot-level cost basis history for SPECIFIC-ID lot selection
     on any SELL/TRIM recommendation)
 
 GROUND your forward outlook in this hierarchy:
   1. quarterly_mda — what management said LAST QUARTER (most current)
   2. earnings_transcript — guidance changes + Q&A signals
-  3. peers — is this holding the BEST name in its competitive set, or has
+  3. news — fresh catalysts that postdate the latest filing/transcript
+     (regulatory decisions, M&A, leadership changes, earnings warnings).
+     Read as QUALITATIVE input only — do not mechanically convert a
+     positive headline into a score boost or vice versa. Headlines are
+     typically already priced in for liquid names; their value is
+     preventing you from missing a thesis-breaking event that postdates
+     the filings.
+  4. peers — is this holding the BEST name in its competitive set, or has
      a peer's forward setup gotten cleaner?
-  4. forward fundamentals + analyst stance trend
+  5. forward fundamentals + analyst stance trend
 
 DEFAULT VERDICT IS HOLD. The bar for changing the verdict is high.
 Acting on weak signals creates tax friction and timing risk that erodes
@@ -349,16 +358,19 @@ def _repair_verdict_inconsistencies(
 
 class Reviewer:
     def __init__(self, provider: Provider, model: str):
+        model_kwargs: dict[str, Any] = {
+            "temperature": 0,
+            "retries": 3,
+            "exponential_backoff": True,
+            "delay_between_retries": 10,
+        }
+        if provider == "claude":
+            model_kwargs["cache_system_prompt"] = True
         self.agent = AgnoAgent(
             "Reviewer",
             provider,
             model,
-            model_kwargs={
-                "temperature": 0,
-                "retries": 3,
-                "exponential_backoff": True,
-                "delay_between_retries": 10,
-            },
+            model_kwargs=model_kwargs,
             instructions=REVIEWER_INSTRUCTIONS,
             output_schema=HoldingReview,
         )
