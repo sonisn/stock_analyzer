@@ -2,13 +2,89 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Literal
 
 from snaptrade_client import SnapTrade
 
 from ..logging import get_logger
 
 logger = get_logger(__name__)
+
+
+TaxStatus = Literal["taxable", "tax_advantaged"]
+
+
+# Substring patterns that flag a name as a tax-advantaged account when
+# SnapTrade's account `type` field isn't conclusive. Order matters — match
+# the longest first to avoid e.g. "RothIRA" matching "IRA" then losing
+# the Roth signal. Case-insensitive.
+_TAX_ADVANTAGED_NAME_PATTERNS = (
+    "ROTH IRA", "TRAD IRA", "TRADITIONAL IRA",
+    "ROLLOVER IRA", "SEP IRA", "SIMPLE IRA",
+    "ROTH", "IRA", "HSA", "401K", "401(K)", "403B", "457",
+    "PENSION", "RRSP", "TFSA",
+)
+# SnapTrade-reported `type` values that map to tax-advantaged.
+_TAX_ADVANTAGED_TYPES = {
+    "IRA", "ROTH IRA", "TRADITIONAL IRA", "ROLLOVER IRA",
+    "SEP IRA", "SIMPLE IRA", "401K", "401(K)", "403B", "457",
+    "HSA", "RRSP", "TFSA", "RETIREMENT",
+}
+
+
+def _name_token_match(name_upper: str, pattern: str) -> bool:
+    """True if `pattern` appears in `name_upper` as a standalone token —
+    i.e. surrounded by non-alphanumeric characters or string boundaries.
+
+    Custom logic instead of `\\b` regex because patterns like '401(K)'
+    end with ')' which isn't word-boundary-compatible. We want:
+      'Vanguard 401(k)' → matches '401(K)' (preceded by space, followed by EOL)
+      'HSAFEcard' → does NOT match 'HSA' (followed by alphanumeric 'F')
+      'Schwab HSA' → matches 'HSA' (preceded by space, followed by EOL)
+    """
+    pattern = pattern.upper()
+    idx = 0
+    while idx <= len(name_upper) - len(pattern):
+        found = name_upper.find(pattern, idx)
+        if found < 0:
+            return False
+        before = name_upper[found - 1] if found > 0 else " "
+        after_idx = found + len(pattern)
+        after = name_upper[after_idx] if after_idx < len(name_upper) else " "
+        if not before.isalnum() and not after.isalnum():
+            return True
+        idx = found + 1
+    return False
+
+
+def classify_tax_status(
+    account_type: str | None, account_name: str | None
+) -> TaxStatus:
+    """Determine whether trades in this account have tax consequences.
+
+    Strategy:
+      1. If SnapTrade returns a `type` field, check it against the
+         known tax-advantaged set (covers Robinhood, Fidelity, Schwab,
+         Vanguard, etc.).
+      2. Fall back to substring match on the account name (catches
+         custom names + brokers where `type` is generic 'Investment'
+         or missing).
+
+    Defaults to 'taxable' — that's the safer default because applying
+    tax-cost analysis to a taxable account is correct; applying it to
+    an IRA wastes signal but doesn't lose money. The reverse (skipping
+    tax-cost analysis on a taxable account) IS a real risk.
+    """
+    if account_type:
+        upper = account_type.upper().strip()
+        if upper in _TAX_ADVANTAGED_TYPES:
+            return "tax_advantaged"
+    if account_name:
+        upper_name = account_name.upper()
+        for pattern in _TAX_ADVANTAGED_NAME_PATTERNS:
+            if _name_token_match(upper_name, pattern):
+                return "tax_advantaged"
+    return "taxable"
 
 
 def _client() -> SnapTrade:
@@ -43,6 +119,54 @@ def _extract_ticker(position: dict) -> str | None:
             return sym["symbol"]
         sym = sym.get("symbol")
     return sym if isinstance(sym, str) else None
+
+
+def fetch_account_meta() -> dict[str, dict[str, Any]]:
+    """Return {account_name: {id, type, tax_status, institution}} for every
+    connected SnapTrade account. Used to tag each position with the
+    account's tax treatment so the rebalancer can skip tax-cost analysis
+    on IRA / HSA / 401k positions.
+    """
+    try:
+        user_id, user_secret = _credentials()
+        client = _client()
+        accounts = _unwrap(
+            client.account_information.list_user_accounts(
+                user_id=user_id, user_secret=user_secret
+            )
+        ) or []
+    except Exception as e:
+        logger.warning("Could not list accounts for tax-status meta: %s", e)
+        return {}
+
+    out: dict[str, dict[str, Any]] = {}
+    for account in accounts:
+        account_id = account.get("id")
+        account_name = (
+            account.get("name")
+            or account.get("institution_name")
+            or account_id
+            or "unknown"
+        )
+        if not account_id:
+            continue
+        account_type = (
+            account.get("type")
+            or account.get("account_type")
+            or (account.get("meta") or {}).get("type")
+        )
+        out[account_name] = {
+            "id": account_id,
+            "type": account_type,
+            "institution": account.get("institution_name"),
+            "tax_status": classify_tax_status(account_type, account_name),
+        }
+    n_advantaged = sum(1 for m in out.values() if m["tax_status"] == "tax_advantaged")
+    logger.info(
+        "Account tax classification: %d taxable, %d tax-advantaged (out of %d)",
+        len(out) - n_advantaged, n_advantaged, len(out),
+    )
+    return out
 
 
 def fetch_portfolio_holdings() -> dict[str, list[dict]]:

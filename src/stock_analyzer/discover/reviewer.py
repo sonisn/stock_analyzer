@@ -108,6 +108,34 @@ SELL — full exit when:
        * structural / regime threat to the business model
        * heavy net insider selling AND deteriorating forward outlook
 
+TAX-ADVANTAGED ACCOUNTS — FREE-TRIM RULE:
+The position payload now includes `account_splits` showing how the
+position is divided across accounts, plus `tax_advantaged_units` and
+`taxable_units`. Tax-advantaged accounts (Traditional IRA, Roth IRA,
+HSA, 401k, etc.) have ZERO tax consequence for trims/sells inside
+them. When recommending TRIM/SELL:
+
+  1. If the position has BOTH taxable AND tax-advantaged shares,
+     and the verdict is TRIM (not full SELL), prefer trimming the
+     tax-advantaged shares FIRST. There's no realized gain to tax,
+     no wash-sale exposure (within the same IRA), no holding-period
+     concern. State this explicitly in your reasoning: "TRIM 40 IRA
+     shares first — zero tax cost — before touching the 60 taxable
+     shares."
+  2. For tax-advantaged loss positions, the "harvest the loss"
+     reframe does NOT apply. There's no capital gain to offset
+     because gains in these accounts are tax-shielded already.
+     Hold based on forward thesis alone for IRA losses; don't
+     manufacture a harvest reason.
+  3. For full SELL recommendations, no preference — both account
+     types must liquidate. But the prose should still distinguish:
+     "SELL the 40 IRA shares (zero tax) plus the 60 taxable shares
+     (realize ~$3,500 long-term gain)."
+  4. If the position is ENTIRELY in tax-advantaged accounts (only
+     IRA/HSA exposure), omit the "Tax lot plan" section — the
+     concept doesn't apply. Just state "Tax: none (held entirely
+     in tax-advantaged account)."
+
 TAX-LOT GUIDANCE (when tax_lots is present):
 For each SELL or TRIM, recommend SPECIFIC lots to sell by date, using these priorities:
   1. Prefer lots with LOSSES (harvest losses to offset gains)

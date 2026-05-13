@@ -29,7 +29,7 @@ from agno.workflow.types import StepInput, StepOutput
 from dotenv import load_dotenv
 
 from ..config import Settings
-from ..data.brokerage import fetch_portfolio_holdings, fetch_total_cash
+from ..data.brokerage import fetch_account_meta, fetch_portfolio_holdings, fetch_total_cash
 from ..data.chart_img import fetch_charts
 from ..data.finnhub import batch_finnhub_signals
 from ..data.fundamentals import batch_fundamentals
@@ -184,6 +184,72 @@ def _aggregate_positions(
     return out
 
 
+def _build_position_splits(
+    holdings: dict[str, list[dict[str, Any]]],
+    account_meta: dict[str, dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    """Preserve per-account splits AND aggregate totals per ticker.
+
+    Returns dict keyed by ticker with both views — the aggregated total
+    (so existing code that reads holdings_positions still works) PLUS a
+    list of per-account splits so the reviewer + rebalancer can reason
+    about which slice of a position is in a tax-advantaged account
+    (zero-tax trim) vs taxable (real tax cost):
+
+      {
+        "AAPL": {
+          "total_units": 100, "total_cost": 12000, "avg_buy_price": 120,
+          "splits": [
+            {"account": "Fidelity Brokerage", "tax_status": "taxable",
+             "units": 60, "avg_buy_price": 116.67, "cost_basis": 7000},
+            {"account": "Fidelity IRA", "tax_status": "tax_advantaged",
+             "units": 40, "avg_buy_price": 125.00, "cost_basis": 5000},
+          ],
+          "has_tax_advantaged": True,
+          "has_taxable": True,
+          "tax_advantaged_units": 40, "taxable_units": 60,
+        },
+      }
+    """
+    raw: dict[str, list[dict[str, Any]]] = {}
+    for account_name, items in holdings.items():
+        meta = account_meta.get(account_name) or {}
+        tax_status = meta.get("tax_status") or "taxable"
+        for h in items:
+            ticker = h.get("ticker")
+            units = h.get("units") or 0
+            avg = h.get("average_purchase_price") or 0
+            if not ticker or not units:
+                continue
+            raw.setdefault(ticker, []).append({
+                "account": account_name,
+                "tax_status": tax_status,
+                "units": float(units),
+                "avg_buy_price": float(avg),
+                "cost_basis": float(units) * float(avg),
+            })
+
+    out: dict[str, dict[str, Any]] = {}
+    for ticker, splits in raw.items():
+        total_units = sum(s["units"] for s in splits)
+        total_cost = sum(s["cost_basis"] for s in splits)
+        if not total_units:
+            continue
+        ta_units = sum(s["units"] for s in splits if s["tax_status"] == "tax_advantaged")
+        tx_units = sum(s["units"] for s in splits if s["tax_status"] == "taxable")
+        out[ticker] = {
+            "total_units": total_units,
+            "total_cost": total_cost,
+            "avg_buy_price": total_cost / total_units if total_units else 0,
+            "splits": splits,
+            "has_tax_advantaged": ta_units > 0,
+            "has_taxable": tx_units > 0,
+            "tax_advantaged_units": ta_units,
+            "taxable_units": tx_units,
+        }
+    return out
+
+
 class RebalancePipeline(DiscoverPipeline):
     """Discovery + per-holding review + Opus rebalance plan delivery."""
 
@@ -199,13 +265,26 @@ class RebalancePipeline(DiscoverPipeline):
             raise RuntimeError(
                 "No SnapTrade positions found — rebalance requires existing holdings"
             )
+        # Fetch account metadata (type + tax_status) and build per-account
+        # position splits so the LLM stages can reason about which slice
+        # of each holding is tax-advantaged.
+        account_meta = fetch_account_meta()
+        position_splits = _build_position_splits(holdings, account_meta)
         cash = fetch_total_cash()
         self.state["holdings_positions"] = positions
+        self.state["account_meta"] = account_meta
+        self.state["position_splits"] = position_splits
         self.state["cash_balance"] = cash
         self.state["holdings_tickers"] = list(positions.keys())
+        ta_count = sum(
+            1 for v in position_splits.values() if v.get("has_tax_advantaged")
+        )
         cash_str = f"${cash:,.0f}" if cash is not None else "unknown"
         return StepOutput(
-            content=f"Holdings: {len(positions)} positions; cash {cash_str}"
+            content=(
+                f"Holdings: {len(positions)} positions ({ta_count} with "
+                f"tax-advantaged exposure); cash {cash_str}"
+            )
         )
 
     def step_holdings_data(self, step_input: StepInput) -> StepOutput:
@@ -297,6 +376,7 @@ class RebalancePipeline(DiscoverPipeline):
         selling = self.state.get("insider_selling", {})
         finnhub_signals = self.state.get("finnhub_signals", {})
         eps_revisions = self.state.get("eps_revisions", {})
+        position_splits = self.state.get("position_splits", {})
 
         payloads: dict[str, dict[str, Any]] = {}
         for ticker, pos in positions.items():
@@ -313,6 +393,7 @@ class RebalancePipeline(DiscoverPipeline):
             insider_activity: Any = fh.get("insider_activity") or {
                 "mention_count": selling.get(ticker, 0)
             }
+            splits_info = position_splits.get(ticker) or {}
             payloads[ticker] = {
                 "position": {
                     "units": units,
@@ -321,6 +402,18 @@ class RebalancePipeline(DiscoverPipeline):
                     "cost_basis": pos["cost_basis"],
                     "unrealized_pnl": pnl,
                     "unrealized_pnl_pct": pnl_pct,
+                    # NEW: per-account splits so the reviewer knows
+                    # whether trims trigger tax. tax_advantaged_units
+                    # are FREE to trim (no realized gains, no tax).
+                    "account_splits": splits_info.get("splits") or [],
+                    "tax_advantaged_units": splits_info.get(
+                        "tax_advantaged_units", 0
+                    ),
+                    "taxable_units": splits_info.get("taxable_units", 0),
+                    "has_tax_advantaged": splits_info.get(
+                        "has_tax_advantaged", False
+                    ),
+                    "has_taxable": splits_info.get("has_taxable", True),
                 },
                 "fundamentals": fund.get(ticker) or {},
                 "technicals": t,

@@ -84,6 +84,33 @@ When in doubt about which to apply, follow the mode specified in the
 user message verbatim. Quote the realized tax cost in dollars for every
 SELL/TRIM regardless of mode.
 
+TAX-ADVANTAGED ACCOUNTS — FREE TRIMS OVERRIDE THE TAX BAR:
+The reviewer's payload now tags each holding with `has_tax_advantaged`,
+`has_taxable`, `tax_advantaged_units`, and `taxable_units`. When a
+holding has tax-advantaged shares (Traditional IRA, Roth IRA, HSA,
+401k, etc.) and the reviewer recommends TRIM, those shares have
+ZERO tax cost. Apply these rules:
+
+  1. When sourcing trim proceeds, prefer trimming tax-advantaged
+     shares first. Free trim — no realized gain, no wash-sale
+     exposure, no holding-period concern. State explicitly:
+     "Action: TRIM MRVL 25% — 40 IRA shares (~$3,200) — zero tax
+     cost. Leaves 100 taxable shares untouched."
+  2. The conservative/balanced/aggressive post-tax bar DOES NOT
+     apply to tax-advantaged trims. Bar drops to zero regardless
+     of mode. A trim of IRA shares to fund an ADD on a higher-
+     conviction holding is a near-free portfolio improvement —
+     execute it whenever the forward case favors the destination.
+  3. For LOSS positions in tax-advantaged accounts: the loss-
+     harvesting reframe does NOT apply. There's no taxable gain to
+     offset (the account is already tax-shielded). The decision is
+     pure forward-thesis: trim if forward looks bad, hold if
+     forward looks fine. Don't manufacture a harvest reason.
+  4. If the rebalance involves a SELL of a position held across
+     both account types, sell the IRA shares first, then the
+     taxable shares with explicit lot selection per the
+     TAX-LOT GUIDANCE above.
+
 LOSS POSITIONS OVERRIDE THE TAX BAR:
 The "tax cost after EV" math above assumes the source position has a
 gain. When the source has an UNREALIZED LOSS, the math INVERTS:
