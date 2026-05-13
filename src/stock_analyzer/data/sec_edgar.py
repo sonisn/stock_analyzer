@@ -1,6 +1,6 @@
 """SEC EDGAR client — fetch latest 10-K risk factors.
 
-Zero-dep: plain `requests` + regex. SEC requires a User-Agent with contact
+Talks via our shared http_client + regex. SEC requires a User-Agent with contact
 info (per their fair-access policy) or returns 403. Parsing 10-K HTML is
 inherently fragile (filings vary widely) — any failure returns None rather
 than crashing the pipeline; the LLM works with what it has.
@@ -17,8 +17,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-import requests
-
+from ..http_client import HttpClient, HttpClientError
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -28,6 +27,14 @@ _USER_AGENT = "stock-analyzer research-bot (snehal.soni@farohealth.com)"
 _HEADERS = {"User-Agent": _USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
+
+# SEC enforces 10 req/sec; cap to 8/sec (= 480/min) to stay comfortably under.
+_HTTP = HttpClient(
+    default_headers=_HEADERS,
+    timeout=30.0,
+    rate_limit_per_min=480,
+    name="sec-edgar",
+)
 
 _TICKER_TO_CIK: dict[str, int] | None = None
 
@@ -43,13 +50,11 @@ def _load_ticker_map() -> dict[str, int]:
     if _TICKER_TO_CIK is not None:
         return _TICKER_TO_CIK
     try:
-        resp = requests.get(_TICKERS_URL, headers=_HEADERS, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
+        data = _HTTP.get_json(_TICKERS_URL)
         _TICKER_TO_CIK = {
             row["ticker"].upper(): int(row["cik_str"]) for row in data.values()
         }
-    except Exception as e:
+    except HttpClientError as e:
         logger.warning("SEC ticker map fetch failed: %s", e)
         _TICKER_TO_CIK = {}
     return _TICKER_TO_CIK
@@ -59,12 +64,8 @@ def _latest_filing_url(cik: int, form_type: str) -> tuple[str, str] | None:
     """Return (filing_date, primary_doc_url) for the latest filing of the
     given form type (e.g. '10-K' or '10-Q'), or None."""
     try:
-        resp = requests.get(
-            _SUBMISSIONS_URL.format(cik=cik), headers=_HEADERS, timeout=15
-        )
-        resp.raise_for_status()
-        sub = resp.json()
-    except Exception as e:
+        sub = _HTTP.get_json(_SUBMISSIONS_URL.format(cik=cik))
+    except HttpClientError as e:
         logger.warning("SEC submissions fetch failed for CIK %s: %s", cik, e)
         return None
     recent = sub.get("filings", {}).get("recent", {})
@@ -126,9 +127,8 @@ def fetch_risk_factors(ticker: str) -> dict[str, Any] | None:
         return None
     filing_date, url = pair
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=30)
-        resp.raise_for_status()
-    except Exception as e:
+        resp = _HTTP.get(url)
+    except HttpClientError as e:
         logger.warning("SEC 10-K fetch failed for %s: %s", ticker, e)
         return None
     section = _extract_item_1a(_strip_html(resp.text))
@@ -192,9 +192,8 @@ def fetch_quarterly_mda(ticker: str) -> dict[str, Any] | None:
         return None
     filing_date, url = pair
     try:
-        resp = requests.get(url, headers=_HEADERS, timeout=30)
-        resp.raise_for_status()
-    except Exception as e:
+        resp = _HTTP.get(url)
+    except HttpClientError as e:
         logger.warning("SEC 10-Q fetch failed for %s: %s", ticker, e)
         return None
     section = _extract_item_2_mda(_strip_html(resp.text))

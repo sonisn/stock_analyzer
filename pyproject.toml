@@ -9,6 +9,7 @@ dependencies = [
     "anthropic>=0.40.0",
     "finnhub-python>=2.4",
     "google-genai>=1.75.0",
+    "httpx>=0.28",
     "orjson>=3.10",
     "pydantic>=2.10",
     "pydantic-settings>=2.6",

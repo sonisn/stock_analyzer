@@ -14,18 +14,23 @@ from __future__ import annotations
 
 import json
 import os
-import time
-import urllib.error
-import urllib.request
 
 from ..cache import CACHE_DIR
+from ..http_client import HttpClient, HttpClientError, RateLimitError
 from ..logging import get_logger
 
 logger = get_logger(__name__)
 
 _ENDPOINT = "https://api.chart-img.com/v2/tradingview/advanced-chart"
-_TIMEOUT_SECONDS = 20
-_REQUEST_INTERVAL_SECONDS = 2.0
+_TIMEOUT_SECONDS = 20.0
+
+# chart-img free tier is ~30/min. Cap our own send rate at 25/min so the
+# HttpClient never needs to lean on retry-after for routine pacing.
+_HTTP = HttpClient(
+    timeout=_TIMEOUT_SECONDS,
+    rate_limit_per_min=25,
+    name="chart-img",
+)
 
 _EXCHANGE_CACHE_PATH = CACHE_DIR / "chart_img_exchanges.json"
 
@@ -131,23 +136,22 @@ def fetch_chart(symbol: str, *, api_key: str | None = None) -> bytes | None:
         return None
 
     body = json.dumps(_build_payload(symbol)).encode("utf-8")
-    req = urllib.request.Request(
-        _ENDPOINT,
-        data=body,
-        method="POST",
-        headers={
-            "x-api-key": key,
-            "content-type": "application/json",
-            "accept": "image/png",
-        },
-    )
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT_SECONDS) as resp:
-            return resp.read()
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", errors="replace")[:200]
-        logger.warning("chart-img HTTP %d for %s: %s", e.code, symbol, detail)
-    except (urllib.error.URLError, TimeoutError) as e:
+        return _HTTP.post(
+            _ENDPOINT,
+            content=body,
+            headers={
+                "x-api-key": key,
+                "content-type": "application/json",
+                "accept": "image/png",
+            },
+        ).content
+    except RateLimitError as e:
+        logger.warning(
+            "chart-img 429 for %s after retries; skipping chart (retry-after=%s)",
+            symbol, e.retry_after,
+        )
+    except HttpClientError as e:
         logger.warning("chart-img request failed for %s: %s", symbol, e)
     return None
 
@@ -165,16 +169,13 @@ def fetch_charts(tickers: list[str]) -> dict[str, bytes]:
 
     exchange_cache = _load_exchange_cache()
     out: dict[str, bytes] = {}
-    issued = 0
     try:
         for ticker in tickers:
             symbol = _resolve_symbol(ticker, exchange_cache)
             if not symbol:
                 logger.info("Skipping chart for %s — no listed exchange", ticker)
                 continue
-            if issued > 0:
-                time.sleep(_REQUEST_INTERVAL_SECONDS)
-            issued += 1
+            # Per-call pacing is owned by the HttpClient's rate limiter.
             data = fetch_chart(symbol, api_key=key)
             if data:
                 out[ticker] = data

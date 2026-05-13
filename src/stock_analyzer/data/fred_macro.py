@@ -9,13 +9,13 @@ from __future__ import annotations
 
 from typing import Any
 
-import requests
-
+from ..http_client import HttpClient, HttpClientError
 from ..logging import get_logger
 
 logger = get_logger(__name__)
 
 _BASE = "https://api.stlouisfed.org/fred/series/observations"
+_HTTP = HttpClient(timeout=15.0, name="fred")
 
 # series_name (our label) → FRED series ID
 SERIES: dict[str, str] = {
@@ -32,7 +32,7 @@ def _fetch_series(
     series_id: str, api_key: str, limit: int = 24
 ) -> list[dict[str, Any]]:
     try:
-        resp = requests.get(
+        data = _HTTP.get_json(
             _BASE,
             params={
                 "series_id": series_id,
@@ -41,11 +41,9 @@ def _fetch_series(
                 "sort_order": "desc",
                 "limit": limit,
             },
-            timeout=15,
         )
-        resp.raise_for_status()
-        return resp.json().get("observations", [])
-    except Exception as e:
+        return data.get("observations", [])
+    except HttpClientError as e:
         logger.warning("FRED fetch failed for %s: %s", series_id, e)
         return []
 
