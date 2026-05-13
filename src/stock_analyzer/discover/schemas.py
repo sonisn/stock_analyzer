@@ -242,6 +242,64 @@ class RedTeamOutput(BaseModel):
     )
 
 
+# --- Sizer ----------------------------------------------------------------
+
+
+class Allocation(BaseModel):
+    """Sizing for one pick."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ticker: str
+    allocation_pct: float | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        description=(
+            "Percentage of new capital. Set this when no dollar budget was "
+            "given. Either allocation_pct OR allocation_usd must be set."
+        ),
+    )
+    allocation_usd: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Dollar amount when a cash budget was given. Either "
+            "allocation_pct OR allocation_usd must be set."
+        ),
+    )
+    rationale: str = Field(
+        ...,
+        description=(
+            "1-2 sentences citing conviction, fragility rank, correlation "
+            "to existing holdings."
+        ),
+    )
+
+
+class SizerOutput(BaseModel):
+    """Structured output of the Sizer agent."""
+
+    model_config = ConfigDict(frozen=True)
+
+    allocations: list[Allocation] = Field(..., min_length=1)
+    concentration_warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Sector or theme where new picks + existing holdings would "
+            "exceed 30% combined. Empty if no warnings."
+        ),
+    )
+    full_text: str = Field(
+        ...,
+        description=(
+            "Plain-text rendering: '---' separators between Allocation "
+            "blocks, trailing 'Concentration warnings:' block. What the "
+            "PDF/email render reads."
+        ),
+    )
+
+
 # --- Analyst ---------------------------------------------------------------
 
 
@@ -304,4 +362,6 @@ __all__ = [
     "RankerOutput",
     "BearCase",
     "RedTeamOutput",
+    "Allocation",
+    "SizerOutput",
 ]

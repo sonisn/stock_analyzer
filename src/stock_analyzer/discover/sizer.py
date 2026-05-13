@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from .schemas import SizerOutput
 
 logger = get_logger(__name__)
 
@@ -38,7 +39,15 @@ Allocation principles to follow:
 
 CRITICAL:
 - Plain text only. No markdown headings or bold.
-- Allocations must sum to 100% (or the full dollar budget).\
+- Allocations must sum to 100% (or the full dollar budget).
+
+STRUCTURED OUTPUT:
+Your response is validated against a Pydantic schema (SizerOutput).
+Populate `allocations` with one Allocation per pick (ticker, rationale,
+plus EITHER allocation_pct OR allocation_usd depending on whether a
+cash budget was provided). Populate `concentration_warnings` with
+the same warnings you list at the end of the prose. Put the full
+prose plan in `full_text`. Structured fields must match the prose.\
 """
 
 
@@ -59,6 +68,7 @@ class Sizer:
                 "temperature": 0,
             },
             instructions=SIZER_INSTRUCTIONS,
+            output_schema=SizerOutput,
         )
 
     def allocate(
@@ -67,7 +77,7 @@ class Sizer:
         bear_case_text: str,
         holdings_summary: str,
         cash_budget: float | None,
-    ) -> str:
+    ) -> SizerOutput:
         budget_line = (
             f"Cash budget: ${cash_budget:,.0f}"
             if cash_budget is not None
@@ -80,4 +90,13 @@ class Sizer:
             f"Bear cases:\n{bear_case_text}"
         )
         logger.info("Sizing picks with Opus")
-        return self.agent.run(prompt).content
+        result = self.agent.run(prompt).content
+        if result is None:
+            raise RuntimeError("Sizer returned no content.")
+        if isinstance(result, SizerOutput):
+            return result
+        if isinstance(result, str):
+            return SizerOutput.model_validate_json(result)
+        raise RuntimeError(
+            f"Sizer returned unexpected type {type(result).__name__}."
+        )

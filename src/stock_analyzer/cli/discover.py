@@ -485,12 +485,14 @@ class DiscoverPipeline:
 
     def step_sizer(self, step_input: StepInput) -> StepOutput:
         sizer = Sizer("claude", self.settings.discover_opus_model)
-        self.state["sizer_text"] = sizer.allocate(
+        sizer_output = sizer.allocate(
             self.state["ranker_text"],
             self.state["redteam_text"],
             self.state["holdings_summary"],
             self.settings.discover_cash_budget,
         )
+        self.state["sizer_output"] = sizer_output
+        self.state["sizer_text"] = sizer_output.full_text
         return StepOutput(content="Position sizing complete")
 
     def step_persist_and_report(self, step_input: StepInput) -> StepOutput:
