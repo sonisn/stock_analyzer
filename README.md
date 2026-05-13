@@ -34,6 +34,26 @@ full analysis to the log so you never lose a run to an email failure.
 | Rebalance | Opus | Structured action plan with aggressiveness knob |
 | Pre-mortem | Opus | Adversarial hindsight on the rebalance plan |
 
+### Covered-call writing (rebalance pipeline)
+
+When enabled (`CC_ENABLED=1`, default), the rebalancer can recommend
+selling covered calls against any held position with ≥ 100 shares.
+Opus picks strikes in the Δ 0.35–0.45, DTE 30–45 band (aggressive
+premium style), leaning further OTM on high-confidence holdings and
+closer to the money on TRIM-leaning ones.
+
+The same Opus pass also deploys the expected premium (minus a 10%
+slippage buffer) via `ADD`/`BUY` actions, and may propose
+**stub-consolidation** trades — selling sub-100-share stubs to fund
+round-lot completions that expand future CC capacity.
+
+Output adds three sections to the rebalance email: **Premium Income**
+(per-contract recommendation table), **Round-Lot Coverage**
+(stub decomposition for every holding), and **Premium → Deployment**
+(dry-powder math).
+
+See `.env.example` for the full set of `CC_*` knobs.
+
 ## Quickstart
 
 ```bash
