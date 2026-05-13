@@ -28,6 +28,12 @@ from pathlib import Path
 from typing import Any
 
 import streamlit as st
+from dotenv import load_dotenv
+
+# Honor the project's .env so DISCOVER_DB_PATH / REPORTS_DIR / LOG_FILE
+# work the same way they do for the CLI pipelines — no need to re-export
+# them in the shell that launches Streamlit.
+load_dotenv()
 
 
 _DB_PATH = Path(
@@ -45,8 +51,20 @@ _REPORTS_DIR = Path(
 def _conn() -> sqlite3.Connection:
     if not _DB_PATH.exists():
         st.error(
-            f"Database not found at {_DB_PATH}. Run the discover or "
-            f"rebalance pipeline at least once to populate it."
+            f"Database not found at `{_DB_PATH}`.\n\n"
+            "Fixes:\n"
+            "1. Run the discover or rebalance pipeline at least once on "
+            "**this machine** to populate the DB, OR\n"
+            "2. Point the dashboard at a DB that already exists by setting "
+            "`DISCOVER_DB_PATH` (in `.env` or as an environment variable "
+            "when launching streamlit), e.g.\n\n"
+            "```\n"
+            "DISCOVER_DB_PATH=/path/to/discover.db streamlit run "
+            "src/stock_analyzer/experimental/dashboard.py\n"
+            "```\n\n"
+            "If the pipeline runs on a different machine, you'll need the "
+            "DB file to be reachable from this host (rsync, scp, NFS, "
+            "SSHFS, etc.)."
         )
         st.stop()
     conn = sqlite3.connect(f"file:{_DB_PATH}?mode=ro", uri=True)
