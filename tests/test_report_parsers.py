@@ -196,3 +196,40 @@ def test_premium_deployment_html_emits_box():
     assert "ADD" in html
     assert "Total dry powder" in html
     assert "$11,998" in html
+
+
+def test_pdf_renders_with_cc_sections_smoke():
+    from stock_analyzer.discover.report_pdf import render_pdf
+    from stock_analyzer.discover.report_sections import Section
+
+    sections = [
+        Section(kind="heading", text="Test", level=1),
+        Section(kind="premium_income", data={  # type: ignore[arg-type]
+            "rows": [{"ticker": "NVDA", "strike": 260.0, "expiry": "2026-06-20",
+                      "contracts": 3, "premium_usd": 720.0,
+                      "delta": 0.36, "assignment_pct": 36}],
+            "gross_premium_usd": 720.0,
+            "slippage_buffer_usd": 72.0,
+            "deployable_premium_usd": 648.0,
+        }),
+        Section(kind="round_lot_coverage", data={  # type: ignore[arg-type]
+            "rows": [{"ticker": "TSLA", "shares": 335, "round_lots": 3,
+                      "round_lot_shares": 300, "stub_shares": 35,
+                      "stub_dollar_value": 10500.0,
+                      "to_next_lot_shares": 65, "to_next_lot_cost": 19500.0}],
+            "stub_pool_total_usd": 10500.0,
+        }),
+        Section(kind="premium_deployment", data={  # type: ignore[arg-type]
+            "gross_premium_usd": 720.0, "slippage_buffer_usd": 72.0,
+            "deployable_premium_usd": 648.0,
+            "existing_cash_usd": 850.0,
+            "stub_consolidation_usd": 10500.0,
+            "total_dry_powder_usd": 11998.0,
+            "deployments": [
+                {"ticker": "AMZN", "action": "ADD", "sizing": "$1,400"},
+            ],
+        }),
+    ]
+    pdf = render_pdf(sections, chart_bytes={})
+    assert isinstance(pdf, bytes)
+    assert len(pdf) > 1000  # not just a header

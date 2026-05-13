@@ -666,6 +666,98 @@ def _pdf_holding_review_card(d: dict[str, Any], styles) -> list[Any]:
     return flow
 
 
+_CC_HEADER_BG = colors.HexColor("#0d9488")  # teal for Premium Income
+_CC_RLC_BG = colors.HexColor("#a16207")     # amber for Round-Lot Coverage
+_CC_GRID = colors.HexColor("#d1d5db")
+
+
+def _pdf_premium_income(data: dict, styles) -> list:
+    """Render the Premium Income section as a ReportLab table + caption."""
+    flow: list = []
+    flow.append(Paragraph("<b>Premium Income</b>", styles["Heading3"]))
+    header = ["Ticker", "Strike", "Expiry", "Qty", "Premium", "Δ", "Assign %"]
+    rows = [header]
+    for r in data.get("rows") or []:
+        rows.append([
+            r["ticker"], f"${r['strike']:,.2f}", r["expiry"],
+            str(r["contracts"]), f"${r['premium_usd']:,.0f}",
+            f"{r['delta']:.2f}", f"{r['assignment_pct']}%",
+        ])
+    t = Table(rows, hAlign="LEFT")
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), _CC_HEADER_BG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.25, _CC_GRID),
+        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+    ]))
+    flow.append(t)
+    flow.append(Spacer(1, 6))
+    flow.append(Paragraph(
+        f"Gross premium: <b>${data.get('gross_premium_usd', 0):,.0f}</b> &nbsp;"
+        f"Buffer (10%): -${data.get('slippage_buffer_usd', 0):,.0f} &nbsp;"
+        f"Deployable: <b>${data.get('deployable_premium_usd', 0):,.0f}</b>",
+        styles["BodyText"],
+    ))
+    flow.append(Spacer(1, 12))
+    return flow
+
+
+def _pdf_round_lot_coverage(data: dict, styles) -> list:
+    """Render the Round-Lot Coverage section as a table."""
+    rows = data.get("rows") or []
+    if not rows:
+        return []
+    flow: list = [Paragraph("<b>Round-Lot Coverage</b>", styles["Heading3"])]
+    table_rows = [["Position", "Shares", "Round Lots", "Stub", "Stub $", "To-next-lot"]]
+    for r in rows:
+        table_rows.append([
+            r["ticker"], str(r["shares"]),
+            f"{r['round_lots']} ({r['round_lot_shares']})",
+            str(r["stub_shares"]),
+            f"${r['stub_dollar_value']:,.0f}",
+            f"${r['to_next_lot_cost']:,.0f}",
+        ])
+    t = Table(table_rows, hAlign="LEFT")
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), _CC_RLC_BG),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.25, _CC_GRID),
+    ]))
+    flow.append(t)
+    flow.append(Paragraph(
+        f"Stub pool total: <b>${data.get('stub_pool_total_usd', 0):,.0f}</b>",
+        styles["BodyText"],
+    ))
+    flow.append(Spacer(1, 12))
+    return flow
+
+
+def _pdf_premium_deployment(data: dict, styles) -> list:
+    """Render the Premium → Deployment dry-powder box."""
+    flow: list = [Paragraph("<b>Premium &rarr; Deployment</b>", styles["Heading3"])]
+    lines = [
+        f"Deployable premium: ${data.get('deployable_premium_usd', 0):,.0f}",
+        f"Existing cash: ${data.get('existing_cash_usd', 0):,.0f}",
+    ]
+    if data.get("stub_consolidation_usd"):
+        lines.append(
+            f"Stub consolidation: ${data['stub_consolidation_usd']:,.0f}"
+        )
+    lines.append(
+        f"<b>Total dry powder: ${data.get('total_dry_powder_usd', 0):,.0f}</b>"
+    )
+    flow.append(Paragraph("<br/>".join(lines), styles["BodyText"]))
+    deps = data.get("deployments") or []
+    if deps:
+        body = "<br/>".join(
+            f"&rarr; {d['action']} <b>{d['ticker']}</b> {d['sizing']}"
+            for d in deps
+        )
+        flow.append(Paragraph(body, styles["BodyText"]))
+    flow.append(Spacer(1, 12))
+    return flow
+
+
 def _pdf_rebalance_action_table(d: dict[str, Any], styles) -> list[Any]:
     """Per-action table for the rebalance plan section. Each row gets a
     pale-tinted action cell using the SELL/TRIM/ADD/BUY palette."""
@@ -819,16 +911,16 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
                 flow.append(el)
 
         elif s.kind == "premium_income" and s.data:
-            flow.append(Paragraph("Premium Income", styles["Heading3"]))
-            flow.append(Spacer(1, 4))
+            for el in _pdf_premium_income(s.data, styles):
+                flow.append(el)
 
         elif s.kind == "round_lot_coverage" and s.data:
-            flow.append(Paragraph("Round Lot Coverage", styles["Heading3"]))
-            flow.append(Spacer(1, 4))
+            for el in _pdf_round_lot_coverage(s.data, styles):
+                flow.append(el)
 
         elif s.kind == "premium_deployment" and s.data:
-            flow.append(Paragraph("Premium Deployment", styles["Heading3"]))
-            flow.append(Spacer(1, 4))
+            for el in _pdf_premium_deployment(s.data, styles):
+                flow.append(el)
 
         elif s.kind == "page_break":
             flow.append(PageBreak())
