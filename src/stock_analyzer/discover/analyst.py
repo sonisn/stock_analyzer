@@ -84,6 +84,15 @@ CRITICAL:
 - Plain text. No markdown headings or bold.
 - Begin reply with "TICKER:" line. No preamble, no closing remarks.
 
+CITATION RULE (anti-hallucination):
+Every numerical claim in your output (forward EPS, P/E, target price,
+growth rate, margin, debt ratio, etc.) MUST appear in the input JSON
+the user provided. Do not invent numbers, estimate values not in the
+data, or recall figures from training. If a number isn't in the
+payload, write "not provided" or omit the claim. The same applies to
+named events: cite the specific risk_factor / quarterly_mda /
+earnings_transcript line you're referencing, not a generic recollection.
+
 STRUCTURED OUTPUT:
 Your response is validated against a Pydantic schema (AnalystReport).
 Populate every required field. The prose plan you would have emitted

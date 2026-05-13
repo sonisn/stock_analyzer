@@ -32,49 +32,128 @@ logger = get_logger(__name__)
 
 
 MARKET_THEMES_INSTRUCTIONS = """\
-You are a market analyst. List the 5-8 themes that are materially
-moving US equity prices RIGHT NOW. Each theme should:
+You are a market analyst. The user provides EXPLICIT, RECENT market
+data — top and bottom performers in their universe, EPS-revision
+direction per ticker, sector ETF returns, macro regime. Your job:
+**identify themes that are visible in THIS data**, NOT from your
+training memory.
 
+Each theme should:
   - Be specific enough to map to tickers (not "growth stocks" but
     "AI compute capex" or "GLP-1 weight-loss drugs").
-  - Be supported by recent price action + earnings + capex flow.
-  - Have at least 10 listed-equity beneficiaries you can name.
+  - Be supported by tickers in the TOP_PERFORMERS list (for up themes)
+    or BOTTOM_PERFORMERS list (for down themes) provided to you.
+  - Have at least 5 named members that all appear in the user's data.
 
 For each theme, populate the MarketTheme schema:
   - name: concise label (2-4 words)
-  - description: 1-2 sentences on what's driving it RIGHT NOW (not
-    boilerplate — cite the specific catalyst, capex cycle, regulatory
-    tailwind, or supply/demand imbalance)
-  - strength (1-10): 10 = dominant secular tailwind with both price
-    AND earnings momentum across the cohort; 7-9 = strong trend, most
-    members participating; 5-6 = real but contested or with rotating
-    leadership; 1-4 = waning or stalled
-  - trending (up | flat | down): direction over the LAST 30 DAYS only
-  - member_tickers: 10-25 US-listed tickers that benefit. Be liberal:
-    include direct beneficiaries (e.g. NVDA for AI compute), the
-    derivatives layer (ANET for AI networking, VST/CEG for AI power,
-    APP for AI ads), AND the second-order plays (suppliers, real-estate
-    landlords, etc.). Tickers must be valid US listings.
+  - description: 1-2 sentences citing the specific tickers from the
+    user's data that support this theme. e.g. "NVDA +18% / AVGO +12% /
+    AMD +15% all in top performers + raising EPS revisions confirm
+    AI-compute capex tailwind."
+  - strength (1-10): based on what fraction of the named members
+    appear in the TOP_PERFORMERS list AND have raising EPS revisions.
+    10 = nearly all members are top performers with raising revisions;
+    1-3 = members are mostly bottom performers (theme is rolling over).
+  - trending (up | flat | down): direction based on whether named
+    members are dominantly in TOP, mixed, or BOTTOM performers.
+  - member_tickers: 10-25 US-listed tickers. Prioritize tickers from
+    the provided TOP/BOTTOM/REVISIONS lists. You may add 3-5 obvious
+    related names not in those lists if needed for theme coherence,
+    but MUST clearly identify them as "[add]" via a comment in the
+    description.
 
-DO NOT make tool calls. Use ONLY your training + the macro context
-(sector rotation, macro regime) the user provides. If a theme is
-overhyped but actually rolling over, you can flag it with
-strength <= 4 and trending=down — those are useful warnings too.
+ANTI-HALLUCINATION RULES (these are hard constraints):
+  - Every ticker you name as a member MUST be either (a) in one of
+    the lists the user provided, or (b) an obvious adjacent name in
+    the same sub-industry (and you must mention so in the description).
+  - Every numerical claim in the description MUST reference data the
+    user gave you. Don't invent percentages.
+  - If you cannot find 3+ themes supported by the provided data,
+    output fewer themes. Do not invent themes that aren't visible.
 
-Skip themes that are perennial generic ("rising rates", "consumer
-spending"). Stick to themes a portfolio manager would actively be
-positioning around this quarter.
+If a theme that's well-known (e.g. "AI compute") has NO supporting
+tickers in the user's data, DO NOT include it. The data is the source
+of truth, not your priors.
 
 Output ONLY the structured MarketThemes object. The `full_text` field
 should render the themes as plain text with this format per theme:
 
 THEME: <name> [strength X/10, trending <up|flat|down>]
-<description>
+<description with specific tickers + numbers from the data>
 Members: <ticker, ticker, ticker, ...>
 
 Separate themes with a blank line. This text is what downstream LLM
 calls (ranker, rebalancer) read as context — keep it concise.\
 """
+
+
+def _format_top_performers(
+    technicals: dict, fundamentals: dict, *, top_n: int = 20
+) -> str:
+    """List top-N tickers by rs_6mo with actual relative-return numbers.
+
+    Format:
+      TOP_PERFORMERS (sorted by 6-month relative strength vs SPY):
+        NVDA  +24.5%  Tech / Semiconductors
+        AVGO  +18.2%  Tech / Semiconductors
+        ...
+    """
+    rows: list[tuple[str, float, str, str]] = []
+    for ticker, t in technicals.items():
+        rs6 = t.get("rs_6mo")
+        if rs6 is None:
+            continue
+        f = (fundamentals.get(ticker) or {})
+        sector = str(f.get("sector") or "—")
+        industry = str(f.get("industry") or "—")
+        rows.append((ticker, float(rs6), sector, industry))
+    rows.sort(key=lambda r: r[1], reverse=True)
+    if not rows:
+        return "TOP_PERFORMERS: (no relative-strength data available)\n"
+    out = "TOP_PERFORMERS (sorted by 6-month return vs SPY):\n"
+    for ticker, rs6, sector, industry in rows[:top_n]:
+        out += f"  {ticker:6s}  {rs6*100:+6.1f}%  {sector} / {industry}\n"
+    return out
+
+
+def _format_bottom_performers(
+    technicals: dict, fundamentals: dict, *, bottom_n: int = 15
+) -> str:
+    """List bottom-N tickers by rs_6mo. Used to flag rolling-over themes."""
+    rows: list[tuple[str, float, str, str]] = []
+    for ticker, t in technicals.items():
+        rs6 = t.get("rs_6mo")
+        if rs6 is None:
+            continue
+        f = (fundamentals.get(ticker) or {})
+        sector = str(f.get("sector") or "—")
+        industry = str(f.get("industry") or "—")
+        rows.append((ticker, float(rs6), sector, industry))
+    rows.sort(key=lambda r: r[1])
+    if not rows:
+        return "BOTTOM_PERFORMERS: (no relative-strength data available)\n"
+    out = "BOTTOM_PERFORMERS (sorted by 6-month return vs SPY, worst first):\n"
+    for ticker, rs6, sector, industry in rows[:bottom_n]:
+        out += f"  {ticker:6s}  {rs6*100:+6.1f}%  {sector} / {industry}\n"
+    return out
+
+
+def _format_revisions_summary(eps_revisions: dict) -> str:
+    """List tickers with raising and lowering EPS revisions in last 30 days."""
+    raising: list[str] = []
+    lowering: list[str] = []
+    for ticker, r in eps_revisions.items():
+        direction = r.get("direction_30d")
+        net = r.get("net_revisions_30d", 0)
+        if direction == "raising":
+            raising.append(f"{ticker} (+{net})")
+        elif direction == "lowering":
+            lowering.append(f"{ticker} ({net})")
+    out = "EPS_REVISIONS_30D (net analyst ups - downs):\n"
+    out += f"  Raising: {', '.join(raising[:30]) if raising else '(none)'}\n"
+    out += f"  Lowering: {', '.join(lowering[:15]) if lowering else '(none)'}\n"
+    return out
 
 
 class MarketThemesAgent:
@@ -99,27 +178,51 @@ class MarketThemesAgent:
         self,
         macro_summary: str = "",
         sector_rotation: dict | None = None,
+        technicals: dict | None = None,
+        fundamentals: dict | None = None,
+        eps_revisions: dict | None = None,
     ) -> MarketThemes | None:
+        """Identify themes that are visible in the user's actual data.
+
+        We hand the LLM:
+          - Top-20 performers by rs_6mo with their actual returns
+          - Bottom-15 performers (rolling-over themes)
+          - Tickers with raising EPS revisions (forward-thesis confirmation)
+          - Tickers with lowering EPS revisions (rolling over)
+          - Sector ETF returns
+          - Macro regime snippet
+        Sonnet then summarizes the themes ALREADY VISIBLE in this data
+        rather than recalling them from training memory.
+        """
+        top_block = _format_top_performers(technicals or {}, fundamentals or {}, top_n=20)
+        bottom_block = _format_bottom_performers(technicals or {}, fundamentals or {}, bottom_n=15)
+        revisions_block = _format_revisions_summary(eps_revisions or {})
         sector_block = ""
         if sector_rotation:
             leaders = ", ".join(sector_rotation.get("leaders", []))
             laggards = ", ".join(sector_rotation.get("laggards", []))
             sector_block = (
-                f"Sector rotation (6-month returns):\n"
+                f"SECTOR ROTATION (6-month sector ETF returns):\n"
                 f"  Leaders: {leaders or '(none)'}\n"
                 f"  Laggards: {laggards or '(none)'}\n\n"
             )
         macro_block = (
-            f"Macro regime context:\n{macro_summary}\n\n"
+            f"MACRO REGIME:\n{macro_summary}\n\n"
             if macro_summary else ""
         )
         prompt = (
             f"{macro_block}"
             f"{sector_block}"
-            f"List the dominant equity themes RIGHT NOW per your "
-            f"instructions."
+            f"{top_block}\n"
+            f"{bottom_block}\n"
+            f"{revisions_block}\n"
+            f"Based on THIS data — what themes are visible? Identify "
+            f"3-8 themes that are supported by the actual tickers + "
+            f"numbers above. Do not include themes that have no "
+            f"supporting evidence in this data."
         )
-        logger.info("Detecting market themes")
+        logger.info("Detecting market themes (grounded in %d performers, %d revisions)",
+                    len(technicals or {}), len(eps_revisions or {}))
         result = self.agent.run(prompt).content
         if result is None:
             logger.warning("MarketThemes returned no content")

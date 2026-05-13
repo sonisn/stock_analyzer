@@ -100,6 +100,141 @@ def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
     return path
 
 
+def _validate_and_correct_themes(
+    themes: object,
+    *,
+    universe_tickers: set[str],
+    technicals: dict[str, Any],
+) -> object:
+    """Anti-hallucination pass on the MarketThemes output.
+
+    1. Drop member_tickers that aren't in the universe (LLM may invent
+       tickers or pull them from training cutoff). Keep them only if we
+       have data on them; otherwise we can't ground anything.
+    2. Compute data-derived strength from the avg rs_6mo of the SURVIVING
+       members. If the LLM's claimed strength is materially off (delta>3),
+       blend toward the data value and log a warning so drift is visible.
+    3. Drop themes that have <3 surviving members (LLM hallucinated the
+       whole theme).
+
+    Returns a NEW MarketThemes instance (or None if all themes were
+    dropped). The original LLM output is left untouched.
+    """
+    if themes is None:
+        return None
+    from ..discover.schemas import MarketTheme, MarketThemes
+    if not isinstance(themes, MarketThemes):
+        return themes
+
+    upper_universe = {t.upper() for t in universe_tickers}
+    rs6_by_ticker: dict[str, float] = {}
+    for ticker, t in technicals.items():
+        rs6 = t.get("rs_6mo")
+        if rs6 is not None:
+            rs6_by_ticker[ticker.upper()] = float(rs6)
+
+    corrected: list[MarketTheme] = []
+    for theme in themes.themes:
+        valid_members = [
+            t for t in theme.member_tickers if t.upper() in upper_universe
+        ]
+        dropped = [
+            t for t in theme.member_tickers if t.upper() not in upper_universe
+        ]
+        if dropped:
+            logger.info(
+                "Theme '%s': dropped %d/%d tickers not in universe: %s",
+                theme.name, len(dropped), len(theme.member_tickers),
+                ", ".join(dropped[:10]),
+            )
+
+        if len(valid_members) < 3:
+            logger.warning(
+                "Theme '%s': only %d valid member(s) survive — dropping "
+                "theme entirely (likely hallucinated).",
+                theme.name, len(valid_members),
+            )
+            continue
+
+        # Data-derived strength: avg rs_6mo across surviving members,
+        # mapped 0..10 via a sigmoid-ish curve. SPY-neutral → ~5, +15% → ~8,
+        # +25% → ~9, -10% → ~3, -20% → ~1.
+        rs6_values = [
+            rs6_by_ticker[m.upper()] for m in valid_members
+            if m.upper() in rs6_by_ticker
+        ]
+        if rs6_values:
+            avg_rs = sum(rs6_values) / len(rs6_values)
+            data_strength = max(
+                1, min(10, round(5 + avg_rs * 25))
+            )
+        else:
+            data_strength = theme.strength
+
+        # Reconcile: if claimed strength diverges from data by > 3, log
+        # warning and blend (60% data, 40% LLM).
+        delta = abs(theme.strength - data_strength)
+        if delta > 3:
+            corrected_strength = round(
+                0.6 * data_strength + 0.4 * theme.strength
+            )
+            logger.warning(
+                "Theme '%s': LLM claimed strength=%d, data says %d "
+                "(avg rs_6mo of members = %.1f%%). Adjusting to %d.",
+                theme.name, theme.strength, data_strength,
+                (sum(rs6_values) / len(rs6_values) * 100) if rs6_values else 0,
+                corrected_strength,
+            )
+            new_strength = corrected_strength
+        else:
+            new_strength = theme.strength
+
+        # Reconcile trending against data: if avg rs_6mo strongly negative,
+        # force 'down'; strongly positive → 'up'.
+        if rs6_values:
+            avg_rs = sum(rs6_values) / len(rs6_values)
+            if avg_rs < -0.05 and theme.trending == "up":
+                logger.warning(
+                    "Theme '%s': LLM said trending=up but avg rs_6mo "
+                    "of members is %.1f%% — flipping to 'down'.",
+                    theme.name, avg_rs * 100,
+                )
+                new_trending = "down"
+            elif avg_rs > 0.10 and theme.trending == "down":
+                logger.warning(
+                    "Theme '%s': LLM said trending=down but avg rs_6mo "
+                    "of members is %.1f%% — flipping to 'up'.",
+                    theme.name, avg_rs * 100,
+                )
+                new_trending = "up"
+            else:
+                new_trending = theme.trending
+        else:
+            new_trending = theme.trending
+
+        corrected.append(MarketTheme(
+            name=theme.name,
+            description=theme.description,
+            strength=new_strength,
+            trending=new_trending,
+            member_tickers=valid_members,
+        ))
+
+    if not corrected:
+        logger.warning("All themes were invalidated; returning None.")
+        return None
+
+    # Rebuild full_text to reflect the corrections.
+    parts: list[str] = []
+    for t in corrected:
+        parts.append(
+            f"THEME: {t.name} [strength {t.strength}/10, trending {t.trending}]\n"
+            f"{t.description}\n"
+            f"Members: {', '.join(t.member_tickers)}"
+        )
+    return MarketThemes(themes=corrected, full_text="\n\n".join(parts))
+
+
 def _top_fail_reasons(
     candidates: list[dict[str, Any]], *, k: int = 3
 ) -> str:
@@ -272,12 +407,24 @@ class DiscoverPipeline:
         return StepOutput(content=self.state["track_record_summary"])
 
     def step_market_themes(self, step_input: StepInput) -> StepOutput:
-        """Detect 5-8 named market themes that are moving prices right now.
-        Bias the screen + analyst + ranker toward theme members."""
+        """Detect 3-8 named market themes that are visible in the
+        universe's actual price action + EPS revisions. Grounded in
+        real data (top/bottom performers, revision direction) rather
+        than the LLM's training memory."""
         agent = MarketThemesAgent("claude", self.settings.discover_sonnet_model)
         themes = agent.detect(
             macro_summary=self.state.get("macro_summary", ""),
             sector_rotation=self.state.get("sector_rotation"),
+            technicals=self.state.get("technicals", {}),
+            fundamentals=self.state.get("fundamentals", {}),
+            eps_revisions=self.state.get("eps_revisions", {}),
+        )
+        # Anti-hallucination pass: filter unknown tickers + recompute
+        # strength against the actual cohort relative-strength data.
+        themes = _validate_and_correct_themes(
+            themes,
+            universe_tickers=set(self.state.get("tickers") or []),
+            technicals=self.state.get("technicals", {}),
         )
         self.state["market_themes"] = themes
         self.state["themes_by_ticker"] = themes_by_ticker(themes)

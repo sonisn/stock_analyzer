@@ -354,6 +354,17 @@ CRITICAL:
   still recommend the SELL and let cash accumulate; do not invent BUYs
   beyond budget.
 
+CITATION RULE (anti-hallucination):
+Every numerical claim in your plan (tax cost in dollars, lot dates,
+share counts, percentage allocations, forward EPS, cash math figures)
+MUST trace back to the inputs the user provided — `tax_lots` for lot
+specifics, holdings reviews for forward outlook numbers, ranker text
+for pick conviction, `Available cash` for the budget. Do not invent
+realized gains, lot dates, or projected returns. If you cite a
+post-tax edge percentage, derive it from the specific reviewer
+verdicts; don't estimate. A clean trail from input number to plan
+claim is required.
+
 STRUCTURED OUTPUT:
 Your response is validated against a small Pydantic schema
 (RebalancePlan) with FIVE fields only:

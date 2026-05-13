@@ -41,6 +41,13 @@ CRITICAL:
 - Plain text only. No markdown headings or bold.
 - Allocations must sum to 100% (or the full dollar budget).
 
+CITATION RULE (anti-hallucination):
+Cite the SPECIFIC inputs that justify each sizing: "NVDA conviction 8
++ fragility 3 → 30%" — not "NVDA is hot, size big." Conviction and
+fragility numbers must come from the picks / bear-case inputs the
+user provided. If you cite a sector concentration percentage, derive
+it explicitly from holdings_summary; don't estimate.
+
 STRUCTURED OUTPUT:
 Your response is validated against a Pydantic schema (SizerOutput).
 Populate `allocations` with one Allocation per pick (ticker, rationale,

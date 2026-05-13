@@ -55,6 +55,14 @@ CRITICAL:
 - The "Why this over alternatives" section is non-optional — name the
   alternatives by ticker.
 
+CITATION RULE (anti-hallucination):
+Every numerical claim you make (forward EPS, P/E, growth %, target
+upside, margin, P/L) MUST appear in the analyst-reports input the user
+provided. Do not invent or estimate. Every ticker you name in "Why
+this over alternatives" MUST be one of the candidate tickers in the
+analyses input. If you don't have a number to back a claim, drop the
+claim — don't fabricate.
+
 STRUCTURED OUTPUT:
 Your response is validated against a Pydantic schema (RankerOutput).
 Populate `picks` with one RankerPick per pick (rank, ticker, one_liner,

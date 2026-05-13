@@ -297,11 +297,12 @@ class MarketThemes(BaseModel):
 
     themes: list[MarketTheme] = Field(
         ...,
-        min_length=3,
+        min_length=1,
         max_length=10,
         description=(
-            "5-8 themes that are materially moving stocks right now. "
-            "Skip stale/long-faded themes; include rising ones."
+            "Prefer 5-8 themes that are materially moving stocks right now. "
+            "Schema allows 1-10 to leave headroom for the validation pass to "
+            "drop hallucinated themes without breaking the rebuild."
         ),
     )
     full_text: str = Field(
