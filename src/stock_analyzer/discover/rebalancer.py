@@ -546,6 +546,7 @@ class Rebalancer:
         aggressiveness: str = "balanced",
         history_block: str = "",
         market_themes_block: str = "",
+        cc_context_block: str = "",
     ) -> RebalancePlan:
         # Accept either the new structured form ({ticker: HoldingReview})
         # or the legacy free-text form ({ticker: str}). For the LLM prompt
@@ -579,6 +580,9 @@ class Rebalancer:
             f"themes):\n{market_themes_block}\n\n"
             if market_themes_block else ""
         )
+        cc_section = (
+            f"{cc_context_block}\n\n" if cc_context_block else ""
+        )
         prompt = (
             f"AGGRESSIVENESS: {agg}\n"
             f"(Apply the {agg} rule set from your instructions. The "
@@ -586,6 +590,7 @@ class Rebalancer:
             f"NO ACTION output.)\n\n"
             f"{macro_block}"
             f"{themes_section}"
+            f"{cc_section}"
             f"{cash_line}\n\n"
             f"{history_section}"
             f"Current holdings reviews ({len(holdings_reviews)}):\n\n{reviews_block}\n\n"

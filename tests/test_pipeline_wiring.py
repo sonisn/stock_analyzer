@@ -433,3 +433,65 @@ def test_rebalancer_prompt_includes_cc_rules():
     assert "STUB CONSOLIDATION" in s
     assert "PREMIUM REINVESTMENT" in s
     assert "option_writes" in s
+
+
+def test_decide_includes_cc_context_in_prompt():
+    from unittest.mock import MagicMock
+
+    from stock_analyzer.discover.rebalance_schema import RebalancePlan
+    from stock_analyzer.discover.rebalancer import Rebalancer
+
+    captured: dict[str, str] = {}
+
+    class _StubAgent:
+        def run(self, prompt):
+            captured["prompt"] = prompt
+            return MagicMock(
+                content=RebalancePlan(
+                    status="NO_ACTION",
+                    aggressiveness_applied="balanced",
+                    full_text="…",
+                )
+            )
+
+    r = Rebalancer.__new__(Rebalancer)
+    r.agent = _StubAgent()
+    cc_block = "===\nCOVERED-CALL CONTEXT\n===\nTICKER: NVDA\n  Shares held: 400"
+    r.decide(
+        holdings_reviews={},
+        picks_text="",
+        cash_available=1000.0,
+        cc_context_block=cc_block,
+    )
+    assert "COVERED-CALL CONTEXT" in captured["prompt"]
+    assert "TICKER: NVDA" in captured["prompt"]
+
+
+def test_decide_omits_cc_block_when_empty():
+    from unittest.mock import MagicMock
+
+    from stock_analyzer.discover.rebalance_schema import RebalancePlan
+    from stock_analyzer.discover.rebalancer import Rebalancer
+
+    captured: dict[str, str] = {}
+
+    class _StubAgent:
+        def run(self, prompt):
+            captured["prompt"] = prompt
+            return MagicMock(
+                content=RebalancePlan(
+                    status="NO_ACTION",
+                    aggressiveness_applied="balanced",
+                    full_text="…",
+                )
+            )
+
+    r = Rebalancer.__new__(Rebalancer)
+    r.agent = _StubAgent()
+    r.decide(
+        holdings_reviews={},
+        picks_text="",
+        cash_available=1000.0,
+        cc_context_block="",
+    )
+    assert "COVERED-CALL CONTEXT" not in captured["prompt"]
