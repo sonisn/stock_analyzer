@@ -397,7 +397,7 @@ Your response is validated against a small Pydantic schema
 (RebalancePlan) with FIVE fields only:
   - status: "NO_ACTION" or "ACTION".
   - aggressiveness_applied: "conservative" | "balanced" | "aggressive".
-  - actions: list of {action: SELL/TRIM/ADD/BUY, ticker, sizing}.
+  - actions: list of {action: SELL/TRIM/ADD/BUY/WRITE_CALL, ticker, sizing}.
     Empty when status=NO_ACTION. Ordered SELLs first, TRIMs second,
     ADDs/BUYs last when status=ACTION.
   - summary: one sentence (the NO_ACTION rationale or the big shift
@@ -407,9 +407,110 @@ Your response is validated against a small Pydantic schema
     alternative list, wash-sale audit, reasoning, forward outlook,
     concentration check, etc.) belongs here — full_text is the only
     place that detail lives. The PDF/email renders straight from it.
+  - option_writes: parallel to WRITE_CALL actions. One entry per
+    WRITE_CALL with ticker, strike, expiry (YYYY-MM-DD), contracts,
+    est_premium_per_share, delta, assignment_probability, notes.
+    Empty list when no calls are recommended.
 
 Structured `actions` must agree with `full_text` — if full_text says
-"Action 1: SELL MRVL", actions[0] must be {SELL, MRVL, ...}.\
+"Action 1: SELL MRVL", actions[0] must be {SELL, MRVL, ...}.
+
+========================================================================
+COVERED-CALL WRITING (when a COVERED-CALL CONTEXT block is present)
+========================================================================
+Style: aggressive premium. You may emit WRITE_CALL actions on positions
+listed under COVERED-CALL CONTEXT.
+
+TARGET BAND
+  Δ 0.35-0.45, DTE 30-45 days. Stay inside the band.
+
+STRIKE WITHIN BAND
+  - HOLD verdict with confidence >= 7  → pick Δ closer to 0.35
+    (lower assignment chance, accept smaller premium).
+  - TRIM verdict, or HOLD with confidence <= 5  → pick Δ closer to 0.45
+    (assignment is a clean exit).
+  - SELL verdict  → DO NOT emit WRITE_CALL. Sell the stock outright.
+
+COHERENCE WITH TRIM
+  If you also TRIM N shares of the same ticker, your WRITE_CALL contracts
+  must be <= (shares_after_trim) // 100. Never write calls that would
+  force assignment beyond your post-action holdings.
+
+LIQUIDITY GUARD
+  Skip any strike where bid < $0.20, OI < 100, or
+  (ask - bid) / mid > 0.15 (wide spread). If the ONLY strike in the
+  band fails the guard, do not emit a WRITE_CALL for that ticker;
+  state the reason in full_text.
+
+ANNUALIZED YIELD (state in full_text)
+  annualized_yield = (premium_per_share / strike) × (365 / DTE)
+  If annualized_yield < 8%, justify why writing is still worth it
+  (e.g., earnings reduction, regime hedge).
+
+OUTPUT
+  - Add one WRITE_CALL action per eligible ticker (max one).
+    `sizing` format: "<N> contracts $<strike>C <YYYY-MM-DD>"
+    Example: "3 contracts $260C 2026-06-20"
+  - Add a matching `option_writes` entry with strike, expiry, contracts,
+    est_premium_per_share (mid of bid/ask), delta, assignment_probability
+    (~ delta unless you have reason to differ), and a one-line `notes`.
+
+========================================================================
+PREMIUM REINVESTMENT
+========================================================================
+After choosing WRITE_CALL actions, compute:
+
+  expected_premium_total = sum(contracts × est_premium_per_share × 100)
+  deployable = existing_cash
+             + (1 - 0.10) × expected_premium_total
+             + sum(stub_consolidation_proceeds)
+
+If expected_premium_total < $500, leave premium as cash; state the
+reason in full_text. Otherwise route deployable capital via ADD/BUY
+actions, priority:
+  1. ADD on high-confidence (>= 7) HOLD positions
+  2. BUY a discover pick justified by the reviewer / ranker context
+  3. Cash residual
+
+Show the math explicitly in full_text:
+
+  Premium income (gross):     $X
+  Slippage buffer (10%):       -$Y
+  Deployable premium:          $Z
+  Existing cash:               $C
+  Stub consolidation:          $S   <- only when consolidating
+  Total dry powder:            $D
+    -> ADD <TICKER> $<amount>
+    -> BUY <TICKER> $<amount>
+    -> Cash held: $<residual>
+
+Note trade linkages, e.g. "If you skip the NVDA write, shrink the
+AMZN ADD by $340."
+
+========================================================================
+STUB CONSOLIDATION (round-lot optimization)
+========================================================================
+A ROUND-LOT COVERAGE table shows each holding's shares = lots*100 + stub,
+stub $ value, and to-next-lot cost. Each round lot of 100 shares unlocks
+one more WRITE_CALL contract — stub shares earn nothing.
+
+Consider stub consolidation when ALL of:
+  1. stub value > $1,000 (trade friction floor)
+  2. selling the stub does NOT violate a confidence->=7 HOLD
+  3. freed capital + other dry powder can complete a round lot
+     elsewhere (ADD existing-with-stub OR BUY new at a 100-multiple)
+
+Express as paired actions:
+  - TRIM N on the stub holding,
+    sizing="<N> shares — stub consolidation"
+  - matching ADD or BUY sized to land on a round lot
+
+BUY sizing for future CC capacity: when BUYing partly to enable future
+CC writing, size to a 100-multiple. State the multiple in sizing,
+e.g. "100 shares (1 lot)".
+
+Tax-aware: prefer LTCG lots for stub sales (see existing tax-lot
+guidance).\
 """
 
 

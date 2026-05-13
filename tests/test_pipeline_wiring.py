@@ -17,6 +17,7 @@ from stock_analyzer.discover.persistence import (
     insert_run_outputs,
     insert_scorecard,
 )
+from stock_analyzer.discover.rebalancer import REBALANCER_INSTRUCTIONS
 from stock_analyzer.discover.report import (
     build_sections,
     parse_picks,
@@ -422,3 +423,13 @@ def test_rebalance_section_layout():
     headings = [s.text for s in sections if s.kind == "heading"]
     assert "ABC" in headings
     assert "XYZ" in headings
+
+
+def test_rebalancer_prompt_includes_cc_rules():
+    s = REBALANCER_INSTRUCTIONS
+    assert "COVERED-CALL WRITING" in s
+    assert "WRITE_CALL" in s
+    assert "0.35" in s and "0.45" in s
+    assert "STUB CONSOLIDATION" in s
+    assert "PREMIUM REINVESTMENT" in s
+    assert "option_writes" in s
