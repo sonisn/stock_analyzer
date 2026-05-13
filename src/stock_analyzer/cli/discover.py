@@ -60,6 +60,11 @@ from ..discover.persistence import (
 )
 from ..discover.ranker import Ranker
 from ..discover.redteam import RedTeam
+from ..discover.track_record import (
+    format_track_record_block,
+    format_track_record_summary,
+    measure_track_record,
+)
 from ..discover.report import (
     build_sections,
     parse_picks,
@@ -236,6 +241,13 @@ class DiscoverPipeline:
         self.state["macro_summary"] = regime_summary_text(data)
         # Truncate for terminal preview.
         return StepOutput(content=self.state["macro_summary"][:200])
+
+    def step_track_record(self, step_input: StepInput) -> StepOutput:
+        record = measure_track_record(self.settings.discover_db_path)
+        self.state["track_record"] = record
+        self.state["track_record_summary"] = format_track_record_summary(record)
+        self.state["track_record_block"] = format_track_record_block(record)
+        return StepOutput(content=self.state["track_record_summary"])
 
     def step_screen(self, step_input: StepInput) -> StepOutput:
         universe = self.state["universe"]
@@ -456,6 +468,7 @@ class DiscoverPipeline:
             self.state["analyses"],
             self.state["holdings_summary"],
             macro_context=self.state.get("macro_summary", ""),
+            track_record_block=self.state.get("track_record_block", ""),
         )
         self.state["picks"] = parse_picks(self.state["ranker_text"])
         picked = [t for _, t, _ in self.state["picks"]]
@@ -544,6 +557,7 @@ class DiscoverPipeline:
             holdings_summary=self.state["holdings_summary"],
             macro_summary=self.state.get("macro_summary", ""),
             sector_rotation=self.state.get("sector_rotation"),
+            track_record_block=self.state.get("track_record_block", ""),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -637,6 +651,7 @@ class DiscoverPipeline:
                     Step(name="technicals", executor=self.step_technicals),
                     Step(name="sector_rotation", executor=self.step_sector_rotation),
                     Step(name="macro_regime", executor=self.step_macro_regime),
+                    Step(name="track_record", executor=self.step_track_record),
                     name="market_data",
                 ),
                 Step(name="screen", executor=self.step_screen),

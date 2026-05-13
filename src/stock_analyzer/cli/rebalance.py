@@ -442,6 +442,7 @@ class RebalancePipeline(DiscoverPipeline):
             holdings_positions=self.state.get("holdings_positions", {}),
             holdings_technicals=self.state.get("holdings_technicals", {}),
             holdings_fundamentals=self.state.get("holdings_fundamentals", {}),
+            track_record_block=self.state.get("track_record_block", ""),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -535,6 +536,7 @@ class RebalancePipeline(DiscoverPipeline):
                     Step(name="technicals", executor=self.step_technicals),
                     Step(name="sector_rotation", executor=self.step_sector_rotation),
                     Step(name="macro_regime", executor=self.step_macro_regime),
+                    Step(name="track_record", executor=self.step_track_record),
                     Step(name="holdings_fetch", executor=self.step_holdings_fetch),
                     Step(
                         name="transaction_history",
@@ -585,6 +587,7 @@ def _build_rebalance_sections(
     holdings_positions: dict[str, dict[str, Any]],
     holdings_technicals: dict[str, dict[str, Any]],
     holdings_fundamentals: dict[str, dict[str, Any]],
+    track_record_block: str = "",
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -653,6 +656,10 @@ def _build_rebalance_sections(
         pie_data = sorted(sector_value.items(), key=lambda x: x[1], reverse=True)
         sections.append(Section(kind="heading", text="Sector allocation", level=2))
         sections.append(Section(kind="sector_pie", pie_data=pie_data))
+
+    if track_record_block:
+        sections.append(Section(kind="heading", text="Track record", level=2))
+        sections.append(Section(kind="preformatted", text=track_record_block))
 
     if macro_summary:
         sections.append(Section(kind="heading", text="Macro regime", level=2))

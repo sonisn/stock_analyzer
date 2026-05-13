@@ -180,6 +180,7 @@ def build_sections(
     holdings_summary: str,
     macro_summary: str = "",
     sector_rotation: dict[str, Any] | None = None,
+    track_record_block: str = "",
 ) -> list[Section]:
     today = date.today().isoformat()
     pick_blocks = _split_by_pick_blocks(ranker_text)
@@ -199,6 +200,10 @@ def build_sections(
             f"hard filters, {len(pick_order)} picks."
         ),
     ))
+
+    if track_record_block:
+        s.append(Section(kind="heading", text="Track record", level=2))
+        s.append(Section(kind="preformatted", text=track_record_block))
 
     if macro_summary:
         s.append(Section(kind="heading", text="Macro regime", level=2))

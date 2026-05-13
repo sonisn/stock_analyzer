@@ -100,13 +100,19 @@ class Ranker:
         holdings_summary: str,
         top_n: int,
         macro_context: str,
+        track_record_block: str = "",
     ) -> str:
         candidates_block = "\n\n".join(
             f"=== {ticker} ===\n{analysis}" for ticker, analysis in analyses.items()
         )
         macro_block = f"Macro regime:\n{macro_context}\n\n" if macro_context else ""
+        track_block = (
+            f"Historical track record (your own past picks):\n{track_record_block}\n\n"
+            if track_record_block else ""
+        )
         prompt = (
             f"{macro_block}"
+            f"{track_block}"
             f"You will pick the top {top_n} from {len(analyses)} candidates.\n\n"
             f"Current holdings summary:\n{holdings_summary or '(none)'}\n\n"
             f"Candidate analyses:\n\n{candidates_block}"
@@ -119,6 +125,7 @@ class Ranker:
         holdings_summary: str,
         top_n: int = 5,
         macro_context: str = "",
+        track_record_block: str = "",
     ) -> str:
         """Single call when consensus_runs=1; otherwise run N times and
         return the run whose picks best overlap the majority-consensus set."""
@@ -130,13 +137,15 @@ class Ranker:
             self.consensus_runs,
         )
         if self.consensus_runs <= 1:
-            return self._rank_once(analyses, holdings_summary, top_n, macro_context)
+            return self._rank_once(
+                analyses, holdings_summary, top_n, macro_context, track_record_block
+            )
 
         texts: list[str] = []
         pick_sets: list[set[str]] = []
         for i in range(self.consensus_runs):
             text = self._rank_once(
-                analyses, holdings_summary, top_n, macro_context
+                analyses, holdings_summary, top_n, macro_context, track_record_block
             )
             texts.append(text)
             picks = _pick_set(text)
