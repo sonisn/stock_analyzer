@@ -6,6 +6,7 @@ basis, and risk factors. Output is consumed by the Rebalancer.
 """
 from __future__ import annotations
 
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -164,6 +165,31 @@ CRITICAL:
 - When in doubt, HOLD. Inaction has costs but they are usually small;
   wrong action has costs that compound over months.
 
+INTERNAL CONSISTENCY CHECK (do this BEFORE finalizing):
+Before submitting your response, re-read your `reasoning` text and
+your `what_would_change_mind` text:
+
+  1. If `reasoning` mentions "the HOLD verdict", "the TRIM verdict",
+     or "the SELL verdict", that word MUST exactly match your
+     structured `verdict` field. A sentence like "the HOLD verdict
+     preserves optionality" with structured verdict=SELL is a hard
+     contradiction — fix one or the other.
+
+  2. `what_would_change_mind` describes what would move you AWAY FROM
+     your current verdict, not toward it. If your structured verdict
+     is SELL and `what_would_change_mind` says "would prompt
+     reassessment toward TRIM", that's backwards — you can't move
+     from SELL toward TRIM, you'd move from HOLD toward TRIM.
+
+  3. CONFIDENCE CALIBRATION: TRIM and SELL require confidence >= 7.
+     A response with `verdict`=TRIM and `confidence`=5 is invalid;
+     either raise confidence (if you can defend it) or downgrade
+     the verdict to HOLD.
+
+These three checks catch the most common inconsistency drift between
+the prose you write and the structured fields. The renderer trusts
+both — when they disagree, the user sees a contradictory card.
+
 STRUCTURED OUTPUT:
 Your response is validated against a Pydantic schema (HoldingReview).
 Populate every required field. The prose plan you would have emitted
@@ -173,6 +199,96 @@ only when verdict is SELL and at least one lot in `tax_lot_plan`
 realizes a loss. The structured fields must agree with `full_text` —
 if `full_text` says "Verdict: SELL" then `verdict` MUST be "SELL".\
 """
+
+
+_VERDICT_IN_PROSE = re.compile(r"\bthe (HOLD|TRIM|SELL) verdict\b", re.IGNORECASE)
+_TOWARD_VERDICT = re.compile(r"\btoward (HOLD|TRIM|SELL)\b", re.IGNORECASE)
+
+
+def _repair_verdict_inconsistencies(
+    review: HoldingReview, ticker: str
+) -> HoldingReview:
+    """Catch and rewrite the LLM's internal inconsistencies between the
+    structured verdict and the prose it produced in the same response.
+
+    Two repair rules:
+
+    1. CONFIDENCE-CALIBRATION violation: the prompt says TRIM/SELL
+       require confidence >= 7; anything below that with a non-HOLD
+       verdict gets rewritten to HOLD. Almost always Sonnet picked
+       the wrong enum.
+
+    2. PROSE-CONTRADICTION: if `reasoning` says "the HOLD verdict
+       preserves..." and the structured `verdict` is SELL, the prose
+       is more reliable (the LLM defends a position before naming it,
+       so the paragraph is the source of truth). Or if
+       `what_would_change_mind` says "toward TRIM" while structured
+       verdict is TRIM (you can't move toward your current state),
+       infer the current verdict from context. Repair the structured
+       field to match what the prose actually argued.
+
+    A repair always emits a WARNING — frequency of repairs is a signal
+    that the prompt or model is drifting.
+    """
+    updates: dict[str, Any] = {}
+
+    # Rule 1: confidence calibration
+    if review.verdict != "HOLD" and review.confidence < 7:
+        logger.warning(
+            "Reviewer %s: verdict=%s with confidence=%d (<7) violates "
+            "the calibration rule (TRIM/SELL require conf >= 7). "
+            "Repairing to HOLD.",
+            ticker, review.verdict, review.confidence,
+        )
+        updates["verdict"] = "HOLD"
+
+    # Rule 2: prose contradiction. Look at the reasoning field first;
+    # "the X verdict <does Y>" is a direct claim of what the verdict IS.
+    reasoning = review.reasoning or ""
+    prose_match = _VERDICT_IN_PROSE.search(reasoning)
+    prose_verdict = prose_match.group(1).upper() if prose_match else None
+    current_verdict = updates.get("verdict", review.verdict)
+    if prose_verdict and prose_verdict != current_verdict:
+        logger.warning(
+            "Reviewer %s: structured verdict=%s but `reasoning` "
+            "references 'the %s verdict' — prose is authoritative; "
+            "repairing structured field to %s.",
+            ticker, review.verdict, prose_verdict, prose_verdict,
+        )
+        updates["verdict"] = prose_verdict
+        # If we're upgrading to TRIM/SELL via prose, drop confidence
+        # to no-lower-than 7 since the prose evidently defended the
+        # tighter verdict.
+        if prose_verdict in ("TRIM", "SELL") and review.confidence < 7:
+            updates["confidence"] = 7
+
+    # Rule 3 (lighter): "what_would_change_mind" says "toward X" while
+    # the current verdict already IS X — implies the actual current
+    # verdict is something other than X. Use this as a TIE-BREAKER only
+    # when prose-contradiction rule did not already fire.
+    if "verdict" not in updates:
+        wcm = review.what_would_change_mind or ""
+        toward_match = _TOWARD_VERDICT.search(wcm)
+        toward_verdict = (
+            toward_match.group(1).upper() if toward_match else None
+        )
+        if toward_verdict and toward_verdict == review.verdict:
+            # We can't move toward our current state. Best guess: prose
+            # was written from a HOLD perspective and structured field
+            # got flipped to TRIM/SELL. Repair to HOLD only if confidence
+            # also fails the calibration rule.
+            if review.verdict != "HOLD" and review.confidence < 7:
+                logger.warning(
+                    "Reviewer %s: verdict=%s with `what_would_change_mind` "
+                    "saying 'toward %s' is self-contradictory; "
+                    "repairing to HOLD.",
+                    ticker, review.verdict, toward_verdict,
+                )
+                updates["verdict"] = "HOLD"
+
+    if not updates:
+        return review
+    return review.model_copy(update=updates)
 
 
 class Reviewer:
@@ -204,16 +320,17 @@ class Reviewer:
             )
             return None
         if isinstance(result, HoldingReview):
-            return result
+            return _repair_verdict_inconsistencies(result, ticker)
         if isinstance(result, str):
             try:
-                return HoldingReview.model_validate_json(result)
+                parsed = HoldingReview.model_validate_json(result)
             except Exception as e:
                 logger.warning(
                     "Reviewer for %s returned a string that wasn't valid "
                     "HoldingReview JSON: %s", ticker, e,
                 )
                 return None
+            return _repair_verdict_inconsistencies(parsed, ticker)
         logger.warning(
             "Reviewer for %s returned unexpected type %s; skipping",
             ticker, type(result).__name__,
