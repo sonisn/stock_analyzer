@@ -250,9 +250,12 @@ class RebalancePipeline(DiscoverPipeline):
 
     def step_insider_selling(self, step_input: StepInput) -> StepOutput:
         """Override: include holdings tickers so reviewer sees selling on them too."""
-        tickers = set(self.state["survivor_tickers"])
+        tickers = set(self.state.get("survivor_tickers") or [])
         if self.state.get("holdings_tickers"):
             tickers |= set(self.state["holdings_tickers"])
+        if not tickers:
+            self.state["insider_selling"] = {}
+            return StepOutput(content="insider_selling: no tickers; skipping")
         self.state["insider_selling"] = insider_selling_mentions(tickers, days=14)
         return StepOutput(
             content=f"Insider selling: {len(self.state['insider_selling'])} flagged"
@@ -260,9 +263,12 @@ class RebalancePipeline(DiscoverPipeline):
 
     def step_share_trades(self, step_input: StepInput) -> StepOutput:
         """Override: fetch insider/institutional data for both survivors AND holdings."""
-        tickers = set(self.state["survivor_tickers"])
+        tickers = set(self.state.get("survivor_tickers") or [])
         if self.state.get("holdings_tickers"):
             tickers |= set(self.state["holdings_tickers"])
+        if not tickers:
+            self.state["share_trades"] = {}
+            return StepOutput(content="share_trades: no tickers; skipping")
         self.state["share_trades"] = batch_share_trade_data(list(tickers))
         return StepOutput(
             content=f"Share trades fetched for {len(self.state['share_trades'])}/{len(tickers)}"
@@ -271,9 +277,12 @@ class RebalancePipeline(DiscoverPipeline):
     def step_finnhub_signals(self, step_input: StepInput) -> StepOutput:
         """Earnings surprise + recommendation trend + price targets +
         Form-4 insider activity for survivors AND current holdings."""
-        tickers = set(self.state["survivor_tickers"])
+        tickers = set(self.state.get("survivor_tickers") or [])
         if self.state.get("holdings_tickers"):
             tickers |= set(self.state["holdings_tickers"])
+        if not tickers:
+            self.state["finnhub_signals"] = {}
+            return StepOutput(content="finnhub_signals: no tickers; skipping")
         self.state["finnhub_signals"] = batch_finnhub_signals(list(tickers))
         n = sum(1 for v in self.state["finnhub_signals"].values() if v)
         return StepOutput(

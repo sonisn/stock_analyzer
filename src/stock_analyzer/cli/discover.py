@@ -94,6 +94,22 @@ def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
     return path
 
 
+def _top_fail_reasons(
+    candidates: list[dict[str, Any]], *, k: int = 3
+) -> str:
+    """Aggregate the top-K fail-reason strings across all candidates, so
+    a 'no survivors' log line is actionable (e.g. tells you debt/equity
+    or market-cap was the dominant filter)."""
+    from collections import Counter
+    counter: Counter[str] = Counter()
+    for c in candidates:
+        for r in c.get("fail_reasons") or []:
+            counter[r] += 1
+    if not counter:
+        return "(no fail_reasons captured)"
+    return ", ".join(f"{r} ({n})" for r, n in counter.most_common(k))
+
+
 def _log_discover_analysis(
     *,
     delivered: bool,
@@ -292,28 +308,50 @@ class DiscoverPipeline:
         self.state["survivors"] = survivors
         self.state["survivor_tickers"] = [c["ticker"] for c in survivors]
         if not survivors:
-            raise RuntimeError(
-                "No candidates passed hard filters — pipeline halted. "
-                "Inspect candidates table for fail_reasons."
+            # Don't raise — agno doesn't propagate state from a step that
+            # raises, which leaves every enrichment step in the next
+            # parallel block reading a missing survivor_tickers key and
+            # cascading 4 retry attempts × 10 steps of KeyError noise.
+            # Log loudly + return so state is preserved; downstream
+            # steps short-circuit on the empty list and the run lands as
+            # an honest 0-candidates row in the DB.
+            logger.error(
+                "Screen: no candidates passed hard filters out of %d "
+                "(top fail reasons: %s). Continuing with empty survivors "
+                "so downstream steps degrade cleanly.",
+                len(candidates),
+                _top_fail_reasons(candidates),
+            )
+            return StepOutput(
+                content=f"Screen: 0/{len(candidates)} passed — no survivors"
             )
         return StepOutput(
             content=f"Screen: {passed}/{len(candidates)} passed; top {len(survivors)} → LLM"
         )
 
     def step_risk_factors(self, step_input: StepInput) -> StepOutput:
-        tickers = self.state["survivor_tickers"]
+        tickers = self.state.get("survivor_tickers") or []
+        if not tickers:
+            self.state["risk_factors"] = {}
+            return StepOutput(content="risk_factors: no survivors; skipping")
         self.state["risk_factors"] = batch_risk_factors(tickers)
         return StepOutput(
             content=f"SEC 10-K: {len(self.state['risk_factors'])}/{len(tickers)}"
         )
 
     def step_news(self, step_input: StepInput) -> StepOutput:
-        tickers = self.state["survivor_tickers"]
+        tickers = self.state.get("survivor_tickers") or []
+        if not tickers:
+            self.state["news"] = {}
+            return StepOutput(content="news: no survivors; skipping")
         self.state["news"] = _batch_news(tickers)
         return StepOutput(content=f"News fetched for {len(tickers)}")
 
     def step_earnings(self, step_input: StepInput) -> StepOutput:
-        tickers = self.state["survivor_tickers"]
+        tickers = self.state.get("survivor_tickers") or []
+        if not tickers:
+            self.state["earnings_alerts"] = {}
+            return StepOutput(content="earnings: no survivors; skipping")
         self.state["earnings_alerts"] = batch_earnings_flags(tickers, within_days=5)
         return StepOutput(
             content=(
@@ -326,14 +364,20 @@ class DiscoverPipeline:
         # Kept for back-compat when FINNHUB_API_KEY is unset; the new
         # Finnhub-backed insider activity in `step_finnhub_signals` is
         # strictly richer (real Form 4 filings vs news-mention heuristic).
-        tickers = set(self.state["survivor_tickers"])
+        tickers = set(self.state.get("survivor_tickers") or [])
+        if not tickers:
+            self.state["insider_selling"] = {}
+            return StepOutput(content="insider_selling: no survivors; skipping")
         self.state["insider_selling"] = insider_selling_mentions(tickers, days=14)
         return StepOutput(
             content=f"Insider selling: {len(self.state['insider_selling'])} survivors flagged"
         )
 
     def step_finnhub_signals(self, step_input: StepInput) -> StepOutput:
-        tickers = list(self.state["survivor_tickers"])
+        tickers = list(self.state.get("survivor_tickers") or [])
+        if not tickers:
+            self.state["finnhub_signals"] = {}
+            return StepOutput(content="finnhub_signals: no survivors; skipping")
         self.state["finnhub_signals"] = batch_finnhub_signals(tickers)
         n = sum(1 for v in self.state["finnhub_signals"].values() if v)
         return StepOutput(
@@ -341,14 +385,20 @@ class DiscoverPipeline:
         )
 
     def step_quarterly_mda(self, step_input: StepInput) -> StepOutput:
-        tickers = self.state["survivor_tickers"]
+        tickers = self.state.get("survivor_tickers") or []
+        if not tickers:
+            self.state["quarterly_mda"] = {}
+            return StepOutput(content="quarterly_mda: no survivors; skipping")
         self.state["quarterly_mda"] = batch_quarterly_mda(tickers)
         return StepOutput(
             content=f"10-Q MD&A: {len(self.state['quarterly_mda'])}/{len(tickers)}"
         )
 
     def step_peer_comparison(self, step_input: StepInput) -> StepOutput:
-        tickers = self.state["survivor_tickers"]
+        tickers = self.state.get("survivor_tickers") or []
+        if not tickers:
+            self.state["peer_comparison"] = {}
+            return StepOutput(content="peer_comparison: no survivors; skipping")
         fundamentals = self.state.get("fundamentals", {})
         target_meta = {
             t: {
@@ -363,14 +413,20 @@ class DiscoverPipeline:
         )
 
     def step_earnings_transcripts(self, step_input: StepInput) -> StepOutput:
-        tickers = self.state["survivor_tickers"]
+        tickers = self.state.get("survivor_tickers") or []
+        if not tickers:
+            self.state["earnings_transcripts"] = {}
+            return StepOutput(content="earnings_transcripts: no survivors; skipping")
         self.state["earnings_transcripts"] = batch_transcript_snippets(tickers)
         return StepOutput(
             content=f"Transcripts: {len(self.state['earnings_transcripts'])}/{len(tickers)}"
         )
 
     def step_share_trades(self, step_input: StepInput) -> StepOutput:
-        tickers = self.state["survivor_tickers"]
+        tickers = self.state.get("survivor_tickers") or []
+        if not tickers:
+            self.state["share_trades"] = {}
+            return StepOutput(content="share_trades: no survivors; skipping")
         self.state["share_trades"] = batch_share_trade_data(tickers)
         signals = {
             (data.get("insider_summary_6mo") or {}).get("insider_signal", "neutral")
@@ -384,11 +440,16 @@ class DiscoverPipeline:
         )
 
     def step_analyst(self, step_input: StepInput) -> StepOutput:
-        survivors = self.state["survivors"]
-        fundamentals = self.state["fundamentals"]
-        technicals = self.state["technicals"]
-        risk_factors = self.state["risk_factors"]
-        news = self.state["news"]
+        survivors = self.state.get("survivors") or []
+        if not survivors:
+            # Empty after screen short-circuited. Set everything downstream
+            # depends on so the rest of the pipeline degrades cleanly.
+            self.state["analyses"] = {}
+            return StepOutput(content="analyst: no survivors; skipping")
+        fundamentals = self.state.get("fundamentals", {})
+        technicals = self.state.get("technicals", {})
+        risk_factors = self.state.get("risk_factors", {})
+        news = self.state.get("news", {})
 
         earnings_alerts = self.state.get("earnings_alerts", {})
         insider_selling = self.state.get("insider_selling", {})
@@ -439,7 +500,10 @@ class DiscoverPipeline:
         analyst = Analyst("claude", self.settings.discover_sonnet_model)
         self.state["analyses"] = analyze_batch(analyst, payloads)
         if not self.state["analyses"]:
-            raise RuntimeError("All analyst calls failed — halting before Opus stages")
+            logger.error(
+                "Analyst: all calls failed; downstream LLM stages will skip"
+            )
+            return StepOutput(content="Analyst: all calls failed; downstream will skip")
         return StepOutput(content=f"Analyst: {len(self.state['analyses'])} scorecards")
 
     def step_holdings(self, step_input: StepInput) -> StepOutput:
@@ -459,14 +523,20 @@ class DiscoverPipeline:
         )
 
     def step_ranker(self, step_input: StepInput) -> StepOutput:
+        analyses = self.state.get("analyses") or {}
+        if not analyses:
+            self.state["ranker_output"] = None
+            self.state["ranker_text"] = ""
+            self.state["picks"] = []
+            return StepOutput(content="ranker: no analyses; skipping")
         ranker = Ranker(
             "claude",
             self.settings.discover_opus_model,
             consensus_runs=self.settings.discover_consensus_runs,
         )
         output = ranker.rank(
-            self.state["analyses"],
-            self.state["holdings_summary"],
+            analyses,
+            self.state.get("holdings_summary", ""),
             macro_context=self.state.get("macro_summary", ""),
             track_record_block=self.state.get("track_record_block", ""),
         )
@@ -477,18 +547,28 @@ class DiscoverPipeline:
         return StepOutput(content=f"Ranker picked {len(picked)}: {picked}")
 
     def step_redteam(self, step_input: StepInput) -> StepOutput:
+        ranker_text = self.state.get("ranker_text") or ""
+        if not ranker_text:
+            self.state["redteam_output"] = None
+            self.state["redteam_text"] = ""
+            return StepOutput(content="redteam: no picks; skipping")
         redteam = RedTeam("claude", self.settings.discover_opus_model)
-        redteam_output = redteam.critique(self.state["ranker_text"])
+        redteam_output = redteam.critique(ranker_text)
         self.state["redteam_output"] = redteam_output
         self.state["redteam_text"] = redteam_output.full_text
         return StepOutput(content="Red-team critique complete")
 
     def step_sizer(self, step_input: StepInput) -> StepOutput:
+        ranker_text = self.state.get("ranker_text") or ""
+        if not ranker_text:
+            self.state["sizer_output"] = None
+            self.state["sizer_text"] = ""
+            return StepOutput(content="sizer: no picks; skipping")
         sizer = Sizer("claude", self.settings.discover_opus_model)
         sizer_output = sizer.allocate(
-            self.state["ranker_text"],
-            self.state["redteam_text"],
-            self.state["holdings_summary"],
+            ranker_text,
+            self.state.get("redteam_text", ""),
+            self.state.get("holdings_summary", ""),
             self.settings.discover_cash_budget,
         )
         self.state["sizer_output"] = sizer_output
