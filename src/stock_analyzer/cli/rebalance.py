@@ -460,10 +460,20 @@ class RebalancePipeline(DiscoverPipeline):
                 "Cross-run context: %d holdings have prior decisions",
                 history_block.count("\n"),
             )
+        # Defensive: when discover stages (ranker/sizer) fail their retry
+        # budget, the rebalancer can still produce a holdings-only plan
+        # off the per-holding reviews. Pass empty discover context rather
+        # than KeyError-ing the whole run.
+        ranker_text = self.state.get("ranker_text") or ""
+        if not ranker_text:
+            logger.warning(
+                "Rebalance: no ranker_text in state (Ranker step likely "
+                "failed). Producing holdings-only plan from reviews."
+            )
         rebalancer = Rebalancer("claude", self.settings.discover_opus_model)
         plan = rebalancer.decide(
-            self.state["holdings_reviews"],
-            self.state["ranker_text"],
+            self.state.get("holdings_reviews", {}),
+            ranker_text,
             self.state.get("cash_balance"),
             self.state.get("macro_summary", ""),
             aggressiveness=self.settings.discover_rebalance_aggressiveness,
@@ -516,19 +526,32 @@ class RebalancePipeline(DiscoverPipeline):
         )
 
     def step_persist_and_email_rebalance(self, step_input: StepInput) -> StepOutput:
+        # Defensive .get() reads throughout: any earlier discover stage
+        # (universe / screen / ranker / sizer) can exhaust its retry budget
+        # without setting state, and persisting + emailing the holdings
+        # reviews is still valuable when that happens. KeyError-ing the
+        # whole pipeline at the last step costs the user the entire run.
+        candidates = self.state.get("candidates") or []
+        survivors = self.state.get("survivors") or []
+        picks = self.state.get("picks") or []
+        analyses = self.state.get("analyses") or {}
+        ranker_text = self.state.get("ranker_text") or ""
+        redteam_text = self.state.get("redteam_text") or ""
+        sizer_text = self.state.get("sizer_text") or ""
+
         # Persist run + candidates + scorecards + picks + outputs.
         with connect(self.settings.discover_db_path) as conn:
             run_id = insert_run(
                 conn,
-                universe_size=len(self.state["candidates"]),
-                survivors=len(self.state["survivors"]),
-                picks=len(self.state["picks"]),
+                universe_size=len(candidates),
+                survivors=len(survivors),
+                picks=len(picks),
                 opus_model=self.settings.discover_opus_model,
                 sonnet_model=self.settings.discover_sonnet_model,
                 cash_budget=self.state.get("cash_balance"),
                 kind="rebalance",
             )
-            for c in self.state["candidates"]:
+            for c in candidates:
                 insert_candidate(
                     conn,
                     run_id,
@@ -543,7 +566,7 @@ class RebalancePipeline(DiscoverPipeline):
                     sector=c["sector"],
                     price=c["price"],
                 )
-            for ticker, report in self.state["analyses"].items():
+            for ticker, report in analyses.items():
                 analyst_text = getattr(report, "full_text", None) or (
                     report if isinstance(report, str) else ""
                 )
@@ -564,15 +587,15 @@ class RebalancePipeline(DiscoverPipeline):
                     confidence=parse_confidence(review),
                     review_text=review_text,
                 )
-            for rank, ticker, _ in self.state["picks"]:
+            for rank, ticker, _ in picks:
                 insert_pick(
                     conn,
                     run_id,
                     rank=rank,
                     ticker=ticker,
-                    ranker_text=self.state["ranker_text"],
-                    bear_case_text=self.state["redteam_text"],
-                    allocation_text=self.state["sizer_text"],
+                    ranker_text=ranker_text,
+                    bear_case_text=redteam_text,
+                    allocation_text=sizer_text,
                 )
             plan = self.state.get("rebalance_plan")
             # Use .get() with empty-string defaults for the rebalancer's
@@ -582,30 +605,32 @@ class RebalancePipeline(DiscoverPipeline):
             insert_run_outputs(
                 conn,
                 run_id,
-                ranker_full=self.state.get("ranker_text", "") or "",
-                redteam_full=self.state.get("redteam_text", "") or "",
-                sizer_full=self.state.get("sizer_text", "") or "",
+                ranker_full=ranker_text,
+                redteam_full=redteam_text,
+                sizer_full=sizer_text,
                 holdings_summary=self.state.get("holdings_summary", "") or "",
                 rebalance_text=self.state.get("rebalance_text", "") or "",
                 dashboard_data=plan.model_dump(mode="json") if plan else None,
             )
 
-        # Charts for the BUY candidates (discover picks).
-        pick_tickers = [t for _, t, _ in self.state["picks"]]
+        # Charts for the BUY candidates (discover picks). If Ranker
+        # failed, picks list is empty and we just skip — the holdings
+        # reviews still render fine without ticker charts.
+        pick_tickers = [t for _, t, _ in picks]
         charts: dict[str, bytes] = {}
         try:
-            charts = fetch_charts(pick_tickers)
+            charts = fetch_charts(pick_tickers) if pick_tickers else {}
         except Exception as e:
             logger.warning("Chart fetch failed (%s) — report will omit charts", e)
         chart_cids = {t: f"chart-{t.replace('.', '-')}" for t in charts}
 
         sections = _build_rebalance_sections(
-            rebalance_text=self.state["rebalance_text"],
-            holdings_reviews=self.state["holdings_reviews"],
-            ranker_text=self.state["ranker_text"],
-            redteam_text=self.state["redteam_text"],
-            sizer_text=self.state["sizer_text"],
-            candidates=self.state["candidates"],
+            rebalance_text=self.state.get("rebalance_text", "") or "",
+            holdings_reviews=self.state.get("holdings_reviews", {}),
+            ranker_text=ranker_text,
+            redteam_text=redteam_text,
+            sizer_text=sizer_text,
+            candidates=candidates,
             cash_balance=self.state.get("cash_balance"),
             macro_summary=self.state.get("macro_summary", ""),
             sector_rotation=self.state.get("sector_rotation"),
@@ -659,18 +684,18 @@ class RebalancePipeline(DiscoverPipeline):
             delivered=delivered,
             delivery_error=delivery_error,
             local_pdf_path=str(local_pdf_path),
-            rebalance_text=self.state["rebalance_text"],
-            ranker_text=self.state["ranker_text"],
-            redteam_text=self.state["redteam_text"],
-            sizer_text=self.state["sizer_text"],
-            holdings_reviews=self.state["holdings_reviews"],
+            rebalance_text=self.state.get("rebalance_text", "") or "",
+            ranker_text=ranker_text,
+            redteam_text=redteam_text,
+            sizer_text=sizer_text,
+            holdings_reviews=self.state.get("holdings_reviews", {}),
         )
 
-        print_terminal_summary(self.state["ranker_text"], self.state["sizer_text"])
+        print_terminal_summary(ranker_text, sizer_text)
         print("\n" + "=" * 60)
         print("REBALANCE PLAN")
         print("=" * 60)
-        print(self.state["rebalance_text"])
+        print(self.state.get("rebalance_text") or "(no plan produced)")
         print(f"\nPDF saved: {local_pdf_path}")
         log_path = current_log_file()
         if log_path:
