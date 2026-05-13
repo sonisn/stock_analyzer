@@ -25,9 +25,6 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.7",
 ]
-dashboard = [
-    "streamlit>=1.40",
-]
 
 [tool.ruff]
 line-length = 100

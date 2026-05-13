@@ -86,78 +86,6 @@ def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
     return path
 
 
-def _build_rebalance_dashboard_data(state: dict[str, Any]) -> dict[str, Any]:
-    """Snapshot the rebalance run for the dashboard's drill-in view.
-
-    Stores the holdings dashboard rows (sector, P/L, verdict, confidence,
-    full review text) + portfolio metrics + status + a deterministic
-    PDF filename. Sits as a single JSON blob on run_outputs.dashboard_data
-    so the dashboard doesn't need a new table for every snapshot field."""
-    from ..discover.report import parse_confidence, parse_rebalance_status, parse_verdict
-
-    positions = state.get("holdings_positions", {}) or {}
-    technicals = state.get("holdings_technicals", {}) or {}
-    fundamentals = state.get("holdings_fundamentals", {}) or {}
-    reviews = state.get("holdings_reviews", {}) or {}
-    rebalance_text = state.get("rebalance_text") or ""
-
-    holdings: dict[str, dict[str, Any]] = {}
-    total_value = 0.0
-    total_cost = 0.0
-    sector_value: dict[str, float] = {}
-    for ticker in sorted(positions.keys()):
-        pos = positions[ticker]
-        tech = technicals.get(ticker, {}) or {}
-        fund = fundamentals.get(ticker, {}) or {}
-        review = reviews.get(ticker) or ""
-        current = tech.get("price")
-        units = pos.get("units", 0)
-        cost = pos.get("cost_basis", 0)
-        value = (current or 0) * units
-        total_value += value
-        total_cost += cost
-        pnl_pct = ((value - cost) / cost * 100) if cost else None
-        sector = fund.get("sector") or "Unknown"
-        if value > 0:
-            sector_value[sector] = sector_value.get(sector, 0) + value
-        holdings[ticker] = {
-            "units": units,
-            "avg_buy_price": pos.get("avg_buy_price"),
-            "current_price": current,
-            "cost_basis": cost,
-            "value": value,
-            "pnl_pct": pnl_pct,
-            "sector": sector,
-            "verdict": parse_verdict(review),
-            "confidence": parse_confidence(review),
-            "review_text": review,
-        }
-
-    today = date.today().isoformat()
-    return {
-        "kind": "rebalance",
-        "status": parse_rebalance_status(rebalance_text),
-        "aggressiveness": state.get("aggressiveness"),
-        "pdf_filename": f"rebalance-{today}.pdf",
-        "metrics": {
-            "total_value": total_value,
-            "total_cost": total_cost,
-            "total_pnl_pct": (
-                ((total_value - total_cost) / total_cost * 100)
-                if total_cost else None
-            ),
-            "cash": state.get("cash_balance"),
-            "holdings_count": len(positions),
-        },
-        "holdings": holdings,
-        "sector_breakdown": [
-            {"sector": s, "value": v}
-            for s, v in sorted(sector_value.items(), key=lambda x: x[1], reverse=True)
-        ],
-        "macro_summary": state.get("macro_summary", ""),
-    }
-
-
 def _log_full_analysis(
     *,
     delivered: bool,
@@ -391,7 +319,6 @@ class RebalancePipeline(DiscoverPipeline):
 
     def step_persist_and_email_rebalance(self, step_input: StepInput) -> StepOutput:
         # Persist run + candidates + scorecards + picks + outputs.
-        dashboard_data = _build_rebalance_dashboard_data(self.state)
         with connect(self.settings.discover_db_path) as conn:
             run_id = insert_run(
                 conn,
@@ -438,7 +365,6 @@ class RebalancePipeline(DiscoverPipeline):
                 sizer_full=self.state["sizer_text"],
                 holdings_summary=self.state["holdings_summary"],
                 rebalance_text=self.state["rebalance_text"],
-                dashboard_data=dashboard_data,
             )
 
         # Charts for the BUY candidates (discover picks).
