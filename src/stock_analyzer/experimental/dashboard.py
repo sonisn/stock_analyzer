@@ -67,7 +67,15 @@ def _conn() -> sqlite3.Connection:
             "SSHFS, etc.)."
         )
         st.stop()
-    conn = sqlite3.connect(f"file:{_DB_PATH}?mode=ro", uri=True)
+    # check_same_thread=False is safe here: the handle is opened in
+    # read-only URI mode and Streamlit serializes script reruns per
+    # session — concurrent reads against a ro handle are the textbook
+    # safe SQLite case.
+    conn = sqlite3.connect(
+        f"file:{_DB_PATH}?mode=ro",
+        uri=True,
+        check_same_thread=False,
+    )
     conn.row_factory = sqlite3.Row
     return conn
 
