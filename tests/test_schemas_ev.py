@@ -56,3 +56,26 @@ def test_returns_none_for_legacy_picks_without_scenarios():
     rather than treating them as 0% EV."""
     pick = _pick([])
     assert expected_return_pct(pick) is None
+
+
+# --- MarketTheme min_length regression -----------------------------------
+
+
+def test_market_theme_accepts_under_populated_member_tickers():
+    """The LLM occasionally emits a theme with one member ticker (we saw
+    `['AU']` in production). The schema must NOT reject the whole
+    MarketThemes response — that triggers all-parsing-attempts-failed
+    and the entire theme block is lost. The auto-correct in
+    cli/discover.py drops <3-member themes at runtime; the schema's job
+    is structural validity, not quality enforcement."""
+    from stock_analyzer.discover.schemas import MarketTheme, MarketThemes
+    theme = MarketTheme(
+        name="Gold miners",
+        description="Bullion ride",
+        strength=4,
+        trending="up",
+        member_tickers=["AU"],  # under-populated; auto-correct will drop
+    )
+    # Must NOT raise.
+    output = MarketThemes(themes=[theme], full_text="...")
+    assert output.themes[0].member_tickers == ["AU"]

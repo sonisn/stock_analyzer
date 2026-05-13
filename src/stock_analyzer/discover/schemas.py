@@ -337,12 +337,16 @@ class MarketTheme(BaseModel):
     )
     member_tickers: list[str] = Field(
         ...,
-        min_length=3,
+        min_length=1,
         description=(
             "10-25 tickers that meaningfully benefit from this theme. "
             "Be liberal — include direct beneficiaries (e.g. NVDA for AI "
             "compute) AND adjacent ones (e.g. ANET for AI networking, "
-            "VST/CEG for AI power)."
+            "VST/CEG for AI power). Schema allows 1+ to leave headroom "
+            "for the universe-grounding pass in cli/discover.py to drop "
+            "hallucinated tickers; that pass drops the whole theme if "
+            "fewer than 3 valid members survive. Without this relaxation "
+            "a single under-populated theme rejects the entire response."
         ),
     )
 
