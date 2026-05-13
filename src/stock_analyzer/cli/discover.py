@@ -296,6 +296,7 @@ class DiscoverPipeline:
         technicals = self.state["technicals"]
 
         themes_by_t = self.state.get("themes_by_ticker") or {}
+        revisions_by_t = self.state.get("eps_revisions") or {}
 
         candidates: list[dict[str, Any]] = []
         for ticker in self.state["tickers"]:
@@ -317,7 +318,9 @@ class DiscoverPipeline:
                 "themes": [m["name"] for m in (themes_by_t.get(ticker.upper()) or [])],
             }
             if passes and f and t:
-                scored = score_candidate(f, t, u)
+                scored = score_candidate(
+                    f, t, u, revisions=revisions_by_t.get(ticker),
+                )
                 bonus, theme_meta = theme_score_bonus(ticker, themes_by_t)
                 cand["score"] = round(scored["score"] + bonus, 1)
                 cand["score_components"] = {
@@ -421,22 +424,29 @@ class DiscoverPipeline:
 
     def step_eps_revisions(self, step_input: StepInput) -> StepOutput:
         """Analyst EPS-estimate revisions over the last 7 and 30 days.
-        One of the strongest forward-thesis signals available — when
-        analysts are raising estimates across a cohort the stock
-        typically outperforms."""
-        tickers = list(self.state.get("survivor_tickers") or [])
+        One of the strongest forward-thesis signals available.
+
+        Runs in the market_data block (before screen) so the screen
+        score can pick up a +/-5 bonus from direction_30d. Fetches for
+        the full universe, not just survivors."""
+        tickers = list(self.state.get("tickers") or [])
         if not tickers:
             self.state["eps_revisions"] = {}
-            return StepOutput(content="eps_revisions: no survivors; skipping")
+            return StepOutput(content="eps_revisions: empty universe; skipping")
         self.state["eps_revisions"] = batch_eps_revisions(tickers)
         raising = sum(
             1 for v in self.state["eps_revisions"].values()
             if v.get("direction_30d") == "raising"
         )
+        lowering = sum(
+            1 for v in self.state["eps_revisions"].values()
+            if v.get("direction_30d") == "lowering"
+        )
         return StepOutput(
             content=(
                 f"EPS revisions: {len(self.state['eps_revisions'])}/{len(tickers)} "
-                f"covered, {raising} raising in last 30d"
+                f"covered ({raising} raising, {lowering} lowering, "
+                f"rest stable or no coverage)"
             )
         )
 
@@ -805,6 +815,10 @@ class DiscoverPipeline:
                     Step(name="sector_rotation", executor=self.step_sector_rotation),
                     Step(name="macro_regime", executor=self.step_macro_regime),
                     Step(name="track_record", executor=self.step_track_record),
+                    # EPS revisions runs alongside fundamentals/technicals so
+                    # the score function can pick up the +/-5 trend bonus
+                    # from direction_30d.
+                    Step(name="eps_revisions", executor=self.step_eps_revisions),
                     name="market_data",
                 ),
                 # Market themes need sector_rotation + macro_regime as input,
@@ -821,7 +835,6 @@ class DiscoverPipeline:
                     Step(name="peer_comparison", executor=self.step_peer_comparison),
                     Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
                     Step(name="finnhub_signals", executor=self.step_finnhub_signals),
-                    Step(name="eps_revisions", executor=self.step_eps_revisions),
                     name="enrichment",
                 ),
                 Step(name="analyst", executor=self.step_analyst),

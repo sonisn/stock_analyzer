@@ -100,8 +100,12 @@ def _score_fundamentals(f: dict[str, Any]) -> tuple[float, dict[str, float]]:
     return (sum(parts.values()), parts)
 
 
-def _score_trend(t: dict[str, Any]) -> tuple[float, dict[str, float]]:
-    """0-35 pts. RS leadership + entry zone + volume + non-stretched momentum."""
+def _score_trend(
+    t: dict[str, Any],
+    revisions: dict[str, Any] | None = None,
+) -> tuple[float, dict[str, float]]:
+    """0-40 pts. RS leadership + entry zone + volume + non-stretched
+    momentum + EPS revision flow."""
     parts: dict[str, float] = {}
 
     rs6 = t.get("rs_6mo") or 0
@@ -129,6 +133,18 @@ def _score_trend(t: dict[str, Any]) -> tuple[float, dict[str, float]]:
     else:
         parts["weekly_rsi"] = 0
 
+    # EPS revision flow — one of the strongest forward-thesis signals.
+    # Net ups across current quarter + current year over the last 30 days
+    # is summarized as direction_30d ('raising' / 'stable' / 'lowering').
+    # Missing (no analyst coverage / fetch failed) → neutral 0.
+    direction = (revisions or {}).get("direction_30d")
+    if direction == "raising":
+        parts["eps_revisions"] = 5.0
+    elif direction == "lowering":
+        parts["eps_revisions"] = -3.0
+    else:
+        parts["eps_revisions"] = 0.0
+
     return (sum(parts.values()), parts)
 
 
@@ -145,10 +161,16 @@ def score_candidate(
     fundamentals: dict[str, Any],
     technicals: dict[str, Any],
     universe_entry: dict[str, Any],
+    revisions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Combine the three scoring dimensions into a 0-100 total + breakdown."""
+    """Combine the three scoring dimensions into a 0-105 total + breakdown.
+
+    `revisions` is the per-ticker EPS-revisions summary (the LLM-stage
+    payload's `eps_revisions` field). When present, the trend score
+    picks up a +/-5 bonus based on direction_30d. Optional so unit tests
+    + legacy callers can still pass three args."""
     fund_total, fund_parts = _score_fundamentals(fundamentals)
-    trend_total, trend_parts = _score_trend(technicals)
+    trend_total, trend_parts = _score_trend(technicals, revisions=revisions)
     conv_total, conv_parts = _score_conviction(universe_entry)
     return {
         "score": round(fund_total + trend_total + conv_total, 1),

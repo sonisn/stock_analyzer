@@ -576,6 +576,7 @@ class RebalancePipeline(DiscoverPipeline):
                     Step(name="sector_rotation", executor=self.step_sector_rotation),
                     Step(name="macro_regime", executor=self.step_macro_regime),
                     Step(name="track_record", executor=self.step_track_record),
+                    Step(name="eps_revisions", executor=self.step_eps_revisions),
                     Step(name="holdings_fetch", executor=self.step_holdings_fetch),
                     Step(
                         name="transaction_history",
@@ -597,7 +598,6 @@ class RebalancePipeline(DiscoverPipeline):
                     Step(name="peer_comparison", executor=self.step_peer_comparison),
                     Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
                     Step(name="finnhub_signals", executor=self.step_finnhub_signals),
-                    Step(name="eps_revisions", executor=self.step_eps_revisions),
                     Step(name="holdings_data", executor=self.step_holdings_data),
                     name="enrichment",
                 ),
