@@ -478,7 +478,9 @@ class DiscoverPipeline:
 
     def step_redteam(self, step_input: StepInput) -> StepOutput:
         redteam = RedTeam("claude", self.settings.discover_opus_model)
-        self.state["redteam_text"] = redteam.critique(self.state["ranker_text"])
+        redteam_output = redteam.critique(self.state["ranker_text"])
+        self.state["redteam_output"] = redteam_output
+        self.state["redteam_text"] = redteam_output.full_text
         return StepOutput(content="Red-team critique complete")
 
     def step_sizer(self, step_input: StepInput) -> StepOutput:

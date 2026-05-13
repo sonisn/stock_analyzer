@@ -179,6 +179,69 @@ class RankerOutput(BaseModel):
     )
 
 
+# --- Red team -------------------------------------------------------------
+
+
+class BearCase(BaseModel):
+    """Adversarial bear case for one pick."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ticker: str
+    bear_case: str = Field(
+        ...,
+        description=(
+            "3-4 sentences naming concrete failure modes — earnings miss, "
+            "margin compression, competitor wins, valuation re-rating, "
+            "regulatory action. Cite specific numbers when possible."
+        ),
+    )
+    most_fragile_assumption: str = Field(
+        ...,
+        description=(
+            "Single sentence identifying the load-bearing assumption that, "
+            "if wrong, breaks the bull thesis."
+        ),
+    )
+    watch_metric: str = Field(
+        ...,
+        description=(
+            "One concrete number to watch, e.g. 'Q2 revenue growth — if "
+            "below 15%, thesis is wrong'."
+        ),
+    )
+    fragility_rank: FragilityRank = Field(
+        ...,
+        description=(
+            "1 = most fragile (highest probability of disappointment), "
+            "5 = most resilient."
+        ),
+    )
+
+
+class RedTeamOutput(BaseModel):
+    """Structured output of the RedTeam agent."""
+
+    model_config = ConfigDict(frozen=True)
+
+    bear_cases: list[BearCase] = Field(..., min_length=1)
+    single_most_fragile_pick: str = Field(
+        ...,
+        description=(
+            "Ticker of the pick most likely to disappoint, with a one-sentence "
+            "explanation. Format: 'TICKER — <reason>'."
+        ),
+    )
+    full_text: str = Field(
+        ...,
+        description=(
+            "Plain-text rendering: '---' separators between BearCase blocks, "
+            "trailing 'Single most fragile pick:' line. What the Sizer / "
+            "Rebalancer read as prompt input."
+        ),
+    )
+
+
 # --- Analyst ---------------------------------------------------------------
 
 
@@ -239,4 +302,6 @@ __all__ = [
     "RankerPick",
     "CorrelatedPair",
     "RankerOutput",
+    "BearCase",
+    "RedTeamOutput",
 ]

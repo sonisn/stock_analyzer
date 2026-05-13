@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from .schemas import RedTeamOutput
 
 logger = get_logger(__name__)
 
@@ -42,7 +43,16 @@ to disappoint, and one sentence on why.
 
 CRITICAL:
 - Plain text only. No markdown headings or bold.
-- Argue against each pick — do not concede to the bull case.\
+- Argue against each pick — do not concede to the bull case.
+
+STRUCTURED OUTPUT:
+Your response is validated against a Pydantic schema (RedTeamOutput).
+Populate `bear_cases` with one BearCase per pick (ticker, bear_case,
+most_fragile_assumption, watch_metric, fragility_rank 1-5). Set
+`single_most_fragile_pick` to the ticker + reason. Put the complete
+prose rendering into `full_text` so downstream stages (Sizer,
+Rebalancer) can read it from their prompt input. Structured fields
+must match the prose.\
 """
 
 
@@ -63,9 +73,19 @@ class RedTeam:
                 "temperature": 0,
             },
             instructions=REDTEAM_INSTRUCTIONS,
+            output_schema=RedTeamOutput,
         )
 
-    def critique(self, picks_text: str) -> str:
+    def critique(self, picks_text: str) -> RedTeamOutput:
         prompt = f"Picks to critique:\n\n{picks_text}"
         logger.info("Red-team critique of picks")
-        return self.agent.run(prompt).content
+        result = self.agent.run(prompt).content
+        if result is None:
+            raise RuntimeError("RedTeam returned no content.")
+        if isinstance(result, RedTeamOutput):
+            return result
+        if isinstance(result, str):
+            return RedTeamOutput.model_validate_json(result)
+        raise RuntimeError(
+            f"RedTeam returned unexpected type {type(result).__name__}."
+        )
