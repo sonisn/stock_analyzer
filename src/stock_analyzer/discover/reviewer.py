@@ -337,7 +337,7 @@ def _repair_verdict_inconsistencies(
         toward_verdict = (
             toward_match.group(1).upper() if toward_match else None
         )
-        if toward_verdict and toward_verdict == review.verdict:
+        if toward_verdict and toward_verdict == review.verdict:  # noqa: SIM102
             # We can't move toward our current state. Best guess: prose
             # was written from a HOLD perspective and structured field
             # got flipped to TRIM/SELL. Repair to HOLD only if confidence

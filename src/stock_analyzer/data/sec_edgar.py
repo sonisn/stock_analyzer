@@ -73,7 +73,7 @@ def _latest_filing_url(cik: int, form_type: str) -> tuple[str, str] | None:
     accessions = recent.get("accessionNumber", [])
     docs = recent.get("primaryDocument", [])
     dates = recent.get("filingDate", [])
-    for form, acc, doc, date in zip(forms, accessions, docs, dates):
+    for form, acc, doc, date in zip(forms, accessions, docs, dates, strict=False):
         if form == form_type:
             acc_clean = acc.replace("-", "")
             return (
@@ -148,7 +148,7 @@ def batch_risk_factors(tickers: list[str]) -> dict[str, dict[str, Any]]:
     _load_ticker_map()
     results: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, r in zip(tickers, ex.map(fetch_risk_factors, tickers)):
+        for ticker, r in zip(tickers, ex.map(fetch_risk_factors, tickers), strict=False):
             if r:
                 results[ticker] = r
     return results
@@ -212,7 +212,7 @@ def batch_quarterly_mda(tickers: list[str]) -> dict[str, dict[str, Any]]:
     _load_ticker_map()
     results: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, r in zip(tickers, ex.map(fetch_quarterly_mda, tickers)):
+        for ticker, r in zip(tickers, ex.map(fetch_quarterly_mda, tickers), strict=False):
             if r:
                 results[ticker] = r
     return results

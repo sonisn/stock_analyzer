@@ -291,7 +291,7 @@ def measure_track_record(
     distinct_dates = sorted({d for _, d, _ in raw_buys + raw_sells})
     spy_cache: dict[str, _Quote] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for d, q in zip(distinct_dates, ex.map(_fetch_spy_quote, distinct_dates)):
+        for d, q in zip(distinct_dates, ex.map(_fetch_spy_quote, distinct_dates), strict=False):
             spy_cache[d] = q
 
     decisions: list[PickReturn] = []

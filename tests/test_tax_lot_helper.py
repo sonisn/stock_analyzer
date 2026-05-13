@@ -11,7 +11,6 @@ from stock_analyzer.discover.tax_lot_helper import (
     enrich_tax_lots_with_impact,
 )
 
-
 # A 100-share lot bought at $50 ($5000 cost basis).
 _LOT_100SH_50 = {"units": 100, "price_per_share": 50.0, "total_cost": 5000.0}
 

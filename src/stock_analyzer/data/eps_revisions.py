@@ -118,7 +118,7 @@ def batch_eps_revisions(tickers: list[str]) -> dict[str, dict[str, Any]]:
     """Fetch revisions for many tickers in parallel."""
     results: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, r in zip(tickers, ex.map(fetch_eps_revisions, tickers)):
+        for ticker, r in zip(tickers, ex.map(fetch_eps_revisions, tickers), strict=False):
             if r:
                 results[ticker] = r
     return results

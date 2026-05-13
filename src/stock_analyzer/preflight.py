@@ -118,18 +118,14 @@ def preflight(
     collected so one run surfaces every problem (not one-at-a-time).
     """
     errors: list[str] = []
-    if needs_llm:
-        if err := _check_anthropic(settings):
-            errors.append(err)
-    if needs_brokerage:
-        if err := _check_snaptrade(settings):
-            errors.append(err)
-    if needs_finnhub:
-        if err := _check_finnhub(settings):
-            errors.append(err)
-    if needs_email:
-        if err := _check_email(settings):
-            errors.append(err)
+    if needs_llm and (err := _check_anthropic(settings)):
+        errors.append(err)
+    if needs_brokerage and (err := _check_snaptrade(settings)):
+        errors.append(err)
+    if needs_finnhub and (err := _check_finnhub(settings)):
+        errors.append(err)
+    if needs_email and (err := _check_email(settings)):
+        errors.append(err)
 
     if errors:
         bullets = "\n  - ".join(errors)

@@ -18,7 +18,6 @@ from pydantic import BaseModel
 from rich.console import Console
 from rich.table import Table as RichTable
 
-
 # --- pick / ticker block parsing --------------------------------------------
 
 _PICK_RE = re.compile(

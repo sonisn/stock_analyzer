@@ -107,7 +107,7 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
 def batch_fundamentals(tickers: list[str]) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, r in zip(tickers, ex.map(fetch_fundamentals, tickers)):
+        for ticker, r in zip(tickers, ex.map(fetch_fundamentals, tickers), strict=False):
             if r:
                 results[ticker] = r
     return results

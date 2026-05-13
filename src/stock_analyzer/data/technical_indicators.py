@@ -135,7 +135,7 @@ def batch_technicals(tickers: list[str]) -> dict[str, dict[str, Any]]:
     _spy_history()
     results: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, r in zip(tickers, ex.map(fetch_technicals, tickers)):
+        for ticker, r in zip(tickers, ex.map(fetch_technicals, tickers), strict=False):
             if r:
                 results[ticker] = r
     return results

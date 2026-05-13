@@ -21,7 +21,6 @@ from stock_analyzer.discover.report import (
     render_pdf,
 )
 
-
 # Minimal payload per kind that produces visible output. If a new kind
 # is added to SectionKind, add an entry here too — the test below
 # enforces this.

@@ -193,7 +193,7 @@ class CorrelatedPair(BaseModel):
     )
 
 
-def expected_return_pct(pick: "RankerPick") -> float | None:
+def expected_return_pct(pick: RankerPick) -> float | None:
     """Deterministic EV computation: Σ(probability × target_return_pct).
 
     Returns None when scenarios are missing/invalid (legacy picks before

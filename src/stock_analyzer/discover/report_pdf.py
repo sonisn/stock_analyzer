@@ -34,7 +34,6 @@ from reportlab.platypus import (
 )
 
 from .report_sections import (
-    Section,
     _FRAGILITY_COLORS,
     _LIKELIHOOD_COLOR,
     _PIE_PALETTE,
@@ -43,6 +42,7 @@ from .report_sections import (
     _TREND_GLYPHS,
     _VERDICT_COLORS,
     _VERDICT_PALETTE_PREMORTEM,
+    Section,
     _conviction_swatch,
     _theme_strength_color,
 )
@@ -528,7 +528,7 @@ def _pdf_premortem_panel(d: dict[str, Any], styles) -> list[Any]:
         ]))
         flow.append(pill_row)
         flow.append(Paragraph(
-            f"<font size='8' color='#6b7280'><b>TRIGGERING ACTION</b></font>",
+            "<font size='8' color='#6b7280'><b>TRIGGERING ACTION</b></font>",
             styles["BodyText"],
         ))
         flow.append(Paragraph(

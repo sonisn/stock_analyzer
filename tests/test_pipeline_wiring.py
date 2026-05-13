@@ -28,7 +28,6 @@ from stock_analyzer.discover.screen import (
     score_candidate,
 )
 
-
 # --- fixture data -----------------------------------------------------------
 
 GOOD_FUNDAMENTALS = {

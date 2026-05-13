@@ -14,7 +14,6 @@ import html
 from typing import Any
 
 from .report_sections import (
-    Section,
     _FRAGILITY_COLORS,
     _LIKELIHOOD_COLOR,
     _PIE_PALETTE,
@@ -23,6 +22,7 @@ from .report_sections import (
     _TREND_GLYPHS,
     _VERDICT_COLORS,
     _VERDICT_PALETTE_PREMORTEM,
+    Section,
     _conviction_swatch,
     _theme_strength_color,
 )

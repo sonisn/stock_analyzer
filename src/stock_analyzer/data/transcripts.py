@@ -84,7 +84,7 @@ def batch_transcript_snippets(tickers: list[str]) -> dict[str, dict[str, Any]]:
     (Tavily rate limits favor lower concurrency) but capped at _MAX_WORKERS."""
     results: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, r in zip(tickers, ex.map(fetch_transcript_snippet, tickers)):
+        for ticker, r in zip(tickers, ex.map(fetch_transcript_snippet, tickers), strict=False):
             if r:
                 results[ticker] = r
     return results

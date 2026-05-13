@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from stock_analyzer.data.brokerage import classify_tax_status
 
-
 # --- account `type` wins over name ----------------------------------------
 
 

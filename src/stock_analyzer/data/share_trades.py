@@ -167,7 +167,7 @@ def fetch_share_trade_data(ticker: str) -> dict[str, Any] | None:
 def batch_share_trade_data(tickers: list[str]) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, data in zip(tickers, ex.map(fetch_share_trade_data, tickers)):
+        for ticker, data in zip(tickers, ex.map(fetch_share_trade_data, tickers), strict=False):
             if data:
                 results[ticker] = data
     return results

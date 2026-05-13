@@ -62,7 +62,7 @@ class Lot(BaseModel):
     @classmethod
     def from_activity(
         cls, activity: dict[str, Any], account_name: str, today: date
-    ) -> "Lot | None":
+    ) -> Lot | None:
         try:
             d = _coerce_date(
                 activity.get("trade_date") or activity.get("settlement_date")

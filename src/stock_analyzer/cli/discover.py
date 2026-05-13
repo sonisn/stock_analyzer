@@ -39,10 +39,10 @@ from ..config import Settings
 from ..data.brokerage import fetch_portfolio_holdings
 from ..data.chart_img import fetch_charts
 from ..data.earnings_calendar import batch_earnings_flags
-from ..data.fred_macro import fetch_regime_data, regime_summary_text
-from ..data.fundamentals import batch_fundamentals
 from ..data.eps_revisions import batch_eps_revisions
 from ..data.finnhub import batch_finnhub_signals
+from ..data.fred_macro import fetch_regime_data, regime_summary_text
+from ..data.fundamentals import batch_fundamentals
 from ..data.insider_selling import insider_selling_mentions
 from ..data.sec_edgar import batch_quarterly_mda, batch_risk_factors
 from ..data.sector_rotation import sector_bias, sector_rotation_summary
@@ -50,6 +50,11 @@ from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
 from ..data.transcripts import batch_transcript_snippets
 from ..discover.analyst import Analyst, analyze_batch
+from ..discover.market_themes import (
+    MarketThemesAgent,
+    theme_score_bonus,
+    themes_by_ticker,
+)
 from ..discover.peers import batch_peer_comparison
 from ..discover.persistence import (
     connect,
@@ -59,18 +64,8 @@ from ..discover.persistence import (
     insert_run_outputs,
     insert_scorecard,
 )
-from ..discover.market_themes import (
-    MarketThemesAgent,
-    theme_score_bonus,
-    themes_by_ticker,
-)
 from ..discover.ranker import Ranker
 from ..discover.redteam import RedTeam
-from ..discover.track_record import (
-    format_track_record_block,
-    format_track_record_summary,
-    measure_track_record,
-)
 from ..discover.report import (
     build_sections,
     parse_picks,
@@ -80,6 +75,11 @@ from ..discover.report import (
 )
 from ..discover.screen import passes_hard_filter, score_candidate
 from ..discover.sizer import Sizer
+from ..discover.track_record import (
+    format_track_record_block,
+    format_track_record_summary,
+    measure_track_record,
+)
 from ..discover.universe import build_universe
 from ..logging import current_log_file, get_logger
 from ..preflight import PreflightError, preflight
@@ -348,7 +348,7 @@ def _fetch_news(ticker: str, limit: int = 3) -> list[dict[str, Any]]:
 def _batch_news(tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
     results: dict[str, list[dict[str, Any]]] = {}
     with ThreadPoolExecutor(max_workers=5) as ex:
-        for ticker, news in zip(tickers, ex.map(_fetch_news, tickers)):
+        for ticker, news in zip(tickers, ex.map(_fetch_news, tickers), strict=False):
             results[ticker] = news
     return results
 

@@ -120,7 +120,7 @@ class Settings(BaseSettings):
         return v
 
     @classmethod
-    def from_env(cls) -> "Settings":
+    def from_env(cls) -> Settings:
         # Back-compat shim — `Settings()` already loads from env. Existing
         # callers (`Settings.from_env()`) keep working without churn.
         return cls()

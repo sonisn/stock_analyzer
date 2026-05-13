@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Mapping
+from typing import Any, Mapping  # noqa: UP035
 
 import httpx
 from pydantic import BaseModel, ConfigDict
@@ -141,7 +141,7 @@ class HttpClient:
     def close(self) -> None:
         self._client.close()
 
-    def __enter__(self) -> "HttpClient":
+    def __enter__(self) -> HttpClient:
         return self
 
     def __exit__(self, *exc: Any) -> None:

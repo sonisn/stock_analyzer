@@ -34,10 +34,10 @@ _FALSE_POSITIVES = frozenset({
     "CEO", "CFO", "COO", "CTO", "CMO", "CIO",
     "FED", "FOMC", "GDP", "CPI", "PPI", "PMI", "FDA", "SEC", "IRS", "DOJ",
     "FTC", "DOE", "EPA", "DOD", "NSA", "CIA", "FBI", "NYSE", "AMEX", "OTC",
-    "ETF", "IPO", "FYI", "AI", "ML", "AR", "VR", "EV", "IT", "OS",
+    "ETF", "IPO", "FYI", "AI", "ML", "AR", "VR", "EV", "OS",
     "PR", "PE", "EPS", "ROE", "ROI", "ROA", "FY", "Q1", "Q2", "Q3", "Q4",
     "YOY", "QOQ", "YTD", "MTD", "AGM", "PIE", "PT", "ST", "MT", "LT",
-    "USA", "UK", "EU", "ASEAN", "G7", "G20",
+    "UK", "EU", "ASEAN", "G7", "G20",
 })
 
 _CASHTAG_RE = re.compile(r"\$([A-Z]{1,5})\b")

@@ -16,10 +16,10 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from ..llm import AgnoAgent, Provider
-from ..logging import get_logger
 from ..data.fundamentals import fetch_fundamentals
 from ..data.sec_edgar import load_ticker_cik_map
+from ..llm import AgnoAgent, Provider
+from ..logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -142,7 +142,7 @@ def fetch_peer_comparison(
         return None
     snapshots: dict[str, Any] = {}
     with ThreadPoolExecutor(max_workers=4) as ex:
-        for peer, snap in zip(peer_tickers, ex.map(_peer_snapshot, peer_tickers)):
+        for peer, snap in zip(peer_tickers, ex.map(_peer_snapshot, peer_tickers), strict=False):
             if snap:
                 snapshots[peer] = snap
     if not snapshots:

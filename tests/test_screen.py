@@ -14,7 +14,6 @@ from stock_analyzer.discover.screen import (
     score_candidate,
 )
 
-
 # --- helpers ----------------------------------------------------------------
 
 

@@ -68,10 +68,10 @@ from ..logging import current_log_file, get_logger
 from ..preflight import PreflightError, preflight
 from ..reporting.smtp import SmtpServer
 from .discover import (
-    DiscoverPipeline,
     _QUARTERLY_MDA_CHARS,
     _RISK_FACTORS_CHARS,
     _TRANSCRIPT_CHARS,
+    DiscoverPipeline,
     _trim,
 )
 
@@ -261,7 +261,7 @@ class RebalancePipeline(DiscoverPipeline):
         try:
             holdings = fetch_portfolio_holdings()
         except Exception as e:
-            raise RuntimeError(f"Could not fetch SnapTrade holdings: {e}")
+            raise RuntimeError(f"Could not fetch SnapTrade holdings: {e}")  # noqa: B904
         positions = _aggregate_positions(holdings)
         if not positions:
             raise RuntimeError(

@@ -16,7 +16,6 @@ import pytest
 from stock_analyzer.discover import track_record as tr
 from stock_analyzer.discover.persistence import connect
 
-
 # --- alpha sign convention -----------------------------------------------
 
 
