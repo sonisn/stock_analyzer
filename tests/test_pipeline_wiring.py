@@ -502,3 +502,16 @@ def test_premortem_prompt_includes_cc_redteam_paragraph():
     assert "WRITE_CALL" in PREMORTEM_INSTRUCTIONS
     assert "assignment lock-in" in PREMORTEM_INSTRUCTIONS
     assert "IV crush" in PREMORTEM_INSTRUCTIONS
+
+
+def test_subject_without_premium():
+    from stock_analyzer.cli.rebalance import build_email_subject
+    subject = build_email_subject(action_count=2, gross_premium_usd=0.0)
+    assert subject.startswith("Portfolio Rebalance")
+    assert "premium" not in subject
+
+
+def test_subject_with_premium_annotates():
+    from stock_analyzer.cli.rebalance import build_email_subject
+    subject = build_email_subject(action_count=4, gross_premium_usd=1550.0)
+    assert "$1,550 premium" in subject

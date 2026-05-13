@@ -186,6 +186,16 @@ def _aggregate_positions(
     return out
 
 
+def build_email_subject(*, action_count: int, gross_premium_usd: float) -> str:
+    """Subject line for the rebalance email. Annotates premium total
+    only when WRITE_CALL actions produced a non-trivial credit."""
+    today = date.today()
+    base = f"Portfolio Rebalance — {today.strftime('%b-%d')}"
+    if gross_premium_usd >= 1.0:
+        return f"{base} ({action_count} actions + ${gross_premium_usd:,.0f} premium)"
+    return base
+
+
 def _build_position_splits(
     holdings: dict[str, list[dict[str, Any]]],
     account_meta: dict[str, dict[str, Any]],
@@ -660,7 +670,17 @@ class RebalancePipeline(DiscoverPipeline):
         pdf_bytes = render_pdf(sections, charts)
 
         today = date.today()
-        subject = f"Portfolio Rebalance — {today.strftime('%b-%d')}"
+        plan = self.state.get("rebalance_plan")
+        gross_premium = 0.0
+        if plan is not None and getattr(plan, "option_writes", None):
+            gross_premium = sum(
+                ow.contracts * ow.est_premium_per_share * 100.0
+                for ow in plan.option_writes
+            )
+        action_count = len(plan.actions) if plan else 0
+        subject = build_email_subject(
+            action_count=action_count, gross_premium_usd=gross_premium,
+        )
         pdf_filename = f"rebalance-{today.isoformat()}.pdf"
 
         # Save PDF locally BEFORE the email attempt so a delivery failure
