@@ -183,3 +183,74 @@ def test_fetch_chains_marks_missing_when_both_fail():
 
 def test_fetch_chains_empty_input():
     assert fetch_chains([], dte_min=30, dte_max=45) == {}
+
+
+def test_yfinance_handles_nan_volume_and_open_interest():
+    """Regression: yfinance returns NaN for low-volume strikes;
+    int(NaN) raises ValueError. Must coerce to 0 cleanly."""
+    today = date.today()
+    e_in_band = (today + timedelta(days=35)).isoformat()
+    nan = float("nan")
+    df = pd.DataFrame(
+        [(260.0, 2.20, 2.40, 0.29, nan, nan)],
+        columns=["strike", "bid", "ask", "impliedVolatility", "openInterest", "volume"],
+    )
+    fake = _fake_ticker(spot=235.0, expiries_to_calls={e_in_band: df})
+    with patch("stock_analyzer.data.options_chain.yf.Ticker", return_value=fake):
+        chain = YFinanceChain().fetch("NVDA", dte_min=30, dte_max=45)
+    assert chain is not None
+    assert len(chain.calls) == 1
+    q = chain.calls[0]
+    assert q.open_interest == 0
+    assert q.volume == 0
+
+
+def test_yfinance_handles_nan_bid_ask_iv():
+    """NaN in bid/ask/iv must coerce to 0.0 / None, not propagate."""
+    today = date.today()
+    e_in_band = (today + timedelta(days=35)).isoformat()
+    nan = float("nan")
+    df = pd.DataFrame(
+        [(260.0, nan, nan, nan, 100, 10)],
+        columns=["strike", "bid", "ask", "impliedVolatility", "openInterest", "volume"],
+    )
+    fake = _fake_ticker(spot=235.0, expiries_to_calls={e_in_band: df})
+    with patch("stock_analyzer.data.options_chain.yf.Ticker", return_value=fake):
+        chain = YFinanceChain().fetch("NVDA", dte_min=30, dte_max=45)
+    assert chain is not None
+    assert len(chain.calls) == 1
+    q = chain.calls[0]
+    assert q.bid == 0.0
+    assert q.ask == 0.0
+    assert q.iv is None  # None preserved for missing greeks/IV
+
+
+def test_snaptrade_skips_when_endpoint_missing_and_warns_once():
+    """When the SDK/tier doesn't expose get_options_chain, skip gracefully
+    and return None (cached per instance, not per ticker)."""
+    fake_client = MagicMock(spec=["account_information", "trading"])
+    # Note: spec list intentionally excludes get_options_chain so hasattr returns False
+    fake_client.trading = MagicMock(spec=[])  # no get_options_chain
+    fake_client.account_information.list_user_accounts.return_value = MagicMock(
+        body=[{"id": "acct-1"}]
+    )
+    fake_client.user_id = "u"
+    fake_client.user_secret = "s"
+
+    provider = SnapTradeChain()
+    with patch(
+        "stock_analyzer.data.options_chain._snaptrade_client",
+        return_value=fake_client,
+    ):
+        # Three different tickers — first fetch detects unavailable endpoint,
+        # subsequent fetches use cached result without re-checking.
+        result1 = provider.fetch("NVDA", 30, 45)
+        result2 = provider.fetch("AAPL", 30, 45)
+        result3 = provider.fetch("TSLA", 30, 45)
+
+    # All should return None due to missing endpoint
+    assert result1 is None
+    assert result2 is None
+    assert result3 is None
+    # Verify the caching: _endpoint_available should be set and False
+    assert provider._endpoint_available is False

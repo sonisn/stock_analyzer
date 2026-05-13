@@ -10,6 +10,7 @@ context just reads `Option chain: UNAVAILABLE` for that ticker.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Literal, Protocol
@@ -20,6 +21,27 @@ from ..config import Settings
 from ..logging import get_logger
 
 logger = get_logger(__name__)
+
+
+def _safe_float(v: object) -> float | None:
+    """Coerce to float, returning None for None / NaN / Inf / unparseable.
+    Used at provider boundary because yfinance returns NaN for low-volume
+    strikes, which crashes downstream arithmetic and int() conversion."""
+    if v is None:
+        return None
+    try:
+        f = float(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
+
+
+def _safe_int(v: object) -> int:
+    """Coerce to int, returning 0 for None / NaN / Inf / unparseable."""
+    f = _safe_float(v)
+    return int(f) if f is not None else 0
 
 
 @dataclass(frozen=True)
@@ -113,12 +135,12 @@ class YFinanceChain:
                 calls.append(OptionQuote(
                     strike=strike,
                     expiry=expiry,
-                    bid=float(row.get("bid") or 0.0),
-                    ask=float(row.get("ask") or 0.0),
-                    iv=float(row["impliedVolatility"]) if row.get("impliedVolatility") is not None else None,
+                    bid=_safe_float(row.get("bid")) or 0.0,
+                    ask=_safe_float(row.get("ask")) or 0.0,
+                    iv=_safe_float(row.get("impliedVolatility")),
                     delta=None,  # yfinance does not provide Greeks
-                    open_interest=int(row.get("openInterest") or 0),
-                    volume=int(row.get("volume") or 0),
+                    open_interest=_safe_int(row.get("openInterest")),
+                    volume=_safe_int(row.get("volume")),
                 ))
 
         return OptionChain(
@@ -204,13 +226,12 @@ def _parse_snaptrade_options_payload(
             call = entry.get("call") or {}
             calls.append(OptionQuote(
                 strike=strike, expiry=expiry,
-                bid=float(call.get("bid_price") or 0.0),
-                ask=float(call.get("ask_price") or 0.0),
-                iv=(float(call["implied_volatility"])
-                    if call.get("implied_volatility") is not None else None),
-                delta=(float(call["delta"]) if call.get("delta") is not None else None),
-                open_interest=int(call.get("open_interest") or 0),
-                volume=int(call.get("volume") or 0),
+                bid=_safe_float(call.get("bid_price")) or 0.0,
+                ask=_safe_float(call.get("ask_price")) or 0.0,
+                iv=_safe_float(call.get("implied_volatility")),
+                delta=_safe_float(call.get("delta")),
+                open_interest=_safe_int(call.get("open_interest")),
+                volume=_safe_int(call.get("volume")),
             ))
 
     return OptionChain(
@@ -225,7 +246,13 @@ class SnapTradeChain:
     Returns None on any failure — auth missing, account list empty,
     endpoint not supported on the user's tier, payload shape mismatch.
     The orchestrator falls back to yfinance on None.
+
+    Caches endpoint availability per instance so we don't spam the log
+    when the SDK/tier doesn't expose `get_options_chain`.
     """
+
+    def __init__(self) -> None:
+        self._endpoint_available: bool | None = None
 
     def fetch(
         self, ticker: str, dte_min: int, dte_max: int
@@ -233,6 +260,21 @@ class SnapTradeChain:
         client = _snaptrade_client()
         if client is None:
             return None
+
+        # Cache endpoint availability once per instance.
+        if self._endpoint_available is None:
+            self._endpoint_available = hasattr(client.trading, "get_options_chain")
+            if not self._endpoint_available:
+                logger.warning(
+                    "SnapTrade chain endpoint is NOT exposed on this SDK/tier "
+                    "(trading.get_options_chain missing). Falling back to "
+                    "yfinance for ALL tickers this run. To enable SnapTrade "
+                    "chains, upgrade the snaptrade_client SDK or your tier."
+                )
+
+        if not self._endpoint_available:
+            return None
+
         account_id = _first_account_id(client)
         if account_id is None:
             logger.info("SnapTrade: no account_id available for chain fetch")

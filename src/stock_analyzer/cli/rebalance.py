@@ -592,12 +592,12 @@ class RebalancePipeline(DiscoverPipeline):
 
             stub_eligible = sum(1 for rec in coverage.values() if rec.stub_dollar_value >= self.settings.cc_min_stub_usd)
             logger.info(
-                "CC round-lot coverage: %d holding(s) have stubs, $%,.0f total stub pool; "
-                "%d stub(s) exceed CC_MIN_STUB_USD=$%,.0f threshold",
+                "CC round-lot coverage: %d holding(s) have stubs, $%s total stub pool; "
+                "%d stub(s) exceed CC_MIN_STUB_USD=$%s threshold",
                 sum(1 for r in coverage.values() if r.stub_shares > 0),
-                stub_pool,
+                f"{stub_pool:,.0f}",
                 stub_eligible,
-                self.settings.cc_min_stub_usd,
+                f"{self.settings.cc_min_stub_usd:,.0f}",
             )
 
             chains = fetch_chains(
@@ -762,16 +762,17 @@ class RebalancePipeline(DiscoverPipeline):
                 )
                 logger.info(
                     "CC validation passed: %d WRITE_CALL action(s), "
-                    "$%,.0f gross premium estimated. Details:",
-                    n_write_calls, total_premium,
+                    "$%s gross premium estimated. Details:",
+                    n_write_calls, f"{total_premium:,.0f}",
                 )
                 for ow in plan.option_writes:
                     contract_premium = ow.contracts * ow.est_premium_per_share * 100.0
                     logger.info(
                         "  - %s: %d contracts @ $%.2f strike, expires %s, "
-                        "Δ=%.2f, ~$%,.0f premium, assignment %.0f%%",
+                        "Δ=%.2f, ~$%s premium, assignment %.0f%%",
                         ow.ticker, ow.contracts, ow.strike, ow.expiry,
-                        ow.delta, contract_premium, ow.assignment_probability * 100,
+                        ow.delta, f"{contract_premium:,.0f}",
+                        ow.assignment_probability * 100,
                     )
             else:
                 # Distinguish "rebalancer chose not to" from "CC was disabled / data missing"
@@ -979,10 +980,10 @@ class RebalancePipeline(DiscoverPipeline):
 
         if gross_premium > 0:
             logger.info(
-                "CC summary at email time: %d WRITE_CALL(s), $%,.0f gross premium "
+                "CC summary at email time: %d WRITE_CALL(s), $%s gross premium "
                 "across %d total action(s)",
                 sum(1 for a in plan.actions if a.action == "WRITE_CALL"),
-                gross_premium, action_count,
+                f"{gross_premium:,.0f}", action_count,
             )
 
         subject = build_email_subject(
