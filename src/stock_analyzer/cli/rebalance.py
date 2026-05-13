@@ -700,6 +700,23 @@ def _build_rebalance_sections(
 
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Rebalance plan (action list)", level=1))
+    # Structured action table when status=ACTION — one styled row per
+    # action with a SELL/TRIM/ADD/BUY badge. NO_ACTION runs have no
+    # actions; skip the table entirely (status banner already conveys
+    # the verdict).
+    from ..discover.rebalance_schema import RebalancePlan
+    plan = rebalance_plan if isinstance(rebalance_plan, RebalancePlan) else None
+    if plan and plan.actions:
+        sections.append(Section(
+            kind="rebalance_action_table",
+            data={
+                "actions": [
+                    {"action": a.action, "ticker": a.ticker, "sizing": a.sizing}
+                    for a in plan.actions
+                ],
+                "summary": plan.summary,
+            },
+        ))
     sections.append(Section(kind="preformatted", text=rebalance_text))
 
     sections.append(Section(kind="page_break"))

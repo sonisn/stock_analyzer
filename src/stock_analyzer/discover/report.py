@@ -198,7 +198,7 @@ SectionKind = Literal[
     "sector_pie",
     # New structured-output kinds (Phase 4f) — renderer pulls fields from
     # `data` and produces a styled card / table instead of dumping prose.
-    "pick_card", "allocation_table",
+    "pick_card", "allocation_table", "rebalance_action_table",
 ]
 
 
@@ -743,6 +743,47 @@ def _allocation_table_html(d: dict[str, Any]) -> str:
     return table_html + warnings_html
 
 
+def _rebalance_action_table_html(d: dict[str, Any]) -> str:
+    """Render the rebalancer's structured actions list as a colored table:
+    action-type badge (SELL/TRIM/ADD/BUY) + ticker + sizing."""
+    actions = d.get("actions") or []
+    summary = d.get("summary") or ""
+    if not actions:
+        return ""
+    rows: list[str] = []
+    for a in actions:
+        action_type = str(a.get("action") or "")
+        ticker = str(a.get("ticker") or "")
+        sizing = str(a.get("sizing") or "")
+        c = _VERDICT_COLORS.get(action_type) or _VERDICT_COLORS["HOLD"]
+        badge = (
+            f"<span style='background:{c['bg']};color:{c['fg']};"
+            f"border:1px solid {c['border']};padding:3px 12px;"
+            f"border-radius:12px;font-size:12px;font-weight:700;"
+            f"letter-spacing:0.3px'>{html.escape(action_type)}</span>"
+        )
+        rows.append(
+            f"<tr><td style='vertical-align:middle'>{badge}</td>"
+            f"<td><b style='font-family:ui-monospace,SFMono-Regular,monospace'>"
+            f"{html.escape(ticker)}</b></td>"
+            f"<td style='color:#374151'>{html.escape(sizing)}</td></tr>"
+        )
+    parts: list[str] = []
+    if summary:
+        parts.append(
+            f"<p style='color:#374151;font-style:italic;margin:8px 0 12px;"
+            f"font-size:13px'>{html.escape(summary)}</p>"
+        )
+    parts.append(
+        "<table class='dashboard'><thead><tr>"
+        "<th style='width:1%'>Action</th>"
+        "<th style='width:1%'>Ticker</th>"
+        "<th>Sizing</th>"
+        "</tr></thead><tbody>" + "".join(rows) + "</tbody></table>"
+    )
+    return "".join(parts)
+
+
 def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> str:
     parts: list[str] = [_HTML_HEAD]
     for s in sections:
@@ -831,6 +872,9 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
 
         elif s.kind == "allocation_table" and s.data:
             parts.append(_allocation_table_html(s.data))
+
+        elif s.kind == "rebalance_action_table" and s.data:
+            parts.append(_rebalance_action_table_html(s.data))
 
         elif s.kind == "page_break":
             parts.append("<hr/>")
@@ -1199,6 +1243,65 @@ def _pdf_allocation_table(d: dict[str, Any], styles) -> list[Any]:
     return flow
 
 
+def _pdf_rebalance_action_table(d: dict[str, Any], styles) -> list[Any]:
+    """Per-action table for the rebalance plan section. Each row gets a
+    pale-tinted action cell using the SELL/TRIM/ADD/BUY palette."""
+    actions = d.get("actions") or []
+    summary = d.get("summary") or ""
+    if not actions:
+        return []
+    flow: list[Any] = []
+    if summary:
+        flow.append(Paragraph(
+            f"<i><font color='#6b7280'>{html.escape(str(summary))}</font></i>",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 4))
+    rows: list[list[Any]] = [
+        [
+            Paragraph("<b>Action</b>", styles["BodyText"]),
+            Paragraph("<b>Ticker</b>", styles["BodyText"]),
+            Paragraph("<b>Sizing</b>", styles["BodyText"]),
+        ]
+    ]
+    style_cmds: list[tuple] = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]
+    for i, a in enumerate(actions, start=1):
+        action_type = str(a.get("action") or "")
+        ticker = str(a.get("ticker") or "")
+        sizing = str(a.get("sizing") or "")
+        c = _VERDICT_COLORS.get(action_type) or _VERDICT_COLORS["HOLD"]
+        rows.append([
+            Paragraph(
+                f"<font color='{c['fg']}'><b>{html.escape(action_type)}</b></font>",
+                styles["BodyText"],
+            ),
+            Paragraph(f"<b>{html.escape(ticker)}</b>", styles["BodyText"]),
+            Paragraph(html.escape(sizing), styles["BodyText"]),
+        ])
+        # Tint the Action column with the badge background so the row reads
+        # at a glance the same way the HTML pill does.
+        style_cmds.append(
+            ("BACKGROUND", (0, i), (0, i), colors.HexColor(c["bg"]))
+        )
+    t = Table(
+        rows,
+        repeatRows=1,
+        hAlign="LEFT",
+        colWidths=[0.9 * inch, 0.9 * inch, 4.9 * inch],
+    )
+    t.setStyle(TableStyle(style_cmds))
+    flow.append(t)
+    flow.append(Spacer(1, 8))
+    return flow
+
+
 def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -1274,6 +1377,10 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
 
         elif s.kind == "allocation_table" and s.data:
             for el in _pdf_allocation_table(s.data, styles):
+                flow.append(el)
+
+        elif s.kind == "rebalance_action_table" and s.data:
+            for el in _pdf_rebalance_action_table(s.data, styles):
                 flow.append(el)
 
         elif s.kind == "page_break":
