@@ -495,3 +495,10 @@ def test_decide_omits_cc_block_when_empty():
         cc_context_block="",
     )
     assert "COVERED-CALL CONTEXT" not in captured["prompt"]
+
+
+def test_premortem_prompt_includes_cc_redteam_paragraph():
+    from stock_analyzer.discover.premortem import PREMORTEM_INSTRUCTIONS
+    assert "WRITE_CALL" in PREMORTEM_INSTRUCTIONS
+    assert "assignment lock-in" in PREMORTEM_INSTRUCTIONS
+    assert "IV crush" in PREMORTEM_INSTRUCTIONS

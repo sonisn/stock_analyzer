@@ -160,7 +160,16 @@ CITATION RULE (anti-hallucination):
 Every action you reference MUST appear verbatim in the plan provided.
 Don't invent failure narratives about events you've imagined; ground
 them in either named recent news from the plan's holdings or named
-concentration / correlation risk that's visible in the data.\
+concentration / correlation risk that's visible in the data.
+
+WRITE_CALL ACTIONS — additional critique dimensions
+For each WRITE_CALL action in the plan, additionally consider:
+  (a) assignment lock-in if the underlying runs 20% past strike,
+  (b) IV crush after near-term earnings or macro events,
+  (c) opportunity cost of capping upside on high-confidence picks,
+  (d) tax consequences if assignment triggers short-term gain on
+      the underlying.
+Treat each of these as a candidate failure mode.\
 """
 
 
