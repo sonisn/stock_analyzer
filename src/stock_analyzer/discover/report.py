@@ -199,7 +199,7 @@ SectionKind = Literal[
     # New structured-output kinds (Phase 4f) — renderer pulls fields from
     # `data` and produces a styled card / table instead of dumping prose.
     "pick_card", "allocation_table", "rebalance_action_table",
-    "holding_review_card", "market_themes_panel",
+    "holding_review_card", "market_themes_panel", "premortem_panel",
 ]
 
 
@@ -837,6 +837,77 @@ def _market_themes_panel_html(d: dict[str, Any]) -> str:
     return "".join(cards)
 
 
+_VERDICT_PALETTE_PREMORTEM = {
+    "proceed_as_planned":  {"bg": "#e6f4ea", "fg": "#0e6432", "border": "#1f9d55"},
+    "proceed_with_caveat": {"bg": "#fff4e0", "fg": "#8a4a00", "border": "#e89c00"},
+    "reconsider":          {"bg": "#fde4e4", "fg": "#9c1010", "border": "#d73030"},
+}
+_LIKELIHOOD_COLOR = {"high": "#9c1010", "medium": "#a3550b", "low": "#0e6432"}
+_SEVERITY_COLOR = {"severe": "#9c1010", "moderate": "#a3550b", "mild": "#0e6432"}
+
+
+def _premortem_panel_html(d: dict[str, Any]) -> str:
+    """Render the plan-level pre-mortem: overall verdict banner + per-failure
+    cards with likelihood × severity badges + narrative + early warning."""
+    verdict = str(d.get("overall_verdict") or "proceed_with_caveat")
+    summary = str(d.get("summary") or "")
+    failures = d.get("failures") or []
+    if not failures and not summary:
+        return ""
+
+    vp = _VERDICT_PALETTE_PREMORTEM.get(verdict, _VERDICT_PALETTE_PREMORTEM["proceed_with_caveat"])
+    verdict_label = {
+        "proceed_as_planned":  "PROCEED AS PLANNED",
+        "proceed_with_caveat": "PROCEED WITH CAVEAT",
+        "reconsider":          "RECONSIDER",
+    }.get(verdict, verdict.upper())
+
+    parts: list[str] = []
+    parts.append(
+        f"<div style='background:{vp['bg']};color:{vp['fg']};"
+        f"border-left:4px solid {vp['border']};padding:12px 16px;"
+        f"border-radius:6px;margin:12px 0;font-weight:600'>"
+        f"Verdict: {html.escape(verdict_label)}</div>"
+    )
+    if summary:
+        parts.append(
+            f"<p style='color:#374151;margin:8px 0 16px'>"
+            f"{html.escape(summary)}</p>"
+        )
+    for f in failures:
+        likelihood = str(f.get("likelihood") or "medium").lower()
+        severity = str(f.get("severity") or "moderate").lower()
+        trig = html.escape(str(f.get("triggering_action") or ""))
+        narrative = html.escape(str(f.get("failure_narrative") or ""))
+        warning = html.escape(str(f.get("early_warning") or ""))
+        like_color = _LIKELIHOOD_COLOR.get(likelihood, "#6b7280")
+        sev_color = _SEVERITY_COLOR.get(severity, "#6b7280")
+        parts.append(
+            f"<div style='border:1px solid #e5e7eb;border-radius:8px;"
+            f"padding:14px 16px;margin:10px 0;background:#fff'>"
+            f"<div style='display:flex;flex-wrap:wrap;gap:8px;"
+            f"margin-bottom:6px;align-items:center'>"
+            f"<span style='background:{like_color};color:#fff;padding:2px 10px;"
+            f"border-radius:10px;font-size:11px;font-weight:700'>"
+            f"Likelihood: {html.escape(likelihood)}</span>"
+            f"<span style='background:{sev_color};color:#fff;padding:2px 10px;"
+            f"border-radius:10px;font-size:11px;font-weight:700'>"
+            f"Severity: {html.escape(severity)}</span>"
+            f"</div>"
+            f"<div style='font-size:11px;color:#6b7280;font-weight:600;"
+            f"text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px'>"
+            f"Triggering action</div>"
+            f"<div style='color:#1f2937;font-style:italic;margin-bottom:8px'>"
+            f"{trig}</div>"
+            f"<div style='color:#1f2937;margin-bottom:8px'>{narrative}</div>"
+            f"<div style='background:#fff4e0;border-left:3px solid #e89c00;"
+            f"padding:6px 10px;color:#8a4a00;font-size:13px'>"
+            f"<b>Early warning:</b> {warning}</div>"
+            f"</div>"
+        )
+    return "".join(parts)
+
+
 def _holding_review_card_html(d: dict[str, Any]) -> str:
     """Render a per-holding review (HoldingReview schema) as a structured
     card: ticker + verdict pill + confidence pill + position context,
@@ -1086,6 +1157,9 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
 
         elif s.kind == "market_themes_panel" and s.data:
             parts.append(_market_themes_panel_html(s.data))
+
+        elif s.kind == "premortem_panel" and s.data:
+            parts.append(_premortem_panel_html(s.data))
 
         elif s.kind == "page_break":
             parts.append("<hr/>")
@@ -1511,6 +1585,105 @@ def _pdf_market_themes_panel(d: dict[str, Any], styles) -> list[Any]:
     return flow
 
 
+def _pdf_premortem_panel(d: dict[str, Any], styles) -> list[Any]:
+    """PDF counterpart of `_premortem_panel_html` — verdict banner, summary,
+    then per-failure cards with likelihood/severity pills and warning callout."""
+    verdict = str(d.get("overall_verdict") or "proceed_with_caveat")
+    summary = str(d.get("summary") or "")
+    failures = d.get("failures") or []
+    if not failures and not summary:
+        return []
+    flow: list[Any] = []
+    vp = _VERDICT_PALETTE_PREMORTEM.get(verdict, _VERDICT_PALETTE_PREMORTEM["proceed_with_caveat"])
+    verdict_label = {
+        "proceed_as_planned":  "PROCEED AS PLANNED",
+        "proceed_with_caveat": "PROCEED WITH CAVEAT",
+        "reconsider":          "RECONSIDER",
+    }.get(verdict, verdict.upper())
+
+    banner = Table(
+        [[Paragraph(
+            f"<font color='{vp['fg']}' size='11'><b>Verdict: "
+            f"{html.escape(verdict_label)}</b></font>",
+            styles["BodyText"],
+        )]],
+        colWidths=[6.5 * inch],
+        hAlign="LEFT",
+    )
+    banner.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(vp["bg"])),
+        ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(vp["border"])),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("LEFTPADDING", (0, 0), (-1, -1), 12),
+    ]))
+    flow.append(banner)
+    flow.append(Spacer(1, 4))
+    if summary:
+        flow.append(Paragraph(
+            f"<font size='9' color='#374151'>{html.escape(summary)}</font>",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 6))
+
+    for f in failures:
+        likelihood = str(f.get("likelihood") or "medium").lower()
+        severity = str(f.get("severity") or "moderate").lower()
+        trig = str(f.get("triggering_action") or "")
+        narrative = str(f.get("failure_narrative") or "")
+        warning = str(f.get("early_warning") or "")
+        like_color = _LIKELIHOOD_COLOR.get(likelihood, "#6b7280")
+        sev_color = _SEVERITY_COLOR.get(severity, "#6b7280")
+
+        pill_row = Table(
+            [[
+                _pdf_pill(f"Likelihood: {likelihood}", "#fff", like_color, styles),
+                _pdf_pill(f"Severity: {severity}", "#fff", sev_color, styles),
+                Paragraph("", styles["BodyText"]),
+            ]],
+            colWidths=[1.5 * inch, 1.5 * inch, 3.5 * inch],
+            hAlign="LEFT",
+        )
+        pill_row.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        flow.append(pill_row)
+        flow.append(Paragraph(
+            f"<font size='8' color='#6b7280'><b>TRIGGERING ACTION</b></font>",
+            styles["BodyText"],
+        ))
+        flow.append(Paragraph(
+            f"<font size='9' color='#1f2937'><i>{html.escape(trig)}</i></font>",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 3))
+        flow.append(Paragraph(
+            f"<font size='9' color='#1f2937'>{html.escape(narrative)}</font>",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 3))
+        warn_table = Table(
+            [[Paragraph(
+                f"<font size='8' color='#8a4a00'><b>Early warning:</b> "
+                f"{html.escape(warning)}</font>",
+                styles["BodyText"],
+            )]],
+            colWidths=[6.5 * inch],
+            hAlign="LEFT",
+        )
+        warn_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff4e0")),
+            ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#e89c00")),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ]))
+        flow.append(warn_table)
+        flow.append(Spacer(1, 8))
+    return flow
+
+
 def _pdf_holding_review_card(d: dict[str, Any], styles) -> list[Any]:
     """PDF counterpart of `_holding_review_card_html` — ticker header
     with verdict + confidence pills, then labeled sections."""
@@ -1761,6 +1934,10 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
 
         elif s.kind == "market_themes_panel" and s.data:
             for el in _pdf_market_themes_panel(s.data, styles):
+                flow.append(el)
+
+        elif s.kind == "premortem_panel" and s.data:
+            for el in _pdf_premortem_panel(s.data, styles):
                 flow.append(el)
 
         elif s.kind == "page_break":

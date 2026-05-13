@@ -50,6 +50,7 @@ from ..discover.persistence import (
     insert_run_outputs,
     insert_scorecard,
 )
+from ..discover.premortem import PreMortem, PreMortemAgent
 from ..discover.rebalancer import Rebalancer
 from ..discover.report import (
     Section,
@@ -482,6 +483,38 @@ class RebalancePipeline(DiscoverPipeline):
             )
         )
 
+    def step_premortem(self, step_input: StepInput) -> StepOutput:
+        """Adversarial hindsight on the rebalance plan: imagine reading the
+        news 6 months from now where this plan went wrong, and write the
+        post-mortem from that future. Skips on NO_ACTION (nothing to
+        pre-mortem)."""
+        plan = self.state.get("rebalance_plan")
+        if plan is None or getattr(plan, "status", None) != "ACTION":
+            self.state["premortem"] = None
+            return StepOutput(content="premortem: skipped (NO_ACTION plan)")
+        # Format the holdings_reviews into a single text blob for the agent.
+        from ..discover.schemas import HoldingReview
+        reviews_text = "\n\n".join(
+            f"=== {ticker} ===\n"
+            f"{r.full_text if isinstance(r, HoldingReview) else r}"
+            for ticker, r in self.state.get("holdings_reviews", {}).items()
+        )
+        agent = PreMortemAgent("claude", self.settings.discover_opus_model)
+        premortem = agent.run(
+            rebalance_plan_text=plan.full_text,
+            ranker_text=self.state.get("ranker_text", ""),
+            holdings_reviews_text=reviews_text,
+        )
+        self.state["premortem"] = premortem
+        if premortem is None:
+            return StepOutput(content="premortem: agent returned no content")
+        return StepOutput(
+            content=(
+                f"Pre-mortem: verdict={premortem.overall_verdict}, "
+                f"{len(premortem.failures)} failure mode(s)"
+            )
+        )
+
     def step_persist_and_email_rebalance(self, step_input: StepInput) -> StepOutput:
         # Persist run + candidates + scorecards + picks + outputs.
         with connect(self.settings.discover_db_path) as conn:
@@ -582,6 +615,7 @@ class RebalancePipeline(DiscoverPipeline):
             track_record_block=self.state.get("track_record_block", ""),
             rebalance_plan=self.state.get("rebalance_plan"),
             market_themes=self.state.get("market_themes"),
+            premortem=self.state.get("premortem"),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -708,6 +742,7 @@ class RebalancePipeline(DiscoverPipeline):
                 Step(name="sizer", executor=self.step_sizer),
                 Step(name="review_holdings", executor=self.step_review_holdings),
                 Step(name="rebalance", executor=self.step_rebalance),
+                Step(name="premortem", executor=self.step_premortem),
                 Step(
                     name="persist_and_email_rebalance",
                     executor=self.step_persist_and_email_rebalance,
@@ -733,6 +768,7 @@ def _build_rebalance_sections(
     track_record_block: str = "",
     rebalance_plan: object = None,
     market_themes: object = None,
+    premortem: object = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -854,6 +890,29 @@ def _build_rebalance_sections(
                 "summary": plan.summary,
             },
         ))
+
+    if isinstance(premortem, PreMortem) and (premortem.failures or premortem.summary):
+        sections.append(Section(
+            kind="heading", text="Pre-mortem (adversarial hindsight)", level=2,
+        ))
+        sections.append(Section(
+            kind="premortem_panel",
+            data={
+                "overall_verdict": premortem.overall_verdict,
+                "summary": premortem.summary,
+                "failures": [
+                    {
+                        "likelihood": f.likelihood,
+                        "severity": f.severity,
+                        "triggering_action": f.triggering_action,
+                        "failure_narrative": f.failure_narrative,
+                        "early_warning": f.early_warning,
+                    }
+                    for f in premortem.failures
+                ],
+            },
+        ))
+
     sections.append(Section(kind="preformatted", text=rebalance_text))
 
     sections.append(Section(kind="page_break"))
