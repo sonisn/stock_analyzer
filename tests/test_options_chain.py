@@ -13,6 +13,7 @@ from stock_analyzer.data.options_chain import (
     OptionQuote,
     SnapTradeChain,
     YFinanceChain,
+    fetch_chains,
 )
 
 
@@ -146,3 +147,39 @@ def test_snaptrade_returns_none_on_unexpected_shape():
     ):
         chain = SnapTradeChain().fetch("NVDA", dte_min=30, dte_max=45)
     assert chain is None
+
+
+def test_fetch_chains_uses_snaptrade_when_available():
+    fake_chain = OptionChain(
+        ticker="NVDA", spot=235.0, asof=datetime.now(),
+        calls=[], source="snaptrade",
+    )
+    with patch.object(SnapTradeChain, "fetch", return_value=fake_chain) as snap, \
+         patch.object(YFinanceChain, "fetch") as yfin:
+        out = fetch_chains(["NVDA"], dte_min=30, dte_max=45)
+    snap.assert_called_once()
+    yfin.assert_not_called()
+    assert out["NVDA"].source == "snaptrade"
+
+
+def test_fetch_chains_falls_back_to_yfinance():
+    fake = OptionChain(
+        ticker="AAPL", spot=215.0, asof=datetime.now(),
+        calls=[], source="yfinance",
+    )
+    with patch.object(SnapTradeChain, "fetch", return_value=None), \
+         patch.object(YFinanceChain, "fetch", return_value=fake):
+        out = fetch_chains(["AAPL"], dte_min=30, dte_max=45)
+    assert out["AAPL"].source == "yfinance"
+
+
+def test_fetch_chains_marks_missing_when_both_fail():
+    with patch.object(SnapTradeChain, "fetch", return_value=None), \
+         patch.object(YFinanceChain, "fetch", return_value=None):
+        out = fetch_chains(["XYZ"], dte_min=30, dte_max=45)
+    assert out["XYZ"].source == "missing"
+    assert out["XYZ"].calls == []
+
+
+def test_fetch_chains_empty_input():
+    assert fetch_chains([], dte_min=30, dte_max=45) == {}

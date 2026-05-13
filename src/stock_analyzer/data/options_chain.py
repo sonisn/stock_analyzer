@@ -241,3 +241,36 @@ class SnapTradeChain:
         if not isinstance(body, dict):
             return None
         return _parse_snaptrade_options_payload(ticker, body, dte_min, dte_max)
+
+
+def fetch_chains(
+    tickers: list[str],
+    *,
+    dte_min: int,
+    dte_max: int,
+) -> dict[str, OptionChain]:
+    """Per-ticker chain fetch with SnapTrade → yfinance fallback.
+
+    Always returns a chain object for every input ticker. When both
+    providers fail, the returned `OptionChain.source` is `"missing"` and
+    `calls` is empty — the rebalancer prompt is told to show
+    `UNAVAILABLE` for these tickers, and Opus will simply not recommend
+    a WRITE_CALL on them.
+    """
+    if not tickers:
+        return {}
+    snap = SnapTradeChain()
+    yfin = YFinanceChain()
+    out: dict[str, OptionChain] = {}
+    for t in tickers:
+        chain = snap.fetch(t, dte_min, dte_max)
+        if chain is None:
+            chain = yfin.fetch(t, dte_min, dte_max)
+        if chain is None:
+            chain = OptionChain(
+                ticker=t, spot=0.0, asof=datetime.now(),
+                calls=[], source="missing",
+            )
+            logger.warning("chain unavailable for %s (both providers failed)", t)
+        out[t] = chain
+    return out
