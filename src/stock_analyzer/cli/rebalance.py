@@ -18,6 +18,7 @@ Run history shares the discover.db SQLite file.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 from datetime import date
 from pathlib import Path
@@ -476,6 +477,99 @@ class RebalancePipeline(DiscoverPipeline):
             content=f"Reviewed {len(self.state['holdings_reviews'])} holdings"
         )
 
+    def step_cc_data(self, step_input: StepInput) -> StepOutput:
+        """Build the COVERED-CALL CONTEXT block consumed by the rebalancer.
+
+        Pulls option chains, parses open short-call positions, computes
+        eligibility + round-lot coverage + earnings-filtered chains,
+        and stashes the assembled prompt block in
+        `self.state['cc_context_block']`.
+
+        Gracefully degrades: if CC_ENABLED is false or no holdings are
+        eligible, `cc_context_block` is "" and the rebalancer prompt
+        simply omits the CC section.
+        """
+        if not self.settings.cc_enabled:
+            self.state["cc_context_block"] = ""
+            self.state["cc_eligibility"] = {}
+            self.state["cc_round_lot_coverage"] = {}
+            self.state["cc_stub_pool_total_usd"] = 0.0
+            return StepOutput(content="cc_data: disabled via CC_ENABLED=0")
+
+        from ..data.brokerage import fetch_open_option_positions
+        from ..data.options_chain import fetch_chains
+        from ..discover.cc_eligibility import (
+            apply_earnings_filter,
+            build_cc_context_block,
+            eligible_holdings,
+            round_lot_coverage,
+        )
+
+        positions = self.state.get("holdings_positions") or {}
+        denylist = self.settings.cc_denylist
+
+        try:
+            open_short_calls = fetch_open_option_positions()
+        except Exception as e:
+            logger.warning("open option position fetch failed: %s", e)
+            open_short_calls = {}
+
+        eligible = eligible_holdings(
+            positions, open_short_calls=open_short_calls, denylist=denylist,
+        )
+
+        spots = {
+            t: (self.state.get("holdings_technicals", {}).get(t) or {}).get("price") or 0.0
+            for t in positions
+        }
+        coverage = round_lot_coverage(positions, spots=spots)
+        stub_pool = sum(
+            rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares
+        )
+
+        chains = fetch_chains(
+            list(eligible),
+            dte_min=self.settings.cc_dte_min,
+            dte_max=self.settings.cc_dte_max,
+        )
+
+        finnhub_signals = self.state.get("finnhub_signals") or {}
+        earnings_map: dict[str, date] = {}
+        for ticker in eligible:
+            sig = finnhub_signals.get(ticker) or {}
+            raw = sig.get("next_earnings_date") or sig.get("earnings_date")
+            if isinstance(raw, str):
+                with contextlib.suppress(ValueError):
+                    earnings_map[ticker] = date.fromisoformat(raw[:10])
+            elif isinstance(raw, date):
+                earnings_map[ticker] = raw
+
+        filtered_chains: dict[str, object] = {}
+        for ticker, chain in chains.items():
+            filtered, _ = apply_earnings_filter(
+                chain, earnings_date=earnings_map.get(ticker),
+            )
+            filtered_chains[ticker] = filtered
+
+        block = build_cc_context_block(
+            eligible=eligible, chains=filtered_chains,
+            coverage=coverage, reviews=self.state.get("holdings_reviews", {}),
+            earnings=earnings_map, stub_pool_total_usd=stub_pool,
+        )
+        self.state["cc_context_block"] = block
+        self.state["cc_eligibility"] = eligible
+        self.state["cc_round_lot_coverage"] = coverage
+        self.state["cc_stub_pool_total_usd"] = stub_pool
+
+        sources = {c.source for c in filtered_chains.values() if hasattr(c, "source")}
+        n_missing = sum(1 for c in filtered_chains.values() if getattr(c, "source", "") == "missing")
+        return StepOutput(content=(
+            f"cc_data: {len(eligible)} eligible holding(s); "
+            f"chain sources {sorted(sources)}; "
+            f"{n_missing} missing; "
+            f"stub pool ${stub_pool:,.0f}"
+        ))
+
     def step_rebalance(self, step_input: StepInput) -> StepOutput:
         history_block = _build_history_block(self.settings.discover_db_path)
         if history_block:
@@ -502,6 +596,7 @@ class RebalancePipeline(DiscoverPipeline):
             aggressiveness=self.settings.discover_rebalance_aggressiveness,
             history_block=history_block,
             market_themes_block=self.state.get("market_themes_block", ""),
+            cc_context_block=self.state.get("cc_context_block", ""),
         )
         self.state["rebalance_plan"] = plan
         # `rebalance_text` is the prose rendering, kept under the same key
@@ -800,6 +895,7 @@ class RebalancePipeline(DiscoverPipeline):
                 Step(name="redteam", executor=self.step_redteam),
                 Step(name="sizer", executor=self.step_sizer),
                 Step(name="review_holdings", executor=self.step_review_holdings),
+                Step(name="cc_data", executor=self.step_cc_data),
                 Step(name="rebalance", executor=self.step_rebalance),
                 Step(name="premortem", executor=self.step_premortem),
                 Step(
