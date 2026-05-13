@@ -772,6 +772,7 @@ class RebalancePipeline(DiscoverPipeline):
             cc_round_lot_coverage=self.state.get("cc_round_lot_coverage") or {},
             cc_stub_pool_total_usd=self.state.get("cc_stub_pool_total_usd") or 0.0,
             cc_warnings=self.state.get("cc_warnings") or [],
+            cc_slippage_buffer=self.settings.cc_slippage_buffer,
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -941,6 +942,7 @@ def _build_rebalance_sections(
     cc_round_lot_coverage: dict[str, Any] | None = None,
     cc_stub_pool_total_usd: float = 0.0,
     cc_warnings: list[str] | None = None,
+    cc_slippage_buffer: float = 0.10,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -1124,7 +1126,7 @@ def _build_rebalance_sections(
     if plan is not None and plan.option_writes:
         sections.append(Section(
             kind="premium_income",
-            data=compute_premium_income(plan, slippage_buffer=0.10),
+            data=compute_premium_income(plan, slippage_buffer=cc_slippage_buffer),
         ))
     if cc_round_lot_coverage:
         rls = compute_round_lot_summary(cc_round_lot_coverage)
@@ -1146,7 +1148,7 @@ def _build_rebalance_sections(
                     if rec is not None:
                         stub_usd += getattr(rec, "stub_dollar_value", 0.0)
         deployment = compute_premium_deployment(
-            plan, cash_balance=cash_balance, slippage_buffer=0.10,
+            plan, cash_balance=cash_balance, slippage_buffer=cc_slippage_buffer,
             stub_consolidation_usd=stub_usd,
         )
         if (

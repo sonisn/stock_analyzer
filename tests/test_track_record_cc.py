@@ -45,3 +45,24 @@ def test_missing_spot_returns_unknown():
         )
     assert out["outcome"] == "UNKNOWN"
     assert out["pnl_usd"] is None
+
+
+def test_spot_at_first_of_month_picks_up_prior_close():
+    """Regression: previously `end.replace(day=end.day - 5)` produced a
+    zero-day window for first-of-month expiries, returning None."""
+    from unittest.mock import MagicMock, patch
+
+    import pandas as pd
+
+    from stock_analyzer.discover.track_record import _spot_at
+
+    real_df = pd.DataFrame({"Close": [100.0, 101.0, 102.0]})
+    fake_ticker = MagicMock()
+    fake_ticker.history.return_value = real_df
+    with patch("yfinance.Ticker", return_value=fake_ticker):
+        out = _spot_at("X", "2026-06-01")
+    assert out == 102.0
+    # The fix uses timedelta(days=7), so the start arg should be 2026-05-25.
+    call_kwargs = fake_ticker.history.call_args.kwargs
+    assert call_kwargs["start"] == "2026-05-25"
+    assert call_kwargs["end"] == "2026-06-01"

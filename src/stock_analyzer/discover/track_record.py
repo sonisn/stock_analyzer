@@ -31,7 +31,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
-import yfinance as yf
 from pydantic import BaseModel, ConfigDict
 
 from ..logging import get_logger
@@ -198,6 +197,7 @@ def _fetch_quote(
     apples-to-apples across vintages.
     """
     try:
+        import yfinance as yf
         start = datetime.fromisoformat(pick_date).date()
         end = min(start + timedelta(days=_MEASUREMENT_WINDOW_DAYS), date.today())
         if end <= start:
@@ -542,10 +542,9 @@ def _spot_at(ticker: str, on: str) -> float | None:
     try:
         import yfinance as yf
         end = date.fromisoformat(on)
-        # Wider start so non-trading-day expiries still pick up a prior close.
-        start_day = max(1, end.day - 5)
+        start = end - timedelta(days=7)
         df = yf.Ticker(ticker).history(
-            start=end.replace(day=start_day).isoformat(),
+            start=start.isoformat(),
             end=end.isoformat(),
             auto_adjust=False,
         )
