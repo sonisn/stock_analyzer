@@ -598,6 +598,14 @@ class RebalancePipeline(DiscoverPipeline):
             market_themes_block=self.state.get("market_themes_block", ""),
             cc_context_block=self.state.get("cc_context_block", ""),
         )
+        from ..discover.cc_validation import validate_option_writes
+        plan, cc_warnings = validate_option_writes(
+            plan, eligibility=self.state.get("cc_eligibility") or {},
+        )
+        if cc_warnings:
+            self.state["cc_warnings"] = cc_warnings
+            for w in cc_warnings:
+                logger.warning("CC plan validation: %s", w)
         self.state["rebalance_plan"] = plan
         # `rebalance_text` is the prose rendering, kept under the same key
         # so the PDF/email layer and the log-dump fallback need no change.
@@ -760,6 +768,10 @@ class RebalancePipeline(DiscoverPipeline):
             market_themes=self.state.get("market_themes"),
             premortem=self.state.get("premortem"),
             holdings_news=self.state.get("news"),
+            cc_eligibility=self.state.get("cc_eligibility") or {},
+            cc_round_lot_coverage=self.state.get("cc_round_lot_coverage") or {},
+            cc_stub_pool_total_usd=self.state.get("cc_stub_pool_total_usd") or 0.0,
+            cc_warnings=self.state.get("cc_warnings") or [],
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -925,6 +937,10 @@ def _build_rebalance_sections(
     market_themes: object = None,
     premortem: object = None,
     holdings_news: dict[str, list[dict[str, Any]]] | None = None,
+    cc_eligibility: dict[str, Any] | None = None,
+    cc_round_lot_coverage: dict[str, Any] | None = None,
+    cc_stub_pool_total_usd: float = 0.0,
+    cc_warnings: list[str] | None = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -1097,6 +1113,53 @@ def _build_rebalance_sections(
                     for f in premortem.failures
                 ],
             },
+        ))
+
+    # Covered-call report sections — rendered only when relevant.
+    from ..discover.cc_render import (
+        compute_premium_deployment,
+        compute_premium_income,
+        compute_round_lot_summary,
+    )
+    if plan is not None and plan.option_writes:
+        sections.append(Section(
+            kind="premium_income",
+            data=compute_premium_income(plan, slippage_buffer=0.10),
+        ))
+    if cc_round_lot_coverage:
+        rls = compute_round_lot_summary(cc_round_lot_coverage)
+        if rls["rows"]:
+            sections.append(Section(kind="round_lot_coverage", data=rls))
+    if plan is not None and (
+        plan.option_writes
+        or any(
+            a.action in ("ADD", "BUY")
+            or (a.action == "TRIM" and "stub" in a.sizing.lower())
+            for a in plan.actions
+        )
+    ):
+        stub_usd = 0.0
+        if cc_round_lot_coverage:
+            for a in plan.actions:
+                if a.action == "TRIM" and "stub" in a.sizing.lower():
+                    rec = cc_round_lot_coverage.get(a.ticker)
+                    if rec is not None:
+                        stub_usd += getattr(rec, "stub_dollar_value", 0.0)
+        deployment = compute_premium_deployment(
+            plan, cash_balance=cash_balance, slippage_buffer=0.10,
+            stub_consolidation_usd=stub_usd,
+        )
+        if (
+            deployment["gross_premium_usd"] > 0
+            or deployment["deployments"]
+            or stub_usd > 0
+        ):
+            sections.append(Section(kind="premium_deployment", data=deployment))
+
+    if cc_warnings:
+        sections.append(Section(
+            kind="para",
+            text="CC plan adjustments: " + "; ".join(cc_warnings),
         ))
 
     sections.append(Section(kind="preformatted", text=rebalance_text))
