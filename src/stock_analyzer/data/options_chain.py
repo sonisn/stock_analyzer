@@ -1,6 +1,6 @@
-"""Options chain fetching: SnapTrade primary, yfinance fallback.
+"""Options chain fetching: Tradier primary, yfinance fallback.
 
-The orchestrator (`fetch_chains`) tries SnapTrade per-ticker and falls
+The orchestrator (`fetch_chains`) tries Tradier per-ticker and falls
 back to yfinance on None/error. Both providers return a normalized
 `OptionChain` containing only OTM calls within the requested DTE band.
 
@@ -13,8 +13,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any, Literal, Protocol
+from typing import Literal, Protocol
 
+import requests
 import yfinance as yf
 
 from ..config import Settings
@@ -68,7 +69,7 @@ class OptionChain:
     spot: float
     asof: datetime
     calls: list[OptionQuote] = field(default_factory=list)
-    source: Literal["snaptrade", "yfinance", "missing"] = "missing"
+    source: Literal["tradier", "yfinance", "missing"] = "missing"
 
 
 class OptionChainProvider(Protocol):
@@ -149,148 +150,185 @@ class YFinanceChain:
         )
 
 
-def _snaptrade_client() -> Any:
-    """Lazy SnapTrade client builder. Returns None when creds are missing
-    so callers can degrade gracefully rather than blow up."""
-    s = Settings()  # type: ignore[call-arg]
-    if not all([
-        s.snaptrade_client_id, s.snaptrade_consumer_key,
-        s.snaptrade_user_id, s.snaptrade_user_secret,
-    ]):
-        logger.info(
-            "SnapTrade chain provider unavailable: missing one or more of "
-            "SNAPTRADE_CLIENT_ID/CONSUMER_KEY/USER_ID/USER_SECRET — "
-            "falling back to yfinance only."
-        )
-        return None
-    try:
-        from snaptrade_client import SnapTrade
-    except ImportError:
-        logger.warning(
-            "SnapTrade SDK not installed — falling back to yfinance only."
-        )
-        return None
-    client = SnapTrade(
-        client_id=s.snaptrade_client_id,
-        consumer_key=s.snaptrade_consumer_key,
-    )
-    # Bind user creds to the convenience attrs the rest of the codebase uses.
-    client.user_id = s.snaptrade_user_id
-    client.user_secret = s.snaptrade_user_secret
-    return client
+class TradierChain:
+    """Tradier-backed options chain provider.
 
+    Two-step fetch: GET expirations → GET chain per in-band expiry with
+    greeks=true. Returns OptionChain with source="tradier" populated with
+    accurate delta/iv from Tradier (ORATS-backed).
 
-def _first_account_id(client: Any) -> str | None:
-    try:
-        accts = client.account_information.list_user_accounts(
-            user_id=client.user_id, user_secret=client.user_secret,
-        ).body
-    except Exception as e:
-        logger.info("SnapTrade list_user_accounts failed: %s", e)
-        return None
-    if not accts:
-        return None
-    first = accts[0]
-    return first.get("id") if isinstance(first, dict) else getattr(first, "id", None)
-
-
-def _parse_snaptrade_options_payload(
-    ticker: str, payload: dict[str, Any], dte_min: int, dte_max: int,
-) -> OptionChain | None:
-    """Translate SnapTrade's chain shape into OptionChain. Returns None
-    when the shape is unrecognized (so we fall back to yfinance)."""
-    try:
-        spot = float(payload["underlying_price"])
-        rows = payload["options"]
-    except (KeyError, TypeError, ValueError):
-        return None
-
-    today = date.today()
-    lo = today + timedelta(days=dte_min)
-    hi = today + timedelta(days=dte_max)
-    calls: list[OptionQuote] = []
-    for r in rows:
-        try:
-            strike = float(r["strike_price"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if strike <= spot:  # OTM calls only
-            continue
-        for entry in r.get("option_chain") or []:
-            try:
-                expiry = date.fromisoformat(entry["expiration_date"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if expiry < lo or expiry > hi:
-                continue
-            call = entry.get("call") or {}
-            calls.append(OptionQuote(
-                strike=strike, expiry=expiry,
-                bid=_safe_float(call.get("bid_price")) or 0.0,
-                ask=_safe_float(call.get("ask_price")) or 0.0,
-                iv=_safe_float(call.get("implied_volatility")),
-                delta=_safe_float(call.get("delta")),
-                open_interest=_safe_int(call.get("open_interest")),
-                volume=_safe_int(call.get("volume")),
-            ))
-
-    return OptionChain(
-        ticker=ticker, spot=spot, asof=datetime.now(),
-        calls=calls, source="snaptrade",
-    )
-
-
-class SnapTradeChain:
-    """SnapTrade-backed options chain provider.
-
-    Returns None on any failure — auth missing, account list empty,
-    endpoint not supported on the user's tier, payload shape mismatch.
-    The orchestrator falls back to yfinance on None.
-
-    Caches endpoint availability per instance so we don't spam the log
-    when the SDK/tier doesn't expose `get_options_chain`.
+    Returns None on any failure — auth missing, network error, payload
+    shape unexpected. The orchestrator falls back to yfinance on None.
     """
 
+    _TIMEOUT_SECONDS = 10
+
     def __init__(self) -> None:
-        self._endpoint_available: bool | None = None
+        # Cache "is provider configured" once per instance so we don't
+        # spam logs across multiple ticker fetches.
+        self._configured: bool | None = None
 
     def fetch(
         self, ticker: str, dte_min: int, dte_max: int
     ) -> OptionChain | None:
-        client = _snaptrade_client()
-        if client is None:
-            return None
-
-        # Cache endpoint availability once per instance.
-        if self._endpoint_available is None:
-            self._endpoint_available = hasattr(client.trading, "get_options_chain")
-            if not self._endpoint_available:
-                logger.warning(
-                    "SnapTrade chain endpoint is NOT exposed on this SDK/tier "
-                    "(trading.get_options_chain missing). Falling back to "
-                    "yfinance for ALL tickers this run. To enable SnapTrade "
-                    "chains, upgrade the snaptrade_client SDK or your tier."
+        s = Settings()  # type: ignore[call-arg]
+        if not s.tradier_api_key:
+            if self._configured is None:
+                logger.info(
+                    "Tradier chain provider not configured "
+                    "(TRADIER_API_KEY unset). Falling back to yfinance."
                 )
-
-        if not self._endpoint_available:
+                self._configured = False
             return None
+        self._configured = True
 
-        account_id = _first_account_id(client)
-        if account_id is None:
-            logger.info("SnapTrade: no account_id available for chain fetch")
-            return None
+        headers = {
+            "Authorization": f"Bearer {s.tradier_api_key}",
+            "Accept": "application/json",
+        }
+
+        # Step 1: expirations
         try:
-            resp = client.trading.get_options_chain(
-                account_id=account_id, symbol=ticker,
-                user_id=client.user_id, user_secret=client.user_secret,
+            resp = requests.get(
+                f"{s.tradier_base_url}/markets/options/expirations",
+                params={"symbol": ticker, "includeAllRoots": "true"},
+                headers=headers,
+                timeout=self._TIMEOUT_SECONDS,
             )
+            resp.raise_for_status()
+            payload = resp.json() or {}
         except Exception as e:
-            logger.info("SnapTrade chain fetch failed for %s: %s", ticker, e)
+            logger.warning("Tradier expirations fetch failed for %s: %s", ticker, e)
             return None
-        body = getattr(resp, "body", None)
-        if not isinstance(body, dict):
-            return None
-        return _parse_snaptrade_options_payload(ticker, body, dte_min, dte_max)
+
+        expirations = self._extract_expirations(payload)
+        if not expirations:
+            logger.info("Tradier returned no expirations for %s", ticker)
+            return OptionChain(
+                ticker=ticker, spot=0.0, asof=datetime.now(),
+                calls=[], source="tradier",
+            )
+
+        today = date.today()
+        lo = today + timedelta(days=dte_min)
+        hi = today + timedelta(days=dte_max)
+        in_band: list[date] = []
+        for d_str in expirations:
+            try:
+                d = date.fromisoformat(d_str)
+            except (ValueError, TypeError):
+                continue
+            if lo <= d <= hi:
+                in_band.append(d)
+
+        if not in_band:
+            return OptionChain(
+                ticker=ticker, spot=0.0, asof=datetime.now(),
+                calls=[], source="tradier",
+            )
+
+        # Step 2: fetch spot for filtering ITM calls
+        spot = self._fetch_spot(ticker, headers, s.tradier_base_url) or 0.0
+
+        calls: list[OptionQuote] = []
+        for expiry in in_band:
+            chain_rows = self._fetch_chain_for_expiry(
+                ticker, expiry, headers, s.tradier_base_url,
+            )
+            for row in chain_rows:
+                if row.get("option_type") != "call":
+                    continue
+                strike = _safe_float(row.get("strike")) or 0.0
+                if strike <= 0 or (spot > 0 and strike <= spot):
+                    continue  # OTM calls only when spot known; else keep all
+                greeks = row.get("greeks") or {}
+                calls.append(OptionQuote(
+                    strike=strike,
+                    expiry=expiry,
+                    bid=_safe_float(row.get("bid")) or 0.0,
+                    ask=_safe_float(row.get("ask")) or 0.0,
+                    iv=_safe_float(greeks.get("mid_iv")),
+                    delta=_safe_float(greeks.get("delta")),
+                    open_interest=_safe_int(row.get("open_interest")),
+                    volume=_safe_int(row.get("volume")),
+                ))
+
+        return OptionChain(
+            ticker=ticker, spot=spot, asof=datetime.now(),
+            calls=calls, source="tradier",
+        )
+
+    @staticmethod
+    def _extract_expirations(payload: dict) -> list[str]:
+        exp_node = payload.get("expirations")
+        if not isinstance(exp_node, dict):
+            return []
+        date_node = exp_node.get("date")
+        if isinstance(date_node, str):
+            return [date_node]
+        if isinstance(date_node, list):
+            return [d for d in date_node if isinstance(d, str)]
+        return []
+
+    @staticmethod
+    def _normalize_chain_options(payload: dict) -> list[dict]:
+        opt_node = payload.get("options")
+        if not isinstance(opt_node, dict):
+            return []
+        rows = opt_node.get("option")
+        if isinstance(rows, dict):
+            return [rows]
+        if isinstance(rows, list):
+            return [r for r in rows if isinstance(r, dict)]
+        return []
+
+    def _fetch_chain_for_expiry(
+        self, ticker: str, expiry: date,
+        headers: dict[str, str], base_url: str,
+    ) -> list[dict]:
+        try:
+            resp = requests.get(
+                f"{base_url}/markets/options/chains",
+                params={
+                    "symbol": ticker,
+                    "expiration": expiry.isoformat(),
+                    "greeks": "true",
+                },
+                headers=headers,
+                timeout=self._TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            payload = resp.json() or {}
+        except Exception as e:
+            logger.warning(
+                "Tradier chain fetch failed for %s @ %s: %s",
+                ticker, expiry, e,
+            )
+            return []
+        return self._normalize_chain_options(payload)
+
+    @staticmethod
+    def _fetch_spot(
+        ticker: str, headers: dict[str, str], base_url: str,
+    ) -> float | None:
+        try:
+            resp = requests.get(
+                f"{base_url}/markets/quotes",
+                params={"symbols": ticker, "greeks": "false"},
+                headers=headers,
+                timeout=TradierChain._TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            payload = resp.json() or {}
+            quotes = (payload.get("quotes") or {}).get("quote")
+            if isinstance(quotes, list):
+                quotes = quotes[0] if quotes else None
+            if isinstance(quotes, dict):
+                return _safe_float(quotes.get("last"))
+        except Exception as e:
+            logger.info("Tradier spot fetch failed for %s: %s", ticker, e)
+        return None
+
 
 
 def fetch_chains(
@@ -299,21 +337,18 @@ def fetch_chains(
     dte_min: int,
     dte_max: int,
 ) -> dict[str, OptionChain]:
-    """Per-ticker chain fetch with SnapTrade → yfinance fallback.
+    """Per-ticker chain fetch with Tradier → yfinance fallback.
 
-    Always returns a chain object for every input ticker. When both
-    providers fail, the returned `OptionChain.source` is `"missing"` and
-    `calls` is empty — the rebalancer prompt is told to show
-    `UNAVAILABLE` for these tickers, and Opus will simply not recommend
-    a WRITE_CALL on them.
+    Always returns a chain object for every input ticker. When all
+    providers fail, the returned `OptionChain.source` is `"missing"`.
     """
     if not tickers:
         return {}
-    snap = SnapTradeChain()
+    tradier = TradierChain()
     yfin = YFinanceChain()
     out: dict[str, OptionChain] = {}
     for t in tickers:
-        chain = snap.fetch(t, dte_min, dte_max)
+        chain = tradier.fetch(t, dte_min, dte_max)
         if chain is None:
             chain = yfin.fetch(t, dte_min, dte_max)
         if chain is None:
@@ -321,6 +356,6 @@ def fetch_chains(
                 ticker=t, spot=0.0, asof=datetime.now(),
                 calls=[], source="missing",
             )
-            logger.warning("chain unavailable for %s (both providers failed)", t)
+            logger.warning("chain unavailable for %s (all providers failed)", t)
         out[t] = chain
     return out

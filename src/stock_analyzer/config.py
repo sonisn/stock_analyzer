@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     cc_stub_optimization: bool = True
     cc_min_stub_usd: float = 1000.0
 
+    # ---- Tradier options data (primary chain provider) -------------------
+    tradier_api_key: str | None = None
+    tradier_base_url: str = "https://api.tradier.com/v1"
+
     # ---- Coercers ---------------------------------------------------------
     @field_validator("discover_watchlist", mode="before")
     @classmethod

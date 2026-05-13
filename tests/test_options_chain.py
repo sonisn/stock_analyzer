@@ -1,7 +1,6 @@
 """Tests for options_chain.py — providers, orchestrator, fallback."""
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,7 +10,7 @@ import pandas as pd
 from stock_analyzer.data.options_chain import (
     OptionChain,
     OptionQuote,
-    SnapTradeChain,
+    TradierChain,
     YFinanceChain,
     fetch_chains,
 )
@@ -96,70 +95,140 @@ def test_yfinance_no_expiries_returns_empty_chain_with_source_set():
 _FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def test_snaptrade_parses_canned_chain():
-    raw = json.loads((_FIXTURES / "snaptrade_chain_nvda.json").read_text())
-    fake_client = MagicMock()
-    fake_client.trading.get_options_chain.return_value = MagicMock(body=raw)
-    fake_client.account_information.list_user_accounts.return_value = MagicMock(
-        body=[{"id": "acct-1"}]
-    )
-    fake_client.user_id = "u"
-    fake_client.user_secret = "s"
+def test_tradier_returns_none_when_key_missing(monkeypatch):
+    """TradierChain must degrade silently to None when the env var is unset."""
+    monkeypatch.delenv("TRADIER_API_KEY", raising=False)
+    from stock_analyzer.data.options_chain import TradierChain
+    out = TradierChain().fetch("NVDA", dte_min=30, dte_max=45)
+    assert out is None
+
+
+def test_tradier_parses_canned_chain(monkeypatch):
+    """Happy path: expirations + chain fetch + Greeks extraction."""
+    monkeypatch.setenv("TRADIER_API_KEY", "fake-token")
+    monkeypatch.setenv("TRADIER_BASE_URL", "https://api.tradier.com/v1")
+
+    today = date.today()
+    in_band_str = (today + timedelta(days=35)).isoformat()
+    out_of_band_str = (today + timedelta(days=120)).isoformat()
+
+    def _fake_get(url, params=None, headers=None, timeout=None):
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        if "expirations" in url:
+            resp.json.return_value = {
+                "expirations": {"date": [in_band_str, out_of_band_str]}
+            }
+        elif "chains" in url:
+            resp.json.return_value = {
+                "options": {
+                    "option": [
+                        {
+                            "symbol": "NVDA260620C00260000",
+                            "strike": 260, "bid": 2.2, "ask": 2.4,
+                            "volume": 1105, "open_interest": 8249,
+                            "option_type": "call",
+                            "expiration_date": in_band_str,
+                            "greeks": {"delta": 0.36, "mid_iv": 0.291},
+                        },
+                        {
+                            "symbol": "NVDA260620P00260000",
+                            "strike": 260, "bid": 1.0, "ask": 1.1,
+                            "volume": 100, "open_interest": 50,
+                            "option_type": "put",  # filtered out
+                            "expiration_date": in_band_str,
+                            "greeks": {"delta": -0.4, "mid_iv": 0.30},
+                        },
+                        {
+                            "symbol": "NVDA260620C00230000",
+                            "strike": 230, "bid": 8.0, "ask": 8.2,
+                            "volume": 1000, "open_interest": 1000,
+                            "option_type": "call",
+                            "expiration_date": in_band_str,
+                            "greeks": {"delta": 0.65, "mid_iv": 0.31},
+                            # ITM (strike < spot=235), filtered out
+                        },
+                    ]
+                }
+            }
+        elif "quotes" in url:
+            resp.json.return_value = {
+                "quotes": {"quote": {"symbol": "NVDA", "last": 235.0}}
+            }
+        else:
+            resp.json.return_value = {}
+        return resp
 
     with patch(
-        "stock_analyzer.data.options_chain._snaptrade_client",
-        return_value=fake_client,
+        "stock_analyzer.data.options_chain.requests.get",
+        side_effect=_fake_get,
     ):
-        chain = SnapTradeChain().fetch("NVDA", dte_min=30, dte_max=45)
+        chain = TradierChain().fetch("NVDA", dte_min=30, dte_max=45)
 
-    # Fixture expiry 2026-06-20 may be out-of-band depending on
-    # the test-run date. Accept None as a valid stale-fixture
-    # outcome; otherwise assert structure.
-    if chain is None or chain.source != "snaptrade":
-        return
+    assert chain is not None
+    assert chain.source == "tradier"
     assert chain.spot == 235.0
+    # Filtered to OTM calls only — strike 260 keeps, strike 230 (ITM) drops,
+    # put row drops.
     strikes = sorted(q.strike for q in chain.calls)
-    assert strikes == [250.0, 260.0]
+    assert strikes == [260.0]
+    q = chain.calls[0]
+    assert q.delta == 0.36
+    assert q.iv == 0.291
+    assert q.open_interest == 8249
 
 
-def test_snaptrade_returns_none_when_creds_missing():
+def test_tradier_handles_expirations_string_form(monkeypatch):
+    """When only one expiry exists, Tradier returns `date` as a string,
+    not a list. Must normalize."""
+    monkeypatch.setenv("TRADIER_API_KEY", "fake")
+    today = date.today()
+    only_expiry = (today + timedelta(days=35)).isoformat()
+
+    def _fake_get(url, params=None, headers=None, timeout=None):
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        if "expirations" in url:
+            resp.json.return_value = {"expirations": {"date": only_expiry}}
+        elif "chains" in url:
+            resp.json.return_value = {"options": {"option": []}}
+        elif "quotes" in url:
+            resp.json.return_value = {"quotes": {"quote": {"last": 100.0}}}
+        else:
+            resp.json.return_value = {}
+        return resp
+
     with patch(
-        "stock_analyzer.data.options_chain._snaptrade_client",
-        return_value=None,
+        "stock_analyzer.data.options_chain.requests.get",
+        side_effect=_fake_get,
     ):
-        chain = SnapTradeChain().fetch("NVDA", dte_min=30, dte_max=45)
-    assert chain is None
+        chain = TradierChain().fetch("X", dte_min=30, dte_max=45)
+    assert chain is not None
+    # Empty chain (no options in fake response) but source set correctly.
+    assert chain.source == "tradier"
 
 
-def test_snaptrade_returns_none_on_unexpected_shape():
-    fake_client = MagicMock()
-    fake_client.trading.get_options_chain.return_value = MagicMock(
-        body={"unexpected": "shape"}
-    )
-    fake_client.account_information.list_user_accounts.return_value = MagicMock(
-        body=[{"id": "acct-1"}]
-    )
-    fake_client.user_id = "u"
-    fake_client.user_secret = "s"
+def test_tradier_returns_none_on_network_error(monkeypatch):
+    monkeypatch.setenv("TRADIER_API_KEY", "fake")
     with patch(
-        "stock_analyzer.data.options_chain._snaptrade_client",
-        return_value=fake_client,
+        "stock_analyzer.data.options_chain.requests.get",
+        side_effect=RuntimeError("network down"),
     ):
-        chain = SnapTradeChain().fetch("NVDA", dte_min=30, dte_max=45)
-    assert chain is None
+        out = TradierChain().fetch("NVDA", dte_min=30, dte_max=45)
+    assert out is None
 
 
-def test_fetch_chains_uses_snaptrade_when_available():
+def test_fetch_chains_uses_tradier_when_available():
     fake_chain = OptionChain(
         ticker="NVDA", spot=235.0, asof=datetime.now(),
-        calls=[], source="snaptrade",
+        calls=[], source="tradier",
     )
-    with patch.object(SnapTradeChain, "fetch", return_value=fake_chain) as snap, \
+    with patch.object(TradierChain, "fetch", return_value=fake_chain) as tradier, \
          patch.object(YFinanceChain, "fetch") as yfin:
         out = fetch_chains(["NVDA"], dte_min=30, dte_max=45)
-    snap.assert_called_once()
+    tradier.assert_called_once()
     yfin.assert_not_called()
-    assert out["NVDA"].source == "snaptrade"
+    assert out["NVDA"].source == "tradier"
 
 
 def test_fetch_chains_falls_back_to_yfinance():
@@ -167,14 +236,14 @@ def test_fetch_chains_falls_back_to_yfinance():
         ticker="AAPL", spot=215.0, asof=datetime.now(),
         calls=[], source="yfinance",
     )
-    with patch.object(SnapTradeChain, "fetch", return_value=None), \
+    with patch.object(TradierChain, "fetch", return_value=None), \
          patch.object(YFinanceChain, "fetch", return_value=fake):
         out = fetch_chains(["AAPL"], dte_min=30, dte_max=45)
     assert out["AAPL"].source == "yfinance"
 
 
-def test_fetch_chains_marks_missing_when_both_fail():
-    with patch.object(SnapTradeChain, "fetch", return_value=None), \
+def test_fetch_chains_marks_missing_when_all_fail():
+    with patch.object(TradierChain, "fetch", return_value=None), \
          patch.object(YFinanceChain, "fetch", return_value=None):
         out = fetch_chains(["XYZ"], dte_min=30, dte_max=45)
     assert out["XYZ"].source == "missing"
@@ -225,32 +294,3 @@ def test_yfinance_handles_nan_bid_ask_iv():
     assert q.iv is None  # None preserved for missing greeks/IV
 
 
-def test_snaptrade_skips_when_endpoint_missing_and_warns_once():
-    """When the SDK/tier doesn't expose get_options_chain, skip gracefully
-    and return None (cached per instance, not per ticker)."""
-    fake_client = MagicMock(spec=["account_information", "trading"])
-    # Note: spec list intentionally excludes get_options_chain so hasattr returns False
-    fake_client.trading = MagicMock(spec=[])  # no get_options_chain
-    fake_client.account_information.list_user_accounts.return_value = MagicMock(
-        body=[{"id": "acct-1"}]
-    )
-    fake_client.user_id = "u"
-    fake_client.user_secret = "s"
-
-    provider = SnapTradeChain()
-    with patch(
-        "stock_analyzer.data.options_chain._snaptrade_client",
-        return_value=fake_client,
-    ):
-        # Three different tickers — first fetch detects unavailable endpoint,
-        # subsequent fetches use cached result without re-checking.
-        result1 = provider.fetch("NVDA", 30, 45)
-        result2 = provider.fetch("AAPL", 30, 45)
-        result3 = provider.fetch("TSLA", 30, 45)
-
-    # All should return None due to missing endpoint
-    assert result1 is None
-    assert result2 is None
-    assert result3 is None
-    # Verify the caching: _endpoint_available should be set and False
-    assert provider._endpoint_available is False
