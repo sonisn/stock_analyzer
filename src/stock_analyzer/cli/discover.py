@@ -487,6 +487,7 @@ class DiscoverPipeline:
                 opus_model=self.settings.discover_opus_model,
                 sonnet_model=self.settings.discover_sonnet_model,
                 cash_budget=self.settings.discover_cash_budget,
+                kind="discover",
             )
             for c in self.state["candidates"]:
                 insert_candidate(

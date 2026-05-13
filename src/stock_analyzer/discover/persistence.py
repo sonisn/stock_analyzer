@@ -24,6 +24,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY,
     run_at TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'discover',  -- 'discover' | 'rebalance'
     universe_size INTEGER NOT NULL,
     survivors INTEGER NOT NULL,
     picks INTEGER NOT NULL,
@@ -69,9 +70,31 @@ CREATE TABLE IF NOT EXISTS run_outputs (
     ranker_full TEXT,
     redteam_full TEXT,
     sizer_full TEXT,
-    holdings_summary TEXT
+    holdings_summary TEXT,
+    rebalance_text TEXT,     -- full Opus rebalance plan (rebalance kind only)
+    dashboard_data TEXT      -- JSON snapshot for the dashboard (holdings,
+                             -- metrics, sector, status, pdf_path, etc.)
 );
 """
+
+# Columns added after the initial schema — apply via ALTER TABLE so older
+# DBs migrate forward without losing data.
+_MIGRATIONS: tuple[tuple[str, str], ...] = (
+    ("runs", "ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'discover'"),
+    ("run_outputs", "ALTER TABLE run_outputs ADD COLUMN rebalance_text TEXT"),
+    ("run_outputs", "ALTER TABLE run_outputs ADD COLUMN dashboard_data TEXT"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Apply additive column migrations; ignore 'duplicate column' errors so
+    the function is idempotent on already-migrated DBs."""
+    for _table, ddl in _MIGRATIONS:
+        try:
+            conn.execute(ddl)
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e).lower():
+                raise
 
 
 def _expanded_path(path: str) -> Path:
@@ -86,6 +109,7 @@ def connect(db_path: str) -> Iterator[sqlite3.Connection]:
     conn.execute("PRAGMA foreign_keys = ON")
     try:
         conn.executescript(_SCHEMA)
+        _migrate(conn)
         yield conn
         conn.commit()
     finally:
@@ -101,12 +125,14 @@ def insert_run(
     opus_model: str,
     sonnet_model: str,
     cash_budget: float | None,
+    kind: str = "discover",
 ) -> int:
     cur = conn.execute(
-        "INSERT INTO runs (run_at, universe_size, survivors, picks, "
-        "opus_model, sonnet_model, cash_budget) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO runs (run_at, kind, universe_size, survivors, picks, "
+        "opus_model, sonnet_model, cash_budget) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             datetime.now().isoformat(timespec="seconds"),
+            kind,
             universe_size,
             survivors,
             picks,
@@ -187,9 +213,20 @@ def insert_run_outputs(
     redteam_full: str,
     sizer_full: str,
     holdings_summary: str,
+    rebalance_text: str | None = None,
+    dashboard_data: dict[str, Any] | None = None,
 ) -> None:
     conn.execute(
         "INSERT INTO run_outputs (run_id, ranker_full, redteam_full, "
-        "sizer_full, holdings_summary) VALUES (?, ?, ?, ?, ?)",
-        (run_id, ranker_full, redteam_full, sizer_full, holdings_summary),
+        "sizer_full, holdings_summary, rebalance_text, dashboard_data) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            run_id,
+            ranker_full,
+            redteam_full,
+            sizer_full,
+            holdings_summary,
+            rebalance_text,
+            json.dumps(dashboard_data) if dashboard_data is not None else None,
+        ),
     )
