@@ -567,6 +567,9 @@ class DiscoverPipeline:
             macro_summary=self.state.get("macro_summary", ""),
             sector_rotation=self.state.get("sector_rotation"),
             track_record_block=self.state.get("track_record_block", ""),
+            ranker_output=self.state.get("ranker_output"),
+            redteam_output=self.state.get("redteam_output"),
+            sizer_output=self.state.get("sizer_output"),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)

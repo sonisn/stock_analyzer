@@ -196,6 +196,9 @@ SectionKind = Literal[
     "heading", "para", "preformatted", "image", "blockquote", "table",
     "page_break", "status_banner", "metric_strip", "holdings_dashboard",
     "sector_pie",
+    # New structured-output kinds (Phase 4f) — renderer pulls fields from
+    # `data` and produces a styled card / table instead of dumping prose.
+    "pick_card", "allocation_table",
 ]
 
 
@@ -216,6 +219,8 @@ class Section(BaseModel):
     holdings: list[dict[str, Any]] | None = None
     # Sector pie data: list of (label, value, color)
     pie_data: list[tuple[str, float]] | None = None
+    # Generic carrier for structured-output card kinds (pick_card, etc.)
+    data: dict[str, Any] | None = None
 
 
 def build_sections(
@@ -229,12 +234,25 @@ def build_sections(
     macro_summary: str = "",
     sector_rotation: dict[str, Any] | None = None,
     track_record_block: str = "",
+    ranker_output: object = None,
+    redteam_output: object = None,
+    sizer_output: object = None,
 ) -> list[Section]:
+    # Prefer the structured Phase 4 objects when present; fall back to
+    # parsing the free-text variants so legacy callers / partial runs
+    # still render something.
+    from .schemas import RankerOutput, RedTeamOutput, SizerOutput
+    structured_ranker = ranker_output if isinstance(ranker_output, RankerOutput) else None
+    structured_redteam = redteam_output if isinstance(redteam_output, RedTeamOutput) else None
+    structured_sizer = sizer_output if isinstance(sizer_output, SizerOutput) else None
+
     today = date.today().isoformat()
     pick_blocks = _split_by_pick_blocks(ranker_text)
     bear_blocks = _split_by_ticker_blocks(redteam_text)
     alloc_blocks = _split_by_ticker_blocks(sizer_text)
-    pick_order = [t for _, t, _ in parse_picks(ranker_text)]
+    pick_order = [
+        t for _, t, _ in parse_picks(structured_ranker or ranker_text)
+    ]
     survivors = [c for c in candidates if c["passed_filter"]]
     rejected = [c for c in candidates if not c["passed_filter"]]
 
@@ -267,27 +285,117 @@ def build_sections(
     s.append(Section(kind="heading", text="Current holdings (concentration context)", level=2))
     s.append(Section(kind="preformatted", text=holdings_summary or "(none)"))
 
+    # Per-pick cards. When structured outputs are present, emit a single
+    # rich pick_card section per ticker (renderer composes rank pill +
+    # conviction badge + fragility chip + allocation + bull/bear prose).
+    # Otherwise fall back to the legacy heading + preformatted layout.
+    pick_by_ticker: dict[str, Any] = {}
+    if structured_ranker:
+        pick_by_ticker = {p.ticker: p for p in structured_ranker.picks}
+    bear_by_ticker: dict[str, Any] = {}
+    if structured_redteam:
+        bear_by_ticker = {b.ticker: b for b in structured_redteam.bear_cases}
+    alloc_by_ticker: dict[str, Any] = {}
+    if structured_sizer:
+        alloc_by_ticker = {a.ticker: a for a in structured_sizer.allocations}
+
     for ticker in pick_order:
         s.append(Section(kind="page_break"))
-        s.append(Section(kind="heading", text=ticker, level=2))
-        s.append(Section(kind="image",image_ticker=ticker))
-        s.append(Section(kind="heading", text="Bull case", level=3))
-        s.append(Section(kind="preformatted", text=pick_blocks.get(ticker, "(missing)")))
-        s.append(Section(kind="heading", text="Bear case (red-team)", level=3))
-        s.append(Section(kind="preformatted", text=bear_blocks.get(ticker, "(missing)")))
-        s.append(Section(kind="heading", text="Position sizing", level=3))
-        s.append(Section(kind="preformatted", text=alloc_blocks.get(ticker, "(missing)")))
+        if pick_by_ticker.get(ticker):
+            pick = pick_by_ticker[ticker]
+            bear = bear_by_ticker.get(ticker)
+            alloc = alloc_by_ticker.get(ticker)
+            s.append(Section(
+                kind="pick_card",
+                data={
+                    "ticker": ticker,
+                    "rank": pick.rank,
+                    "one_liner": pick.one_liner,
+                    "conviction": pick.conviction,
+                    "time_horizon": pick.time_horizon,
+                    "bull_thesis": pick.bull_thesis,
+                    "what_youre_betting_on": pick.what_youre_betting_on,
+                    "why_over_alternatives": pick.why_over_alternatives,
+                    "sector_concentration_check": pick.sector_concentration_check,
+                    "bear_case": bear.bear_case if bear else None,
+                    "most_fragile_assumption": (
+                        bear.most_fragile_assumption if bear else None
+                    ),
+                    "watch_metric": bear.watch_metric if bear else None,
+                    "fragility_rank": bear.fragility_rank if bear else None,
+                    "allocation_pct": (
+                        alloc.allocation_pct if alloc else None
+                    ),
+                    "allocation_usd": (
+                        alloc.allocation_usd if alloc else None
+                    ),
+                    "allocation_rationale": alloc.rationale if alloc else None,
+                },
+            ))
+            s.append(Section(kind="image", image_ticker=ticker))
+        else:
+            s.append(Section(kind="heading", text=ticker, level=2))
+            s.append(Section(kind="image", image_ticker=ticker))
+            s.append(Section(kind="heading", text="Bull case", level=3))
+            s.append(Section(kind="preformatted", text=pick_blocks.get(ticker, "(missing)")))
+            s.append(Section(kind="heading", text="Bear case (red-team)", level=3))
+            s.append(Section(kind="preformatted", text=bear_blocks.get(ticker, "(missing)")))
+            s.append(Section(kind="heading", text="Position sizing", level=3))
+            s.append(Section(kind="preformatted", text=alloc_blocks.get(ticker, "(missing)")))
 
     s.append(Section(kind="page_break"))
+    # Structured allocation table when sizer ran in Phase 4e mode.
+    if structured_sizer and structured_sizer.allocations:
+        s.append(Section(kind="page_break"))
+        s.append(Section(kind="heading", text="Allocation summary", level=2))
+        s.append(Section(
+            kind="allocation_table",
+            data={
+                "allocations": [
+                    {
+                        "ticker": a.ticker,
+                        "pct": a.allocation_pct,
+                        "usd": a.allocation_usd,
+                        "rationale": a.rationale,
+                    }
+                    for a in structured_sizer.allocations
+                ],
+                "warnings": list(structured_sizer.concentration_warnings),
+            },
+        ))
+
     s.append(Section(kind="heading", text="Ranker correlation notes", level=2))
-    trailing = re.split(_PICK_RE, ranker_text)[-1].strip()
-    s.append(Section(kind="preformatted", text=trailing or "(none)"))
+    if structured_ranker and structured_ranker.pairs_not_to_hold_together:
+        for pair in structured_ranker.pairs_not_to_hold_together:
+            s.append(Section(
+                kind="para",
+                text=(
+                    f"{pair.ticker_a} + {pair.ticker_b}: "
+                    f"{pair.shared_driver}"
+                ),
+            ))
+    else:
+        trailing = re.split(_PICK_RE, ranker_text)[-1].strip()
+        s.append(Section(kind="preformatted", text=trailing or "(none)"))
 
     s.append(Section(kind="heading", text="Red-team summary", level=2))
-    s.append(Section(kind="preformatted", text=redteam_text.split("---")[-1].strip() or "(none)"))
+    if structured_redteam:
+        s.append(Section(
+            kind="para",
+            text=f"Single most fragile pick: {structured_redteam.single_most_fragile_pick}",
+        ))
+    else:
+        s.append(Section(kind="preformatted", text=redteam_text.split("---")[-1].strip() or "(none)"))
 
     s.append(Section(kind="heading", text="Sizer concentration warnings", level=2))
-    s.append(Section(kind="preformatted", text=sizer_text.split("---")[-1].strip() or "(none)"))
+    if structured_sizer:
+        if structured_sizer.concentration_warnings:
+            for w in structured_sizer.concentration_warnings:
+                s.append(Section(kind="para", text=f"• {w}"))
+        else:
+            s.append(Section(kind="para", text="(none)"))
+    else:
+        s.append(Section(kind="preformatted", text=sizer_text.split("---")[-1].strip() or "(none)"))
 
     if survivors:
         s.append(Section(kind="page_break"))
@@ -461,6 +569,180 @@ def _svg_pie(pie_data: list[tuple[str, float]], diameter: int = 180) -> str:
     )
 
 
+# Fragility-rank visual palette — 1 = most fragile (red), 5 = most resilient (green).
+_FRAGILITY_COLORS: dict[int, dict[str, str]] = {
+    1: {"bg": "#fde4e4", "fg": "#9c1010", "border": "#d73030"},
+    2: {"bg": "#fde8d3", "fg": "#a3550b", "border": "#e89c00"},
+    3: {"bg": "#fff4e0", "fg": "#8a4a00", "border": "#e89c00"},
+    4: {"bg": "#e8f4f8", "fg": "#0c5e7c", "border": "#3b8fde"},
+    5: {"bg": "#e6f4ea", "fg": "#0e6432", "border": "#1f9d55"},
+}
+
+
+def _conviction_swatch(score: int | None) -> str:
+    """Return a hex color reflecting conviction strength (1=red → 10=green)."""
+    if score is None:
+        return "#9ca3af"
+    if score >= 8:
+        return "#0e6432"
+    if score >= 6:
+        return "#3b8fde"
+    if score >= 4:
+        return "#a3550b"
+    return "#9c1010"
+
+
+def _pick_card_html(d: dict[str, Any]) -> str:
+    """Render a per-pick structured card. Uses pill badges for rank /
+    conviction / fragility / allocation and stacks bull + bear prose."""
+    ticker = html.escape(str(d.get("ticker", "")))
+    rank = d.get("rank")
+    conviction = d.get("conviction")
+    fragility = d.get("fragility_rank")
+    alloc_pct = d.get("allocation_pct")
+    alloc_usd = d.get("allocation_usd")
+    one_liner = html.escape(str(d.get("one_liner") or ""))
+    bull = html.escape(str(d.get("bull_thesis") or ""))
+    bear = html.escape(str(d.get("bear_case") or "")) if d.get("bear_case") else ""
+    bet_on = html.escape(str(d.get("what_youre_betting_on") or ""))
+    why_over = html.escape(str(d.get("why_over_alternatives") or ""))
+    sector_concentration = html.escape(str(d.get("sector_concentration_check") or ""))
+    most_fragile = html.escape(str(d.get("most_fragile_assumption") or ""))
+    watch_metric = html.escape(str(d.get("watch_metric") or ""))
+    alloc_rationale = html.escape(str(d.get("allocation_rationale") or ""))
+
+    rank_html = (
+        f"<span style='background:#1f2937;color:#fff;padding:3px 10px;"
+        f"border-radius:12px;font-size:12px;font-weight:600'>#{rank}</span>"
+        if rank is not None else ""
+    )
+    conv_color = _conviction_swatch(conviction if isinstance(conviction, int) else None)
+    conv_html = (
+        f"<span style='background:{conv_color};color:#fff;padding:3px 10px;"
+        f"border-radius:12px;font-size:12px;font-weight:600'>"
+        f"Conviction {conviction}/10</span>"
+        if conviction is not None else ""
+    )
+    frag_html = ""
+    if isinstance(fragility, int) and fragility in _FRAGILITY_COLORS:
+        c = _FRAGILITY_COLORS[fragility]
+        frag_html = (
+            f"<span style='background:{c['bg']};color:{c['fg']};"
+            f"border:1px solid {c['border']};padding:3px 10px;border-radius:12px;"
+            f"font-size:12px;font-weight:600'>Fragility {fragility}/5</span>"
+        )
+    alloc_html = ""
+    if alloc_pct is not None:
+        alloc_html = (
+            f"<span style='background:#ece8fb;color:#4c1d95;border:1px solid #7c3aed;"
+            f"padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600'>"
+            f"Allocation {alloc_pct:.1f}%</span>"
+        )
+    elif alloc_usd is not None:
+        alloc_html = (
+            f"<span style='background:#ece8fb;color:#4c1d95;border:1px solid #7c3aed;"
+            f"padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600'>"
+            f"Allocation ${alloc_usd:,.0f}</span>"
+        )
+
+    sections_html: list[str] = []
+    if bull:
+        sections_html.append(
+            f"<div><div style='font-size:11px;color:#6b7280;font-weight:600;"
+            f"text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px'>"
+            f"Bull thesis</div><div>{bull}</div></div>"
+        )
+    if bet_on:
+        sections_html.append(
+            f"<div style='margin-top:6px;color:#374151;font-style:italic'>"
+            f"You're betting on: {bet_on}</div>"
+        )
+    if bear:
+        sections_html.append(
+            f"<div><div style='font-size:11px;color:#9c1010;font-weight:600;"
+            f"text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px'>"
+            f"Bear case</div><div>{bear}</div></div>"
+        )
+    if most_fragile:
+        sections_html.append(
+            f"<div style='margin-top:4px;color:#374151'>"
+            f"<b>Most fragile assumption:</b> {most_fragile}</div>"
+        )
+    if watch_metric:
+        sections_html.append(
+            f"<div style='margin-top:4px;color:#374151'>"
+            f"<b>Watch:</b> {watch_metric}</div>"
+        )
+    if why_over:
+        sections_html.append(
+            f"<div><div style='font-size:11px;color:#6b7280;font-weight:600;"
+            f"text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px'>"
+            f"Why this over alternatives</div><div>{why_over}</div></div>"
+        )
+    if sector_concentration:
+        sections_html.append(
+            f"<div style='margin-top:4px;color:#374151;font-size:13px'>"
+            f"Sector concentration: {sector_concentration}</div>"
+        )
+    if alloc_rationale:
+        sections_html.append(
+            f"<div style='margin-top:8px;background:#f3f4f6;padding:8px 12px;"
+            f"border-left:3px solid #7c3aed;font-size:13px;color:#374151'>"
+            f"<b>Sizing rationale:</b> {alloc_rationale}</div>"
+        )
+
+    return (
+        f"<div style='border:1px solid #e5e7eb;border-radius:8px;padding:16px;"
+        f"margin:16px 0;background:#fff'>"
+        f"<div style='display:flex;flex-wrap:wrap;align-items:center;gap:10px;"
+        f"margin-bottom:10px'>"
+        f"<h2 style='margin:0;border:none;padding:0'>{ticker}</h2>"
+        f"{rank_html}{conv_html}{frag_html}{alloc_html}"
+        f"</div>"
+        f"<div style='color:#374151;margin-bottom:6px'>{one_liner}</div>"
+        + "".join(sections_html)
+        + "</div>"
+    )
+
+
+def _allocation_table_html(d: dict[str, Any]) -> str:
+    """Render the structured sizing allocations as a clean numeric table."""
+    allocations = d.get("allocations") or []
+    warnings = d.get("warnings") or []
+    if not allocations:
+        return "<p>(no allocations)</p>"
+    rows_html: list[str] = []
+    for a in allocations:
+        pct = a.get("pct")
+        usd = a.get("usd")
+        size_str = (
+            f"{pct:.1f}%" if pct is not None
+            else (f"${usd:,.0f}" if usd is not None else "—")
+        )
+        rows_html.append(
+            f"<tr><td><b>{html.escape(str(a.get('ticker', '')))}</b></td>"
+            f"<td style='text-align:right;color:#4c1d95;font-weight:600'>"
+            f"{html.escape(size_str)}</td>"
+            f"<td style='color:#374151;font-size:13px'>"
+            f"{html.escape(str(a.get('rationale') or ''))}</td></tr>"
+        )
+    table_html = (
+        "<table class='dashboard'><thead><tr>"
+        "<th>Ticker</th><th style='text-align:right'>Size</th><th>Rationale</th>"
+        "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table>"
+    )
+    warnings_html = ""
+    if warnings:
+        items = "".join(f"<li>{html.escape(str(w))}</li>" for w in warnings)
+        warnings_html = (
+            f"<div style='margin-top:8px;color:#8a4a00;background:#fff4e0;"
+            f"padding:8px 12px;border-left:3px solid #e89c00'>"
+            f"<b>Concentration warnings:</b><ul style='margin:4px 0 0 18px'>"
+            f"{items}</ul></div>"
+        )
+    return table_html + warnings_html
+
+
 def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> str:
     parts: list[str] = [_HTML_HEAD]
     for s in sections:
@@ -543,6 +825,12 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
 
         elif s.kind == "sector_pie" and s.pie_data:
             parts.append(_svg_pie(s.pie_data))
+
+        elif s.kind == "pick_card" and s.data:
+            parts.append(_pick_card_html(s.data))
+
+        elif s.kind == "allocation_table" and s.data:
+            parts.append(_allocation_table_html(s.data))
 
         elif s.kind == "page_break":
             parts.append("<hr/>")
@@ -717,6 +1005,200 @@ def _pdf_sector_pie(pie_data: list[tuple[str, float]]):
     return drawing
 
 
+def _pdf_pick_card(d: dict[str, Any], styles) -> list[Any]:
+    """Render a structured pick as a header row of colored pill badges
+    + per-section paragraphs. Returns a list of flowables (no Spacer
+    around the page-break boundary)."""
+    ticker = str(d.get("ticker", ""))
+    rank = d.get("rank")
+    conviction = d.get("conviction") if isinstance(d.get("conviction"), int) else None
+    fragility = d.get("fragility_rank") if isinstance(d.get("fragility_rank"), int) else None
+    alloc_pct = d.get("allocation_pct")
+    alloc_usd = d.get("allocation_usd")
+
+    flow: list[Any] = []
+
+    # Header row: ticker + pill badges as a single 5-column Table.
+    pill_cells: list[Paragraph] = []
+    pill_cells.append(Paragraph(
+        f"<font size='14'><b>{html.escape(ticker)}</b></font>",
+        styles["BodyText"],
+    ))
+    if rank is not None:
+        pill_cells.append(_pdf_pill(f"#{rank}", "#fff", "#1f2937", styles))
+    if conviction is not None:
+        pill_cells.append(_pdf_pill(
+            f"Conviction {conviction}/10", "#fff",
+            _conviction_swatch(conviction), styles,
+        ))
+    if fragility in _FRAGILITY_COLORS:
+        c = _FRAGILITY_COLORS[fragility]
+        pill_cells.append(_pdf_pill(
+            f"Fragility {fragility}/5", c["fg"], c["bg"], styles,
+        ))
+    if alloc_pct is not None:
+        pill_cells.append(_pdf_pill(
+            f"Allocation {alloc_pct:.1f}%", "#4c1d95", "#ece8fb", styles,
+        ))
+    elif alloc_usd is not None:
+        pill_cells.append(_pdf_pill(
+            f"Allocation ${alloc_usd:,.0f}", "#4c1d95", "#ece8fb", styles,
+        ))
+
+    # Pad to 5 cells so all rows column-align.
+    while len(pill_cells) < 5:
+        pill_cells.append(Paragraph("", styles["BodyText"]))
+    header = Table(
+        [pill_cells],
+        colWidths=[2.1 * inch] + [1.1 * inch] * 4,
+        hAlign="LEFT",
+    )
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    flow.append(header)
+
+    one_liner = str(d.get("one_liner") or "").strip()
+    if one_liner:
+        flow.append(Paragraph(html.escape(one_liner), styles["BodyText"]))
+        flow.append(Spacer(1, 6))
+
+    def _section(label: str, body: str | None, color: str = "#374151") -> None:
+        if not body:
+            return
+        flow.append(Paragraph(
+            f"<font color='{color}' size='8'><b>{label.upper()}</b></font>",
+            styles["BodyText"],
+        ))
+        flow.append(Paragraph(html.escape(str(body)), styles["BodyText"]))
+        flow.append(Spacer(1, 4))
+
+    _section("Bull thesis", d.get("bull_thesis"))
+    if d.get("what_youre_betting_on"):
+        flow.append(Paragraph(
+            f"<i>You're betting on: {html.escape(str(d.get('what_youre_betting_on')))}</i>",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 4))
+    _section("Bear case", d.get("bear_case"), color="#9c1010")
+    if d.get("most_fragile_assumption"):
+        flow.append(Paragraph(
+            f"<b>Most fragile assumption:</b> "
+            f"{html.escape(str(d.get('most_fragile_assumption')))}",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 2))
+    if d.get("watch_metric"):
+        flow.append(Paragraph(
+            f"<b>Watch:</b> {html.escape(str(d.get('watch_metric')))}",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 4))
+    _section("Why this over alternatives", d.get("why_over_alternatives"))
+    if d.get("sector_concentration_check"):
+        flow.append(Paragraph(
+            f"<font size='9' color='#6b7280'>Sector concentration: "
+            f"{html.escape(str(d.get('sector_concentration_check')))}</font>",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 4))
+    if d.get("allocation_rationale"):
+        rationale_para = Paragraph(
+            f"<b>Sizing rationale:</b> "
+            f"{html.escape(str(d.get('allocation_rationale')))}",
+            styles["BodyText"],
+        )
+        wrap = Table([[rationale_para]], colWidths=[6.7 * inch])
+        wrap.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f3f4f6")),
+            ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#7c3aed")),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ]))
+        flow.append(wrap)
+        flow.append(Spacer(1, 8))
+    return flow
+
+
+def _pdf_pill(text: str, fg: str, bg: str, styles) -> Paragraph:
+    """Single colored pill, rendered as a Paragraph for compositing in a Table cell."""
+    return Paragraph(
+        f"<font color='{fg}' size='9'><b>{html.escape(text)}</b></font>",
+        ParagraphStyle(
+            name="pill",
+            parent=styles["BodyText"],
+            backColor=colors.HexColor(bg),
+            borderPadding=(2, 6, 2, 6),
+            alignment=1,  # center
+            spaceBefore=0, spaceAfter=0,
+        ),
+    )
+
+
+def _pdf_allocation_table(d: dict[str, Any], styles) -> list[Any]:
+    """Structured sizing table rendered as a proper ReportLab Table."""
+    allocations = d.get("allocations") or []
+    warnings = d.get("warnings") or []
+    if not allocations:
+        return [Paragraph("(no allocations)", styles["BodyText"]), Spacer(1, 4)]
+    rows: list[list[Any]] = [
+        [
+            Paragraph("<b>Ticker</b>", styles["BodyText"]),
+            Paragraph("<b>Size</b>", styles["BodyText"]),
+            Paragraph("<b>Rationale</b>", styles["BodyText"]),
+        ]
+    ]
+    for a in allocations:
+        pct = a.get("pct")
+        usd = a.get("usd")
+        size_str = (
+            f"{pct:.1f}%" if pct is not None
+            else (f"${usd:,.0f}" if usd is not None else "—")
+        )
+        rows.append([
+            Paragraph(f"<b>{html.escape(str(a.get('ticker', '')))}</b>", styles["BodyText"]),
+            Paragraph(
+                f"<font color='#4c1d95'><b>{html.escape(size_str)}</b></font>",
+                styles["BodyText"],
+            ),
+            Paragraph(html.escape(str(a.get("rationale") or "")), styles["BodyText"]),
+        ])
+    t = Table(
+        rows,
+        repeatRows=1,
+        hAlign="LEFT",
+        colWidths=[0.9 * inch, 1.0 * inch, 4.8 * inch],
+    )
+    t.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    flow: list[Any] = [t, Spacer(1, 6)]
+    if warnings:
+        body = "<b>Concentration warnings:</b> " + " · ".join(
+            html.escape(str(w)) for w in warnings
+        )
+        wpara = Paragraph(body, styles["BodyText"])
+        wrap = Table([[wpara]], colWidths=[6.7 * inch])
+        wrap.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff4e0")),
+            ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#e89c00")),
+            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#8a4a00")),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ]))
+        flow.append(wrap)
+        flow.append(Spacer(1, 6))
+    return flow
+
+
 def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
     buf = BytesIO()
     doc = SimpleDocTemplate(
@@ -785,6 +1267,14 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
             if pie is not None:
                 flow.append(pie)
                 flow.append(Spacer(1, 6))
+
+        elif s.kind == "pick_card" and s.data:
+            for el in _pdf_pick_card(s.data, styles):
+                flow.append(el)
+
+        elif s.kind == "allocation_table" and s.data:
+            for el in _pdf_allocation_table(s.data, styles):
+                flow.append(el)
 
         elif s.kind == "page_break":
             flow.append(PageBreak())
