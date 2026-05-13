@@ -16,7 +16,7 @@ from typing import Any
 
 # Hard filter thresholds — tighten/loosen after running the pipeline a few
 # times. These are deliberately conservative for capital-at-stake decisions.
-MIN_MARKET_CAP = 5e9
+MIN_MARKET_CAP = 2e9
 MIN_REVENUE_GROWTH = 0.08
 MAX_DEBT_TO_EQUITY = 2.0
 MAX_DRAWDOWN_FROM_52W_HIGH = -0.30
