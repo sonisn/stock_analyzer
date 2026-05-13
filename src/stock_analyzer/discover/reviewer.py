@@ -12,6 +12,7 @@ from typing import Any
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
 from ..serialization import dumps_pretty
+from .schemas import HoldingReview
 
 logger = get_logger(__name__)
 
@@ -130,7 +131,16 @@ CRITICAL:
 - Begin with "TICKER:" line. No preamble, no closing remarks.
 - If tax_lots is absent, omit the "Tax lot plan" section.
 - When in doubt, HOLD. Inaction has costs but they are usually small;
-  wrong action has costs that compound over months.\
+  wrong action has costs that compound over months.
+
+STRUCTURED OUTPUT:
+Your response is validated against a Pydantic schema (HoldingReview).
+Populate every required field. The prose plan you would have emitted
+goes into `full_text` — make it match the format described above
+exactly. Set `trim_pct` only when verdict is TRIM. Set `wash_sale_notice`
+only when verdict is SELL and at least one lot in `tax_lot_plan`
+realizes a loss. The structured fields must agree with `full_text` —
+if `full_text` says "Verdict: SELL" then `verdict` MUST be "SELL".\
 """
 
 
@@ -147,34 +157,56 @@ class Reviewer:
                 "delay_between_retries": 10,
             },
             instructions=REVIEWER_INSTRUCTIONS,
+            output_schema=HoldingReview,
         )
 
-    def review(self, ticker: str, payload: dict[str, Any]) -> str:
+    def review(self, ticker: str, payload: dict[str, Any]) -> HoldingReview | None:
         prompt = (
             f"Holding: {ticker}\n\n"
             f"```json\n{dumps_pretty(payload)}\n```"
         )
         logger.info("Reviewing holding %s", ticker)
-        content = self.agent.run(prompt).content
-        if not content:
+        result = self.agent.run(prompt).content
+        if result is None:
             logger.warning(
-                "Reviewer returned empty content for %s — using empty review",
-                ticker,
+                "Reviewer returned no content for %s — skipping", ticker,
             )
-            return ""
-        return content
+            return None
+        if isinstance(result, HoldingReview):
+            return result
+        if isinstance(result, str):
+            try:
+                return HoldingReview.model_validate_json(result)
+            except Exception as e:
+                logger.warning(
+                    "Reviewer for %s returned a string that wasn't valid "
+                    "HoldingReview JSON: %s", ticker, e,
+                )
+                return None
+        logger.warning(
+            "Reviewer for %s returned unexpected type %s; skipping",
+            ticker, type(result).__name__,
+        )
+        return None
 
 
 def review_batch(
     reviewer: Reviewer, payloads: dict[str, dict[str, Any]]
-) -> dict[str, str]:
-    results: dict[str, str] = {}
+) -> dict[str, HoldingReview]:
+    """Return {ticker: HoldingReview} for every payload that the
+    Reviewer successfully scored. Tickers that failed (None content,
+    invalid JSON, network error) are silently excluded — the consumer
+    treats missing keys as 'no review available'."""
+    results: dict[str, HoldingReview] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         futures = {ex.submit(reviewer.review, t, p): t for t, p in payloads.items()}
         for fut in futures:
             ticker = futures[fut]
             try:
-                results[ticker] = fut.result()
+                review = fut.result()
             except Exception as e:
                 logger.warning("reviewer failed for %s: %s", ticker, e)
+                continue
+            if review is not None:
+                results[ticker] = review
     return results

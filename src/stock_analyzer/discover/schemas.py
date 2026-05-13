@@ -1,0 +1,110 @@
+"""Pydantic schemas for every LLM stage's structured output.
+
+The discover + rebalance pipelines used to glue stages together via
+free-text + regex parsing — that was the source of recurring fragility
+(empty content from rate-limit retries → parsers raised on None,
+labeled prose drifting between runs, etc.).
+
+Now every LLM stage emits a validated Pydantic instance. Each schema
+keeps a `full_text` field carrying the prose rendering of that stage's
+output: PDF/email renderers continue to use it, AND downstream LLM
+stages still receive prompt-ready text without needing to know about
+this refactor.
+
+Structured fields are the source of truth for parsers, dashboards,
+analytics, and the modernized report layout (per-pick cards, verdict
+badges, fragility chips, sizing tables).
+
+Schemas live here (one module) so the LLM contracts are easy to find
+and review together. The pre-existing `rebalance_schema.RebalancePlan`
+stays in its own file for historical continuity.
+"""
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+Verdict = Literal["HOLD", "TRIM", "SELL"]
+ActionType = Literal["SELL", "TRIM", "ADD", "BUY"]
+FragilityRank = Literal[1, 2, 3, 4, 5]
+
+
+# --- Reviewer ---------------------------------------------------------------
+
+
+class HoldingReview(BaseModel):
+    """Per-holding review emitted by the Reviewer agent.
+
+    Replaces the prior free-text output that downstream parsers
+    (parse_verdict / parse_confidence) regex-scanned for verdict +
+    confidence — those reads are now trivial field accesses.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    ticker: str
+    verdict: Verdict = Field(..., description="HOLD / TRIM / SELL — default HOLD when uncertain.")
+    confidence: int = Field(..., ge=1, le=10, description="1-10 conviction score.")
+    trim_pct: float | None = Field(
+        default=None,
+        description="Only set for TRIM verdicts: 25 / 33 / 50.",
+    )
+    position_context: str = Field(
+        ...,
+        description="One line: N shares, avg cost $X, current $Y, P/L +/-Z%.",
+    )
+    forward_outlook: str = Field(
+        ...,
+        description=(
+            "1-2 sentences citing forward EPS, target price vs current, "
+            "analyst stance, calendar catalysts. Not trailing performance."
+        ),
+    )
+    reasoning: str = Field(
+        ...,
+        description=(
+            "2-3 sentences citing specific FORWARD-LOOKING evidence for the "
+            "verdict. Past performance is supporting evidence only."
+        ),
+    )
+    tax_lot_plan: list[str] = Field(
+        default_factory=list,
+        description=(
+            "SELL/TRIM only. Per-lot recommendations as strings: "
+            "'2024-01-15: sell 50 shares (held 400 days, long-term), "
+            "realizes ~$5,200 gain'."
+        ),
+    )
+    what_would_change_mind: str = Field(
+        ...,
+        description="One sentence — the specific evidence that would flip the verdict.",
+    )
+    wash_sale_notice: str | None = Field(
+        default=None,
+        description=(
+            "Only set if you recommend SELL at a loss. Warn the user not to "
+            "re-buy this security or a substantially identical one within "
+            "30 days of the sale."
+        ),
+    )
+
+    # Always required — the prose rendering for the PDF/email + the
+    # rebalancer prompt (which feeds the full text of every review into
+    # its own structured-output call).
+    full_text: str = Field(
+        ...,
+        description=(
+            "Human-readable rendering of this review matching the prose "
+            "format in your instructions (TICKER: ... / Verdict: ... / "
+            "Forward outlook: ... etc.)."
+        ),
+    )
+
+
+__all__ = [
+    "Verdict",
+    "ActionType",
+    "FragilityRank",
+    "HoldingReview",
+]

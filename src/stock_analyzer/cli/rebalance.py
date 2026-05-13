@@ -130,10 +130,11 @@ def _log_full_analysis(
     ranker_text: str,
     redteam_text: str,
     sizer_text: str,
-    holdings_reviews: dict[str, str],
+    holdings_reviews: dict[str, Any],
 ) -> None:
     """Dump every analyst-produced section to the logger so the user can
     recover the full report from the log file when email fails."""
+    from ..discover.schemas import HoldingReview
     bar = "=" * 70
     if not delivered:
         logger.error(
@@ -149,8 +150,12 @@ def _log_full_analysis(
     logger.info("%s\nRED TEAM — bear cases\n%s\n%s", bar, bar, redteam_text)
     logger.info("%s\nSIZER — allocation\n%s\n%s", bar, bar, sizer_text)
     for ticker in sorted(holdings_reviews):
-        review = holdings_reviews.get(ticker) or "(review unavailable)"
-        logger.info("%s\nHOLDING REVIEW — %s\n%s\n%s", bar, ticker, bar, review)
+        review = holdings_reviews.get(ticker)
+        text = (
+            review.full_text if isinstance(review, HoldingReview)
+            else (review or "(review unavailable)")
+        )
+        logger.info("%s\nHOLDING REVIEW — %s\n%s\n%s", bar, ticker, bar, text)
 
 
 def _aggregate_positions(
@@ -398,13 +403,18 @@ class RebalancePipeline(DiscoverPipeline):
             for ticker, review in self.state.get("holdings_reviews", {}).items():
                 if not review:
                     continue
+                # `review` is a HoldingReview (Phase 4a). Fall back gracefully
+                # if a legacy str leaks through.
+                review_text = getattr(review, "full_text", None) or (
+                    review if isinstance(review, str) else ""
+                )
                 insert_holdings_review(
                     conn,
                     run_id,
                     ticker,
                     verdict=parse_verdict(review),
                     confidence=parse_confidence(review),
-                    review_text=review,
+                    review_text=review_text,
                 )
             for rank, ticker, _ in self.state["picks"]:
                 insert_pick(
@@ -585,7 +595,7 @@ class RebalancePipeline(DiscoverPipeline):
 def _build_rebalance_sections(
     *,
     rebalance_text: str,
-    holdings_reviews: dict[str, str],
+    holdings_reviews: dict[str, Any],
     ranker_text: str,
     redteam_text: str,
     sizer_text: str,
@@ -687,9 +697,15 @@ def _build_rebalance_sections(
 
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Per-holding reviews", level=1))
+    from ..discover.schemas import HoldingReview
     for ticker in sorted(holdings_reviews.keys()):
+        review = holdings_reviews[ticker]
+        text = (
+            review.full_text if isinstance(review, HoldingReview)
+            else (review or "")
+        )
         sections.append(Section(kind="heading", text=ticker, level=2))
-        sections.append(Section(kind="preformatted", text=holdings_reviews[ticker]))
+        sections.append(Section(kind="preformatted", text=text))
 
     # Discover picks as appendix — drop their own H1 + summary since we have ours.
     discover_sections = build_sections(

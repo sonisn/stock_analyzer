@@ -14,6 +14,7 @@ from __future__ import annotations
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
 from .rebalance_schema import RebalancePlan
+from .schemas import HoldingReview
 
 logger = get_logger(__name__)
 
@@ -356,15 +357,20 @@ class Rebalancer:
 
     def decide(
         self,
-        holdings_reviews: dict[str, str],
+        holdings_reviews: dict[str, HoldingReview] | dict[str, str],
         picks_text: str,
         cash_available: float | None,
         macro_summary: str = "",
         aggressiveness: str = "balanced",
         history_block: str = "",
     ) -> RebalancePlan:
+        # Accept either the new structured form ({ticker: HoldingReview})
+        # or the legacy free-text form ({ticker: str}). For the LLM prompt
+        # we need prose, so unwrap HoldingReview.full_text.
         reviews_block = "\n\n".join(
-            f"=== {ticker} ===\n{text}" for ticker, text in holdings_reviews.items()
+            f"=== {ticker} ===\n"
+            f"{r.full_text if isinstance(r, HoldingReview) else r}"
+            for ticker, r in holdings_reviews.items()
         )
         cash_line = (
             f"Available cash: ${cash_available:,.0f}"

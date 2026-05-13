@@ -87,17 +87,31 @@ _ACTION_RE = re.compile(
 )
 
 
-def parse_verdict(review_text: str | None) -> str:
-    if not review_text:
+def parse_verdict(review: object) -> str:
+    """Return HOLD / TRIM / SELL.
+
+    Accepts a `HoldingReview` (preferred — reads the field directly,
+    no regex) OR a free-text review (legacy DB rows / partial runs).
+    """
+    from .schemas import HoldingReview
+    if isinstance(review, HoldingReview):
+        return review.verdict
+    if not review or not isinstance(review, str):
         return "HOLD"
-    m = _VERDICT_RE.search(review_text)
+    m = _VERDICT_RE.search(review)
     return m.group(1).upper() if m else "HOLD"
 
 
-def parse_confidence(review_text: str | None) -> int | None:
-    if not review_text:
+def parse_confidence(review: object) -> int | None:
+    """Return the 1-10 confidence integer.
+
+    Accepts a `HoldingReview` (preferred) OR a free-text review."""
+    from .schemas import HoldingReview
+    if isinstance(review, HoldingReview):
+        return review.confidence
+    if not review or not isinstance(review, str):
         return None
-    m = _CONFIDENCE_RE.search(review_text)
+    m = _CONFIDENCE_RE.search(review)
     return int(m.group(1)) if m else None
 
 
