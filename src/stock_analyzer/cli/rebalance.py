@@ -733,12 +733,30 @@ def _build_rebalance_sections(
     from ..discover.schemas import HoldingReview
     for ticker in sorted(holdings_reviews.keys()):
         review = holdings_reviews[ticker]
-        text = (
-            review.full_text if isinstance(review, HoldingReview)
-            else (review or "")
-        )
-        sections.append(Section(kind="heading", text=ticker, level=2))
-        sections.append(Section(kind="preformatted", text=text))
+        if isinstance(review, HoldingReview):
+            # Structured card — pills, labeled sections, tax lot list,
+            # wash-sale callout. Renders much nicer than the monospace
+            # preformatted dump.
+            sections.append(Section(
+                kind="holding_review_card",
+                data={
+                    "ticker": ticker,
+                    "verdict": review.verdict,
+                    "confidence": review.confidence,
+                    "trim_pct": review.trim_pct,
+                    "position_context": review.position_context,
+                    "forward_outlook": review.forward_outlook,
+                    "reasoning": review.reasoning,
+                    "tax_lot_plan": list(review.tax_lot_plan),
+                    "what_would_change_mind": review.what_would_change_mind,
+                    "wash_sale_notice": review.wash_sale_notice,
+                },
+            ))
+        else:
+            # Legacy free-text path — keep the old layout.
+            text = review or ""
+            sections.append(Section(kind="heading", text=ticker, level=2))
+            sections.append(Section(kind="preformatted", text=text))
 
     # Discover picks as appendix — drop their own H1 + summary since we have ours.
     discover_sections = build_sections(

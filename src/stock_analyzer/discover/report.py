@@ -199,6 +199,7 @@ SectionKind = Literal[
     # New structured-output kinds (Phase 4f) — renderer pulls fields from
     # `data` and produces a styled card / table instead of dumping prose.
     "pick_card", "allocation_table", "rebalance_action_table",
+    "holding_review_card",
 ]
 
 
@@ -743,6 +744,117 @@ def _allocation_table_html(d: dict[str, Any]) -> str:
     return table_html + warnings_html
 
 
+def _holding_review_card_html(d: dict[str, Any]) -> str:
+    """Render a per-holding review (HoldingReview schema) as a structured
+    card: ticker + verdict pill + confidence pill + position context,
+    then labeled forward outlook / reasoning / what-would-change-your-mind
+    paragraphs, with tax lot plan + wash-sale notice when present.
+
+    Replaces the monospace `preformatted` dump that used to render
+    HoldingReview.full_text verbatim."""
+    ticker = html.escape(str(d.get("ticker", "")))
+    verdict = str(d.get("verdict") or "HOLD").upper()
+    confidence = d.get("confidence")
+    trim_pct = d.get("trim_pct")
+    position_context = html.escape(str(d.get("position_context") or ""))
+    forward_outlook = html.escape(str(d.get("forward_outlook") or ""))
+    reasoning = html.escape(str(d.get("reasoning") or ""))
+    tax_lot_plan = d.get("tax_lot_plan") or []
+    what_change = html.escape(str(d.get("what_would_change_mind") or ""))
+    wash_sale_notice = d.get("wash_sale_notice")
+
+    # Pill badges in header row.
+    vc = _VERDICT_COLORS.get(verdict) or _VERDICT_COLORS["HOLD"]
+    verdict_pill = (
+        f"<span style='background:{vc['bg']};color:{vc['fg']};"
+        f"border:1px solid {vc['border']};padding:3px 12px;"
+        f"border-radius:12px;font-size:12px;font-weight:700;"
+        f"letter-spacing:0.3px'>{verdict}</span>"
+    )
+    pills = [verdict_pill]
+    if isinstance(confidence, int):
+        cs = _conviction_swatch(confidence)
+        pills.append(
+            f"<span style='background:{cs};color:#fff;padding:3px 10px;"
+            f"border-radius:12px;font-size:12px;font-weight:600'>"
+            f"Conviction {confidence}/10</span>"
+        )
+    if verdict == "TRIM" and isinstance(trim_pct, (int, float)) and trim_pct > 0:
+        pills.append(
+            f"<span style='background:#fff;color:#a36500;"
+            f"border:1px solid #e89c00;padding:3px 10px;border-radius:12px;"
+            f"font-size:12px;font-weight:600'>Trim {trim_pct:.0f}%</span>"
+        )
+
+    # Build body sections (only include the ones present).
+    body_parts: list[str] = []
+
+    def _section(label: str, body: str, *, color: str = "#6b7280") -> None:
+        if not body:
+            return
+        body_parts.append(
+            f"<div style='margin-top:12px'>"
+            f"<div style='font-size:11px;color:{color};font-weight:600;"
+            f"text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px'>"
+            f"{html.escape(label)}</div>"
+            f"<div style='color:#1f2937'>{body}</div></div>"
+        )
+
+    _section("Forward outlook", forward_outlook)
+    _section("Reasoning", reasoning)
+
+    if tax_lot_plan:
+        items = "".join(
+            f"<li style='margin:3px 0'>{html.escape(str(line))}</li>"
+            for line in tax_lot_plan
+        )
+        body_parts.append(
+            f"<div style='margin-top:12px'>"
+            f"<div style='font-size:11px;color:#4c1d95;font-weight:600;"
+            f"text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px'>"
+            f"Tax lot plan</div>"
+            f"<ul style='margin:4px 0 0 18px;padding:0;color:#1f2937'>"
+            f"{items}</ul></div>"
+        )
+
+    if wash_sale_notice:
+        body_parts.append(
+            f"<div style='margin-top:12px;background:#fde4e4;"
+            f"padding:8px 12px;border-left:3px solid #d73030;"
+            f"color:#9c1010;font-size:13px'>"
+            f"<b>Wash-sale notice:</b> "
+            f"{html.escape(str(wash_sale_notice))}</div>"
+        )
+
+    if what_change:
+        body_parts.append(
+            f"<div style='margin-top:14px;padding-top:10px;"
+            f"border-top:1px solid #e5e7eb;color:#6b7280;font-style:italic;"
+            f"font-size:13px'>"
+            f"<b style='color:#374151;font-style:normal'>"
+            f"What would change my mind:</b> {what_change}</div>"
+        )
+
+    pos_html = (
+        f"<div style='color:#6b7280;font-size:13px;margin-top:6px'>"
+        f"{position_context}</div>"
+        if position_context else ""
+    )
+
+    return (
+        f"<div style='border:1px solid #e5e7eb;border-radius:8px;"
+        f"padding:16px;margin:16px 0;background:#fff'>"
+        f"<div style='display:flex;flex-wrap:wrap;align-items:center;"
+        f"gap:10px;margin-bottom:0'>"
+        f"<h2 style='margin:0;border:none;padding:0;font-family:"
+        f"ui-monospace,SFMono-Regular,monospace'>{ticker}</h2>"
+        + "".join(pills)
+        + f"</div>{pos_html}"
+        + "".join(body_parts)
+        + "</div>"
+    )
+
+
 def _rebalance_action_table_html(d: dict[str, Any]) -> str:
     """Render the rebalancer's structured actions list as a colored table:
     action-type badge (SELL/TRIM/ADD/BUY) + ticker + sizing."""
@@ -875,6 +987,9 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
 
         elif s.kind == "rebalance_action_table" and s.data:
             parts.append(_rebalance_action_table_html(s.data))
+
+        elif s.kind == "holding_review_card" and s.data:
+            parts.append(_holding_review_card_html(s.data))
 
         elif s.kind == "page_break":
             parts.append("<hr/>")
@@ -1243,6 +1358,110 @@ def _pdf_allocation_table(d: dict[str, Any], styles) -> list[Any]:
     return flow
 
 
+def _pdf_holding_review_card(d: dict[str, Any], styles) -> list[Any]:
+    """PDF counterpart of `_holding_review_card_html` — ticker header
+    with verdict + confidence pills, then labeled sections."""
+    ticker = str(d.get("ticker", ""))
+    verdict = str(d.get("verdict") or "HOLD").upper()
+    confidence = d.get("confidence") if isinstance(d.get("confidence"), int) else None
+    trim_pct = d.get("trim_pct")
+    position_context = str(d.get("position_context") or "")
+    forward_outlook = str(d.get("forward_outlook") or "")
+    reasoning = str(d.get("reasoning") or "")
+    tax_lot_plan = d.get("tax_lot_plan") or []
+    what_change = str(d.get("what_would_change_mind") or "")
+    wash_sale_notice = d.get("wash_sale_notice")
+
+    flow: list[Any] = []
+
+    # Header row: ticker + pills as a 4-column Table for alignment.
+    vc = _VERDICT_COLORS.get(verdict) or _VERDICT_COLORS["HOLD"]
+    cells: list[Paragraph] = [
+        Paragraph(
+            f"<font size='14'><b>{html.escape(ticker)}</b></font>",
+            styles["BodyText"],
+        ),
+        _pdf_pill(verdict, vc["fg"], vc["bg"], styles),
+    ]
+    if confidence is not None:
+        cs = _conviction_swatch(confidence)
+        cells.append(_pdf_pill(f"Conviction {confidence}/10", "#fff", cs, styles))
+    if verdict == "TRIM" and isinstance(trim_pct, (int, float)) and trim_pct > 0:
+        cells.append(_pdf_pill(f"Trim {trim_pct:.0f}%", "#a36500", "#fff4e0", styles))
+    while len(cells) < 4:
+        cells.append(Paragraph("", styles["BodyText"]))
+    header = Table(
+        [cells],
+        colWidths=[1.8 * inch, 1.0 * inch, 1.5 * inch, 1.5 * inch],
+        hAlign="LEFT",
+    )
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    flow.append(header)
+
+    if position_context:
+        flow.append(Paragraph(
+            f"<font color='#6b7280' size='9'>"
+            f"{html.escape(position_context)}</font>",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 6))
+
+    def _section(label: str, body: str, *, color: str = "#374151") -> None:
+        if not body:
+            return
+        flow.append(Paragraph(
+            f"<font color='{color}' size='8'><b>{html.escape(label.upper())}</b></font>",
+            styles["BodyText"],
+        ))
+        flow.append(Paragraph(html.escape(body), styles["BodyText"]))
+        flow.append(Spacer(1, 6))
+
+    _section("Forward outlook", forward_outlook)
+    _section("Reasoning", reasoning)
+
+    if tax_lot_plan:
+        flow.append(Paragraph(
+            "<font color='#4c1d95' size='8'><b>TAX LOT PLAN</b></font>",
+            styles["BodyText"],
+        ))
+        for line in tax_lot_plan:
+            flow.append(Paragraph(
+                f"• {html.escape(str(line))}", styles["BodyText"],
+            ))
+        flow.append(Spacer(1, 6))
+
+    if wash_sale_notice:
+        notice_para = Paragraph(
+            f"<b>Wash-sale notice:</b> {html.escape(str(wash_sale_notice))}",
+            styles["BodyText"],
+        )
+        wrap = Table([[notice_para]], colWidths=[6.7 * inch])
+        wrap.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fde4e4")),
+            ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#d73030")),
+            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#9c1010")),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+        ]))
+        flow.append(wrap)
+        flow.append(Spacer(1, 6))
+
+    if what_change:
+        flow.append(Paragraph(
+            f"<i><font color='#6b7280' size='9'>"
+            f"<b>What would change my mind:</b> "
+            f"{html.escape(what_change)}</font></i>",
+            styles["BodyText"],
+        ))
+        flow.append(Spacer(1, 10))
+
+    return flow
+
+
 def _pdf_rebalance_action_table(d: dict[str, Any], styles) -> list[Any]:
     """Per-action table for the rebalance plan section. Each row gets a
     pale-tinted action cell using the SELL/TRIM/ADD/BUY palette."""
@@ -1381,6 +1600,10 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
 
         elif s.kind == "rebalance_action_table" and s.data:
             for el in _pdf_rebalance_action_table(s.data, styles):
+                flow.append(el)
+
+        elif s.kind == "holding_review_card" and s.data:
+            for el in _pdf_holding_review_card(s.data, styles):
                 flow.append(el)
 
         elif s.kind == "page_break":
