@@ -105,6 +105,38 @@ class HoldingReview(BaseModel):
 # --- Ranker ---------------------------------------------------------------
 
 
+class Scenario(BaseModel):
+    """One probabilistic scenario for a pick over the time horizon."""
+
+    model_config = ConfigDict(frozen=True)
+
+    label: Literal["bull", "base", "bear"]
+    probability: float = Field(
+        ...,
+        ge=0,
+        le=1,
+        description=(
+            "Probability of this scenario playing out, in [0, 1]. The three "
+            "scenarios for a pick must sum to 1.0."
+        ),
+    )
+    target_return_pct: float = Field(
+        ...,
+        description=(
+            "Total return (price + dividends) over the 6-12 month horizon "
+            "IF this scenario plays out. Sign matters: bear can be "
+            "negative; base typically modest positive; bull large positive."
+        ),
+    )
+    rationale: str = Field(
+        ...,
+        description=(
+            "One sentence on what specifically would make this scenario play "
+            "out. Cite a data point from the analyst report."
+        ),
+    )
+
+
 class RankerPick(BaseModel):
     """One of the Ranker's top-N picks, structured."""
 
@@ -136,6 +168,16 @@ class RankerPick(BaseModel):
         ...,
         description="1-2 sentences making the core assumption explicit.",
     )
+    scenarios: list[Scenario] = Field(
+        default_factory=list,
+        description=(
+            "EXACTLY 3 scenarios: bull / base / bear, with probabilities "
+            "summing to 1.0 and target_return_pct per scenario. The Sizer "
+            "+ downstream analytics use these to compute expected return "
+            "deterministically — keep them honest, especially the bear "
+            "probability (don't under-weight it)."
+        ),
+    )
 
 
 class CorrelatedPair(BaseModel):
@@ -149,6 +191,21 @@ class CorrelatedPair(BaseModel):
         ...,
         description="Brief: 'same hyperscaler AI capex cycle', 'same gold-price tape', etc.",
     )
+
+
+def expected_return_pct(pick: "RankerPick") -> float | None:
+    """Deterministic EV computation: Σ(probability × target_return_pct).
+
+    Returns None when scenarios are missing/invalid (legacy picks before
+    Phase 5c). Always called from the Sizer + report so the LLM never
+    has to do this arithmetic itself."""
+    if not pick.scenarios:
+        return None
+    total_p = sum(s.probability for s in pick.scenarios)
+    # Allow tiny floating-point drift but reject obvious misnormalization.
+    if not (0.95 <= total_p <= 1.05):
+        return None
+    return sum(s.probability * s.target_return_pct for s in pick.scenarios)
 
 
 class RankerOutput(BaseModel):
@@ -430,9 +487,11 @@ __all__ = [
     "FragilityRank",
     "HoldingReview",
     "AnalystReport",
+    "Scenario",
     "RankerPick",
     "CorrelatedPair",
     "RankerOutput",
+    "expected_return_pct",
     "BearCase",
     "RedTeamOutput",
     "Allocation",

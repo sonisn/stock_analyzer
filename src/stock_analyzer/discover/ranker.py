@@ -55,6 +55,30 @@ CRITICAL:
 - The "Why this over alternatives" section is non-optional — name the
   alternatives by ticker.
 
+PROBABILITY-WEIGHTED SCENARIOS:
+For each pick, you MUST emit exactly 3 scenarios in the `scenarios` list:
+  - bull: optimistic case (thesis fully plays out, multiple expands)
+  - base: muted case (thesis half-plays-out, multiple roughly stable)
+  - bear: thesis breaks (specific failure mode you can name)
+
+Each scenario has a probability (in [0, 1]) and a target_return_pct
+over the 6-12 month horizon. The 3 probabilities MUST sum to 1.0.
+
+Probability discipline rules — these catch the common mistakes:
+  - DO NOT default to 33/34/33. A pick at conviction 9 should look
+    something like 50/35/15 (bull dominant); a conviction 5 should look
+    more like 25/40/35 (base dominant); a conviction 7 might be 40/40/20.
+  - Bear probability MUST be at least 10% on every pick — even your
+    best ideas can fail. A bear<10% means you've miscalibrated.
+  - target_return_pct must be conditional on the scenario playing out
+    fully. Don't blend — bull is "if the bull scenario hits". Typical
+    ranges over 6-12 months: bull +25% to +60% (rarely higher),
+    base 0% to +15%, bear -15% to -35%.
+
+A downstream Sizer + analytics layer computes expected return
+deterministically as Σ(probability × target_return_pct). Calibrate
+your numbers as if you'll be measured on the EV vs realized return.
+
 CITATION RULE (anti-hallucination):
 Every numerical claim you make (forward EPS, P/E, growth %, target
 upside, margin, P/L) MUST appear in the analyst-reports input the user

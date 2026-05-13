@@ -100,6 +100,39 @@ def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
     return path
 
 
+def _format_ev_table(ranker_output: object) -> str:
+    """Build the expected-return table the Sizer reads as ranking signal.
+
+    Format per row: ticker | E[ret] | bull P/ret | base P/ret | bear P/ret.
+    Bear probabilities surfaced explicitly so the Sizer can see when a
+    high-EV pick has high dispersion."""
+    from ..discover.schemas import RankerOutput, expected_return_pct
+    if not isinstance(ranker_output, RankerOutput):
+        return ""
+    rows: list[str] = []
+    for pick in sorted(ranker_output.picks, key=lambda p: p.rank):
+        ev = expected_return_pct(pick)
+        if ev is None or not pick.scenarios:
+            rows.append(f"  {pick.ticker:6s}  conviction={pick.conviction}  (no scenarios)")
+            continue
+        sc_map = {s.label: s for s in pick.scenarios}
+        bull = sc_map.get("bull")
+        base = sc_map.get("base")
+        bear = sc_map.get("bear")
+        bull_s = f"{bull.probability:.0%}/{bull.target_return_pct:+.0f}%" if bull else "—"
+        base_s = f"{base.probability:.0%}/{base.target_return_pct:+.0f}%" if base else "—"
+        bear_s = f"{bear.probability:.0%}/{bear.target_return_pct:+.0f}%" if bear else "—"
+        rows.append(
+            f"  {pick.ticker:6s}  E[ret]={ev:+5.1f}%  "
+            f"bull {bull_s:>10s}  base {base_s:>10s}  bear {bear_s:>10s}  "
+            f"(conv {pick.conviction})"
+        )
+    if not rows:
+        return ""
+    header = "  Ticker  E[return]    Bull P/Ret    Base P/Ret    Bear P/Ret"
+    return header + "\n" + "\n".join(rows)
+
+
 def _validate_and_correct_themes(
     themes: object,
     *,
@@ -781,12 +814,16 @@ class DiscoverPipeline:
             self.state["sizer_output"] = None
             self.state["sizer_text"] = ""
             return StepOutput(content="sizer: no picks; skipping")
+        # Build deterministic EV table from the ranker's probability-weighted
+        # scenarios — feeds Sizer as primary ranking signal.
+        ev_table = _format_ev_table(self.state.get("ranker_output"))
         sizer = Sizer("claude", self.settings.discover_opus_model)
         sizer_output = sizer.allocate(
             ranker_text,
             self.state.get("redteam_text", ""),
             self.state.get("holdings_summary", ""),
             self.settings.discover_cash_budget,
+            ev_table=ev_table,
         )
         self.state["sizer_output"] = sizer_output
         self.state["sizer_text"] = sizer_output.full_text

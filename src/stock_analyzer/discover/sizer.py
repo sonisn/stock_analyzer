@@ -32,8 +32,14 @@ End with a "Concentration warnings:" block listing any sector or theme
 where the new picks + existing holdings would exceed 30% combined.
 
 Allocation principles to follow:
-- Higher conviction → larger position, up to ~30% of new capital
-- Higher fragility (bear-case rank 1-2) → smaller position
+- The user message includes an EXPECTED RETURN TABLE — pre-computed
+  E[return] = Σ(probability × scenario_return) from the ranker's
+  bull/base/bear scenarios. This is the PRIMARY ranking signal:
+  size proportional to expected return.
+- Higher conviction (and thus typically higher EV) → larger position,
+  up to ~30% of new capital
+- Higher fragility (bear-case rank 1-2) → smaller position, even if
+  EV is high (high EV with high dispersion = risky bet)
 - Highly correlated picks (same sector/theme) → underweight one or split
 - Never recommend more than 35% in any single pick
 
@@ -84,14 +90,21 @@ class Sizer:
         bear_case_text: str,
         holdings_summary: str,
         cash_budget: float | None,
+        ev_table: str = "",
     ) -> SizerOutput:
         budget_line = (
             f"Cash budget: ${cash_budget:,.0f}"
             if cash_budget is not None
             else "No dollar budget — output percentages of new capital."
         )
+        ev_block = (
+            f"Expected return table (deterministic, computed from your "
+            f"ranker's probability-weighted scenarios):\n{ev_table}\n\n"
+            if ev_table else ""
+        )
         prompt = (
             f"{budget_line}\n\n"
+            f"{ev_block}"
             f"Current holdings:\n{holdings_summary or '(none)'}\n\n"
             f"Picks (with bull theses):\n{picks_text}\n\n"
             f"Bear cases:\n{bear_case_text}"
