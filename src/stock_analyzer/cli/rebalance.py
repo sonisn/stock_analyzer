@@ -496,79 +496,93 @@ class RebalancePipeline(DiscoverPipeline):
             self.state["cc_stub_pool_total_usd"] = 0.0
             return StepOutput(content="cc_data: disabled via CC_ENABLED=0")
 
-        from ..data.brokerage import fetch_open_option_positions
-        from ..data.options_chain import fetch_chains
-        from ..discover.cc_eligibility import (
-            apply_earnings_filter,
-            build_cc_context_block,
-            eligible_holdings,
-            round_lot_coverage,
-        )
-
-        positions = self.state.get("holdings_positions") or {}
-        denylist = self.settings.cc_denylist
+        # Safe defaults — populated below on success.
+        self.state["cc_context_block"] = ""
+        self.state["cc_eligibility"] = {}
+        self.state["cc_round_lot_coverage"] = {}
+        self.state["cc_stub_pool_total_usd"] = 0.0
 
         try:
-            open_short_calls = fetch_open_option_positions()
-        except Exception as e:
-            logger.warning("open option position fetch failed: %s", e)
-            open_short_calls = {}
-
-        eligible = eligible_holdings(
-            positions, open_short_calls=open_short_calls, denylist=denylist,
-        )
-
-        spots = {
-            t: (self.state.get("holdings_technicals", {}).get(t) or {}).get("price") or 0.0
-            for t in positions
-        }
-        coverage = round_lot_coverage(positions, spots=spots)
-        stub_pool = sum(
-            rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares
-        )
-
-        chains = fetch_chains(
-            list(eligible),
-            dte_min=self.settings.cc_dte_min,
-            dte_max=self.settings.cc_dte_max,
-        )
-
-        finnhub_signals = self.state.get("finnhub_signals") or {}
-        earnings_map: dict[str, date] = {}
-        for ticker in eligible:
-            sig = finnhub_signals.get(ticker) or {}
-            raw = sig.get("next_earnings_date") or sig.get("earnings_date")
-            if isinstance(raw, str):
-                with contextlib.suppress(ValueError):
-                    earnings_map[ticker] = date.fromisoformat(raw[:10])
-            elif isinstance(raw, date):
-                earnings_map[ticker] = raw
-
-        filtered_chains: dict[str, object] = {}
-        for ticker, chain in chains.items():
-            filtered, _ = apply_earnings_filter(
-                chain, earnings_date=earnings_map.get(ticker),
+            from ..data.brokerage import fetch_open_option_positions
+            from ..data.options_chain import fetch_chains
+            from ..discover.cc_eligibility import (
+                apply_earnings_filter,
+                build_cc_context_block,
+                eligible_holdings,
+                round_lot_coverage,
             )
-            filtered_chains[ticker] = filtered
 
-        block = build_cc_context_block(
-            eligible=eligible, chains=filtered_chains,
-            coverage=coverage, reviews=self.state.get("holdings_reviews", {}),
-            earnings=earnings_map, stub_pool_total_usd=stub_pool,
-        )
-        self.state["cc_context_block"] = block
-        self.state["cc_eligibility"] = eligible
-        self.state["cc_round_lot_coverage"] = coverage
-        self.state["cc_stub_pool_total_usd"] = stub_pool
+            positions = self.state.get("holdings_positions") or {}
+            denylist = self.settings.cc_denylist
 
-        sources = {c.source for c in filtered_chains.values() if hasattr(c, "source")}
-        n_missing = sum(1 for c in filtered_chains.values() if getattr(c, "source", "") == "missing")
-        return StepOutput(content=(
-            f"cc_data: {len(eligible)} eligible holding(s); "
-            f"chain sources {sorted(sources)}; "
-            f"{n_missing} missing; "
-            f"stub pool ${stub_pool:,.0f}"
-        ))
+            try:
+                open_short_calls = fetch_open_option_positions()
+            except Exception as e:
+                logger.warning("open option position fetch failed: %s", e)
+                open_short_calls = {}
+
+            eligible = eligible_holdings(
+                positions, open_short_calls=open_short_calls, denylist=denylist,
+            )
+
+            spots = {
+                t: (self.state.get("holdings_technicals", {}).get(t) or {}).get("price") or 0.0
+                for t in positions
+            }
+            coverage = round_lot_coverage(positions, spots=spots)
+            stub_pool = sum(
+                rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares
+            )
+
+            chains = fetch_chains(
+                list(eligible),
+                dte_min=self.settings.cc_dte_min,
+                dte_max=self.settings.cc_dte_max,
+            )
+
+            finnhub_signals = self.state.get("finnhub_signals") or {}
+            earnings_map: dict[str, date] = {}
+            for ticker in eligible:
+                sig = finnhub_signals.get(ticker) or {}
+                raw = sig.get("next_earnings_date") or sig.get("earnings_date")
+                if isinstance(raw, str):
+                    with contextlib.suppress(ValueError):
+                        earnings_map[ticker] = date.fromisoformat(raw[:10])
+                elif isinstance(raw, date):
+                    earnings_map[ticker] = raw
+
+            filtered_chains: dict[str, object] = {}
+            for ticker, chain in chains.items():
+                filtered, _ = apply_earnings_filter(
+                    chain, earnings_date=earnings_map.get(ticker),
+                )
+                filtered_chains[ticker] = filtered
+
+            block = build_cc_context_block(
+                eligible=eligible, chains=filtered_chains,
+                coverage=coverage, reviews=self.state.get("holdings_reviews", {}),
+                earnings=earnings_map, stub_pool_total_usd=stub_pool,
+            )
+            self.state["cc_context_block"] = block
+            self.state["cc_eligibility"] = eligible
+            self.state["cc_round_lot_coverage"] = coverage
+            self.state["cc_stub_pool_total_usd"] = stub_pool
+
+            sources = {c.source for c in filtered_chains.values() if hasattr(c, "source")}
+            n_missing = sum(1 for c in filtered_chains.values() if getattr(c, "source", "") == "missing")
+            return StepOutput(content=(
+                f"cc_data: {len(eligible)} eligible holding(s); "
+                f"chain sources {sorted(sources)}; "
+                f"{n_missing} missing; "
+                f"stub pool ${stub_pool:,.0f}"
+            ))
+        except Exception as e:
+            logger.error(
+                "step_cc_data crashed (%s) — rebalance will run WITHOUT "
+                "CC context. Investigate the traceback below.",
+                e, exc_info=True,
+            )
+            return StepOutput(content=f"cc_data: failed ({type(e).__name__}); CC disabled for this run")
 
     def step_rebalance(self, step_input: StepInput) -> StepOutput:
         history_block = _build_history_block(self.settings.discover_db_path)
@@ -598,14 +612,22 @@ class RebalancePipeline(DiscoverPipeline):
             market_themes_block=self.state.get("market_themes_block", ""),
             cc_context_block=self.state.get("cc_context_block", ""),
         )
-        from ..discover.cc_validation import validate_option_writes
-        plan, cc_warnings = validate_option_writes(
-            plan, eligibility=self.state.get("cc_eligibility") or {},
-        )
-        if cc_warnings:
-            self.state["cc_warnings"] = cc_warnings
-            for w in cc_warnings:
-                logger.warning("CC plan validation: %s", w)
+        try:
+            from ..discover.cc_validation import validate_option_writes
+            plan, cc_warnings = validate_option_writes(
+                plan, eligibility=self.state.get("cc_eligibility") or {},
+            )
+            if cc_warnings:
+                self.state["cc_warnings"] = cc_warnings
+                for w in cc_warnings:
+                    logger.warning("CC plan validation: %s", w)
+        except Exception as e:
+            logger.error(
+                "CC validation crashed (%s) — using unvalidated plan. "
+                "WRITE_CALL orphans / oversized contracts may slip through.",
+                e, exc_info=True,
+            )
+            self.state["cc_warnings"] = [f"validation crashed: {e}"]
         self.state["rebalance_plan"] = plan
         # `rebalance_text` is the prose rendering, kept under the same key
         # so the PDF/email layer and the log-dump fallback need no change.

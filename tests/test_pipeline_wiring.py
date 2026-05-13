@@ -584,3 +584,32 @@ def test_end_to_end_with_write_call_action():
     assert "premium_deployment" in kinds
     # No stubs → round_lot_coverage section should NOT be emitted.
     assert "round_lot_coverage" not in kinds
+
+
+def test_step_cc_data_swallows_unexpected_errors():
+    """Production safety: if any internal call in step_cc_data throws
+    unexpectedly, the rebalance pipeline must continue with empty CC
+    state — not crash."""
+    from unittest.mock import MagicMock, patch
+
+    from stock_analyzer.cli.rebalance import RebalancePipeline
+    from stock_analyzer.config import Settings
+
+    settings = Settings()  # type: ignore[call-arg]
+    pipe = RebalancePipeline(settings)
+    pipe.state["holdings_positions"] = {"NVDA": {"units": 400}}
+    pipe.state["holdings_technicals"] = {"NVDA": {"price": 235.0}}
+    pipe.state["holdings_reviews"] = {}
+    pipe.state["finnhub_signals"] = {}
+
+    # Force fetch_chains to raise a totally unexpected error.
+    with patch(
+        "stock_analyzer.data.options_chain.fetch_chains",
+        side_effect=RuntimeError("simulated upstream failure"),
+    ):
+        out = pipe.step_cc_data(MagicMock())
+
+    # Pipeline must continue — not raise — and state must have safe defaults.
+    assert pipe.state["cc_context_block"] == ""
+    assert pipe.state["cc_eligibility"] == {}
+    assert "failed" in out.content.lower()
