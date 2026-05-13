@@ -28,6 +28,8 @@ Extend the existing `rebalance-portfolio` pipeline so the single Opus rebalancer
 | `CC_DENYLIST` | `""` | Comma-separated tickers to never write calls against. |
 | `CC_MIN_PREMIUM_USD` | `500` | If total expected premium < this, leave as cash (no reinvestment). |
 | `CC_SLIPPAGE_BUFFER` | `0.10` | Fraction of premium held back for fill slippage when sizing reinvestment. |
+| `CC_STUB_OPTIMIZATION` | `true` | Master switch for stub consolidation (sell sub-100 stubs → complete round lots elsewhere). |
+| `CC_MIN_STUB_USD` | `1000` | Don't propose stub consolidation when the stub is worth less than this (trade friction). |
 
 **Style:** aggressive premium (Δ 0.35–0.45, DTE 30–45). Within that band, Opus pushes lower-Δ on high-confidence HOLDs and higher-Δ on TRIM-leaning positions. ("Confidence" is the reviewer's existing 1–10 score, surfaced per-ticker in the rebalancer context.)
 
@@ -65,7 +67,7 @@ rebalance-portfolio
 - `src/stock_analyzer/discover/premortem.py` — system prompt extended to red-team `WRITE_CALL` actions.
 - `src/stock_analyzer/cli/rebalance.py` — invoke `fetch_chains` + eligibility + earnings filter in the parallel data block; thread results into rebalancer.
 - `src/stock_analyzer/data/transactions.py` *(or holdings module)* — parse open option positions from SnapTrade for the coverage subtraction.
-- `src/stock_analyzer/discover/report_sections.py` — new section types: `PremiumIncome` + `PremiumDeployment`.
+- `src/stock_analyzer/discover/report_sections.py` — new section types: `RoundLotCoverage` + `PremiumIncome` + `PremiumDeployment`.
 - `src/stock_analyzer/discover/report_html.py` / `report_pdf.py` — renderers for the two new sections.
 - `src/stock_analyzer/discover/persistence.py` — six new nullable columns on `actions` table (strike, expiry, contracts, est_premium, delta, assignment_prob) with `ALTER TABLE` migration; track-record extension for CC outcomes.
 - `src/stock_analyzer/discover/track_record.py` — WRITE_CALL scoring branch (EXPIRED_OTM vs ASSIGNED, opportunity-cost math).
@@ -142,6 +144,20 @@ A ticker is eligible for a `WRITE_CALL` if **all** hold:
 
 Produces an `EligibleHolding` record per ticker (shares available, max contracts, blacklisted expiries) consumed by the rebalancer.
 
+## Round-lot coverage context (deterministic)
+
+For every held ticker (including those with < 100 shares), the data-prep step computes:
+
+```
+round_lots         = shares_held // 100
+stub_shares        = shares_held % 100
+stub_dollar_value  = stub_shares × spot
+to_next_lot_shares = (100 - stub_shares) if stub_shares else 0
+to_next_lot_cost   = to_next_lot_shares × spot
+```
+
+These per-ticker numbers, plus an aggregate `stub_pool_total_usd`, feed a `ROUND-LOT COVERAGE` block in the rebalancer context (see Rebalancer prompt section). They unlock the stub-consolidation rule.
+
 ## Rebalancer prompt extension
 
 Three additions to the existing system prompt:
@@ -172,12 +188,30 @@ Tickers with no chain show `Option chain: UNAVAILABLE`.
 
 ### (c) Premium reinvestment
 - `expected_premium_total = Σ contracts × est_premium_per_share × 100`
-- `deployable = existing_cash + (1 - CC_SLIPPAGE_BUFFER) × expected_premium_total`
+- `deployable = existing_cash + (1 - CC_SLIPPAGE_BUFFER) × expected_premium_total + Σ stub_consolidation_proceeds`
 - Priority: fund `ADD`s on high-confidence HOLDs first, then `BUY`s, then cash.
 - If `expected_premium_total < CC_MIN_PREMIUM_USD`: leave as cash, state reason in `full_text`.
 - Respect existing aggressiveness-mode concentration/position-size limits.
 - Show explicit dry-powder math in `full_text` (template provided in prompt).
 - Note trade linkages in `full_text` ("If you skip the NVDA write, shrink the AMZN ADD by $340").
+
+### (d) Round-lot optimization (stub consolidation)
+
+A `ROUND-LOT COVERAGE` block in the context lists each holding's `shares = round_lots × 100 + stub`, stub dollar value, and to-next-lot cost. The rule:
+
+> Each round lot of 100 shares unlocks one more `WRITE_CALL` contract. Stub shares (< 100, not part of a round lot) generate zero premium.
+>
+> Consider **stub consolidation** when *all* of:
+> 1. `CC_STUB_OPTIMIZATION = true`
+> 2. stub value > `CC_MIN_STUB_USD` (default $1,000)
+> 3. selling the stub doesn't violate a high-confidence (≥ 7) HOLD verdict
+> 4. the freed capital plus other dry powder is enough to **complete a round lot** elsewhere — either as an `ADD` on an existing position with a stub, or a `BUY` sized to a 100-multiple
+>
+> Express it as paired actions: `TRIM N` on the stub holding (sizing="35 shares — stub consolidation") + matching `ADD`/`BUY` sized to land on a round lot. Show the round-lot math in `full_text`.
+>
+> Tax-aware: existing tax-lot guidance applies (prefer LTCG lots, avoid wash sales).
+
+**Round-lot sizing for BUYs:** when a `BUY` is partly to enable future CC writing, size it to a round-lot multiple (100, 200, …) and state the multiple in `sizing` (e.g., `"100 shares (1 lot)"`).
 
 ## Premortem prompt extension
 
@@ -249,20 +283,33 @@ Graceful degradation everywhere; the pipeline never fails because of CC.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Round-Lot Coverage section (rendered when any held ticker has a stub)
+```
+┌─ Round-Lot Coverage ────────────────────────────────────────────┐
+│ Position    Shares   Round Lots   Stub   Stub $   To-next-lot  │
+│ TSLA          335      3 (300)     35   $10,500    $19,500     │
+│ AAPL          215      2 (200)     15    $3,225    $18,275     │
+│ NVDA          150      1 (100)     50   $12,000    $12,000     │
+│ ──────────  ─────   ─────────   ────  ────────  ─────────      │
+│ Stub pool total                       $25,725                   │
+└─────────────────────────────────────────────────────────────────┘
+```
+
 ### Premium → Deployment section (rendered when both `option_writes` and `ADD`/`BUY` actions exist)
 ```
 ┌─ Premium → Deployment ──────────────────────────────────────────┐
 │ Deployable premium: $1,395                                      │
 │ Existing cash:       $850                                       │
-│ Total dry powder:  $2,245                                       │
+│ Stub consolidation: $10,500     ← shown only when consolidating │
+│ Total dry powder: $12,745                                       │
 │                                                                  │
-│   → ADD VRT  $1,400                                              │
-│   → BUY PLTR  $600                                               │
-│   → Cash held: $245                                              │
+│   → TRIM 35 TSLA (stub)         → frees $10,500                  │
+│   → ADD  85 AAPL (completes 300) → $18,275                       │
+│   → Cash held: $-5,530          (or partial deployment)          │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-The deployment math is computed deterministically in the renderer from `option_writes` + ADD/BUY actions, not parsed out of `full_text`. The prose narrative is preserved for human context.
+The deployment math is computed deterministically in the renderer from `option_writes` + ADD/BUY/TRIM-stub actions, not parsed out of `full_text`. The prose narrative is preserved for human context.
 
 **Email subject:** existing format gets one annotation: `[Rebalance] 4 actions + $1,550 premium`.
 
@@ -300,7 +347,8 @@ New test files (matching the flat `tests/test_*.py` layout):
 | `test_cc_eligibility.py` | `shares >= 100` floor; denylist; open-short-call subtraction (OCC symbol parsing); earnings-expiry blacklist. |
 | `test_cc_schema.py` | `OptionWrite` validation; `RebalancePlan.option_writes` round-trip; legacy plans (no `option_writes`) still parse. |
 | `test_rebalance_validation.py` | Orphan `WRITE_CALL` (no matching `OptionWrite`) gets dropped; `contracts × 100 > available` gets clamped; both cases logged. |
-| `test_premium_deployment.py` | Deterministic dry-powder math (gross, buffer, deployable, total). |
+| `test_premium_deployment.py` | Deterministic dry-powder math (gross, buffer, deployable, total) including stub-consolidation row. |
+| `test_round_lot_coverage.py` | `round_lots`/`stub`/`stub_$`/`to_next_lot` per holding; stub pool aggregate; renderer suppression when no stubs exist. |
 | `test_track_record.py` (extend) | WRITE_CALL scoring: EXPIRED_OTM vs ASSIGNED branches; opportunity-cost math. |
 | `test_pipeline_wiring.py` (extend) | End-to-end with stubbed Opus returning a mixed-action plan; assert email renders both new sections, SQLite persists option columns. |
 
