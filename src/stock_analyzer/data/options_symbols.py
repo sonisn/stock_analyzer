@@ -52,8 +52,10 @@ def parse_occ(symbol: str) -> ParsedOCC:
     that doesn't fit the pattern.
 
     The fixed-width spec uses 6 chars for the root, space-padded right
-    ("NVDA  "). We accept 1-6 chars plus any run of spaces so brokers
-    that strip padding still parse.
+    ("NVDA  "). We accept 1-6 chars plus one or more spaces between the
+    root and date — brokers that fully strip the padding (no space
+    delimiter at all) are not supported; they'd need to repad before
+    calling this.
     """
     if not isinstance(symbol, str):
         raise OCCParseError(f"expected str, got {type(symbol).__name__}")
@@ -68,6 +70,8 @@ def parse_occ(symbol: str) -> ParsedOCC:
         raise OCCParseError(f"bad date in {symbol!r}: {e}") from e
     # Strike has 3 implied decimals: "00250000" = 250.000
     strike = int(strike_raw) / 1000.0
+    # Regex guarantees otype ∈ {"C","P"} but the type checker can only
+    # see `str`; the ignore is for the Literal["C","P"] assignment.
     return ParsedOCC(
         ticker=root, expiry=expiry, option_type=otype, strike=strike,  # type: ignore[arg-type]
     )

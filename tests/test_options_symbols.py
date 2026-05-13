@@ -49,3 +49,11 @@ def test_parse_rejects_garbage():
 def test_parse_rejects_wrong_length():
     with pytest.raises(OCCParseError):
         parse_occ("NVDA260620C00250000")  # missing padding
+
+
+def test_six_char_root_with_no_padding_rejected():
+    """OCC requires at least one space between root and date, even for
+    6-char roots. Brokers that strip the padding entirely are not
+    supported — repad before parsing."""
+    with pytest.raises(OCCParseError):
+        parse_occ("BRKBXX260117C00450000")  # 6 chars, no space → rejected
