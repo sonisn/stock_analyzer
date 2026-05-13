@@ -363,11 +363,16 @@ def test_orchestrator_imports():
     assert callable(run)
 
 
-def test_rebalance_pipeline_imports_and_assembles():
-    """RebalancePipeline must construct and produce a 10-step workflow."""
+def test_rebalance_pipeline_imports_and_assembles(tmp_path, monkeypatch):
+    """RebalancePipeline must construct and produce a 10-step workflow.
+
+    Hermetic: forces DISCOVER_DB_PATH to a tmp dir so the test doesn't
+    depend on whatever path the developer's real .env points to (which
+    may live on a non-existent / read-only mount in dev environments)."""
     from stock_analyzer.cli.rebalance import RebalancePipeline
     from stock_analyzer.config import Settings
 
+    monkeypatch.setenv("DISCOVER_DB_PATH", str(tmp_path / "test.db"))
     pipeline = RebalancePipeline(Settings.from_env())
     wf = pipeline.build_workflow()
     assert wf.name == "Portfolio Rebalance"
