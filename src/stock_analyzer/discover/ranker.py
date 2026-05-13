@@ -114,6 +114,12 @@ class Ranker:
         # gated by `output_config.effort` (low | medium | high).
         # temperature=0 + consensus_runs > 1 → near-deterministic + variance check.
         self.consensus_runs = max(1, consensus_runs)
+        # Opus 4.7 adaptive thinking spends part of `max_tokens` on
+        # the thinking trace, so the JSON output competes with it. Our
+        # response is rich (5 picks × 3 scenarios × bull/bear prose +
+        # pairs_not_to_hold_together + full_text) and we hit truncation
+        # mid-string at ~4500 visible tokens when capped at 8000. Bumped
+        # to 16000 so thinking AND output both fit comfortably.
         self.agent = AgnoAgent(
             "Ranker",
             provider,
@@ -121,7 +127,7 @@ class Ranker:
             model_kwargs={
                 "thinking": {"type": "adaptive"},
                 "output_config": {"effort": effort},
-                "max_tokens": 8000,
+                "max_tokens": 16000,
                 "temperature": 0,
             },
             instructions=RANKER_INSTRUCTIONS,

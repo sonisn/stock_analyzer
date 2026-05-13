@@ -313,6 +313,19 @@ def measure_track_record(
             except Exception as e:
                 logger.debug("decision scoring failed: %s", e)
 
+    # Drop decisions where yfinance returned no price data — these are
+    # delisted tickers from old picks/sells that still live in the DB.
+    # Including them as "pending" inflates the count with zombie entries
+    # that will never mature; better to silently skip and log the count.
+    delisted = [p for p in decisions if p.pick_price is None]
+    if delisted:
+        logger.info(
+            "Track record: skipped %d delisted/unmeasurable ticker(s): %s",
+            len(delisted),
+            ", ".join(sorted({p.ticker for p in delisted})[:10]),
+        )
+    decisions = [p for p in decisions if p.pick_price is not None]
+
     mature = [p for p in decisions if p.is_mature and p.alpha_pct is not None]
     pending = [p for p in decisions if not p.is_mature or p.alpha_pct is None]
 

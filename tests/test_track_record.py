@@ -110,6 +110,49 @@ def test_fetch_recent_sells_excludes_hold_includes_sell_and_trim():
     assert tickers == {"TSLA", "AAPL"}  # SELL + TRIM, no HOLD, no NULL
 
 
+def test_delisted_tickers_are_dropped_not_pending():
+    """yfinance returns no price for delisted tickers (e.g. MCAH after a
+    SPAC unwind). The old behavior bucketed those as 'pending' forever,
+    inflating the count with zombie entries. New behavior drops them
+    from the output entirely so the user only sees real decisions."""
+    with tempfile.TemporaryDirectory() as td:
+        db_path = os.path.join(td, "discover.db")
+        old = (datetime.now() - timedelta(days=60)).isoformat(timespec="seconds")
+        with connect(db_path) as conn:
+            cur = conn.execute(
+                "INSERT INTO runs (run_at, kind, universe_size, survivors, "
+                "picks, opus_model, sonnet_model) VALUES (?, 'discover', 1, 1, "
+                "2, 'o', 's')",
+                (old,),
+            )
+            rid = cur.lastrowid
+            conn.execute(
+                "INSERT INTO picks (run_id, rank, ticker, ranker_text, "
+                "bear_case_text, allocation_text) VALUES (?, 1, 'NVDA', '', '', '')",
+                (rid,),
+            )
+            conn.execute(
+                "INSERT INTO picks (run_id, rank, ticker, ranker_text, "
+                "bear_case_text, allocation_text) VALUES (?, 2, 'MCAH', '', '', '')",
+                (rid,),
+            )
+
+        def fake_quote(ticker, pick_date, age_days):
+            # MCAH is delisted — yfinance returns empty quote.
+            if ticker == "MCAH":
+                return tr._Quote(None, None)
+            if ticker == "SPY":
+                return tr._Quote(400.0, 420.0)
+            return tr._Quote(100.0, 120.0)  # NVDA
+
+        with patch.object(tr, "_fetch_quote", side_effect=fake_quote):
+            record = tr.measure_track_record(db_path)
+    tickers = {p.ticker for p in record.picks + record.pending}
+    assert "MCAH" not in tickers           # delisted dropped entirely
+    assert "NVDA" in tickers               # measurable ticker retained
+    assert record.n_picks_total == 1       # MCAH not counted
+
+
 def test_dedup_oldest_keeps_first_decision_per_ticker():
     """If we said SELL on TSLA twice (run 5 + run 8), the OLDEST date
     is what the user would have acted on. Dedupe to oldest, same as
