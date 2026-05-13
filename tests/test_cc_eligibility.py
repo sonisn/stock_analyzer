@@ -1,8 +1,12 @@
 """Tests for CC eligibility / round-lot / earnings / context-block builders."""
 from __future__ import annotations
 
+from datetime import date, datetime
+
+from stock_analyzer.data.options_chain import OptionChain, OptionQuote
 from stock_analyzer.discover.cc_eligibility import (
     EligibleHolding,
+    apply_earnings_filter,
     eligible_holdings,
 )
 
@@ -60,3 +64,41 @@ def test_eligibility_record_shape():
     assert rec.available_shares == 335
     assert rec.max_contracts == 3
     assert rec.open_short_call_contracts == 0
+
+
+def _chain(ticker: str, expiries: list[str]) -> OptionChain:
+    return OptionChain(
+        ticker=ticker, spot=100.0, asof=datetime.now(),
+        calls=[OptionQuote(
+            strike=110.0, expiry=date.fromisoformat(e),
+            bid=1.0, ask=1.1, iv=0.3, delta=0.35,
+            open_interest=500, volume=50,
+        ) for e in expiries],
+        source="yfinance",
+    )
+
+
+def test_earnings_filter_drops_straddling_expiries():
+    # Earnings 2026-06-15; window = 2026-06-08 .. 2026-06-22
+    chain = _chain("NVDA", ["2026-06-10", "2026-06-22", "2026-07-18"])
+    filtered, blacklisted = apply_earnings_filter(
+        chain, earnings_date=date(2026, 6, 15),
+    )
+    survived = [c.expiry.isoformat() for c in filtered.calls]
+    assert survived == ["2026-07-18"]
+    assert blacklisted == (date(2026, 6, 8), date(2026, 6, 22))
+
+
+def test_earnings_filter_passthrough_when_no_date():
+    chain = _chain("NVDA", ["2026-06-10", "2026-07-18"])
+    filtered, blacklisted = apply_earnings_filter(chain, earnings_date=None)
+    assert len(filtered.calls) == 2
+    assert blacklisted is None
+
+
+def test_earnings_filter_empty_chain():
+    chain = OptionChain(
+        ticker="X", spot=100.0, asof=datetime.now(), calls=[], source="missing",
+    )
+    filtered, _ = apply_earnings_filter(chain, earnings_date=date(2026, 6, 15))
+    assert filtered.calls == []

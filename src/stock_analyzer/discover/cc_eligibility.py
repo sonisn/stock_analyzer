@@ -10,6 +10,9 @@ passing them in.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
+
+from ..data.options_chain import OptionChain
 
 
 @dataclass(frozen=True)
@@ -101,3 +104,29 @@ def round_lot_coverage(
             to_next_lot_cost=to_next_shares * spot,
         )
     return out
+
+
+EARNINGS_BLACKLIST_DAYS = 7
+
+
+def apply_earnings_filter(
+    chain: OptionChain,
+    *,
+    earnings_date: date | None,
+) -> tuple[OptionChain, tuple[date, date] | None]:
+    """Drop expiries that fall within ±EARNINGS_BLACKLIST_DAYS of
+    earnings_date. Returns the filtered chain and the blacklist window
+    (for prompt display) or None when no earnings date was provided.
+    """
+    if earnings_date is None:
+        return chain, None
+    lo = earnings_date - timedelta(days=EARNINGS_BLACKLIST_DAYS)
+    hi = earnings_date + timedelta(days=EARNINGS_BLACKLIST_DAYS)
+    survived = [q for q in chain.calls if q.expiry < lo or q.expiry > hi]
+    return (
+        OptionChain(
+            ticker=chain.ticker, spot=chain.spot, asof=chain.asof,
+            calls=survived, source=chain.source,
+        ),
+        (lo, hi),
+    )
