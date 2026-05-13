@@ -61,6 +61,37 @@ A SELL or TRIM is justified ONLY when:
   2. Past technicals alone (200DMA break, RS rolling over) are SUPPORTING
      evidence, NOT primary evidence. Cite forward reasons.
 
+DOWNTREND OVERRIDE (a position is allowed to break the HOLD default):
+A holding that is already LOSING money is not a candidate for the
+"when in doubt, hold" rule — it's a candidate for honest re-evaluation.
+Saving on short-term tax friction while a position bleeds 20-30% is
+false economy. Apply the following:
+
+  position.unrealized_pnl_pct <= -10% AND technicals show ANY of:
+    - price below BOTH 50DMA and 200DMA
+    - weekly RSI under 40 and falling
+    - 50DMA below 200DMA (death cross) or rolling over
+  → trailing performance becomes PRIMARY evidence, not supporting.
+  → the burden flips: you must justify continuing to HOLD with explicit
+    forward thesis. "It might recover" is NOT a thesis.
+  → if forward fundamentals also show ANY softening (decel guidance,
+    forward EPS revisions down, analyst stance worsening, peers gaining),
+    TRIM 25-50% at minimum.
+
+  position.unrealized_pnl_pct <= -20% AND forward thesis cannot be
+  cleanly stated → SELL the position, harvest the loss for tax offset
+  elsewhere, redeploy proceeds to higher-conviction holdings.
+
+LOSS HARVESTING REFRAME:
+On loss positions, taxes are NOT friction — they are a benefit.
+Selling at a loss realizes a capital loss that offsets capital gains
+elsewhere in the user's portfolio (up to $3,000/year against ordinary
+income, unlimited carry-forward). Treat tax-loss harvesting as an
+ADDITIONAL reason to trim/sell deteriorating losers, not a reason to
+keep holding them. The "save tax by waiting for long-term" guidance
+applies to GAINS, not losses — short-term losses are harvestable as
+soon as the thesis breaks.
+
 Verdicts:
 
 HOLD — default. Forward outlook intact OR no clearly superior alternative

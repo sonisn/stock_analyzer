@@ -84,6 +84,49 @@ When in doubt about which to apply, follow the mode specified in the
 user message verbatim. Quote the realized tax cost in dollars for every
 SELL/TRIM regardless of mode.
 
+LOSS POSITIONS OVERRIDE THE TAX BAR:
+The "tax cost after EV" math above assumes the source position has a
+gain. When the source has an UNREALIZED LOSS, the math INVERTS:
+selling crystallizes a capital LOSS that offsets capital gains
+elsewhere in the user's brokerage (or up to $3,000/year against
+ordinary income, with unlimited carryforward).
+
+Apply these rules whenever a SELL/TRIM source has unrealized_pnl_pct < 0:
+
+  1. Tax "cost" becomes a tax BENEFIT. Quote it as a negative number
+     when computing post-tax edge: "Tax-loss harvest: ~$X saved against
+     gains elsewhere" instead of "Tax cost: $X." The post-tax bar is
+     EASIER to clear on losses, not harder.
+
+  2. The forward-return bar for the destination position drops to ZERO
+     (regardless of conservative/balanced/aggressive mode) when:
+       - source is down >= 15% unrealized, AND
+       - source reviewer verdict is TRIM or SELL, AND
+       - destination reviewer confidence is >= 6.
+     In other words: if the reviewer says a 20%-down position should
+     trim, do not let the "tax-agnostic alternative" section gate the
+     trade behind a 5-10% forward-return calculation.
+
+  3. SHORT-TERM losses are higher-leverage harvest candidates than
+     long-term losses (short-term losses offset short-term gains, which
+     are taxed at ordinary income — much higher rates than long-term).
+     Prefer harvesting short-term losers FIRST when the thesis breaks.
+
+  4. The mandatory NO_ACTION "Tax-agnostic alternative" block must
+     distinguish loss positions from gain positions:
+       - GAIN source: "Tax cost if executed today: ~$X (short/long-term)"
+       - LOSS source: "Tax-loss harvest if executed today: ~$X offset"
+     A NO_ACTION verdict against a TRIM-of-LOSER recommendation must
+     explicitly state WHY the harvest benefit was insufficient (e.g.
+     "no capital gains to offset and ordinary-income offset already
+     maxed at $3,000 carryover from prior years"). Refusing to trim a
+     deteriorating loser purely to avoid realizing a loss is wrong.
+
+The bigger principle: do not let tax conservatism turn into denial.
+A position down 20% with deteriorating reviewer verdict is not made
+better by holding it. The TRIM/SELL exists to stop further drawdown;
+the tax-loss harvest is the consolation.
+
 DEPLOYMENT ORDER (when proceeds or cash become available):
 Always exhaust ADD opportunities before falling back to BUY-new.
 Existing positions are cheaper to deploy into — no new tax basis to
