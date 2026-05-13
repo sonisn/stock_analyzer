@@ -29,7 +29,7 @@ Extend the existing `rebalance-portfolio` pipeline so the single Opus rebalancer
 | `CC_MIN_PREMIUM_USD` | `500` | If total expected premium < this, leave as cash (no reinvestment). |
 | `CC_SLIPPAGE_BUFFER` | `0.10` | Fraction of premium held back for fill slippage when sizing reinvestment. |
 
-**Style:** aggressive premium (Δ 0.35–0.45, DTE 30–45). Within that band, Opus pushes lower-Δ on conviction HOLDs and higher-Δ on TRIM-leaning positions.
+**Style:** aggressive premium (Δ 0.35–0.45, DTE 30–45). Within that band, Opus pushes lower-Δ on high-confidence HOLDs and higher-Δ on TRIM-leaning positions. ("Confidence" is the reviewer's existing 1–10 score, surfaced per-ticker in the rebalancer context.)
 
 ## Architecture
 
@@ -42,7 +42,7 @@ rebalance-portfolio
                            shares minus open short-call coverage   [pure Python]
  ├─ option_chains    NEW   SnapTrade primary, yfinance fallback   [parallel]
  ├─ reviewer               Sonnet HOLD/TRIM/SELL per ticker       [existing, parallel]
- ├─ earnings_filter  NEW   drop expiries straddling next earnings [pure Python]
+ ├─ earnings_filter  NEW   drop expiries straddling next earnings [pure Python; date from existing FinnHub fetch]
  ├─ rebalancer             Opus — sees holdings, lots, reviewer,
                            chains, eligibility. Emits actions
                            (incl. WRITE_CALL) + option_writes      [existing, extended]
@@ -84,7 +84,7 @@ class OptionWrite(BaseModel):
     strike: float
     expiry: str                       # ISO date "YYYY-MM-DD"
     contracts: int                    # must satisfy contracts*100 <= available_shares
-    est_premium_per_contract: float   # mid of bid/ask, in dollars
+    est_premium_per_share: float      # mid of bid/ask, in dollars per share (×100 → per contract)
     delta: float
     assignment_probability: float     # Opus may differ from delta
     notes: str = ""                   # one-line rationale
@@ -149,7 +149,7 @@ Three additions to the existing system prompt:
 ### (a) Per-ticker context block (assembled in Python)
 ```
 TICKER: NVDA
-  Reviewer verdict:        HOLD (high conviction)
+  Reviewer verdict:        HOLD (confidence 8/10)
   Shares held:             400
   Available for CC:        300 (100 already collateralizing open short call)
   Earnings-blacklist:      2026-05-21 (skip expiries 2026-05-16 .. 2026-05-23)
@@ -163,7 +163,7 @@ Tickers with no chain show `Option chain: UNAVAILABLE`.
 
 ### (b) Covered-call writing rules
 - **Target band:** Δ 0.35–0.45, DTE 30–45.
-- **Strike within band:** HOLD-high-conviction → toward Δ 0.35; TRIM/low-conviction → toward Δ 0.45.
+- **Strike within band:** HOLD with confidence ≥ 7 → toward Δ 0.35; TRIM verdict or HOLD with confidence ≤ 5 → toward Δ 0.45.
 - **No WRITE_CALL on SELL positions.**
 - **Coherence with TRIM:** contracts ≤ (shares_after_trim) // 100.
 - **Liquidity guard:** skip strikes with bid < $0.20, OI < 100, or (ask − bid) / mid > 0.15.
@@ -171,9 +171,9 @@ Tickers with no chain show `Option chain: UNAVAILABLE`.
 - **Output:** one `WRITE_CALL` action per eligible ticker (max) + matching `OptionWrite` entry.
 
 ### (c) Premium reinvestment
-- `expected_premium_total = Σ contracts × est_premium_per_contract × 100`
+- `expected_premium_total = Σ contracts × est_premium_per_share × 100`
 - `deployable = existing_cash + (1 - CC_SLIPPAGE_BUFFER) × expected_premium_total`
-- Priority: fund `ADD`s on conviction HOLDs first, then `BUY`s, then cash.
+- Priority: fund `ADD`s on high-confidence HOLDs first, then `BUY`s, then cash.
 - If `expected_premium_total < CC_MIN_PREMIUM_USD`: leave as cash, state reason in `full_text`.
 - Respect existing aggressiveness-mode concentration/position-size limits.
 - Show explicit dry-powder math in `full_text` (template provided in prompt).
@@ -183,7 +183,7 @@ Tickers with no chain show `Option chain: UNAVAILABLE`.
 
 Add one paragraph after the existing critique guidance:
 
-> For each `WRITE_CALL`, additionally consider: (a) assignment lock-in if the underlying runs 20% past strike; (b) IV crush after near-term earnings or macro events; (c) opportunity cost of capping upside on conviction picks; (d) tax consequences if assignment triggers short-term gain on the underlying.
+> For each `WRITE_CALL`, additionally consider: (a) assignment lock-in if the underlying runs 20% past strike; (b) IV crush after near-term earnings or macro events; (c) opportunity cost of capping upside on high-confidence picks; (d) tax consequences if assignment triggers short-term gain on the underlying.
 
 ## Data flow
 
@@ -275,7 +275,7 @@ The deployment math is computed deterministically in the renderer from `option_w
 ALTER TABLE actions ADD COLUMN strike            REAL;
 ALTER TABLE actions ADD COLUMN expiry            TEXT;
 ALTER TABLE actions ADD COLUMN contracts         INTEGER;
-ALTER TABLE actions ADD COLUMN est_premium       REAL;   -- per contract
+ALTER TABLE actions ADD COLUMN est_premium       REAL;   -- per share (dollars; ×100 → per contract)
 ALTER TABLE actions ADD COLUMN delta             REAL;
 ALTER TABLE actions ADD COLUMN assignment_prob   REAL;
 ```
@@ -314,6 +314,7 @@ New test files (matching the flat `tests/test_*.py` layout):
 2. **SnapTrade chain endpoint availability** on the user's tier — verified empirically during implementation; yfinance fallback covers the gap if not.
 3. **OCC symbol parsing helper** — small utility; place in `data/transactions.py` or a new `data/options_symbols.py` (decide during implementation).
 4. **Chain row cap per ticker** in the LLM context — defaulted to ~8 rows; tune during prompt iteration.
+5. **SnapTrade option-positions format** — broker-dependent. Confirm symbol format empirically against the user's connected accounts when implementing the coverage-subtraction parser.
 
 ## Future work (explicitly out of scope for v1)
 
