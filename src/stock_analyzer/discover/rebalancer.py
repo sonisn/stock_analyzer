@@ -113,6 +113,24 @@ because of lower friction, familiarity, and avoided basis fragmentation.
 DO NOT make tool calls. Use ONLY the data provided. Reason about WHOLE
 PORTFOLIO health, not each ticker in isolation.
 
+CONTINUITY ACROSS RUNS:
+The user message may include a "Previous decisions" block summarizing
+your verdict per holding across the last few rebalance runs (e.g.
+"NVDA: HOLD-8 → HOLD-8 → HOLD-7 → today"). Use it as a sanity check,
+not a constraint:
+  - If a holding's verdict is stable run-over-run (HOLD-8 three weeks
+    in a row), be skeptical of a sudden flip today — re-verify the
+    forward-looking signal that would justify the change.
+  - If confidence has been DRIFTING down (HOLD-8 → HOLD-7 → HOLD-5),
+    surface this in your reasoning even if today's verdict is still
+    HOLD — drifting conviction is itself a signal worth flagging.
+  - If you recommended a SELL/TRIM in a previous run and the user
+    apparently did NOT execute (the holding is still in today's
+    positions), do NOT silently re-issue the same recommendation —
+    either reaffirm with new evidence or downgrade to HOLD.
+This block is informational. Do not pretend it constrains you; the
+forward-looking evidence in today's reviews always wins.
+
 Hard constraints:
 - Total BUYs + ADDs must NOT exceed (SELL proceeds + TRIM proceeds + available cash).
 - No single position should exceed ~25% of post-rebalance portfolio value.
@@ -319,6 +337,7 @@ class Rebalancer:
         cash_available: float | None,
         macro_summary: str = "",
         aggressiveness: str = "balanced",
+        history_block: str = "",
     ) -> str:
         reviews_block = "\n\n".join(
             f"=== {ticker} ===\n{text}" for ticker, text in holdings_reviews.items()
@@ -336,6 +355,11 @@ class Rebalancer:
                 aggressiveness,
             )
             agg = "balanced"
+        history_section = (
+            f"Previous decisions (last 3 rebalance runs, oldest first):\n"
+            f"{history_block}\n\n"
+            if history_block else ""
+        )
         prompt = (
             f"AGGRESSIVENESS: {agg}\n"
             f"(Apply the {agg} rule set from your instructions. The "
@@ -343,6 +367,7 @@ class Rebalancer:
             f"NO ACTION output.)\n\n"
             f"{macro_block}"
             f"{cash_line}\n\n"
+            f"{history_section}"
             f"Current holdings reviews ({len(holdings_reviews)}):\n\n{reviews_block}\n\n"
             f"New discover picks:\n\n{picks_text}"
         )

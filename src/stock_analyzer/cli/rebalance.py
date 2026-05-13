@@ -42,7 +42,9 @@ from ..data.transcripts import batch_transcript_snippets
 from ..discover.peers import batch_peer_comparison
 from ..discover.persistence import (
     connect,
+    fetch_recent_holdings_history,
     insert_candidate,
+    insert_holdings_review,
     insert_pick,
     insert_run,
     insert_run_outputs,
@@ -84,6 +86,39 @@ def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
     path = reports_dir / filename
     path.write_bytes(pdf_bytes)
     return path
+
+
+def _build_history_block(db_path: str, *, n_runs: int = 3) -> str:
+    """Reach into the discover DB and produce a compact `Previous decisions`
+    block for the rebalancer prompt. Per-holding format:
+
+        AAPL: HOLD-8 (2026-05-05) -> HOLD-7 (2026-05-10) -> today
+
+    Oldest first so the LLM sees chronological drift left-to-right. Returns
+    an empty string if no history exists (first run, fresh DB, or every
+    prior run was a discover-only run).
+    """
+    try:
+        with connect(db_path) as conn:
+            history = fetch_recent_holdings_history(conn, n_runs=n_runs)
+    except Exception as e:
+        logger.warning("history fetch failed (%s) — proceeding without it", e)
+        return ""
+    if not history:
+        return ""
+    lines: list[str] = []
+    for ticker in sorted(history.keys()):
+        entries = history[ticker]
+        parts: list[str] = []
+        for e in entries:
+            verdict = e.get("verdict") or "?"
+            conf = e.get("confidence")
+            run_at = (e.get("run_at") or "")[:10]
+            label = f"{verdict}-{conf}" if conf is not None else verdict
+            parts.append(f"{label} ({run_at})")
+        parts.append("today")
+        lines.append(f"{ticker}: {' -> '.join(parts)}")
+    return "\n".join(lines)
 
 
 def _log_full_analysis(
@@ -302,6 +337,12 @@ class RebalancePipeline(DiscoverPipeline):
         )
 
     def step_rebalance(self, step_input: StepInput) -> StepOutput:
+        history_block = _build_history_block(self.settings.discover_db_path)
+        if history_block:
+            logger.info(
+                "Cross-run context: %d holdings have prior decisions",
+                history_block.count("\n"),
+            )
         rebalancer = Rebalancer("claude", self.settings.discover_opus_model)
         self.state["rebalance_text"] = rebalancer.decide(
             self.state["holdings_reviews"],
@@ -309,6 +350,7 @@ class RebalancePipeline(DiscoverPipeline):
             self.state.get("cash_balance"),
             self.state.get("macro_summary", ""),
             aggressiveness=self.settings.discover_rebalance_aggressiveness,
+            history_block=history_block,
         )
         return StepOutput(
             content=(
@@ -347,6 +389,17 @@ class RebalancePipeline(DiscoverPipeline):
                 )
             for ticker, text in self.state["analyses"].items():
                 insert_scorecard(conn, run_id, ticker, text)
+            for ticker, review in self.state.get("holdings_reviews", {}).items():
+                if not review:
+                    continue
+                insert_holdings_review(
+                    conn,
+                    run_id,
+                    ticker,
+                    verdict=parse_verdict(review),
+                    confidence=parse_confidence(review),
+                    review_text=review,
+                )
             for rank, ticker, _ in self.state["picks"]:
                 insert_pick(
                     conn,

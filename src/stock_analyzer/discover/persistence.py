@@ -65,6 +65,15 @@ CREATE TABLE IF NOT EXISTS picks (
     PRIMARY KEY (run_id, rank)
 );
 
+CREATE TABLE IF NOT EXISTS holdings_reviews (
+    run_id INTEGER NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+    ticker TEXT NOT NULL,
+    verdict TEXT,           -- HOLD / TRIM / SELL (parsed from review_text)
+    confidence INTEGER,     -- 1-10 (parsed from review_text)
+    review_text TEXT,       -- full Sonnet review for this holding
+    PRIMARY KEY (run_id, ticker)
+);
+
 CREATE TABLE IF NOT EXISTS run_outputs (
     run_id INTEGER PRIMARY KEY REFERENCES runs(id) ON DELETE CASCADE,
     ranker_full TEXT,
@@ -186,6 +195,53 @@ def insert_scorecard(
         "INSERT INTO scorecards (run_id, ticker, analyst_text) VALUES (?, ?, ?)",
         (run_id, ticker, text),
     )
+
+
+def insert_holdings_review(
+    conn: sqlite3.Connection,
+    run_id: int,
+    ticker: str,
+    *,
+    verdict: str | None,
+    confidence: int | None,
+    review_text: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO holdings_reviews (run_id, ticker, verdict, "
+        "confidence, review_text) VALUES (?, ?, ?, ?, ?)",
+        (run_id, ticker, verdict, confidence, review_text),
+    )
+
+
+def fetch_recent_holdings_history(
+    conn: sqlite3.Connection, *, n_runs: int = 3, kind: str = "rebalance"
+) -> dict[str, list[dict[str, Any]]]:
+    """Return {ticker: [{run_at, verdict, confidence}, ...]} oldest-first
+    for the last `n_runs` rebalance runs. Used to build the cross-run
+    'Previous decisions' block for the rebalancer prompt."""
+    cur = conn.execute(
+        "SELECT id, run_at FROM runs WHERE kind = ? "
+        "ORDER BY id DESC LIMIT ?",
+        (kind, n_runs),
+    )
+    runs = list(cur.fetchall())
+    if not runs:
+        return {}
+    runs.reverse()  # oldest first so the LLM sees chronological drift
+    out: dict[str, list[dict[str, Any]]] = {}
+    for run_id, run_at in runs:
+        cur = conn.execute(
+            "SELECT ticker, verdict, confidence FROM holdings_reviews "
+            "WHERE run_id = ?",
+            (run_id,),
+        )
+        for ticker, verdict, confidence in cur.fetchall():
+            out.setdefault(ticker, []).append({
+                "run_at": run_at,
+                "verdict": verdict,
+                "confidence": confidence,
+            })
+    return out
 
 
 def insert_pick(
