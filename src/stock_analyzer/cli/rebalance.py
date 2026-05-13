@@ -430,14 +430,18 @@ class RebalancePipeline(DiscoverPipeline):
                     allocation_text=self.state["sizer_text"],
                 )
             plan = self.state.get("rebalance_plan")
+            # Use .get() with empty-string defaults for the rebalancer's
+            # outputs so a failed rebalance step (e.g. LLM error after
+            # max retries) doesn't compound into a KeyError that
+            # tanks persistence too.
             insert_run_outputs(
                 conn,
                 run_id,
-                ranker_full=self.state["ranker_text"],
-                redteam_full=self.state["redteam_text"],
-                sizer_full=self.state["sizer_text"],
-                holdings_summary=self.state["holdings_summary"],
-                rebalance_text=self.state["rebalance_text"],
+                ranker_full=self.state.get("ranker_text", "") or "",
+                redteam_full=self.state.get("redteam_text", "") or "",
+                sizer_full=self.state.get("sizer_text", "") or "",
+                holdings_summary=self.state.get("holdings_summary", "") or "",
+                rebalance_text=self.state.get("rebalance_text", "") or "",
                 dashboard_data=plan.model_dump(mode="json") if plan else None,
             )
 
