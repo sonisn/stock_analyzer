@@ -685,6 +685,15 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
         elif s.kind == "premortem_panel" and s.data:
             parts.append(_premortem_panel_html(s.data))
 
+        elif s.kind == "premium_income" and s.data:
+            parts.append("<div class='cc-section'><p>Premium Income</p></div>")
+
+        elif s.kind == "round_lot_coverage" and s.data:
+            parts.append("<div class='cc-section'><p>Round Lot Coverage</p></div>")
+
+        elif s.kind == "premium_deployment" and s.data:
+            parts.append("<div class='cc-section'><p>Premium Deployment</p></div>")
+
         elif s.kind == "page_break":
             parts.append("<hr/>")
     parts.append("</body></html>")

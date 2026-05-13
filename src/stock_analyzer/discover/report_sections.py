@@ -231,6 +231,8 @@ SectionKind = Literal[
     # `data` and produces a styled card / table instead of dumping prose.
     "pick_card", "allocation_table", "rebalance_action_table",
     "holding_review_card", "market_themes_panel", "premortem_panel",
+    # Covered-call sections (cli/rebalance.py CC extension).
+    "premium_income", "round_lot_coverage", "premium_deployment",
 ]
 
 

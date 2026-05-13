@@ -818,6 +818,18 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
             for el in _pdf_premortem_panel(s.data, styles):
                 flow.append(el)
 
+        elif s.kind == "premium_income" and s.data:
+            flow.append(Paragraph("Premium Income", styles["Heading3"]))
+            flow.append(Spacer(1, 4))
+
+        elif s.kind == "round_lot_coverage" and s.data:
+            flow.append(Paragraph("Round Lot Coverage", styles["Heading3"]))
+            flow.append(Spacer(1, 4))
+
+        elif s.kind == "premium_deployment" and s.data:
+            flow.append(Paragraph("Premium Deployment", styles["Heading3"]))
+            flow.append(Spacer(1, 4))
+
         elif s.kind == "page_break":
             flow.append(PageBreak())
 
