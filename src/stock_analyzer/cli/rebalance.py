@@ -78,6 +78,11 @@ from .discover import (
 
 logger = get_logger(__name__)
 
+# Cap CC eligible holdings sent to the rebalancer to bound prompt size.
+# 25 covers virtually every realistic portfolio while keeping the
+# CC context block <~40KB (per-ticker ~1.5KB × 25 + round-lot table).
+_CC_MAX_ELIGIBLE_FOR_PROMPT = 25
+
 
 def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
     """Persist the PDF to ~/.stock_analyzer/reports/ so a missed email
@@ -543,6 +548,27 @@ class RebalancePipeline(DiscoverPipeline):
                 positions, open_short_calls=open_short_calls, denylist=denylist,
             )
 
+            # Bound eligible holdings to cap prompt size.
+            if len(eligible) > _CC_MAX_ELIGIBLE_FOR_PROMPT:
+                # Rank by available dollar exposure (proxy for premium potential).
+                # Larger positions get prompt priority — they unlock more contracts
+                # and more premium per contract.
+                def _exposure(t: str) -> float:
+                    rec = eligible[t]
+                    spot = (
+                        self.state.get("holdings_technicals", {}).get(t) or {}
+                    ).get("price") or 0.0
+                    return float(rec.available_shares) * float(spot)
+                kept = sorted(eligible, key=_exposure, reverse=True)[:_CC_MAX_ELIGIBLE_FOR_PROMPT]
+                dropped = sorted(set(eligible) - set(kept))
+                logger.warning(
+                    "CC: %d eligible holdings exceed prompt cap (%d); "
+                    "keeping top %d by exposure, dropping %s",
+                    len(eligible), _CC_MAX_ELIGIBLE_FOR_PROMPT,
+                    len(kept), dropped,
+                )
+                eligible = {t: eligible[t] for t in kept}
+
             logger.info(
                 "CC eligibility: %d/%d positions eligible (≥100 shares, not denylisted, "
                 "post-short-call coverage). Eligible: %s",
@@ -674,6 +700,40 @@ class RebalancePipeline(DiscoverPipeline):
             cc_min_stub_usd=self.settings.cc_min_stub_usd,
             cc_stub_optimization=self.settings.cc_stub_optimization,
         )
+
+        # Pre-flight: estimate the rebalancer's prompt size so any
+        # context-window pressure is visible before we burn the call.
+        reviews_block_chars = sum(
+            len(getattr(r, "full_text", str(r)) or "")
+            for r in (self.state.get("holdings_reviews") or {}).values()
+        )
+        cc_block_chars = len(self.state.get("cc_context_block") or "")
+        ranker_chars = len(ranker_text)
+        history_chars = len(history_block)
+        themes_chars = len(self.state.get("market_themes_block", "") or "")
+        macro_chars = len(self.state.get("macro_summary", "") or "")
+        total_input_chars = (
+            reviews_block_chars + cc_block_chars + ranker_chars
+            + history_chars + themes_chars + macro_chars
+        )
+        # Rough estimate: ~4 chars per token for English with markdown.
+        approx_input_tokens = total_input_chars // 4
+        logger.info(
+            "Rebalancer input estimate: %d total chars (~%d tokens). "
+            "Breakdown: reviews=%d, cc_block=%d, ranker=%d, history=%d, "
+            "themes=%d, macro=%d. (Opus 4.7 input limit: 200,000 tokens.)",
+            total_input_chars, approx_input_tokens,
+            reviews_block_chars, cc_block_chars, ranker_chars,
+            history_chars, themes_chars, macro_chars,
+        )
+        if approx_input_tokens > 150_000:
+            logger.warning(
+                "Rebalancer input is approaching the 200K-token context "
+                "limit (estimated %d tokens). Consider reducing the number "
+                "of holdings reviewed, or shortening reviewer.full_text.",
+                approx_input_tokens,
+            )
+
         plan = rebalancer.decide(
             self.state.get("holdings_reviews", {}),
             ranker_text,

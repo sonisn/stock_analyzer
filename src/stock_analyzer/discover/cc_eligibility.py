@@ -9,6 +9,7 @@ passing them in.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -134,16 +135,27 @@ def apply_earnings_filter(
 
 
 _CHAIN_ROW_CAP_PER_TICKER = 8
+_CC_CONTEXT_BLOCK_MAX_CHARS = 50_000  # ~12.5K tokens — safe margin under 200K context.
 
 
 def _format_chain_row(q: OptionQuote) -> str:
-    """Single-line chain row used inside the per-ticker context block."""
-    delta_str = f"Δ {q.delta:.2f}" if q.delta is not None else "Δ —"
-    iv_str = f"IV {q.iv:.2f}" if q.iv is not None else "IV —"
+    """Single-line chain row used inside the per-ticker context block.
+
+    Coerces NaN/inf numeric fields to a "-" sentinel so the LLM sees
+    clean text. yfinance occasionally returns NaN for low-volume strikes.
+    """
+
+    def _f(v: float | None, fmt: str) -> str:
+        if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
+            return "—"
+        return format(v, fmt)
+
+    delta_str = f"Δ {_f(q.delta, '.2f')}"
+    iv_str = f"IV {_f(q.iv, '.2f')}"
     oi_str = f"OI {q.open_interest}" if q.open_interest else "OI —"
     return (
-        f"    {q.expiry.isoformat()} ${q.strike:>6.2f} strike  "
-        f"bid {q.bid:.2f} / ask {q.ask:.2f}  "
+        f"    {q.expiry.isoformat()} ${_f(q.strike, '>6.2f')} strike  "
+        f"bid {_f(q.bid, '.2f')} / ask {_f(q.ask, '.2f')}  "
         f"{delta_str}  {iv_str}  {oi_str}"
     )
 
@@ -238,4 +250,14 @@ def build_cc_context_block(
     rlc_lines.append(f"  Stub pool total: ${stub_pool_total_usd:,.0f}")
 
     header = "=" * 70 + "\nCOVERED-CALL CONTEXT\n" + "=" * 70
-    return header + "\n\n" + "\n\n".join(per_ticker) + "\n" + "\n".join(rlc_lines)
+    result = header + "\n\n" + "\n\n".join(per_ticker) + "\n" + "\n".join(rlc_lines)
+    if len(result) > _CC_CONTEXT_BLOCK_MAX_CHARS:
+        # Defensive: shouldn't happen if cli/rebalance trimmed eligible to
+        # _CC_MAX_ELIGIBLE_FOR_PROMPT, but a single position with many earnings-
+        # blacklisted strikes or unusually verbose reviewer text could still
+        # push us over. Truncate with a visible marker so the LLM knows the
+        # block was cut.
+        truncated = result[:_CC_CONTEXT_BLOCK_MAX_CHARS]
+        marker = f"\n\n[TRUNCATED — context exceeded {_CC_CONTEXT_BLOCK_MAX_CHARS:,}-char budget]"
+        return truncated + marker
+    return result
