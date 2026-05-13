@@ -1,11 +1,15 @@
 """Tests for options_chain.py — providers, orchestrator, fallback."""
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
 
 from stock_analyzer.data.options_chain import (
     OptionChain,
     OptionQuote,
+    YFinanceChain,
 )
 
 
@@ -26,3 +30,60 @@ def test_optionchain_dataclass():
     )
     assert chain.ticker == "NVDA"
     assert chain.source == "missing"
+
+
+def _fake_ticker(spot: float, expiries_to_calls: dict[str, pd.DataFrame]) -> MagicMock:
+    """Build a MagicMock that mimics yfinance.Ticker."""
+    t = MagicMock()
+    t.fast_info = MagicMock(last_price=spot)
+    t.options = tuple(expiries_to_calls.keys())
+    t.option_chain.side_effect = lambda e: MagicMock(calls=expiries_to_calls[e])
+    return t
+
+
+def _calls_df(rows: list[tuple[float, float, float, float, int, int]]) -> pd.DataFrame:
+    return pd.DataFrame(
+        rows,
+        columns=["strike", "bid", "ask", "impliedVolatility", "openInterest", "volume"],
+    )
+
+
+def test_yfinance_filters_to_dte_band_and_otm():
+    today = date.today()
+    e_in_band = (today + timedelta(days=35)).isoformat()
+    e_too_close = (today + timedelta(days=10)).isoformat()
+    e_too_far = (today + timedelta(days=120)).isoformat()
+    chains = {
+        e_in_band: _calls_df([
+            (250.0, 3.10, 3.30, 0.31, 4210, 850),  # OTM
+            (230.0, 8.00, 8.20, 0.33, 1000, 200),  # ITM — should be filtered
+        ]),
+        e_too_close: _calls_df([(260.0, 0.50, 0.60, 0.28, 100, 10)]),
+        e_too_far: _calls_df([(260.0, 5.50, 5.60, 0.28, 100, 10)]),
+    }
+    fake = _fake_ticker(spot=235.0, expiries_to_calls=chains)
+    with patch("stock_analyzer.data.options_chain.yf.Ticker", return_value=fake):
+        chain = YFinanceChain().fetch("NVDA", dte_min=30, dte_max=45)
+    assert chain is not None
+    assert chain.source == "yfinance"
+    assert chain.spot == 235.0
+    strikes = sorted(q.strike for q in chain.calls)
+    assert strikes == [250.0]  # ITM 230 dropped, out-of-band expiries dropped
+
+
+def test_yfinance_returns_none_on_error():
+    with patch(
+        "stock_analyzer.data.options_chain.yf.Ticker",
+        side_effect=RuntimeError("network blew up"),
+    ):
+        chain = YFinanceChain().fetch("NVDA", dte_min=30, dte_max=45)
+    assert chain is None
+
+
+def test_yfinance_no_expiries_returns_empty_chain_with_source_set():
+    fake = _fake_ticker(spot=235.0, expiries_to_calls={})
+    with patch("stock_analyzer.data.options_chain.yf.Ticker", return_value=fake):
+        chain = YFinanceChain().fetch("NVDA", dte_min=30, dte_max=45)
+    assert chain is not None
+    assert chain.calls == []
+    assert chain.source == "yfinance"
