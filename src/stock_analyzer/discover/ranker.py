@@ -7,6 +7,7 @@ Opus's reasoning depth pays off here vs N isolated per-ticker calls.
 from __future__ import annotations
 
 import re
+from typing import Any
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
@@ -96,14 +97,18 @@ class Ranker:
 
     def _rank_once(
         self,
-        analyses: dict[str, str],
+        analyses: dict[str, Any],
         holdings_summary: str,
         top_n: int,
         macro_context: str,
         track_record_block: str = "",
     ) -> str:
+        # `analyses` is dict[ticker, AnalystReport] from Phase 4b; for
+        # legacy callers it may be dict[ticker, str]. Unwrap to prose for
+        # the prompt without depending on the type.
         candidates_block = "\n\n".join(
-            f"=== {ticker} ===\n{analysis}" for ticker, analysis in analyses.items()
+            f"=== {ticker} ===\n{getattr(analysis, 'full_text', analysis)}"
+            for ticker, analysis in analyses.items()
         )
         macro_block = f"Macro regime:\n{macro_context}\n\n" if macro_context else ""
         track_block = (
@@ -121,7 +126,7 @@ class Ranker:
 
     def rank(
         self,
-        analyses: dict[str, str],
+        analyses: dict[str, Any],
         holdings_summary: str,
         top_n: int = 5,
         macro_context: str = "",

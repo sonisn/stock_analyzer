@@ -102,9 +102,61 @@ class HoldingReview(BaseModel):
     )
 
 
+# --- Analyst ---------------------------------------------------------------
+
+
+class AnalystReport(BaseModel):
+    """Per-candidate analyst report emitted by the Analyst agent.
+
+    Replaces the prior free-text format ('TICKER: AAPL / Score: 7 / ...').
+    Downstream (Ranker) reads full_text from its prompt input; the report
+    layer and any analytics read the structured fields directly.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    ticker: str
+    score: int = Field(..., ge=1, le=10, description="1-10 conviction score.")
+    one_liner: str = Field(..., description="Single sentence summary, no fluff.")
+    competitive_position: str = Field(
+        ...,
+        description="1-2 sentences on moat / market position / what's hard to replicate.",
+    )
+    growth_runway: str = Field(
+        ...,
+        description="1-2 sentences on 3-5 year revenue/profit drivers from the data.",
+    )
+    top_risks: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=5,
+        description=(
+            "Up to 5 concrete risks extracted from 10-K risk factors or news. "
+            "Not generic boilerplate."
+        ),
+    )
+    valuation_context: str = Field(
+        ...,
+        description="1-2 sentences: PE / FCF yield vs peers or historical; is it stretched?",
+    )
+    catalyst_calendar: str = Field(
+        ...,
+        description="Next earnings date if known + any product / regulatory items from news.",
+    )
+    full_text: str = Field(
+        ...,
+        description=(
+            "Plain-text rendering matching the prose template: TICKER: / "
+            "Score: / One-liner: / Competitive position: / ... — what the "
+            "ranker reads as prompt input."
+        ),
+    )
+
+
 __all__ = [
     "Verdict",
     "ActionType",
     "FragilityRank",
     "HoldingReview",
+    "AnalystReport",
 ]

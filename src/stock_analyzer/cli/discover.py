@@ -517,8 +517,11 @@ class DiscoverPipeline:
                     sector=c["sector"],
                     price=c["price"],
                 )
-            for ticker, text in self.state["analyses"].items():
-                insert_scorecard(conn, run_id, ticker, text)
+            for ticker, report in self.state["analyses"].items():
+                analyst_text = getattr(report, "full_text", None) or (
+                    report if isinstance(report, str) else ""
+                )
+                insert_scorecard(conn, run_id, ticker, analyst_text)
             for rank, ticker, _ in self.state["picks"]:
                 insert_pick(
                     conn,

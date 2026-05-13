@@ -11,6 +11,7 @@ from typing import Any
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
 from ..serialization import dumps_pretty
+from .schemas import AnalystReport
 
 logger = get_logger(__name__)
 
@@ -81,7 +82,14 @@ Catalyst calendar:
 
 CRITICAL:
 - Plain text. No markdown headings or bold.
-- Begin reply with "TICKER:" line. No preamble, no closing remarks.\
+- Begin reply with "TICKER:" line. No preamble, no closing remarks.
+
+STRUCTURED OUTPUT:
+Your response is validated against a Pydantic schema (AnalystReport).
+Populate every required field. The prose plan you would have emitted
+goes into `full_text` — make it match the format described above
+exactly. The structured fields must agree with `full_text` — if
+`full_text` says "Score: 7" then `score` MUST be 7.\
 """
 
 
@@ -98,28 +106,53 @@ class Analyst:
                 "delay_between_retries": 10,
             },
             instructions=ANALYST_INSTRUCTIONS,
+            output_schema=AnalystReport,
         )
 
-    def analyze(self, ticker: str, payload: dict[str, Any]) -> str:
+    def analyze(self, ticker: str, payload: dict[str, Any]) -> AnalystReport | None:
         prompt = (
             f"Candidate ticker: {ticker}\n\n"
             f"```json\n{dumps_pretty(payload)}\n```"
         )
         logger.info("Analyzing %s", ticker)
-        return self.agent.run(prompt).content
+        result = self.agent.run(prompt).content
+        if result is None:
+            logger.warning("Analyst returned no content for %s — skipping", ticker)
+            return None
+        if isinstance(result, AnalystReport):
+            return result
+        if isinstance(result, str):
+            try:
+                return AnalystReport.model_validate_json(result)
+            except Exception as e:
+                logger.warning(
+                    "Analyst for %s returned a string that wasn't valid "
+                    "AnalystReport JSON: %s", ticker, e,
+                )
+                return None
+        logger.warning(
+            "Analyst for %s returned unexpected type %s; skipping",
+            ticker, type(result).__name__,
+        )
+        return None
 
 
 def analyze_batch(
     analyst: Analyst, payloads: dict[str, dict[str, Any]]
-) -> dict[str, str]:
-    results: dict[str, str] = {}
+) -> dict[str, AnalystReport]:
+    """Return {ticker: AnalystReport} for every payload the Analyst
+    successfully scored. Failures are silently excluded."""
+    results: dict[str, AnalystReport] = {}
     items = list(payloads.items())
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         futures = {ex.submit(analyst.analyze, t, p): t for t, p in items}
         for fut in futures:
             ticker = futures[fut]
             try:
-                results[ticker] = fut.result()
+                report = fut.result()
             except Exception as e:
                 logger.warning("analyst failed for %s: %s", ticker, e)
+                continue
+            if report is not None:
+                results[ticker] = report
     return results
