@@ -1,7 +1,15 @@
 """Tests for CC config + RebalancePlan/OptionWrite schema."""
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from stock_analyzer.config import Settings
+from stock_analyzer.discover.rebalance_schema import (
+    OptionWrite,
+    RebalanceAction,
+    RebalancePlan,
+)
 
 
 def test_cc_defaults():
@@ -22,16 +30,6 @@ def test_cc_denylist_parses_csv(monkeypatch):
     monkeypatch.setenv("CC_DENYLIST", "TSLA, AAPL ,nvda")
     s = Settings()  # type: ignore[call-arg]
     assert s.cc_denylist == ("TSLA", "AAPL", "NVDA")
-
-
-import pytest
-from pydantic import ValidationError
-
-from stock_analyzer.discover.rebalance_schema import (
-    OptionWrite,
-    RebalanceAction,
-    RebalancePlan,
-)
 
 
 def test_option_write_valid():
