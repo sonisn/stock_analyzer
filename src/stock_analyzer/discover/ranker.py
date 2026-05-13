@@ -152,7 +152,9 @@ class Ranker:
             if market_themes_block else ""
         )
         track_block = (
-            f"Historical track record (your own past picks):\n{track_record_block}\n\n"
+            f"Historical track record (your own past buy picks and sell calls, "
+            f"with alpha vs SPY — positive alpha = call was right regardless "
+            f"of direction):\n{track_record_block}\n\n"
             if track_record_block else ""
         )
         prompt = (
