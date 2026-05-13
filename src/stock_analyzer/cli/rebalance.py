@@ -344,7 +344,7 @@ class RebalancePipeline(DiscoverPipeline):
                 history_block.count("\n"),
             )
         rebalancer = Rebalancer("claude", self.settings.discover_opus_model)
-        self.state["rebalance_text"] = rebalancer.decide(
+        plan = rebalancer.decide(
             self.state["holdings_reviews"],
             self.state["ranker_text"],
             self.state.get("cash_balance"),
@@ -352,10 +352,16 @@ class RebalancePipeline(DiscoverPipeline):
             aggressiveness=self.settings.discover_rebalance_aggressiveness,
             history_block=history_block,
         )
+        self.state["rebalance_plan"] = plan
+        # `rebalance_text` is the prose rendering, kept under the same key
+        # so the PDF/email layer and the log-dump fallback need no change.
+        self.state["rebalance_text"] = plan.full_text
         return StepOutput(
             content=(
                 f"Rebalance plan generated "
-                f"(aggressiveness={self.settings.discover_rebalance_aggressiveness})"
+                f"(status={plan.status}, "
+                f"aggressiveness={plan.aggressiveness_applied}, "
+                f"actions={len(plan.actions)})"
             )
         )
 
@@ -410,6 +416,7 @@ class RebalancePipeline(DiscoverPipeline):
                     bear_case_text=self.state["redteam_text"],
                     allocation_text=self.state["sizer_text"],
                 )
+            plan = self.state.get("rebalance_plan")
             insert_run_outputs(
                 conn,
                 run_id,
@@ -418,6 +425,7 @@ class RebalancePipeline(DiscoverPipeline):
                 sizer_full=self.state["sizer_text"],
                 holdings_summary=self.state["holdings_summary"],
                 rebalance_text=self.state["rebalance_text"],
+                dashboard_data=plan.model_dump(mode="json") if plan else None,
             )
 
         # Charts for the BUY candidates (discover picks).
@@ -443,6 +451,7 @@ class RebalancePipeline(DiscoverPipeline):
             holdings_technicals=self.state.get("holdings_technicals", {}),
             holdings_fundamentals=self.state.get("holdings_fundamentals", {}),
             track_record_block=self.state.get("track_record_block", ""),
+            rebalance_plan=self.state.get("rebalance_plan"),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -588,14 +597,21 @@ def _build_rebalance_sections(
     holdings_technicals: dict[str, dict[str, Any]],
     holdings_fundamentals: dict[str, dict[str, Any]],
     track_record_block: str = "",
+    rebalance_plan: object = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
-    discover-picks appendix."""
+    discover-picks appendix.
+
+    `rebalance_plan` is the structured RebalancePlan from the LLM (Phase 3);
+    `rebalance_text` is the prose rendering (plan.full_text). The plan is
+    used to determine status without regex; the prose is what we render."""
     today = date.today().isoformat()
 
     # ---- Parse status + collect dashboard rows ----------------------------
-    status = parse_rebalance_status(rebalance_text)
+    # Prefer the structured plan; fall back to regex on text only when not
+    # available (legacy or partial runs).
+    status = parse_rebalance_status(rebalance_plan or rebalance_text)
     status_label = (
         "STATUS: NO ACTION RECOMMENDED" if status == "NO_ACTION"
         else "STATUS: ACTION RECOMMENDED" if status == "ACTION"

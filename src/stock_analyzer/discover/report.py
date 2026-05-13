@@ -101,20 +101,41 @@ def parse_confidence(review_text: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
-def parse_rebalance_status(rebalance_text: str | None) -> str:
-    if not rebalance_text:
+def parse_rebalance_status(rebalance_text_or_plan: object) -> str:
+    """Return status as `NO_ACTION` / `ACTION` / `UNKNOWN`.
+
+    Accepts either a structured `RebalancePlan` (preferred — read the
+    field directly, no regex) OR a free-text plan (legacy / discover
+    runs / older DB rows). The structured form removes the regex
+    fragility that previously crashed the persist step on `None`."""
+    # Lazy import to avoid a circular module load.
+    from .rebalance_schema import RebalancePlan
+    if isinstance(rebalance_text_or_plan, RebalancePlan):
+        return rebalance_text_or_plan.status
+    if not rebalance_text_or_plan:
         return "UNKNOWN"
-    m = _STATUS_RE.search(rebalance_text)
+    if not isinstance(rebalance_text_or_plan, str):
+        return "UNKNOWN"
+    m = _STATUS_RE.search(rebalance_text_or_plan)
     if not m:
         return "UNKNOWN"
     return "NO_ACTION" if "NO ACTION" in m.group(1) else "ACTION"
 
 
-def parse_actions(rebalance_text: str | None) -> list[tuple[str, str]]:
-    """Return [(action_type, ticker), ...] preserving order from the plan."""
-    if not rebalance_text:
+def parse_actions(rebalance_text_or_plan: object) -> list[tuple[str, str]]:
+    """Return [(action_type, ticker), ...] preserving execution order.
+
+    Reads from the structured RebalancePlan when given one (no regex);
+    falls back to regex on free text for legacy/discover runs."""
+    from .rebalance_schema import RebalancePlan
+    if isinstance(rebalance_text_or_plan, RebalancePlan):
+        return [(a.action, a.ticker) for a in rebalance_text_or_plan.actions]
+    if not rebalance_text_or_plan or not isinstance(rebalance_text_or_plan, str):
         return []
-    return [(m.group(1), m.group(2)) for m in _ACTION_RE.finditer(rebalance_text)]
+    return [
+        (m.group(1), m.group(2))
+        for m in _ACTION_RE.finditer(rebalance_text_or_plan)
+    ]
 
 
 # --- visual constants -------------------------------------------------------

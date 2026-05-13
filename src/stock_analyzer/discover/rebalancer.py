@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from .rebalance_schema import RebalancePlan
 
 logger = get_logger(__name__)
 
@@ -307,7 +308,26 @@ CRITICAL:
 - Sum constraint: BUYs total ≤ proceeds + cash.
 - If a holding has a SELL verdict but the math would over-deploy proceeds,
   still recommend the SELL and let cash accumulate; do not invent BUYs
-  beyond budget.\
+  beyond budget.
+
+STRUCTURED OUTPUT:
+Your response is validated against a Pydantic schema (RebalancePlan).
+Fill in `full_text` with the complete Format A or Format B prose plan
+exactly as described above — this is what the user reads in the PDF/email.
+Then populate the structured fields that match your chosen format:
+
+- NO_ACTION: populate `add_first_walk`, `intra_portfolio_check`,
+  `tax_agnostic_alternatives` (mandatory list), `conclusion`,
+  `reasoning`, `forward_outlook`, and optionally `opportunistic_note`.
+- ACTION: populate `summary`, `cash_math`, `actions` (ordered SELL,
+  TRIM, ADD, BUY), `concentration_check`, `risk_summary`,
+  `estimated_tax_impact`, `wash_sale_audit`.
+
+Always set `status` and `aggressiveness_applied`. Leave fields belonging
+to the OTHER format as null/empty. The structured fields must agree with
+`full_text` — if `full_text` lists "Action 1: SELL MRVL", then the
+`actions` list must contain exactly that action with the same ticker
+and reasoning. Mismatches will surface as bugs.\
 """
 
 
@@ -317,6 +337,9 @@ class Rebalancer:
     ):
         # Opus 4.7+ adaptive thinking — high effort for the deepest synthesis
         # (combining holdings reviews + new picks + cash math + concentration).
+        # output_schema=RebalancePlan gets agno to validate the model's
+        # response against the Pydantic schema so downstream callers never
+        # have to regex-parse plain text again.
         self.agent = AgnoAgent(
             "Rebalancer",
             provider,
@@ -328,6 +351,7 @@ class Rebalancer:
                 "temperature": 0,
             },
             instructions=REBALANCER_INSTRUCTIONS,
+            output_schema=RebalancePlan,
         )
 
     def decide(
@@ -338,7 +362,7 @@ class Rebalancer:
         macro_summary: str = "",
         aggressiveness: str = "balanced",
         history_block: str = "",
-    ) -> str:
+    ) -> RebalancePlan:
         reviews_block = "\n\n".join(
             f"=== {ticker} ===\n{text}" for ticker, text in holdings_reviews.items()
         )
@@ -378,10 +402,31 @@ class Rebalancer:
             f"${cash_available:,.0f}" if cash_available is not None else "unknown",
             agg,
         )
-        content = self.agent.run(prompt).content
-        if not content:
+        result = self.agent.run(prompt).content
+        if result is None:
             raise RuntimeError(
-                "Rebalancer LLM returned empty content — the rebalance plan "
+                "Rebalancer LLM returned no content — the rebalance plan "
                 "cannot be rendered. Check provider rate limits and retry."
             )
-        return content
+        if not isinstance(result, RebalancePlan):
+            # agno returns the parsed Pydantic instance when output_schema is set;
+            # if for some reason we got a str, parse it.
+            if isinstance(result, str):
+                try:
+                    result = RebalancePlan.model_validate_json(result)
+                except Exception as e:
+                    raise RuntimeError(
+                        f"Rebalancer returned a string that wasn't valid "
+                        f"RebalancePlan JSON: {e}"
+                    ) from e
+            else:
+                raise RuntimeError(
+                    f"Rebalancer returned unexpected type {type(result).__name__}; "
+                    "expected RebalancePlan."
+                )
+        if not result.full_text:
+            raise RuntimeError(
+                "Rebalancer returned a plan with empty full_text — nothing to "
+                "render in the report."
+            )
+        return result
