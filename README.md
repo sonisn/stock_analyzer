@@ -52,7 +52,17 @@ Output adds three sections to the rebalance email: **Premium Income**
 (stub decomposition for every holding), and **Premium → Deployment**
 (dry-powder math).
 
-See `.env.example` for the full set of `CC_*` knobs.
+**Options chain data:** the pipeline uses **Tradier** as the primary chain
+provider (real-time bid/ask + Greeks like delta/IV, courtesy of ORATS).
+Set `TRADIER_API_KEY` in your `.env` to enable — a free Tradier brokerage
+account (no funding minimum) gives you a production access token at
+[dash.tradier.com](https://dash.tradier.com/). If `TRADIER_API_KEY` is
+unset or Tradier is unreachable, the pipeline falls back to **yfinance**
+(free, 15–20 min delayed, no Greeks — Opus picks strikes via strike-vs-spot
+proxy). Both work; Tradier gives meaningfully better strike selection
+because the LLM gets accurate delta values for the Δ 0.35–0.45 band rule.
+
+See `.env.example` for the full set of `CC_*` and `TRADIER_*` knobs.
 
 ## Quickstart
 
@@ -82,6 +92,13 @@ For rebalance, additionally:
 
 - `SNAPTRADE_CLIENT_ID`, `SNAPTRADE_CONSUMER_KEY`, `SNAPTRADE_USER_ID`,
   `SNAPTRADE_USER_SECRET` — brokerage holdings + transaction history
+
+For covered-call writing (optional but recommended — better strike picks):
+
+- `TRADIER_API_KEY` — real-time option chains + Greeks. Free with a
+  Tradier brokerage account (no funding minimum). Without it, the
+  pipeline falls back to delayed yfinance data with no Greeks.
+- `TRADIER_BASE_URL` — defaults to production `https://api.tradier.com/v1`.
 
 For email delivery:
 
