@@ -1,0 +1,73 @@
+"""OCC option-symbol parsing.
+
+OCC format (21 chars total):
+
+  ROOT(6, space-padded right) | YY(2) MM(2) DD(2) | TYPE(1: C|P) | STRIKE(8, 3 implied decimals)
+
+Example:
+  "NVDA  260620C00250000" = NVDA, 2026-06-20, Call, $250.000 strike
+
+This module deliberately does NOT depend on third-party libs — the
+format is fixed-width and small enough to handle by slicing.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from datetime import date
+from typing import Literal
+
+OptionType = Literal["C", "P"]
+
+_OCC_RE = re.compile(
+    r"^([A-Z][A-Z0-9.\-]{0,5})\s+(\d{2})(\d{2})(\d{2})([CP])(\d{8})$"
+)
+
+
+class OCCParseError(ValueError):
+    """Raised when a string does not look like an OCC option symbol."""
+
+
+@dataclass(frozen=True)
+class ParsedOCC:
+    ticker: str
+    expiry: date
+    option_type: OptionType
+    strike: float
+
+
+def is_option_symbol(s: str) -> bool:
+    """True if `s` looks like an OCC option symbol. Does not raise."""
+    try:
+        parse_occ(s)
+    except OCCParseError:
+        return False
+    return True
+
+
+def parse_occ(symbol: str) -> ParsedOCC:
+    """Parse an OCC option symbol. Tolerates trailing whitespace and
+    runs of spaces between the root and the date (SnapTrade and yfinance
+    use slightly different padding). Raises OCCParseError on anything
+    that doesn't fit the pattern.
+
+    The fixed-width spec uses 6 chars for the root, space-padded right
+    ("NVDA  "). We accept 1-6 chars plus any run of spaces so brokers
+    that strip padding still parse.
+    """
+    if not isinstance(symbol, str):
+        raise OCCParseError(f"expected str, got {type(symbol).__name__}")
+    s = symbol.strip()
+    m = _OCC_RE.match(s)
+    if not m:
+        raise OCCParseError(f"not an OCC symbol: {symbol!r}")
+    root, yy, mm, dd, otype, strike_raw = m.groups()
+    try:
+        expiry = date(2000 + int(yy), int(mm), int(dd))
+    except ValueError as e:
+        raise OCCParseError(f"bad date in {symbol!r}: {e}") from e
+    # Strike has 3 implied decimals: "00250000" = 250.000
+    strike = int(strike_raw) / 1000.0
+    return ParsedOCC(
+        ticker=root, expiry=expiry, option_type=otype, strike=strike,  # type: ignore[arg-type]
+    )
