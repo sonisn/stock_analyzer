@@ -7,8 +7,11 @@ from stock_analyzer.data.options_chain import OptionChain, OptionQuote
 from stock_analyzer.discover.cc_eligibility import (
     EligibleHolding,
     apply_earnings_filter,
+    build_cc_context_block,
     eligible_holdings,
+    round_lot_coverage,
 )
+from stock_analyzer.discover.schemas import HoldingReview
 
 
 def _pos(units: int) -> dict[str, float | int]:
@@ -102,3 +105,74 @@ def test_earnings_filter_empty_chain():
     )
     filtered, _ = apply_earnings_filter(chain, earnings_date=date(2026, 6, 15))
     assert filtered.calls == []
+
+
+def _review(verdict: str, confidence: int) -> HoldingReview:
+    return HoldingReview(
+        ticker="NVDA",
+        verdict=verdict, confidence=confidence,
+        position_context="x", forward_outlook="x",
+        reasoning="x", tax_lot_plan=[], what_would_change_mind="x",
+        wash_sale_notice=None, trim_pct=None,
+        full_text="x",
+    )
+
+
+def test_context_block_basic():
+    positions = {"NVDA": {"units": 400}}
+    elig = eligible_holdings(positions, open_short_calls={"NVDA": 1}, denylist=())
+    coverage = round_lot_coverage(positions, spots={"NVDA": 235.0})
+    chain = _chain("NVDA", ["2026-06-20"])
+    block = build_cc_context_block(
+        eligible=elig,
+        chains={"NVDA": chain},
+        coverage=coverage,
+        reviews={"NVDA": _review("HOLD", 8)},
+        earnings={"NVDA": date(2026, 5, 21)},
+        stub_pool_total_usd=0.0,
+    )
+    assert "TICKER: NVDA" in block
+    assert "Reviewer verdict:        HOLD (confidence 8/10)" in block
+    assert "Shares held:             400" in block
+    assert "Available for CC:        300 (100 already collateralizing open short call" in block
+    assert "Earnings-blacklist:      2026-05-21" in block
+    assert "2026-06-20" in block
+
+
+def test_context_block_marks_unavailable_chain():
+    positions = {"AAPL": {"units": 200}}
+    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    coverage = round_lot_coverage(positions, spots={"AAPL": 215.0})
+    block = build_cc_context_block(
+        eligible=elig, chains={}, coverage=coverage,
+        reviews={"AAPL": _review("HOLD", 7)},
+        earnings={}, stub_pool_total_usd=0.0,
+    )
+    assert "Option chain: UNAVAILABLE" in block
+
+
+def test_context_block_round_lot_section():
+    positions = {"TSLA": {"units": 335}, "AAPL": {"units": 215}}
+    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    coverage = round_lot_coverage(
+        positions, spots={"TSLA": 300.0, "AAPL": 215.0},
+    )
+    block = build_cc_context_block(
+        eligible=elig, chains={}, coverage=coverage,
+        reviews={
+            "TSLA": _review("HOLD", 8),
+            "AAPL": _review("HOLD", 7),
+        },
+        earnings={}, stub_pool_total_usd=13_725.0,
+    )
+    assert "ROUND-LOT COVERAGE" in block
+    assert "TSLA" in block and "AAPL" in block
+    assert "$13,725" in block
+
+
+def test_context_block_empty_when_no_eligible():
+    block = build_cc_context_block(
+        eligible={}, chains={}, coverage={},
+        reviews={}, earnings={}, stub_pool_total_usd=0.0,
+    )
+    assert block == ""
