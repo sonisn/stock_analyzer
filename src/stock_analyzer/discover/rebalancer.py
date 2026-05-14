@@ -473,25 +473,34 @@ STRIKE WITHIN BAND
     (assignment is a clean exit).
   - SELL verdict  → DO NOT emit WRITE_CALL. Sell the stock outright.
 
-IV REGIME ADJUSTMENT (per-ticker IVR included in CC context)
-Each eligible ticker shows `IV regime: IV X%  IVR-1y N  IVP-1y N  (label)`
-where IVR-1y is current IV's percentile rank vs the past 252 trading
-days.
+IV REGIME ADJUSTMENT (per-ticker timing signal — IVR if available, IV/HV ratio otherwise)
+Each eligible ticker shows EITHER:
+  `IV regime: IV X%  IVR-1y N  IVP-1y N  (label)` — ORATS-backed; preferred
+or:
+  `IV/HV regime: IV X%  HV-252d Y%  ratio Z.ZZx  (label)` — free realized-vol proxy
+or both lines (the ratio adds context even when IVR is present).
 
-  - IVR-1y >= 50 (elevated)  — premiums are at or above median for this
-    name. Favorable window. Apply the delta-band rules normally.
-  - IVR-1y 30-49 (average)   — middling premium. Write but don't reach
-    for higher delta to compensate; the absolute premium is what it is.
-  - IVR-1y < 30 (depressed)  — premiums are below median. SKIP the
-    WRITE_CALL unless conviction is HOLD with confidence >= 8 AND the
-    available_shares × spot is large enough that the absolute dollar
-    premium still warrants the trade. When you skip, state the IVR
-    regime concern in full_text.
-  - IVR-1y unknown           — ORATS data missing; proceed using delta
-    rules only but flag this in full_text.
+The label is `elevated` | `average` | `depressed` regardless of which
+source produced it. Rules:
 
-Annotate each WRITE_CALL's `option_writes.notes` field with the regime,
-e.g. "IVR-1y 42 (average), Δ-band lower end picked for HOLD-8 conviction".
+  - elevated  — premiums rich relative to historical (IVR >= 50 or
+                IV/HV >= 1.20). Favorable window. Apply delta-band rules
+                normally.
+  - average   — middling premium (IVR 30-49 or IV/HV 0.90-1.19). Write
+                but don't reach for higher delta to compensate.
+  - depressed — premium below historical (IVR < 30 or IV/HV < 0.90).
+                SKIP the WRITE_CALL unless conviction is HOLD with
+                confidence >= 8 AND available_shares × spot is large
+                enough that the absolute dollar premium still warrants
+                the trade. State the regime concern in full_text when
+                you skip.
+  - unknown   — no IVR or HV data; proceed using delta rules only,
+                flag the missing signal in full_text.
+
+Annotate each WRITE_CALL's `option_writes.notes` field with the regime
+and source, e.g.
+  "IV/HV 1.32x (elevated), Δ-band lower end picked for HOLD-8 conviction"
+  "IVR-1y 42 (average), Δ 0.40 chosen mid-band"
 
 COHERENCE WITH TRIM
   If you also TRIM N shares of the same ticker, your WRITE_CALL contracts

@@ -18,6 +18,7 @@ from ..data.options_chain import OptionChain, OptionQuote
 from .schemas import HoldingReview
 
 if TYPE_CHECKING:
+    from ..data.historical_volatility import RealizedVolatility
     from ..data.orats import IVRank
 
 
@@ -138,6 +139,61 @@ def apply_earnings_filter(
     )
 
 
+@dataclass(frozen=True)
+class IvHvRegime:
+    """IV-vs-realized-vol regime for one ticker (free IVR proxy)."""
+    ticker: str
+    current_iv: float         # representative chain IV, e.g. 0.32
+    hv_annualized: float      # 252-day realized vol, e.g. 0.27
+    iv_hv_ratio: float        # current_iv / hv
+    label: str                # "elevated" | "average" | "depressed"
+
+
+def _representative_iv_from_chain(chain: OptionChain | None) -> float | None:
+    """Average `iv` across all OTM call rows in the chain (calls within
+    our band, near-ATM-weighted by inclusion). Returns None when no
+    rows have IV data."""
+    if chain is None or not chain.calls:
+        return None
+    ivs = [q.iv for q in chain.calls if q.iv is not None and q.iv > 0]
+    if not ivs:
+        return None
+    return sum(ivs) / len(ivs)
+
+
+def _label_iv_hv_ratio(ratio: float) -> str:
+    if ratio >= 1.20:
+        return "elevated"
+    if ratio >= 0.90:
+        return "average"
+    return "depressed"
+
+
+def compute_iv_hv_regime(
+    *,
+    chain: OptionChain | None,
+    hv: RealizedVolatility | None,
+) -> IvHvRegime | None:
+    """Pair a chain's representative IV with a realized-vol estimate
+    to produce a regime label. Returns None when either input is
+    missing or yields a degenerate ratio."""
+    if chain is None or hv is None or hv.hv_annualized <= 0:
+        return None
+    iv = _representative_iv_from_chain(chain)
+    if iv is None or iv <= 0:
+        return None
+    ratio = iv / hv.hv_annualized
+    if math.isnan(ratio) or math.isinf(ratio) or ratio <= 0:
+        return None
+    return IvHvRegime(
+        ticker=chain.ticker,
+        current_iv=iv,
+        hv_annualized=hv.hv_annualized,
+        iv_hv_ratio=ratio,
+        label=_label_iv_hv_ratio(ratio),
+    )
+
+
 _CHAIN_ROW_CAP_PER_TICKER = 8
 _CC_CONTEXT_BLOCK_MAX_CHARS = 50_000  # ~12.5K tokens — safe margin under 200K context.
 
@@ -171,6 +227,7 @@ def _format_ticker_block(
     chain: OptionChain | None,
     earnings_date: date | None,
     iv_rank: IVRank | None = None,
+    iv_hv: IvHvRegime | None = None,
 ) -> str:
     lines: list[str] = [f"TICKER: {ticker}"]
     if isinstance(review, HoldingReview):
@@ -202,6 +259,8 @@ def _format_ticker_block(
         lines.append(
             "  Earnings-blacklist:      earnings_unknown — be conservative on DTE"
         )
+    # Show ORATS IVR if available; otherwise fall back to the IV/HV proxy;
+    # otherwise show "unknown".
     if iv_rank is not None:
         ivr1y = (
             f"{iv_rank.iv_rank_1y:.0f}" if iv_rank.iv_rank_1y is not None else "—"
@@ -218,8 +277,20 @@ def _format_ticker_block(
             f"  IV regime:               IV {iv_rank.iv * 100:.0f}%  "
             f"IVR-1y {ivr1y}  IVP-1y {ivp1y}  ({regime})"
         )
+    elif iv_hv is not None:
+        # IV/HV proxy renders here only (avoids duplicating with ORATS line).
+        pass  # the iv_hv block below handles it
     else:
-        lines.append("  IV regime:               unknown (ORATS data unavailable)")
+        lines.append(
+            "  IV regime:               unknown (no IVR or HV data)"
+        )
+
+    if iv_hv is not None:
+        lines.append(
+            f"  IV/HV regime:            IV {iv_hv.current_iv * 100:.0f}%  "
+            f"HV-252d {iv_hv.hv_annualized * 100:.0f}%  "
+            f"ratio {iv_hv.iv_hv_ratio:.2f}x  ({iv_hv.label})"
+        )
     if not isinstance(chain, OptionChain) or chain.source == "missing" or not chain.calls:
         lines.append("  Option chain: UNAVAILABLE")
     else:
@@ -238,6 +309,7 @@ def build_cc_context_block(
     earnings: dict[str, date],
     stub_pool_total_usd: float,
     iv_ranks: dict[str, IVRank] | None = None,
+    iv_hv_regimes: dict[str, IvHvRegime] | None = None,
 ) -> str:
     """Compose the COVERED-CALL CONTEXT block consumed by the rebalancer
     prompt. Returns the empty string when no positions are eligible
@@ -255,6 +327,7 @@ def build_cc_context_block(
             chain=chains.get(ticker),
             earnings_date=earnings.get(ticker),
             iv_rank=(iv_ranks or {}).get(ticker),
+            iv_hv=(iv_hv_regimes or {}).get(ticker),
         ))
 
     rlc_lines: list[str] = [

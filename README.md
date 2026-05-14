@@ -62,12 +62,19 @@ unset or Tradier is unreachable, the pipeline falls back to **yfinance**
 proxy). Both work; Tradier gives meaningfully better strike selection
 because the LLM gets accurate delta values for the Δ 0.35–0.45 band rule.
 
-**IV timing signal:** when `ORATS_API_KEY` is set, the pipeline pulls
-per-ticker IV rank (IVR-1y) from ORATS's `/datav2/ivrank` endpoint —
-one batched call per rebalance, well within the free tier's 5 req/min.
-IVR tells Opus whether IV is elevated (write more aggressively),
-average, or depressed (skip the write unless conviction is high). Free
-ORATS signup: https://orats.io/data-api.
+**IV timing signal:** Opus picks not just WHICH strike but WHETHER to
+write right now. The pipeline ships a **free realized-volatility
+proxy** — compute 252-day annualized HV per eligible ticker from
+yfinance closes, then compare to current chain IV to label the regime
+as elevated (IV/HV ≥ 1.20), average (0.90-1.19), or depressed (< 0.90).
+Opus skips writes in depressed regimes unless conviction is HOLD with
+confidence ≥ 8.
+
+If you have a paid ORATS subscription with `/datav2/ivrank` access,
+set `ORATS_API_KEY` and the pipeline will additionally feed proper
+1-year IV rank as a second timing signal. ORATS is **not required** —
+the free HV proxy captures the same fundamental "is implied vol
+elevated?" question.
 
 See `.env.example` for the full set of `CC_*`, `TRADIER_*`, and `ORATS_*` knobs.
 

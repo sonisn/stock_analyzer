@@ -275,7 +275,7 @@ def test_context_block_marks_iv_regime_unknown_when_no_data():
         earnings={}, stub_pool_total_usd=0.0,
         iv_ranks=None,
     )
-    assert "ORATS data unavailable" in block
+    assert "unknown (no IVR or HV data)" in block
 
 
 def test_context_block_elevated_label_at_high_ivr():
@@ -314,3 +314,75 @@ def test_context_block_depressed_label_at_low_ivr():
         iv_ranks=iv_ranks,
     )
     assert "depressed" in block
+
+
+def test_compute_iv_hv_regime_elevated():
+    from datetime import datetime
+
+    from stock_analyzer.data.historical_volatility import RealizedVolatility
+    from stock_analyzer.data.options_chain import OptionChain, OptionQuote
+    from stock_analyzer.discover.cc_eligibility import compute_iv_hv_regime
+
+    chain = OptionChain(
+        ticker="X", spot=100.0, asof=datetime.now(),
+        calls=[OptionQuote(
+            strike=110.0, expiry=date(2026, 6, 20),
+            bid=1.0, ask=1.1, iv=0.40, delta=0.35,
+            open_interest=100, volume=50,
+        )],
+        source="yfinance",
+    )
+    hv = RealizedVolatility(ticker="X", hv_annualized=0.30, sample_size=252)
+    regime = compute_iv_hv_regime(chain=chain, hv=hv)
+    assert regime is not None
+    assert abs(regime.iv_hv_ratio - 0.40 / 0.30) < 1e-6
+    assert regime.label == "elevated"
+
+
+def test_compute_iv_hv_regime_average():
+    from datetime import datetime
+
+    from stock_analyzer.data.historical_volatility import RealizedVolatility
+    from stock_analyzer.data.options_chain import OptionChain, OptionQuote
+    from stock_analyzer.discover.cc_eligibility import compute_iv_hv_regime
+
+    chain = OptionChain(
+        ticker="X", spot=100.0, asof=datetime.now(),
+        calls=[OptionQuote(
+            strike=110.0, expiry=date(2026, 6, 20),
+            bid=1.0, ask=1.1, iv=0.30, delta=0.35,
+            open_interest=100, volume=50,
+        )],
+        source="yfinance",
+    )
+    hv = RealizedVolatility(ticker="X", hv_annualized=0.30, sample_size=252)
+    regime = compute_iv_hv_regime(chain=chain, hv=hv)
+    assert regime is not None
+    assert regime.label == "average"
+
+
+def test_compute_iv_hv_regime_depressed():
+    from datetime import datetime
+
+    from stock_analyzer.data.historical_volatility import RealizedVolatility
+    from stock_analyzer.data.options_chain import OptionChain, OptionQuote
+    from stock_analyzer.discover.cc_eligibility import compute_iv_hv_regime
+
+    chain = OptionChain(
+        ticker="X", spot=100.0, asof=datetime.now(),
+        calls=[OptionQuote(
+            strike=110.0, expiry=date(2026, 6, 20),
+            bid=1.0, ask=1.1, iv=0.20, delta=0.35,
+            open_interest=100, volume=50,
+        )],
+        source="yfinance",
+    )
+    hv = RealizedVolatility(ticker="X", hv_annualized=0.30, sample_size=252)
+    regime = compute_iv_hv_regime(chain=chain, hv=hv)
+    assert regime is not None
+    assert regime.label == "depressed"
+
+
+def test_compute_iv_hv_regime_handles_missing_data():
+    from stock_analyzer.discover.cc_eligibility import compute_iv_hv_regime
+    assert compute_iv_hv_regime(chain=None, hv=None) is None

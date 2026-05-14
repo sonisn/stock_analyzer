@@ -653,11 +653,33 @@ class RebalancePipeline(DiscoverPipeline):
             # the actions list (observed in production).
             self.state["cc_chains"] = filtered_chains
 
+            # Free IV-rank proxy: compute realized-vol per eligible ticker
+            # from yfinance close prices, then compare to chain IV to get
+            # a regime label. Doesn't depend on any paid subscription.
+            from ..data.historical_volatility import fetch_realized_volatility
+            from ..discover.cc_eligibility import IvHvRegime, compute_iv_hv_regime
+            hv_data = fetch_realized_volatility(list(eligible))
+            iv_hv_regimes: dict[str, IvHvRegime] = {}
+            for ticker in eligible:
+                regime = compute_iv_hv_regime(
+                    chain=filtered_chains.get(ticker),
+                    hv=hv_data.get(ticker),
+                )
+                if regime is not None:
+                    iv_hv_regimes[ticker] = regime
+            self.state["cc_iv_hv_regimes"] = iv_hv_regimes
+            logger.info(
+                "CC IV/HV regimes: %s",
+                {t: f"{r.iv_hv_ratio:.2f}x ({r.label})"
+                 for t, r in iv_hv_regimes.items()},
+            )
+
             block = build_cc_context_block(
                 eligible=eligible, chains=filtered_chains,
                 coverage=coverage, reviews=self.state.get("holdings_reviews", {}),
                 earnings=earnings_map, stub_pool_total_usd=stub_pool,
                 iv_ranks=iv_ranks,
+                iv_hv_regimes=iv_hv_regimes,
             )
             self.state["cc_context_block"] = block
             self.state["cc_eligibility"] = eligible
