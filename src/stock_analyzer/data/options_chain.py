@@ -99,9 +99,15 @@ class YFinanceChain:
     ) -> OptionChain | None:
         try:
             t = yf.Ticker(ticker)
-            spot = float(t.fast_info.last_price)
+            spot = _safe_float(t.fast_info.last_price)
         except Exception as e:
             logger.info("yfinance chain miss for %s (%s)", ticker, e)
+            return None
+        if spot is None or spot <= 0:
+            logger.info(
+                "yfinance returned invalid spot for %s (NaN / 0 / negative); "
+                "skipping ticker", ticker,
+            )
             return None
 
         today = date.today()
@@ -130,7 +136,10 @@ class YFinanceChain:
                 logger.info("yfinance chain row miss %s@%s (%s)", ticker, e_str, ex)
                 continue
             for _, row in df.iterrows():
-                strike = float(row["strike"])
+                strike = _safe_float(row.get("strike"))
+                # NaN / None / 0 / negative strikes are nonsense; skip them.
+                if strike is None or strike <= 0:
+                    continue
                 if strike <= spot:  # OTM calls only
                     continue
                 calls.append(OptionQuote(
