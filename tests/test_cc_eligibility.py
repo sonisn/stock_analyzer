@@ -242,3 +242,75 @@ def test_format_chain_row_handles_nan():
     row = _format_chain_row(q)
     assert "nan" not in row.lower()
     assert "—" in row
+
+
+def test_context_block_includes_iv_regime_when_provided():
+    from stock_analyzer.data.orats import IVRank
+
+    positions = {"NVDA": {"units": 400}}
+    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    coverage = round_lot_coverage(positions, spots={"NVDA": 235.0})
+    iv_ranks = {"NVDA": IVRank(
+        ticker="NVDA", iv=0.32, iv_rank_1y=42.5, iv_pct_1y=38.0,
+        iv_rank_1m=50.0, iv_pct_1m=48.0,
+    )}
+    block = build_cc_context_block(
+        eligible=elig, chains={}, coverage=coverage,
+        reviews={"NVDA": _review("HOLD", 8)},
+        earnings={}, stub_pool_total_usd=0.0,
+        iv_ranks=iv_ranks,
+    )
+    assert "IV regime" in block
+    assert "IVR-1y 42" in block or "IVR-1y 43" in block  # rounded
+    assert "average" in block  # 42.5 is in the 30-50 band
+
+
+def test_context_block_marks_iv_regime_unknown_when_no_data():
+    positions = {"NVDA": {"units": 400}}
+    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    coverage = round_lot_coverage(positions, spots={"NVDA": 235.0})
+    block = build_cc_context_block(
+        eligible=elig, chains={}, coverage=coverage,
+        reviews={"NVDA": _review("HOLD", 8)},
+        earnings={}, stub_pool_total_usd=0.0,
+        iv_ranks=None,
+    )
+    assert "ORATS data unavailable" in block
+
+
+def test_context_block_elevated_label_at_high_ivr():
+    from stock_analyzer.data.orats import IVRank
+
+    positions = {"NVDA": {"units": 400}}
+    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    coverage = round_lot_coverage(positions, spots={"NVDA": 235.0})
+    iv_ranks = {"NVDA": IVRank(
+        ticker="NVDA", iv=0.55, iv_rank_1y=78.0, iv_pct_1y=72.0,
+        iv_rank_1m=80.0, iv_pct_1m=75.0,
+    )}
+    block = build_cc_context_block(
+        eligible=elig, chains={}, coverage=coverage,
+        reviews={"NVDA": _review("HOLD", 8)},
+        earnings={}, stub_pool_total_usd=0.0,
+        iv_ranks=iv_ranks,
+    )
+    assert "elevated" in block
+
+
+def test_context_block_depressed_label_at_low_ivr():
+    from stock_analyzer.data.orats import IVRank
+
+    positions = {"AAPL": {"units": 400}}
+    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    coverage = round_lot_coverage(positions, spots={"AAPL": 215.0})
+    iv_ranks = {"AAPL": IVRank(
+        ticker="AAPL", iv=0.18, iv_rank_1y=12.0, iv_pct_1y=10.0,
+        iv_rank_1m=15.0, iv_pct_1m=13.0,
+    )}
+    block = build_cc_context_block(
+        eligible=elig, chains={}, coverage=coverage,
+        reviews={"AAPL": _review("HOLD", 8)},
+        earnings={}, stub_pool_total_usd=0.0,
+        iv_ranks=iv_ranks,
+    )
+    assert "depressed" in block

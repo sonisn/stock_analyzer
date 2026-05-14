@@ -12,9 +12,13 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import TYPE_CHECKING
 
 from ..data.options_chain import OptionChain, OptionQuote
 from .schemas import HoldingReview
+
+if TYPE_CHECKING:
+    from ..data.orats import IVRank
 
 
 @dataclass(frozen=True)
@@ -166,6 +170,7 @@ def _format_ticker_block(
     eligible: EligibleHolding,
     chain: OptionChain | None,
     earnings_date: date | None,
+    iv_rank: IVRank | None = None,
 ) -> str:
     lines: list[str] = [f"TICKER: {ticker}"]
     if isinstance(review, HoldingReview):
@@ -197,6 +202,24 @@ def _format_ticker_block(
         lines.append(
             "  Earnings-blacklist:      earnings_unknown — be conservative on DTE"
         )
+    if iv_rank is not None:
+        ivr1y = (
+            f"{iv_rank.iv_rank_1y:.0f}" if iv_rank.iv_rank_1y is not None else "—"
+        )
+        ivp1y = (
+            f"{iv_rank.iv_pct_1y:.0f}" if iv_rank.iv_pct_1y is not None else "—"
+        )
+        regime = "elevated" if (
+            iv_rank.iv_rank_1y is not None and iv_rank.iv_rank_1y >= 50
+        ) else "average" if (
+            iv_rank.iv_rank_1y is not None and iv_rank.iv_rank_1y >= 30
+        ) else "depressed" if iv_rank.iv_rank_1y is not None else "unknown"
+        lines.append(
+            f"  IV regime:               IV {iv_rank.iv * 100:.0f}%  "
+            f"IVR-1y {ivr1y}  IVP-1y {ivp1y}  ({regime})"
+        )
+    else:
+        lines.append("  IV regime:               unknown (ORATS data unavailable)")
     if not isinstance(chain, OptionChain) or chain.source == "missing" or not chain.calls:
         lines.append("  Option chain: UNAVAILABLE")
     else:
@@ -214,6 +237,7 @@ def build_cc_context_block(
     reviews: dict[str, HoldingReview | str],
     earnings: dict[str, date],
     stub_pool_total_usd: float,
+    iv_ranks: dict[str, IVRank] | None = None,
 ) -> str:
     """Compose the COVERED-CALL CONTEXT block consumed by the rebalancer
     prompt. Returns the empty string when no positions are eligible
@@ -230,6 +254,7 @@ def build_cc_context_block(
             eligible=eligible[ticker],
             chain=chains.get(ticker),
             earnings_date=earnings.get(ticker),
+            iv_rank=(iv_ranks or {}).get(ticker),
         ))
 
     rlc_lines: list[str] = [

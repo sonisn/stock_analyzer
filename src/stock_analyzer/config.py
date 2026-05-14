@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     tradier_api_key: str | None = None
     tradier_base_url: str = "https://api.tradier.com/v1"
 
+    # ---- ORATS IV rank / percentile (covered-call timing signal) ----------
+    orats_api_key: str | None = None
+    orats_base_url: str = "https://api.orats.io/datav2"
+
     # ---- Coercers ---------------------------------------------------------
     @field_validator("discover_watchlist", mode="before")
     @classmethod

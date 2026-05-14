@@ -473,6 +473,26 @@ STRIKE WITHIN BAND
     (assignment is a clean exit).
   - SELL verdict  → DO NOT emit WRITE_CALL. Sell the stock outright.
 
+IV REGIME ADJUSTMENT (per-ticker IVR included in CC context)
+Each eligible ticker shows `IV regime: IV X%  IVR-1y N  IVP-1y N  (label)`
+where IVR-1y is current IV's percentile rank vs the past 252 trading
+days.
+
+  - IVR-1y >= 50 (elevated)  — premiums are at or above median for this
+    name. Favorable window. Apply the delta-band rules normally.
+  - IVR-1y 30-49 (average)   — middling premium. Write but don't reach
+    for higher delta to compensate; the absolute premium is what it is.
+  - IVR-1y < 30 (depressed)  — premiums are below median. SKIP the
+    WRITE_CALL unless conviction is HOLD with confidence >= 8 AND the
+    available_shares × spot is large enough that the absolute dollar
+    premium still warrants the trade. When you skip, state the IVR
+    regime concern in full_text.
+  - IVR-1y unknown           — ORATS data missing; proceed using delta
+    rules only but flag this in full_text.
+
+Annotate each WRITE_CALL's `option_writes.notes` field with the regime,
+e.g. "IVR-1y 42 (average), Δ-band lower end picked for HOLD-8 conviction".
+
 COHERENCE WITH TRIM
   If you also TRIM N shares of the same ticker, your WRITE_CALL contracts
   must be <= (shares_after_trim) // 100. Never write calls that would

@@ -440,6 +440,15 @@ def test_rebalancer_prompt_includes_cc_rules():
     assert "option_writes" in s
 
 
+def test_rebalancer_prompt_includes_iv_regime_rule():
+    s = REBALANCER_INSTRUCTIONS
+    assert "IV REGIME" in s or "IV regime" in s
+    assert "IVR" in s
+    assert "30" in s and "50" in s  # threshold cutoffs
+    assert "depressed" in s.lower()
+    assert "elevated" in s.lower()
+
+
 def test_decide_includes_cc_context_in_prompt():
     from unittest.mock import MagicMock
 
