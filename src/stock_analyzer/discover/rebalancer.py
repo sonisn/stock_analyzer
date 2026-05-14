@@ -574,7 +574,15 @@ class Rebalancer:
             model_kwargs={
                 "thinking": {"type": "adaptive"},
                 "output_config": {"effort": effort},
-                "max_tokens": 8000,
+                # Output budget. The plan must include: structured actions
+                # list (incl. WRITE_CALL), option_writes list, AND the
+                # full_text prose (cash math, tax-agnostic alternative,
+                # wash-sale audit, per-holding reasoning, CC premium
+                # reinvestment math, stub-consolidation narrative).
+                # 8000 was the pre-CC value and caused mid-JSON truncation
+                # on plans with WRITE_CALLs. 16000 gives comfortable
+                # headroom; Opus 4.7 supports significantly more.
+                "max_tokens": 16000,
                 "temperature": 0,
             },
             instructions=instructions,
