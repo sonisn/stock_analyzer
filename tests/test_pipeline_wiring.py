@@ -442,9 +442,9 @@ def test_rebalancer_prompt_includes_cc_rules():
 
 def test_rebalancer_prompt_includes_iv_regime_rule():
     s = REBALANCER_INSTRUCTIONS
-    assert "IV REGIME" in s or "IV regime" in s
-    assert "IVR" in s
-    assert "30" in s and "50" in s  # threshold cutoffs
+    assert "IV regime" in s or "IV/HV regime" in s
+    assert "ratio" in s or "IV/HV" in s
+    assert "1.20" in s and "0.90" in s  # IV/HV threshold cutoffs
     assert "depressed" in s.lower()
     assert "elevated" in s.lower()
 

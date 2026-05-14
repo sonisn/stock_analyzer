@@ -548,11 +548,6 @@ class RebalancePipeline(DiscoverPipeline):
                 positions, open_short_calls=open_short_calls, denylist=denylist,
             )
 
-            # ORATS IV-rank (timing signal). One batched call per run.
-            from ..data.orats import fetch_iv_ranks
-            iv_ranks = fetch_iv_ranks(list(eligible))
-            self.state["cc_iv_ranks"] = iv_ranks
-
             # Bound eligible holdings to cap prompt size.
             if len(eligible) > _CC_MAX_ELIGIBLE_FOR_PROMPT:
                 # Rank by available dollar exposure (proxy for premium potential).
@@ -678,7 +673,6 @@ class RebalancePipeline(DiscoverPipeline):
                 eligible=eligible, chains=filtered_chains,
                 coverage=coverage, reviews=self.state.get("holdings_reviews", {}),
                 earnings=earnings_map, stub_pool_total_usd=stub_pool,
-                iv_ranks=iv_ranks,
                 iv_hv_regimes=iv_hv_regimes,
             )
             self.state["cc_context_block"] = block

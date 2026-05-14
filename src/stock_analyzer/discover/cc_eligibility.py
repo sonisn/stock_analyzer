@@ -19,7 +19,6 @@ from .schemas import HoldingReview
 
 if TYPE_CHECKING:
     from ..data.historical_volatility import RealizedVolatility
-    from ..data.orats import IVRank
 
 
 @dataclass(frozen=True)
@@ -226,7 +225,6 @@ def _format_ticker_block(
     eligible: EligibleHolding,
     chain: OptionChain | None,
     earnings_date: date | None,
-    iv_rank: IVRank | None = None,
     iv_hv: IvHvRegime | None = None,
 ) -> str:
     lines: list[str] = [f"TICKER: {ticker}"]
@@ -259,37 +257,15 @@ def _format_ticker_block(
         lines.append(
             "  Earnings-blacklist:      earnings_unknown — be conservative on DTE"
         )
-    # Show ORATS IVR if available; otherwise fall back to the IV/HV proxy;
-    # otherwise show "unknown".
-    if iv_rank is not None:
-        ivr1y = (
-            f"{iv_rank.iv_rank_1y:.0f}" if iv_rank.iv_rank_1y is not None else "—"
-        )
-        ivp1y = (
-            f"{iv_rank.iv_pct_1y:.0f}" if iv_rank.iv_pct_1y is not None else "—"
-        )
-        regime = "elevated" if (
-            iv_rank.iv_rank_1y is not None and iv_rank.iv_rank_1y >= 50
-        ) else "average" if (
-            iv_rank.iv_rank_1y is not None and iv_rank.iv_rank_1y >= 30
-        ) else "depressed" if iv_rank.iv_rank_1y is not None else "unknown"
-        lines.append(
-            f"  IV regime:               IV {iv_rank.iv * 100:.0f}%  "
-            f"IVR-1y {ivr1y}  IVP-1y {ivp1y}  ({regime})"
-        )
-    elif iv_hv is not None:
-        # IV/HV proxy renders here only (avoids duplicating with ORATS line).
-        pass  # the iv_hv block below handles it
-    else:
-        lines.append(
-            "  IV regime:               unknown (no IVR or HV data)"
-        )
-
     if iv_hv is not None:
         lines.append(
             f"  IV/HV regime:            IV {iv_hv.current_iv * 100:.0f}%  "
             f"HV-252d {iv_hv.hv_annualized * 100:.0f}%  "
             f"ratio {iv_hv.iv_hv_ratio:.2f}x  ({iv_hv.label})"
+        )
+    else:
+        lines.append(
+            "  IV/HV regime:            unknown (insufficient data)"
         )
     if not isinstance(chain, OptionChain) or chain.source == "missing" or not chain.calls:
         lines.append("  Option chain: UNAVAILABLE")
@@ -308,7 +284,6 @@ def build_cc_context_block(
     reviews: dict[str, HoldingReview | str],
     earnings: dict[str, date],
     stub_pool_total_usd: float,
-    iv_ranks: dict[str, IVRank] | None = None,
     iv_hv_regimes: dict[str, IvHvRegime] | None = None,
 ) -> str:
     """Compose the COVERED-CALL CONTEXT block consumed by the rebalancer
@@ -326,7 +301,6 @@ def build_cc_context_block(
             eligible=eligible[ticker],
             chain=chains.get(ticker),
             earnings_date=earnings.get(ticker),
-            iv_rank=(iv_ranks or {}).get(ticker),
             iv_hv=(iv_hv_regimes or {}).get(ticker),
         ))
 

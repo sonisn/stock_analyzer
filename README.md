@@ -53,8 +53,8 @@ Output adds three sections to the rebalance email: **Premium Income**
 (dry-powder math).
 
 **Options chain data:** the pipeline uses **Tradier** as the primary chain
-provider (real-time bid/ask + Greeks like delta/IV, courtesy of ORATS).
-Set `TRADIER_API_KEY` in your `.env` to enable — a free Tradier brokerage
+provider (real-time bid/ask + Greeks like delta/IV). Set `TRADIER_API_KEY`
+in your `.env` to enable — a free Tradier brokerage
 account (no funding minimum) gives you a production access token at
 [dash.tradier.com](https://dash.tradier.com/). If `TRADIER_API_KEY` is
 unset or Tradier is unreachable, the pipeline falls back to **yfinance**
@@ -63,20 +63,14 @@ proxy). Both work; Tradier gives meaningfully better strike selection
 because the LLM gets accurate delta values for the Δ 0.35–0.45 band rule.
 
 **IV timing signal:** Opus picks not just WHICH strike but WHETHER to
-write right now. The pipeline ships a **free realized-volatility
-proxy** — compute 252-day annualized HV per eligible ticker from
-yfinance closes, then compare to current chain IV to label the regime
-as elevated (IV/HV ≥ 1.20), average (0.90-1.19), or depressed (< 0.90).
-Opus skips writes in depressed regimes unless conviction is HOLD with
+write right now. The pipeline ships a free realized-volatility proxy —
+compute 252-day annualized HV per eligible ticker from yfinance closes,
+then compare to current chain IV to label the regime as elevated
+(IV/HV ≥ 1.20), average (0.90-1.19), or depressed (< 0.90). Opus
+skips writes in depressed regimes unless conviction is HOLD with
 confidence ≥ 8.
 
-If you have a paid ORATS subscription with `/datav2/ivrank` access,
-set `ORATS_API_KEY` and the pipeline will additionally feed proper
-1-year IV rank as a second timing signal. ORATS is **not required** —
-the free HV proxy captures the same fundamental "is implied vol
-elevated?" question.
-
-See `.env.example` for the full set of `CC_*`, `TRADIER_*`, and `ORATS_*` knobs.
+See `.env.example` for the full set of `CC_*` and `TRADIER_*` knobs.
 
 ## Quickstart
 
@@ -113,10 +107,6 @@ For covered-call writing (optional but recommended — better strike picks):
   Tradier brokerage account (no funding minimum). Without it, the
   pipeline falls back to delayed yfinance data with no Greeks.
 - `TRADIER_BASE_URL` — defaults to production `https://api.tradier.com/v1`.
-- `ORATS_API_KEY` — IV rank / percentile per ticker. Free tier (5
-  req/min) is plenty for one batched call per rebalance. Without it,
-  the LLM picks strikes by delta alone — no IV timing signal.
-- `ORATS_BASE_URL` — defaults to `https://api.orats.io/datav2`.
 
 For email delivery:
 
