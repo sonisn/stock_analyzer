@@ -643,6 +643,11 @@ class RebalancePipeline(DiscoverPipeline):
                 )
                 filtered_chains[ticker] = filtered
 
+            # Stash chains so step_rebalance can backfill OptionWrite
+            # entries from WRITE_CALL sizing strings if Opus only fills
+            # the actions list (observed in production).
+            self.state["cc_chains"] = filtered_chains
+
             block = build_cc_context_block(
                 eligible=eligible, chains=filtered_chains,
                 coverage=coverage, reviews=self.state.get("holdings_reviews", {}),
@@ -745,7 +750,15 @@ class RebalancePipeline(DiscoverPipeline):
             cc_context_block=self.state.get("cc_context_block", ""),
         )
         try:
+            from ..discover.cc_backfill import backfill_option_writes
             from ..discover.cc_validation import validate_option_writes
+            # Synthesize OptionWrite entries for any WRITE_CALL actions
+            # that Opus emitted without matching option_writes (observed
+            # in production — Opus sometimes only fills the actions list
+            # and the prose, dropping the structured field).
+            plan = backfill_option_writes(
+                plan, chains=self.state.get("cc_chains") or {},
+            )
             plan, cc_warnings = validate_option_writes(
                 plan, eligibility=self.state.get("cc_eligibility") or {},
             )
