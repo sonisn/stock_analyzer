@@ -49,6 +49,14 @@ from ..data.sector_rotation import sector_bias, sector_rotation_summary
 from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
 from ..data.transcripts import batch_transcript_snippets
+from ..db.repository import (
+    insert_candidate,
+    insert_pick,
+    insert_run,
+    insert_run_outputs,
+    insert_scorecard,
+)
+from ..db.session import get_session
 from ..discover.analyst import Analyst, analyze_batch
 from ..discover.market_themes import (
     MarketThemesAgent,
@@ -56,14 +64,6 @@ from ..discover.market_themes import (
     themes_by_ticker,
 )
 from ..discover.peers import batch_peer_comparison
-from ..discover.persistence import (
-    connect,
-    insert_candidate,
-    insert_pick,
-    insert_run,
-    insert_run_outputs,
-    insert_scorecard,
-)
 from ..discover.ranker import Ranker
 from ..discover.redteam import RedTeam
 from ..discover.report import (
@@ -831,9 +831,9 @@ class DiscoverPipeline:
 
     def step_persist_and_report(self, step_input: StepInput) -> StepOutput:
         # 1. SQLite persistence (same as before)
-        with connect(self.settings.discover_db_path) as conn:
+        with get_session(self.settings.discover_db_path) as session:
             run_id = insert_run(
-                conn,
+                session,
                 universe_size=len(self.state["candidates"]),
                 survivors=len(self.state["survivors"]),
                 picks=len(self.state["picks"]),
@@ -844,7 +844,7 @@ class DiscoverPipeline:
             )
             for c in self.state["candidates"]:
                 insert_candidate(
-                    conn,
+                    session,
                     run_id,
                     c["ticker"],
                     passed_filter=c["passed_filter"],
@@ -861,10 +861,10 @@ class DiscoverPipeline:
                 analyst_text = getattr(report, "full_text", None) or (
                     report if isinstance(report, str) else ""
                 )
-                insert_scorecard(conn, run_id, ticker, analyst_text)
+                insert_scorecard(session, run_id, ticker, analyst_text)
             for rank, ticker, _ in self.state["picks"]:
                 insert_pick(
-                    conn,
+                    session,
                     run_id,
                     rank=rank,
                     ticker=ticker,
@@ -873,7 +873,7 @@ class DiscoverPipeline:
                     allocation_text=self.state["sizer_text"],
                 )
             insert_run_outputs(
-                conn,
+                session,
                 run_id,
                 ranker_full=self.state["ranker_text"],
                 redteam_full=self.state["redteam_text"],

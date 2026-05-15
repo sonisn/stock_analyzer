@@ -40,9 +40,7 @@ from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
 from ..data.transactions import fetch_transaction_history, to_tax_payloads
 from ..data.transcripts import batch_transcript_snippets
-from ..discover.peers import batch_peer_comparison
-from ..discover.persistence import (
-    connect,
+from ..db.repository import (
     fetch_recent_holdings_history,
     insert_candidate,
     insert_holdings_review,
@@ -51,6 +49,8 @@ from ..discover.persistence import (
     insert_run_outputs,
     insert_scorecard,
 )
+from ..db.session import get_session
+from ..discover.peers import batch_peer_comparison
 from ..discover.premortem import PreMortemAgent
 from ..discover.rebalancer import Rebalancer
 from ..discover.report import (
@@ -107,8 +107,8 @@ def _build_history_block(db_path: str, *, n_runs: int = 3) -> str:
     prior run was a discover-only run).
     """
     try:
-        with connect(db_path) as conn:
-            history = fetch_recent_holdings_history(conn, n_runs=n_runs)
+        with get_session(db_path) as session:
+            history = fetch_recent_holdings_history(session, n_runs=n_runs)
     except Exception as e:
         logger.warning("history fetch failed (%s) — proceeding without it", e)
         return ""
@@ -893,9 +893,9 @@ class RebalancePipeline(DiscoverPipeline):
         sizer_text = self.state.get("sizer_text") or ""
 
         # Persist run + candidates + scorecards + picks + outputs.
-        with connect(self.settings.discover_db_path) as conn:
+        with get_session(self.settings.discover_db_path) as session:
             run_id = insert_run(
-                conn,
+                session,
                 universe_size=len(candidates),
                 survivors=len(survivors),
                 picks=len(picks),
@@ -906,7 +906,7 @@ class RebalancePipeline(DiscoverPipeline):
             )
             for c in candidates:
                 insert_candidate(
-                    conn,
+                    session,
                     run_id,
                     c["ticker"],
                     passed_filter=c["passed_filter"],
@@ -923,7 +923,7 @@ class RebalancePipeline(DiscoverPipeline):
                 analyst_text = getattr(report, "full_text", None) or (
                     report if isinstance(report, str) else ""
                 )
-                insert_scorecard(conn, run_id, ticker, analyst_text)
+                insert_scorecard(session, run_id, ticker, analyst_text)
             for ticker, review in self.state.get("holdings_reviews", {}).items():
                 if not review:
                     continue
@@ -933,7 +933,7 @@ class RebalancePipeline(DiscoverPipeline):
                     review if isinstance(review, str) else ""
                 )
                 insert_holdings_review(
-                    conn,
+                    session,
                     run_id,
                     ticker,
                     verdict=parse_verdict(review),
@@ -942,7 +942,7 @@ class RebalancePipeline(DiscoverPipeline):
                 )
             for rank, ticker, _ in picks:
                 insert_pick(
-                    conn,
+                    session,
                     run_id,
                     rank=rank,
                     ticker=ticker,
@@ -956,7 +956,7 @@ class RebalancePipeline(DiscoverPipeline):
             # max retries) doesn't compound into a KeyError that
             # tanks persistence too.
             insert_run_outputs(
-                conn,
+                session,
                 run_id,
                 ranker_full=ranker_text,
                 redteam_full=redteam_text,

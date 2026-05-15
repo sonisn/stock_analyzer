@@ -12,9 +12,11 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
+from sqlalchemy import text
 
+from stock_analyzer.db.session import get_session
+from stock_analyzer.db.track_record import fetch_recent_sell_runs
 from stock_analyzer.discover import track_record as tr
-from stock_analyzer.discover.persistence import connect
 
 # --- alpha sign convention -----------------------------------------------
 
@@ -97,27 +99,31 @@ def test_fetch_recent_sells_excludes_hold_includes_sell_and_trim():
     with tempfile.TemporaryDirectory() as td:
         db_path = os.path.join(td, "discover.db")
         now = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
-        with connect(db_path) as conn:
-            cur = conn.execute(
-                "INSERT INTO runs (run_at, kind, universe_size, survivors, "
-                "picks, opus_model, sonnet_model) VALUES (?, 'rebalance', 0, 0, 0, "
-                "'opus', 'sonnet')",
-                (now,),
+        with get_session(db_path) as session:
+            result = session.exec(
+                text(
+                    "INSERT INTO runs (run_at, kind, universe_size, survivors, "
+                    "picks, opus_model, sonnet_model) VALUES (:run_at, 'rebalance', 0, 0, 0, "
+                    "'opus', 'sonnet')"
+                ),
+                params={"run_at": now},
             )
-            run_id = cur.lastrowid
+            run_id = result.lastrowid
             for ticker, verdict in [
                 ("TSLA", "SELL"),
                 ("AAPL", "TRIM"),
                 ("GOOGL", "HOLD"),
                 ("MSFT", None),
             ]:
-                conn.execute(
-                    "INSERT INTO holdings_reviews (run_id, ticker, verdict, "
-                    "confidence, review_text) VALUES (?, ?, ?, 7, '')",
-                    (run_id, ticker, verdict),
+                session.exec(
+                    text(
+                        "INSERT INTO holdings_reviews (run_id, ticker, verdict, "
+                        "confidence, review_text) VALUES (:rid, :ticker, :verdict, 7, '')"
+                    ),
+                    params={"rid": run_id, "ticker": ticker, "verdict": verdict},
                 )
-            sells = tr._fetch_recent_sells(conn, lookback_days=180)
-    tickers = {t for t, _, _ in sells}
+            sells = fetch_recent_sell_runs(session, lookback_days=180)
+    tickers = {ticker for _, ticker in sells}
     assert tickers == {"TSLA", "AAPL"}  # SELL + TRIM, no HOLD, no NULL
 
 
@@ -129,23 +135,29 @@ def test_delisted_tickers_are_dropped_not_pending():
     with tempfile.TemporaryDirectory() as td:
         db_path = os.path.join(td, "discover.db")
         old = (datetime.now() - timedelta(days=60)).isoformat(timespec="seconds")
-        with connect(db_path) as conn:
-            cur = conn.execute(
-                "INSERT INTO runs (run_at, kind, universe_size, survivors, "
-                "picks, opus_model, sonnet_model) VALUES (?, 'discover', 1, 1, "
-                "2, 'o', 's')",
-                (old,),
+        with get_session(db_path) as session:
+            result = session.exec(
+                text(
+                    "INSERT INTO runs (run_at, kind, universe_size, survivors, "
+                    "picks, opus_model, sonnet_model) VALUES (:run_at, 'discover', 1, 1, "
+                    "2, 'o', 's')"
+                ),
+                params={"run_at": old},
             )
-            rid = cur.lastrowid
-            conn.execute(
-                "INSERT INTO picks (run_id, rank, ticker, ranker_text, "
-                "bear_case_text, allocation_text) VALUES (?, 1, 'NVDA', '', '', '')",
-                (rid,),
+            rid = result.lastrowid
+            session.exec(
+                text(
+                    "INSERT INTO picks (run_id, rank, ticker, ranker_text, "
+                    "bear_case_text, allocation_text) VALUES (:rid, 1, 'NVDA', '', '', '')"
+                ),
+                params={"rid": rid},
             )
-            conn.execute(
-                "INSERT INTO picks (run_id, rank, ticker, ranker_text, "
-                "bear_case_text, allocation_text) VALUES (?, 2, 'MCAH', '', '', '')",
-                (rid,),
+            session.exec(
+                text(
+                    "INSERT INTO picks (run_id, rank, ticker, ranker_text, "
+                    "bear_case_text, allocation_text) VALUES (:rid, 2, 'MCAH', '', '', '')"
+                ),
+                params={"rid": rid},
             )
 
         def fake_quote(ticker, pick_date, age_days):

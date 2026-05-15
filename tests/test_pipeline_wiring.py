@@ -9,14 +9,14 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from stock_analyzer.discover.persistence import (
-    connect,
+from stock_analyzer.db.repository import (
     insert_candidate,
     insert_pick,
     insert_run,
     insert_run_outputs,
     insert_scorecard,
 )
+from stock_analyzer.db.session import get_session
 from stock_analyzer.discover.rebalancer import REBALANCER_INSTRUCTIONS
 from stock_analyzer.discover.report import (
     build_sections,
@@ -162,9 +162,9 @@ def test_parse_picks_finds_both_picks():
 
 def test_persistence_round_trip(tmp_path: Path):
     db_path = str(tmp_path / "test.db")
-    with connect(db_path) as conn:
+    with get_session(db_path) as session:
         run_id = insert_run(
-            conn,
+            session,
             universe_size=10,
             survivors=2,
             picks=2,
@@ -175,7 +175,7 @@ def test_persistence_round_trip(tmp_path: Path):
         assert run_id > 0
 
         insert_candidate(
-            conn, run_id, "NVDA",
+            session, run_id, "NVDA",
             passed_filter=True,
             fail_reasons=[],
             score=85.0,
@@ -187,7 +187,7 @@ def test_persistence_round_trip(tmp_path: Path):
             price=500.0,
         )
         insert_candidate(
-            conn, run_id, "XYZ",
+            session, run_id, "XYZ",
             passed_filter=False,
             fail_reasons=["market_cap=1e9 < $5B"],
             score=None,
@@ -198,16 +198,16 @@ def test_persistence_round_trip(tmp_path: Path):
             sector=None,
             price=None,
         )
-        insert_scorecard(conn, run_id, "NVDA", "TICKER: NVDA\nScore: 9\n...")
+        insert_scorecard(session, run_id, "NVDA", "TICKER: NVDA\nScore: 9\n...")
         insert_pick(
-            conn, run_id,
+            session, run_id,
             rank=1, ticker="NVDA",
             ranker_text=RANKER_OUTPUT,
             bear_case_text=REDTEAM_OUTPUT,
             allocation_text=SIZER_OUTPUT,
         )
         insert_run_outputs(
-            conn, run_id,
+            session, run_id,
             ranker_full=RANKER_OUTPUT,
             redteam_full=REDTEAM_OUTPUT,
             sizer_full=SIZER_OUTPUT,

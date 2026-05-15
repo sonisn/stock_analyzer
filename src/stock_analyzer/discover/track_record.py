@@ -25,11 +25,12 @@ Surfaced two ways:
 """
 from __future__ import annotations
 
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from ..db.session import get_session
+from ..db.track_record import fetch_recent_pick_runs, fetch_recent_sell_runs
 from ..logging import get_logger
 from ..models.track_record import (
     Direction,
@@ -54,45 +55,6 @@ _MAX_WORKERS = 6
 
 
 # --- DB read ---------------------------------------------------------------
-
-
-def _fetch_recent_picks(
-    conn: sqlite3.Connection, *, lookback_days: int
-) -> list[tuple[str, str, int]]:
-    """Return [(ticker, pick_date, age_days), ...] for every BUY pick in
-    the last `lookback_days`, deduplicated to the OLDEST occurrence per
-    ticker (so re-picks don't double-count)."""
-    cur = conn.execute(
-        "SELECT runs.run_at, picks.ticker FROM picks "
-        "JOIN runs ON runs.id = picks.run_id "
-        "WHERE runs.run_at >= ? "
-        "ORDER BY runs.run_at ASC",
-        ((datetime.now() - timedelta(days=lookback_days)).isoformat(),),
-    )
-    return _dedup_oldest(cur.fetchall())
-
-
-def _fetch_recent_sells(
-    conn: sqlite3.Connection, *, lookback_days: int
-) -> list[tuple[str, str, int]]:
-    """Return [(ticker, sell_date, age_days), ...] for every SELL or TRIM
-    verdict in the last `lookback_days`, deduplicated to the OLDEST
-    occurrence per ticker.
-
-    SELL and TRIM both count: TRIM is a softer SELL but still a
-    directional 'reduce exposure' call we should be held accountable for.
-    The holdings_reviews.verdict column stores parsed verdicts from the
-    Reviewer; rows where verdict is NULL or HOLD are skipped here.
-    """
-    cur = conn.execute(
-        "SELECT runs.run_at, holdings_reviews.ticker FROM holdings_reviews "
-        "JOIN runs ON runs.id = holdings_reviews.run_id "
-        "WHERE runs.run_at >= ? "
-        "AND UPPER(COALESCE(holdings_reviews.verdict, '')) IN ('SELL', 'TRIM') "
-        "ORDER BY runs.run_at ASC",
-        ((datetime.now() - timedelta(days=lookback_days)).isoformat(),),
-    )
-    return _dedup_oldest(cur.fetchall())
 
 
 def _dedup_oldest(
@@ -208,12 +170,12 @@ def measure_track_record(
     it's been running a while. Empty TrackRecord is returned if the DB
     has neither buys nor sells yet.
     """
-    from .persistence import connect
-
     try:
-        with connect(db_path) as conn:
-            raw_buys = _fetch_recent_picks(conn, lookback_days=lookback_days)
-            raw_sells = _fetch_recent_sells(conn, lookback_days=lookback_days)
+        with get_session(db_path) as session:
+            pick_rows = fetch_recent_pick_runs(session, lookback_days=lookback_days)
+            sell_rows = fetch_recent_sell_runs(session, lookback_days=lookback_days)
+        raw_buys = _dedup_oldest(pick_rows)
+        raw_sells = _dedup_oldest(sell_rows)
     except Exception as e:
         logger.warning("track-record fetch failed (%s) — returning empty", e)
         return _empty_record()
