@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import statistics
 from collections import defaultdict
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -310,7 +311,7 @@ def measure_track_record(
 
 def _compute_model_breakdown(
     buy_mature: list[PickReturn],
-    ticker_model: dict[str, str | None],
+    ticker_model: Mapping[str, str | None],
 ) -> list[ModelStats]:
     """Group mature BUY decisions by their originating opus_model. Models
     with n_mature < 3 are dropped — their stats are too noisy to report
