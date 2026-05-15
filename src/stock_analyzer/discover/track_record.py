@@ -411,6 +411,24 @@ def _sharpe_text(sharpe: float | None, n_mature: int) -> str:
     return "n/a (flat)"
 
 
+_DIRECTION_TAGS: dict[str, str] = {
+    "buy": "[BUY] ",
+    "hold": "[HOLD]",
+    "trim": "[TRIM]",
+    "sell": "[SELL]",
+}
+_UNKNOWN_DIRECTION_TAG = "[?]   "
+
+
+def _alpha_text(mean_alpha_pct: float | None) -> str:
+    """Render mean alpha as ``+8.0%`` or ``n/a`` — shared between the summary
+    and block formatters so DirectionStats with None alpha don't crash the
+    f-string."""
+    if mean_alpha_pct is None:
+        return "n/a"
+    return f"{mean_alpha_pct:+.1f}%"
+
+
 def format_track_record_summary(record: TrackRecord) -> str:
     """One-line summary suitable for the dashboard / short prompt context.
     Renders the OVERALL aggregate plus per-direction sub-totals when each
@@ -423,32 +441,19 @@ def format_track_record_summary(record: TrackRecord) -> str:
             )
         return "Track record: no prior decisions in the lookback window."
 
-    parts: list[str] = []
-    parts.append(f"Track record (last ~{_MEASUREMENT_WINDOW_DAYS}d):")
-    if record.buy_stats.n_mature:
-        bs = record.buy_stats
-        parts.append(
-            f" Buy {bs.n_mature} mature, "
-            f"alpha {bs.mean_alpha_pct:+.1f}% ({bs.winners}W/{bs.losers}L/{bs.flats}F)."
-        )
-    if record.hold_stats.n_mature:
-        hs = record.hold_stats
-        parts.append(
-            f" Hold {hs.n_mature} mature, "
-            f"alpha {hs.mean_alpha_pct:+.1f}% ({hs.winners}W/{hs.losers}L/{hs.flats}F)."
-        )
-    if record.trim_stats.n_mature:
-        ts = record.trim_stats
-        parts.append(
-            f" Trim {ts.n_mature} mature, "
-            f"alpha {ts.mean_alpha_pct:+.1f}% ({ts.winners}W/{ts.losers}L/{ts.flats}F)."
-        )
-    if record.sell_stats.n_mature:
-        ss = record.sell_stats
-        parts.append(
-            f" Sell {ss.n_mature} mature, "
-            f"alpha {ss.mean_alpha_pct:+.1f}% ({ss.winners}W/{ss.losers}L/{ss.flats}F)."
-        )
+    parts: list[str] = [f"Track record (last ~{_MEASUREMENT_WINDOW_DAYS}d):"]
+    for label, stats in (
+        ("Buy", record.buy_stats),
+        ("Hold", record.hold_stats),
+        ("Trim", record.trim_stats),
+        ("Sell", record.sell_stats),
+    ):
+        if stats.n_mature:
+            parts.append(
+                f" {label} {stats.n_mature} mature, "
+                f"alpha {_alpha_text(stats.mean_alpha_pct)} "
+                f"({stats.winners}W/{stats.losers}L/{stats.flats}F)."
+            )
     if record.n_pending:
         parts.append(f" {record.n_pending} pending.")
     return "".join(parts)
@@ -457,12 +462,7 @@ def format_track_record_summary(record: TrackRecord) -> str:
 def _format_decision_line(p: PickReturn) -> str:
     """Render one mature decision; non-buy decisions get a [VERDICT] tag
     so the user can tell directions apart in the listing."""
-    tag = {
-        "buy": "[BUY] ",
-        "hold": "[HOLD]",
-        "trim": "[TRIM]",
-        "sell": "[SELL]",
-    }.get(p.direction, "[?]   ")
+    tag = _DIRECTION_TAGS.get(p.direction, _UNKNOWN_DIRECTION_TAG)
     return (
         f"  {tag} {p.ticker:6s}  {p.pick_date}  age {p.age_days}d  "
         f"return {p.pick_return_pct:+.1f}%  "
@@ -479,7 +479,10 @@ def format_track_record_lines(record: TrackRecord, *, limit: int = 15) -> list[s
         "buy": [], "hold": [], "trim": [], "sell": [],
     }
     for p in record.picks:
-        by_dir.setdefault(p.direction, []).append(p)
+        # pre-populated above; KeyError on an unknown direction is the right
+        # failure mode (signals the Direction literal grew without updating
+        # this dispatch table).
+        by_dir[p.direction].append(p)
 
     section_headers = [
         ("buy", "  -- BUY picks (mature) --"),
@@ -500,12 +503,7 @@ def format_track_record_lines(record: TrackRecord, *, limit: int = 15) -> list[s
     if record.pending:
         lines.append("  -- pending (too young to score) --")
         for p in sorted(record.pending, key=lambda p: p.pick_date, reverse=True)[:5]:
-            tag = {
-                "buy": "[BUY] ",
-                "hold": "[HOLD]",
-                "trim": "[TRIM]",
-                "sell": "[SELL]",
-            }.get(p.direction, "[?]   ")
+            tag = _DIRECTION_TAGS.get(p.direction, _UNKNOWN_DIRECTION_TAG)
             live_ret = (
                 f"live {p.pick_return_pct:+.1f}%"
                 if p.pick_return_pct is not None else "—"
@@ -525,13 +523,9 @@ def _format_direction_block_line(
     to communicate the unit, subsequent lines just say "Sharpe"."""
     label_text = "Sharpe (per-decision)" if not first_sharpe_label_done[0] else "Sharpe"
     first_sharpe_label_done[0] = True
-    alpha_text = (
-        f"{stats.mean_alpha_pct:+.1f}%"
-        if stats.mean_alpha_pct is not None else "n/a"
-    )
     return (
         f"{label} track record: {stats.n_mature} mature, "
-        f"alpha {alpha_text}, "
+        f"alpha {_alpha_text(stats.mean_alpha_pct)}, "
         f"{label_text} {_sharpe_text(stats.sharpe, stats.n_mature)}"
     )
 
