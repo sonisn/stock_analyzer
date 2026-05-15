@@ -11,17 +11,25 @@ context just reads `Option chain: UNAVAILABLE` for that ticker.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Protocol
 
 import requests
 import yfinance as yf
 
 from ..config import Settings
 from ..logging import get_logger
+from ..models.market import OptionChain, OptionQuote
 
 logger = get_logger(__name__)
+
+# Re-export the model classes here so legacy import paths continue
+# working during Phase 1. Group C strips this shim once every callsite
+# has been migrated.
+__all__ = [
+    "OptionChain", "OptionQuote", "OptionChainProvider",
+    "YFinanceChain", "TradierChain", "fetch_chains",
+]
 
 
 def _safe_float(v: object) -> float | None:
@@ -43,33 +51,6 @@ def _safe_int(v: object) -> int:
     """Coerce to int, returning 0 for None / NaN / Inf / unparseable."""
     f = _safe_float(v)
     return int(f) if f is not None else 0
-
-
-@dataclass(frozen=True)
-class OptionQuote:
-    """One option strike/expiry row (calls only — puts not supported)."""
-    strike: float
-    expiry: date
-    bid: float
-    ask: float
-    iv: float | None
-    delta: float | None
-    open_interest: int | None
-    volume: int | None
-
-
-@dataclass(frozen=True)
-class OptionChain:
-    """A ticker's filtered OTM call chain.
-
-    `source` records which provider answered. `"missing"` is a valid
-    state that downstream code handles — it does NOT raise.
-    """
-    ticker: str
-    spot: float
-    asof: datetime
-    calls: list[OptionQuote] = field(default_factory=list)
-    source: Literal["tradier", "yfinance", "missing"] = "missing"
 
 
 class OptionChainProvider(Protocol):

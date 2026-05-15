@@ -10,25 +10,25 @@ passing them in.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
-from ..data.options_chain import OptionChain, OptionQuote
-from .schemas import HoldingReview
+from ..models.llm import HoldingReview
+from ..models.market import OptionChain, OptionQuote
+from ..models.portfolio import EligibleHolding, IvHvRegime, RoundLotCoverage
 
 if TYPE_CHECKING:
-    from ..data.historical_volatility import RealizedVolatility
+    from ..models.market import RealizedVolatility
 
-
-@dataclass(frozen=True)
-class EligibleHolding:
-    """A position that's eligible to write covered calls against."""
-    ticker: str
-    shares_held: int
-    open_short_call_contracts: int
-    available_shares: int   # shares_held - 100 × open_short_call_contracts
-    max_contracts: int      # available_shares // 100
+# Re-export the new model classes from this legacy import path so any
+# Phase-1 callsite that still imports them from here keeps working.
+# Group C will strip these once every callsite has migrated.
+__all__ = [
+    "EligibleHolding", "RoundLotCoverage", "IvHvRegime",
+    "eligible_holdings", "round_lot_coverage",
+    "apply_earnings_filter", "compute_iv_hv_regime",
+    "build_cc_context_block",
+]
 
 
 def eligible_holdings(
@@ -64,22 +64,6 @@ def eligible_holdings(
             max_contracts=available // 100,
         )
     return out
-
-
-@dataclass(frozen=True)
-class RoundLotCoverage:
-    """Round-lot decomposition of a single holding.
-
-    Used by the stub-consolidation prompt rule and by the reporting
-    layer's `RoundLotCoverage` section.
-    """
-    ticker: str
-    shares: int
-    round_lots: int
-    stub_shares: int             # shares - round_lots × 100
-    stub_dollar_value: float     # stub_shares × spot (0 when spot unknown)
-    to_next_lot_shares: int      # (100 - stub_shares) if stub_shares else 0
-    to_next_lot_cost: float      # to_next_lot_shares × spot
 
 
 def round_lot_coverage(
@@ -136,16 +120,6 @@ def apply_earnings_filter(
         ),
         (lo, hi),
     )
-
-
-@dataclass(frozen=True)
-class IvHvRegime:
-    """IV-vs-realized-vol regime for one ticker (free IVR proxy)."""
-    ticker: str
-    current_iv: float         # representative chain IV, e.g. 0.32
-    hv_annualized: float      # 252-day realized vol, e.g. 0.27
-    iv_hv_ratio: float        # current_iv / hv
-    label: str                # "elevated" | "average" | "depressed"
 
 
 def _representative_iv_from_chain(chain: OptionChain | None) -> float | None:

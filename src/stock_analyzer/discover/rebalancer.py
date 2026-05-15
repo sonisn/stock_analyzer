@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
-from .rebalance_schema import RebalancePlan
-from .schemas import HoldingReview
+from ..models.llm import HoldingReview
+from ..models.rebalance import RebalancePlan
 
 logger = get_logger(__name__)
 

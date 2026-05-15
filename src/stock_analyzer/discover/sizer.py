@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
-from .schemas import SizerOutput
+from ..models.llm import SizerOutput
 
 logger = get_logger(__name__)
 

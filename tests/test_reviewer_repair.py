@@ -10,7 +10,7 @@ subtly wrong — these tests pin the three repair rules.
 from __future__ import annotations
 
 from stock_analyzer.discover.reviewer import _repair_verdict_inconsistencies
-from stock_analyzer.discover.schemas import HoldingReview
+from stock_analyzer.models.llm import HoldingReview
 
 
 def _make_review(**overrides) -> HoldingReview:

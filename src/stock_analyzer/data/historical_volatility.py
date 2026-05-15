@@ -11,22 +11,23 @@ ticker. Batched callers should expect ~1 sec per ticker.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
 
 from ..logging import get_logger
+from ..models.market import RealizedVolatility
 
 logger = get_logger(__name__)
 
 LOOKBACK_DAYS = 252  # one trading year
 ANNUALIZATION_FACTOR = math.sqrt(252)
 
-
-@dataclass(frozen=True)
-class RealizedVolatility:
-    """Annualized realized volatility for one ticker."""
-    ticker: str
-    hv_annualized: float           # e.g. 0.27 = 27%
-    sample_size: int               # number of daily returns used
+# Re-export RealizedVolatility from the canonical models package so
+# legacy import paths continue working during Phase 1. Group C removes
+# this shim.
+__all__ = [
+    "RealizedVolatility",
+    "_annualized_vol_from_closes",
+    "fetch_realized_volatility",
+]
 
 
 def _annualized_vol_from_closes(closes: list[float]) -> float | None:

@@ -5,7 +5,7 @@ import pytest
 from pydantic import ValidationError
 
 from stock_analyzer.config import Settings
-from stock_analyzer.discover.rebalance_schema import (
+from stock_analyzer.models.rebalance import (
     OptionWrite,
     RebalanceAction,
     RebalancePlan,

@@ -7,7 +7,8 @@ from typing import Any, Literal
 from snaptrade_client import SnapTrade
 
 from ..logging import get_logger
-from .options_symbols import OCCParseError, is_option_symbol, parse_occ
+from ..models.market import OCCParseError
+from .options_symbols import is_option_symbol, parse_occ
 
 logger = get_logger(__name__)
 

@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from .cc_eligibility import RoundLotCoverage
-from .rebalance_schema import RebalancePlan
+from ..models.portfolio import RoundLotCoverage
+from ..models.rebalance import RebalancePlan
 
 
 def compute_premium_income(

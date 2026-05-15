@@ -1,23 +1,12 @@
 """Pydantic schemas for every LLM stage's structured output.
 
-The discover + rebalance pipelines used to glue stages together via
-free-text + regex parsing — that was the source of recurring fragility
-(empty content from rate-limit retries → parsers raised on None,
-labeled prose drifting between runs, etc.).
-
-Now every LLM stage emits a validated Pydantic instance. Each schema
-keeps a `full_text` field carrying the prose rendering of that stage's
-output: PDF/email renderers continue to use it, AND downstream LLM
-stages still receive prompt-ready text without needing to know about
-this refactor.
-
-Structured fields are the source of truth for parsers, dashboards,
-analytics, and the modernized report layout (per-pick cards, verdict
-badges, fragility chips, sizing tables).
-
-Schemas live here (one module) so the LLM contracts are easy to find
-and review together. The pre-existing `rebalance_schema.RebalancePlan`
-stays in its own file for historical continuity.
+Each LLM stage in the discover + rebalance pipelines emits a validated
+Pydantic instance. Every schema keeps a ``full_text`` field carrying
+the prose rendering of that stage's output: PDF/email renderers and
+downstream LLM stages read it as prompt-ready text. Structured fields
+are the source of truth for parsers, dashboards, analytics, and the
+modernized report layout (per-pick cards, verdict badges, fragility
+chips, sizing tables).
 """
 from __future__ import annotations
 

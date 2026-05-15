@@ -33,6 +33,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from ..models.reports import Section
 from .report_sections import (
     _FRAGILITY_COLORS,
     _LIKELIHOOD_COLOR,
@@ -42,7 +43,6 @@ from .report_sections import (
     _TREND_GLYPHS,
     _VERDICT_COLORS,
     _VERDICT_PALETTE_PREMORTEM,
-    Section,
     _conviction_swatch,
     _theme_strength_color,
 )

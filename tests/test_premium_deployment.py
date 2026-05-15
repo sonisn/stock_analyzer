@@ -1,13 +1,13 @@
 """Tests for deterministic CC reporting math."""
 from __future__ import annotations
 
-from stock_analyzer.discover.cc_eligibility import RoundLotCoverage
 from stock_analyzer.discover.cc_render import (
     compute_premium_deployment,
     compute_premium_income,
     compute_round_lot_summary,
 )
-from stock_analyzer.discover.rebalance_schema import (
+from stock_analyzer.models.portfolio import RoundLotCoverage
+from stock_analyzer.models.rebalance import (
     OptionWrite,
     RebalanceAction,
     RebalancePlan,

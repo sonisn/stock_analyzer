@@ -5,7 +5,7 @@ from __future__ import annotations
 import html
 import re
 
-from pydantic import BaseModel, Field
+from ..models.reports import TickerSection
 
 TICKER_HEADER_RE = re.compile(r"^([A-Z][A-Z0-9.\-]{0,9})\s+-\s+(.+)$")
 LABEL_LINE_RE = re.compile(r"^([A-Z][A-Za-z/0-9 &]+):\s*(.*)$")
@@ -16,12 +16,6 @@ PREAMBLE_LINE_RE = re.compile(
     re.IGNORECASE,
 )
 SENTIMENT_PREFIX = "Social/Economic Sentiment:"
-
-
-class TickerSection(BaseModel):
-    symbol: str
-    name: str
-    fields: list[tuple[str, str]] = Field(default_factory=list)
 
 
 def format_html(

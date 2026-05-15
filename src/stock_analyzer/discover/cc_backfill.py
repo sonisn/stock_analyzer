@@ -22,9 +22,9 @@ import re
 from datetime import date
 from typing import Any
 
-from ..data.options_chain import OptionChain
 from ..logging import get_logger
-from .rebalance_schema import OptionWrite, RebalancePlan
+from ..models.market import OptionChain
+from ..models.rebalance import OptionWrite, RebalancePlan
 
 logger = get_logger(__name__)
 

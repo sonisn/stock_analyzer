@@ -27,13 +27,17 @@ from __future__ import annotations
 
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, Literal
-
-from pydantic import BaseModel, ConfigDict
+from typing import Any
 
 from ..logging import get_logger
+from ..models.track_record import (
+    Direction,
+    DirectionStats,
+    PickReturn,
+    Quote,
+    TrackRecord,
+)
 
 logger = get_logger(__name__)
 
@@ -47,71 +51,6 @@ _MIN_AGE_DAYS = 14
 _MEASUREMENT_WINDOW_DAYS = 90
 # yfinance batch size for parallel ticker fetches.
 _MAX_WORKERS = 6
-
-
-Direction = Literal["buy", "sell"]
-
-
-class PickReturn(BaseModel):
-    """One scored decision — its realized return and how it compared to SPY.
-
-    `direction` distinguishes buy picks (from discover) from sell/trim calls
-    (from rebalance). `alpha_pct` is sign-flipped for sells so positive
-    alpha always means "the call was right".
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    ticker: str
-    pick_date: str          # ISO yyyy-mm-dd
-    age_days: int
-    direction: Direction = "buy"
-    pick_price: float | None
-    measured_price: float | None
-    pick_return_pct: float | None
-    spy_return_pct: float | None
-    alpha_pct: float | None  # direction-aware: positive = right call
-    is_mature: bool          # >= _MIN_AGE_DAYS old
-
-
-class DirectionStats(BaseModel):
-    """Aggregate stats for one direction (buy or sell)."""
-
-    model_config = ConfigDict(frozen=True)
-
-    n_mature: int
-    n_pending: int
-    mean_return_pct: float | None
-    mean_spy_return_pct: float | None
-    mean_alpha_pct: float | None
-    winners: int
-    losers: int
-    flats: int
-
-
-class TrackRecord(BaseModel):
-    """Aggregate summary of mature decisions over the lookback window.
-
-    Top-level `mean_*` / `winners` / `losers` / `flats` cover ALL mature
-    decisions (buys + sells) so existing consumers keep working.
-    `buy_stats` / `sell_stats` break it down per direction.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    n_picks_total: int
-    n_mature: int
-    n_pending: int
-    mean_return_pct: float | None
-    mean_spy_return_pct: float | None
-    mean_alpha_pct: float | None
-    winners: int       # mature decisions where alpha > 0
-    losers: int        # mature decisions where alpha < 0
-    flats: int         # mature decisions where alpha ≈ 0
-    buy_stats: DirectionStats
-    sell_stats: DirectionStats
-    picks: list[PickReturn]
-    pending: list[PickReturn]
 
 
 # --- DB read ---------------------------------------------------------------
@@ -180,15 +119,9 @@ def _dedup_oldest(
 # --- yfinance price fetch --------------------------------------------------
 
 
-@dataclass
-class _Quote:
-    pick_price: float | None
-    measured_price: float | None
-
-
 def _fetch_quote(
     ticker: str, pick_date: str, age_days: int
-) -> _Quote:
+) -> Quote:
     """Pick-date close and measurement-date close from yfinance.
 
     Measurement date = min(pick_date + 90d, today). For picks younger than
@@ -201,25 +134,25 @@ def _fetch_quote(
         start = datetime.fromisoformat(pick_date).date()
         end = min(start + timedelta(days=_MEASUREMENT_WINDOW_DAYS), date.today())
         if end <= start:
-            return _Quote(None, None)
+            return Quote(pick_price=None, measured_price=None)
         hist = yf.Ticker(ticker).history(
             start=start.isoformat(),
             end=(end + timedelta(days=1)).isoformat(),
             auto_adjust=True,
         )
         if hist.empty:
-            return _Quote(None, None)
+            return Quote(pick_price=None, measured_price=None)
         # First and last close in the window.
-        return _Quote(
+        return Quote(
             pick_price=float(hist["Close"].iloc[0]),
             measured_price=float(hist["Close"].iloc[-1]),
         )
     except Exception as e:
         logger.debug("yfinance fetch failed for %s: %s", ticker, e)
-        return _Quote(None, None)
+        return Quote(pick_price=None, measured_price=None)
 
 
-def _fetch_spy_quote(pick_date: str) -> _Quote:
+def _fetch_spy_quote(pick_date: str) -> Quote:
     return _fetch_quote("SPY", pick_date, age_days=0)
 
 
@@ -236,7 +169,7 @@ def _score_pick(
     ticker: str,
     pick_date: str,
     age_days: int,
-    spy_quote: _Quote,
+    spy_quote: Quote,
     direction: Direction = "buy",
 ) -> PickReturn:
     quote = _fetch_quote(ticker, pick_date, age_days)
@@ -289,7 +222,7 @@ def measure_track_record(
 
     # SPY benchmarks — one per distinct decision date so we don't refetch.
     distinct_dates = sorted({d for _, d, _ in raw_buys + raw_sells})
-    spy_cache: dict[str, _Quote] = {}
+    spy_cache: dict[str, Quote] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         for d, q in zip(distinct_dates, ex.map(_fetch_spy_quote, distinct_dates), strict=False):
             spy_cache[d] = q
@@ -300,12 +233,12 @@ def measure_track_record(
         for t, d, a in raw_buys:
             futures.append(ex.submit(
                 _score_pick, t, d, a,
-                spy_cache.get(d, _Quote(None, None)), "buy",
+                spy_cache.get(d, Quote(pick_price=None, measured_price=None)), "buy",
             ))
         for t, d, a in raw_sells:
             futures.append(ex.submit(
                 _score_pick, t, d, a,
-                spy_cache.get(d, _Quote(None, None)), "sell",
+                spy_cache.get(d, Quote(pick_price=None, measured_price=None)), "sell",
             ))
         for fut in futures:
             try:
@@ -515,13 +448,15 @@ def format_track_record_block(record: TrackRecord) -> str:
 
 __all__ = [
     "Direction",
+    "Quote",
     "PickReturn",
     "DirectionStats",
     "TrackRecord",
     "measure_track_record",
+    "score_covered_call",
+    "format_track_record_block",
     "format_track_record_summary",
     "format_track_record_lines",
-    "format_track_record_block",
 ]
 
 

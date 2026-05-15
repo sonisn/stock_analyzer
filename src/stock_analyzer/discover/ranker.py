@@ -10,7 +10,7 @@ from typing import Any
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
-from .schemas import RankerOutput
+from ..models.llm import RankerOutput
 
 logger = get_logger(__name__)
 

@@ -12,8 +12,8 @@ from typing import Any
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from ..models.llm import HoldingReview
 from ..serialization import dumps_pretty
-from .schemas import HoldingReview
 
 logger = get_logger(__name__)
 

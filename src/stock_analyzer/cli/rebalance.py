@@ -51,10 +51,9 @@ from ..discover.persistence import (
     insert_run_outputs,
     insert_scorecard,
 )
-from ..discover.premortem import PreMortem, PreMortemAgent
+from ..discover.premortem import PreMortemAgent
 from ..discover.rebalancer import Rebalancer
 from ..discover.report import (
-    Section,
     build_sections,
     parse_confidence,
     parse_rebalance_status,
@@ -66,6 +65,7 @@ from ..discover.report import (
 from ..discover.reviewer import Reviewer, review_batch
 from ..discover.tax_lot_helper import enrich_tax_lots_with_impact
 from ..logging import current_log_file, get_logger
+from ..models.reports import PreMortem, Section
 from ..preflight import PreflightError, preflight
 from ..reporting.smtp import SmtpServer
 from .discover import (
@@ -142,7 +142,7 @@ def _log_full_analysis(
 ) -> None:
     """Dump every analyst-produced section to the logger so the user can
     recover the full report from the log file when email fails."""
-    from ..discover.schemas import HoldingReview
+    from ..models.llm import HoldingReview
     bar = "=" * 70
     if not delivered:
         logger.error(
@@ -652,7 +652,8 @@ class RebalancePipeline(DiscoverPipeline):
             # from yfinance close prices, then compare to chain IV to get
             # a regime label. Doesn't depend on any paid subscription.
             from ..data.historical_volatility import fetch_realized_volatility
-            from ..discover.cc_eligibility import IvHvRegime, compute_iv_hv_regime
+            from ..discover.cc_eligibility import compute_iv_hv_regime
+            from ..models.portfolio import IvHvRegime
             hv_data = fetch_realized_volatility(list(eligible))
             iv_hv_regimes: dict[str, IvHvRegime] = {}
             for ticker in eligible:
@@ -855,7 +856,7 @@ class RebalancePipeline(DiscoverPipeline):
             self.state["premortem"] = None
             return StepOutput(content="premortem: skipped (NO_ACTION plan)")
         # Format the holdings_reviews into a single text blob for the agent.
-        from ..discover.schemas import HoldingReview
+        from ..models.llm import HoldingReview
         reviews_text = "\n\n".join(
             f"=== {ticker} ===\n"
             f"{r.full_text if isinstance(r, HoldingReview) else r}"
@@ -1317,7 +1318,7 @@ def _build_rebalance_sections(
         sections.append(Section(kind="heading", text="Track record", level=2))
         sections.append(Section(kind="preformatted", text=track_record_block))
 
-    from ..discover.schemas import MarketThemes
+    from ..models.llm import MarketThemes
     if isinstance(market_themes, MarketThemes) and market_themes.themes:
         sections.append(Section(kind="heading", text="Current market themes", level=2))
         sections.append(Section(
@@ -1346,7 +1347,7 @@ def _build_rebalance_sections(
     # action with a SELL/TRIM/ADD/BUY badge. NO_ACTION runs have no
     # actions; skip the table entirely (status banner already conveys
     # the verdict).
-    from ..discover.rebalance_schema import RebalancePlan
+    from ..models.rebalance import RebalancePlan
     plan = rebalance_plan if isinstance(rebalance_plan, RebalancePlan) else None
     if plan and plan.actions:
         sections.append(Section(
@@ -1433,7 +1434,7 @@ def _build_rebalance_sections(
 
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Per-holding reviews", level=1))
-    from ..discover.schemas import HoldingReview
+    from ..models.llm import HoldingReview
     for ticker in sorted(holdings_reviews.keys()):
         review = holdings_reviews[ticker]
         if isinstance(review, HoldingReview):

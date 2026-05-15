@@ -1,10 +1,8 @@
 """Tests for round-lot coverage math (stub consolidation context)."""
 from __future__ import annotations
 
-from stock_analyzer.discover.cc_eligibility import (
-    RoundLotCoverage,
-    round_lot_coverage,
-)
+from stock_analyzer.discover.cc_eligibility import round_lot_coverage
+from stock_analyzer.models.portfolio import RoundLotCoverage
 
 
 def test_basic_split_and_stub():

@@ -15,11 +15,10 @@ this module — keep the re-exports stable so the split is invisible to them.
 """
 from __future__ import annotations
 
+from ..models.reports import Section, SectionKind
 from .report_html import render_html_email
 from .report_pdf import render_pdf
 from .report_sections import (
-    Section,
-    SectionKind,
     build_sections,
     parse_actions,
     parse_confidence,

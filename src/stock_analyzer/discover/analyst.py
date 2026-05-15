@@ -10,8 +10,8 @@ from typing import Any
 
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from ..models.llm import AnalystReport
 from ..serialization import dumps_pretty
-from .schemas import AnalystReport
 
 logger = get_logger(__name__)
 

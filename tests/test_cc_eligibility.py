@@ -3,15 +3,15 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from stock_analyzer.data.options_chain import OptionChain, OptionQuote
 from stock_analyzer.discover.cc_eligibility import (
-    EligibleHolding,
     apply_earnings_filter,
     build_cc_context_block,
     eligible_holdings,
     round_lot_coverage,
 )
-from stock_analyzer.discover.schemas import HoldingReview
+from stock_analyzer.models.llm import HoldingReview
+from stock_analyzer.models.market import OptionChain, OptionQuote
+from stock_analyzer.models.portfolio import EligibleHolding
 
 
 def _pos(units: int) -> dict[str, float | int]:
@@ -245,7 +245,7 @@ def test_format_chain_row_handles_nan():
 
 
 def test_context_block_renders_iv_hv_regime_when_provided():
-    from stock_analyzer.discover.cc_eligibility import IvHvRegime
+    from stock_analyzer.models.portfolio import IvHvRegime
 
     positions = {"NVDA": {"units": 400}}
     elig = eligible_holdings(positions, open_short_calls={}, denylist=())
@@ -280,9 +280,12 @@ def test_context_block_marks_iv_hv_regime_unknown_when_no_data():
 def test_compute_iv_hv_regime_elevated():
     from datetime import datetime
 
-    from stock_analyzer.data.historical_volatility import RealizedVolatility
-    from stock_analyzer.data.options_chain import OptionChain, OptionQuote
     from stock_analyzer.discover.cc_eligibility import compute_iv_hv_regime
+    from stock_analyzer.models.market import (
+        OptionChain,
+        OptionQuote,
+        RealizedVolatility,
+    )
 
     chain = OptionChain(
         ticker="X", spot=100.0, asof=datetime.now(),
@@ -303,9 +306,12 @@ def test_compute_iv_hv_regime_elevated():
 def test_compute_iv_hv_regime_average():
     from datetime import datetime
 
-    from stock_analyzer.data.historical_volatility import RealizedVolatility
-    from stock_analyzer.data.options_chain import OptionChain, OptionQuote
     from stock_analyzer.discover.cc_eligibility import compute_iv_hv_regime
+    from stock_analyzer.models.market import (
+        OptionChain,
+        OptionQuote,
+        RealizedVolatility,
+    )
 
     chain = OptionChain(
         ticker="X", spot=100.0, asof=datetime.now(),
@@ -325,9 +331,12 @@ def test_compute_iv_hv_regime_average():
 def test_compute_iv_hv_regime_depressed():
     from datetime import datetime
 
-    from stock_analyzer.data.historical_volatility import RealizedVolatility
-    from stock_analyzer.data.options_chain import OptionChain, OptionQuote
     from stock_analyzer.discover.cc_eligibility import compute_iv_hv_regime
+    from stock_analyzer.models.market import (
+        OptionChain,
+        OptionQuote,
+        RealizedVolatility,
+    )
 
     chain = OptionChain(
         ticker="X", spot=100.0, asof=datetime.now(),

@@ -17,15 +17,19 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-
 from ..logging import get_logger
+from ..models.portfolio import Lot, TickerTaxSummary, TickerTaxSummaryMut
 from .brokerage import _client, _credentials, _extract_ticker, _unwrap
 
 logger = get_logger(__name__)
 
-# 365 days = long-term holding period for US capital gains.
-LONG_TERM_DAYS = 365
+# Re-export the model classes so legacy import paths keep working
+# during Phase 1. Group C strips this shim once every callsite has
+# moved to ``..models.portfolio``.
+__all__ = [
+    "Lot", "TickerTaxSummary",
+    "fetch_transaction_history", "to_tax_payloads",
+]
 
 
 def _coerce_date(value: Any) -> date | None:
@@ -43,115 +47,6 @@ def _coerce_date(value: Any) -> date | None:
         except ValueError:
             return None
     return None
-
-
-class Lot(BaseModel):
-    """A single BUY transaction — i.e. one tax lot."""
-
-    model_config = ConfigDict(frozen=True)
-
-    date: str          # ISO date of purchase
-    units: float       # shares acquired
-    price: float       # per-share purchase price
-    total_cost: float  # units * price + fee
-    fee: float
-    days_held: int
-    is_long_term: bool
-    account: str
-
-    @classmethod
-    def from_activity(
-        cls, activity: dict[str, Any], account_name: str, today: date
-    ) -> Lot | None:
-        try:
-            d = _coerce_date(
-                activity.get("trade_date") or activity.get("settlement_date")
-            )
-            if d is None:
-                return None
-            units = float(activity.get("units") or 0)
-            price = float(activity.get("price") or 0)
-            fee = float(activity.get("fee") or 0)
-            if units <= 0 or price <= 0:
-                return None
-            days_held = (today - d).days
-            return cls(
-                date=d.isoformat(),
-                units=units,
-                price=price,
-                total_cost=units * price + fee,
-                fee=fee,
-                days_held=days_held,
-                is_long_term=days_held >= LONG_TERM_DAYS,
-                account=account_name,
-            )
-        except (ValueError, TypeError) as e:
-            logger.debug("Could not parse activity: %s", e)
-            return None
-
-
-class TickerTaxSummary(BaseModel):
-    ticker: str
-    lots: list[Lot] = Field(default_factory=list)
-    total_units_bought: float = 0.0
-    total_units_sold: float = 0.0
-    total_cost_basis: float = 0.0
-    short_term_lot_count: int = 0
-    long_term_lot_count: int = 0
-    short_term_units: float = 0.0
-    long_term_units: float = 0.0
-    # SELL transactions within the last 60 days — used by the rebalancer
-    # for wash-sale awareness (re-buying within 30 days of a loss-sale
-    # disallows the loss for tax purposes).
-    recent_sells_60d: list[dict[str, Any]] = Field(default_factory=list)
-
-    @property
-    def current_units(self) -> float:
-        return self.total_units_bought - self.total_units_sold
-
-    @property
-    def avg_cost(self) -> float:
-        return (
-            self.total_cost_basis / self.total_units_bought
-            if self.total_units_bought
-            else 0
-        )
-
-    def to_payload(self) -> dict[str, Any]:
-        """Dict suitable for inclusion in the reviewer JSON payload."""
-        # Sort lots newest-first so most-recent (shortest-held) appear at top.
-        lots_sorted = sorted(self.lots, key=lambda x: x.date, reverse=True)
-        return {
-            "current_units_held": self.current_units,
-            "total_units_bought": self.total_units_bought,
-            "total_units_sold": self.total_units_sold,
-            "average_cost_basis_per_share": round(self.avg_cost, 4),
-            "lot_count": len(self.lots),
-            "short_term_lots": self.short_term_lot_count,
-            "long_term_lots": self.long_term_lot_count,
-            "short_term_units": self.short_term_units,
-            "long_term_units": self.long_term_units,
-            "lots": [
-                {
-                    "date": lot.date,
-                    "units": lot.units,
-                    "price_per_share": round(lot.price, 4),
-                    "total_cost": round(lot.total_cost, 2),
-                    "days_held": lot.days_held,
-                    "treatment": "long_term" if lot.is_long_term else "short_term",
-                    "account": lot.account,
-                }
-                for lot in lots_sorted
-            ],
-            # Wash-sale flag data. Compare sale_price to avg_cost to estimate
-            # whether the sell was at a loss; the LLM uses this to avoid
-            # recommending re-purchase within 30 days.
-            "recent_sells_60d": sorted(
-                self.recent_sells_60d,
-                key=lambda x: x.get("date", ""),
-                reverse=True,
-            ),
-        }
 
 
 def _activity_account_name(
@@ -276,17 +171,23 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
         start_date_.isoformat(),
     )
 
-    summaries: dict[str, TickerTaxSummary] = {}
+    working: dict[str, TickerTaxSummaryMut] = {}
     for activity in activities:
         ticker = _extract_ticker(activity)
         if not ticker:
             continue
         activity_type = (activity.get("type") or "").upper()
         account_name = _activity_account_name(activity, account_id_to_name)
-        summary = summaries.setdefault(ticker, TickerTaxSummary(ticker=ticker))
+        summary = working.setdefault(ticker, TickerTaxSummaryMut(ticker=ticker))
 
         if activity_type == "BUY":
-            lot = Lot.from_activity(activity, account_name, today)
+            lot = Lot.from_activity(
+                activity,
+                account_name,
+                today,
+                coerce_date=_coerce_date,
+                logger=logger,
+            )
             if lot:
                 summary.lots.append(lot)
                 summary.total_units_bought += lot.units
@@ -322,10 +223,14 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
 
     logger.info(
         "Built tax summaries for %d tickers over %d-year lookback",
-        len(summaries),
+        len(working),
         years_back,
     )
-    return summaries
+    # Freeze each per-ticker aggregate back into the immutable public type.
+    return {
+        t: TickerTaxSummary.model_validate(mut.model_dump())
+        for t, mut in working.items()
+    }
 
 
 def to_tax_payloads(

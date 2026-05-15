@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import re
 from datetime import date
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import BaseModel
 from rich.console import Console
 from rich.table import Table as RichTable
+
+from ..models.reports import Section
 
 # --- pick / ticker block parsing --------------------------------------------
 
@@ -32,7 +33,7 @@ def parse_picks(ranker_text_or_output: object) -> list[tuple[int, str, str]]:
     Accepts a structured `RankerOutput` (preferred — field reads) OR a
     free-text ranker output (legacy / discover-pipeline-output that
     hasn't been migrated yet)."""
-    from .schemas import RankerOutput
+    from ..models.llm import RankerOutput
     if isinstance(ranker_text_or_output, RankerOutput):
         return [
             (p.rank, p.ticker, p.one_liner)
@@ -89,7 +90,7 @@ def parse_verdict(review: object) -> str:
     Accepts a `HoldingReview` (preferred — reads the field directly,
     no regex) OR a free-text review (legacy DB rows / partial runs).
     """
-    from .schemas import HoldingReview
+    from ..models.llm import HoldingReview
     if isinstance(review, HoldingReview):
         return review.verdict
     if not review or not isinstance(review, str):
@@ -102,7 +103,7 @@ def parse_confidence(review: object) -> int | None:
     """Return the 1-10 confidence integer.
 
     Accepts a `HoldingReview` (preferred) OR a free-text review."""
-    from .schemas import HoldingReview
+    from ..models.llm import HoldingReview
     if isinstance(review, HoldingReview):
         return review.confidence
     if not review or not isinstance(review, str):
@@ -119,7 +120,7 @@ def parse_rebalance_status(rebalance_text_or_plan: object) -> str:
     runs / older DB rows). The structured form removes the regex
     fragility that previously crashed the persist step on `None`."""
     # Lazy import to avoid a circular module load.
-    from .rebalance_schema import RebalancePlan
+    from ..models.rebalance import RebalancePlan
     if isinstance(rebalance_text_or_plan, RebalancePlan):
         return rebalance_text_or_plan.status
     if not rebalance_text_or_plan:
@@ -137,7 +138,7 @@ def parse_actions(rebalance_text_or_plan: object) -> list[tuple[str, str]]:
 
     Reads from the structured RebalancePlan when given one (no regex);
     falls back to regex on free text for legacy/discover runs."""
-    from .rebalance_schema import RebalancePlan
+    from ..models.rebalance import RebalancePlan
     if isinstance(rebalance_text_or_plan, RebalancePlan):
         return [(a.action, a.ticker) for a in rebalance_text_or_plan.actions]
     if not rebalance_text_or_plan or not isinstance(rebalance_text_or_plan, str):
@@ -223,40 +224,6 @@ def _theme_strength_color(strength: int | None) -> str:
 # --- sections (unified IR for HTML + PDF) -----------------------------------
 
 
-SectionKind = Literal[
-    "heading", "para", "preformatted", "image", "blockquote", "table",
-    "page_break", "status_banner", "metric_strip", "holdings_dashboard",
-    "sector_pie",
-    # New structured-output kinds (Phase 4f) — renderer pulls fields from
-    # `data` and produces a styled card / table instead of dumping prose.
-    "pick_card", "allocation_table", "rebalance_action_table",
-    "holding_review_card", "market_themes_panel", "premortem_panel",
-    # Covered-call sections (cli/rebalance.py CC extension).
-    "premium_income", "round_lot_coverage", "premium_deployment",
-]
-
-
-class Section(BaseModel):
-    kind: SectionKind
-    text: str = ""
-    level: int = 2
-    image_ticker: str | None = None
-    table_rows: list[list[str]] | None = None
-    table_header: list[str] | None = None
-    # Status banner: kind="status_banner", text=display label, level=color-key
-    # ("NO_ACTION" | "ACTION" | "UNKNOWN")
-    status: str = ""
-    # Metric strip: list of (label, value) shown as colored cards
-    metrics: list[tuple[str, str]] | None = None
-    # Holdings dashboard: list of dicts with ticker, verdict, confidence,
-    # pnl_pct, sector, concerns (parsed by build_sections)
-    holdings: list[dict[str, Any]] | None = None
-    # Sector pie data: list of (label, value, color)
-    pie_data: list[tuple[str, float]] | None = None
-    # Generic carrier for structured-output card kinds (pick_card, etc.)
-    data: dict[str, Any] | None = None
-
-
 def build_sections(
     *,
     ranker_text: str,
@@ -276,7 +243,7 @@ def build_sections(
     # Prefer the structured Phase 4 objects when present; fall back to
     # parsing the free-text variants so legacy callers / partial runs
     # still render something.
-    from .schemas import RankerOutput, RedTeamOutput, SizerOutput
+    from ..models.llm import RankerOutput, RedTeamOutput, SizerOutput
     structured_ranker = ranker_output if isinstance(ranker_output, RankerOutput) else None
     structured_redteam = redteam_output if isinstance(redteam_output, RedTeamOutput) else None
     structured_sizer = sizer_output if isinstance(sizer_output, SizerOutput) else None
@@ -307,7 +274,7 @@ def build_sections(
         s.append(Section(kind="preformatted", text=track_record_block))
 
     # Market themes panel — what's hot right now (drives ranker bias).
-    from .schemas import MarketThemes
+    from ..models.llm import MarketThemes
     if isinstance(market_themes, MarketThemes) and market_themes.themes:
         s.append(Section(kind="heading", text="Current market themes", level=2))
         s.append(Section(

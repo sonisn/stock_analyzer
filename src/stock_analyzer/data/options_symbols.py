@@ -13,27 +13,19 @@ format is fixed-width and small enough to handle by slicing.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
 from datetime import date
-from typing import Literal
 
-OptionType = Literal["C", "P"]
+# Re-export model classes from the canonical models package. Local
+# aliases preserve the legacy import path during Phase 1; Group C will
+# delete this shim block once every callsite has migrated.
+from ..models.market import OCCParseError, ParsedOCC
+
+__all__ = ["OCCParseError", "ParsedOCC",
+           "is_option_symbol", "parse_occ"]
 
 _OCC_RE = re.compile(
     r"^([A-Z][A-Z0-9.\-]{0,5})\s+(\d{2})(\d{2})(\d{2})([CP])(\d{8})$"
 )
-
-
-class OCCParseError(ValueError):
-    """Raised when a string does not look like an OCC option symbol."""
-
-
-@dataclass(frozen=True)
-class ParsedOCC:
-    ticker: str
-    expiry: date
-    option_type: OptionType
-    strike: float
 
 
 def is_option_symbol(s: str) -> bool:

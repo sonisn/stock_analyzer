@@ -106,7 +106,7 @@ def _format_ev_table(ranker_output: object) -> str:
     Format per row: ticker | E[ret] | bull P/ret | base P/ret | bear P/ret.
     Bear probabilities surfaced explicitly so the Sizer can see when a
     high-EV pick has high dispersion."""
-    from ..discover.schemas import RankerOutput, expected_return_pct
+    from ..models.llm import RankerOutput, expected_return_pct
     if not isinstance(ranker_output, RankerOutput):
         return ""
     rows: list[str] = []
@@ -155,7 +155,7 @@ def _validate_and_correct_themes(
     """
     if themes is None:
         return None
-    from ..discover.schemas import MarketTheme, MarketThemes
+    from ..models.llm import MarketTheme, MarketThemes
     if not isinstance(themes, MarketThemes):
         return themes
 

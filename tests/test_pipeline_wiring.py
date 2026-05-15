@@ -452,8 +452,8 @@ def test_rebalancer_prompt_includes_iv_regime_rule():
 def test_decide_includes_cc_context_in_prompt():
     from unittest.mock import MagicMock
 
-    from stock_analyzer.discover.rebalance_schema import RebalancePlan
     from stock_analyzer.discover.rebalancer import Rebalancer
+    from stock_analyzer.models.rebalance import RebalancePlan
 
     captured: dict[str, str] = {}
 
@@ -484,8 +484,8 @@ def test_decide_includes_cc_context_in_prompt():
 def test_decide_omits_cc_block_when_empty():
     from unittest.mock import MagicMock
 
-    from stock_analyzer.discover.rebalance_schema import RebalancePlan
     from stock_analyzer.discover.rebalancer import Rebalancer
+    from stock_analyzer.models.rebalance import RebalancePlan
 
     captured: dict[str, str] = {}
 
@@ -533,11 +533,11 @@ def test_subject_with_premium_annotates():
 
 def test_end_to_end_with_write_call_action():
     from stock_analyzer.cli.rebalance import _build_rebalance_sections
-    from stock_analyzer.discover.cc_eligibility import (
+    from stock_analyzer.models.portfolio import (
         EligibleHolding,
         RoundLotCoverage,
     )
-    from stock_analyzer.discover.rebalance_schema import (
+    from stock_analyzer.models.rebalance import (
         OptionWrite,
         RebalanceAction,
         RebalancePlan,
@@ -632,9 +632,9 @@ def test_step_cc_data_swallows_unexpected_errors():
 def test_validation_summary_log_includes_per_call_details(caplog):
     """When validation succeeds with WRITE_CALL actions, we must log
     a per-action summary so the operator can grep for it."""
-    from stock_analyzer.discover.cc_eligibility import EligibleHolding
     from stock_analyzer.discover.cc_validation import validate_option_writes
-    from stock_analyzer.discover.rebalance_schema import (
+    from stock_analyzer.models.portfolio import EligibleHolding
+    from stock_analyzer.models.rebalance import (
         OptionWrite,
         RebalanceAction,
         RebalancePlan,

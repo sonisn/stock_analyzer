@@ -8,12 +8,11 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 
 from stock_analyzer.data.options_chain import (
-    OptionChain,
-    OptionQuote,
     TradierChain,
     YFinanceChain,
     fetch_chains,
 )
+from stock_analyzer.models.market import OptionChain, OptionQuote
 
 
 def test_optionquote_frozen_and_typed():

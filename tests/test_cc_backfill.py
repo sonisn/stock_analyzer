@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from stock_analyzer.data.options_chain import OptionChain, OptionQuote
 from stock_analyzer.discover.cc_backfill import (
     _parse_sizing,
     backfill_option_writes,
 )
-from stock_analyzer.discover.rebalance_schema import (
+from stock_analyzer.models.market import OptionChain, OptionQuote
+from stock_analyzer.models.rebalance import (
     OptionWrite,
     RebalanceAction,
     RebalancePlan,

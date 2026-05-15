@@ -6,10 +6,10 @@ from datetime import date
 import pytest
 
 from stock_analyzer.data.options_symbols import (
-    OCCParseError,
     is_option_symbol,
     parse_occ,
 )
+from stock_analyzer.models.market import OCCParseError
 
 
 def test_parse_call():

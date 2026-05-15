@@ -16,99 +16,11 @@ Skipped on NO_ACTION plans (nothing to pre-mortem).
 """
 from __future__ import annotations
 
-from typing import Literal
-
-from pydantic import BaseModel, ConfigDict, Field
-
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from ..models.reports import PreMortem
 
 logger = get_logger(__name__)
-
-
-class PreMortemFailure(BaseModel):
-    """One specific way the plan could fail."""
-
-    model_config = ConfigDict(frozen=True)
-
-    likelihood: Literal["low", "medium", "high"] = Field(
-        ...,
-        description=(
-            "How likely is this failure mode given current data? "
-            "high = >25% probability; medium = 10-25%; low = <10%."
-        ),
-    )
-    severity: Literal["mild", "moderate", "severe"] = Field(
-        ...,
-        description=(
-            "If this failure plays out, how much portfolio damage? "
-            "severe = double-digit % loss across the plan; moderate = "
-            "single-digit; mild = uncomfortable but recoverable."
-        ),
-    )
-    triggering_action: str = Field(
-        ...,
-        description=(
-            "Which specific action in the plan triggers this failure mode? "
-            "Quote it (e.g. 'Action 2: ADD GOOGL ~$3,400')."
-        ),
-    )
-    failure_narrative: str = Field(
-        ...,
-        description=(
-            "2-3 sentence imagined post-mortem in past tense: "
-            "'In April, GOOGL fell 18% after the DOJ Chrome divestiture "
-            "ruling. The plan's ADD added to losses; in hindsight the "
-            "wash-sale window on the MRVL trim made the timing worse.' "
-            "Cite specific named events or metrics."
-        ),
-    )
-    early_warning: str = Field(
-        ...,
-        description=(
-            "ONE metric or event the user could watch in the next 30 days "
-            "that would tell them this failure mode is materializing."
-        ),
-    )
-
-
-class PreMortem(BaseModel):
-    """Structured output of the PreMortem agent."""
-
-    model_config = ConfigDict(frozen=True)
-
-    overall_verdict: Literal["proceed_as_planned", "proceed_with_caveat", "reconsider"] = Field(
-        ...,
-        description=(
-            "After examining the failure modes, would you recommend the user "
-            "execute this plan as-is, execute with smaller sizes / staged "
-            "entry, or reconsider entirely?"
-        ),
-    )
-    summary: str = Field(
-        ...,
-        description=(
-            "One paragraph summarizing the pre-mortem: what's the single "
-            "most likely way this plan goes wrong and why."
-        ),
-    )
-    failures: list[PreMortemFailure] = Field(
-        ...,
-        min_length=1,
-        max_length=6,
-        description=(
-            "2-4 specific failure modes ranked by likelihood × severity. "
-            "Concrete, not generic — must reference actual actions in the "
-            "plan, not 'market downturn'."
-        ),
-    )
-    full_text: str = Field(
-        ...,
-        description=(
-            "Plain-text rendering: VERDICT line + summary + per-failure "
-            "blocks. What the PDF/email renders."
-        ),
-    )
 
 
 PREMORTEM_INSTRUCTIONS = """\
@@ -227,4 +139,4 @@ class PreMortemAgent:
         return None
 
 
-__all__ = ["PreMortemAgent", "PreMortem", "PreMortemFailure"]
+__all__ = ["PreMortemAgent", "PreMortem"]

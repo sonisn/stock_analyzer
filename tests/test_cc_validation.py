@@ -1,9 +1,9 @@
 """Tests for post-LLM validation of WRITE_CALL actions."""
 from __future__ import annotations
 
-from stock_analyzer.discover.cc_eligibility import EligibleHolding
 from stock_analyzer.discover.cc_validation import validate_option_writes
-from stock_analyzer.discover.rebalance_schema import (
+from stock_analyzer.models.portfolio import EligibleHolding
+from stock_analyzer.models.rebalance import (
     OptionWrite,
     RebalanceAction,
     RebalancePlan,

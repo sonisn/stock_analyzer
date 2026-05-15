@@ -14,8 +14,8 @@ which the caller logs (loudly) and surfaces in the email summary.
 from __future__ import annotations
 
 from ..logging import get_logger
-from .cc_eligibility import EligibleHolding
-from .rebalance_schema import OptionWrite, RebalanceAction, RebalancePlan
+from ..models.portfolio import EligibleHolding
+from ..models.rebalance import OptionWrite, RebalanceAction, RebalancePlan
 
 logger = get_logger(__name__)
 

@@ -19,13 +19,16 @@ from stock_analyzer.discover.persistence import connect
 # --- alpha sign convention -----------------------------------------------
 
 
-def _spy_quote(start: float, end: float) -> tr._Quote:
-    return tr._Quote(pick_price=start, measured_price=end)
+def _spy_quote(start: float, end: float) -> tr.Quote:
+    return tr.Quote(pick_price=start, measured_price=end)
 
 
 def test_buy_alpha_is_stock_minus_spy_when_stock_beats_spy():
     """Stock +20%, SPY +5% → buy alpha = +15% (wise buy)."""
-    with patch.object(tr, "_fetch_quote", return_value=tr._Quote(100.0, 120.0)):
+    with patch.object(
+        tr, "_fetch_quote",
+        return_value=tr.Quote(pick_price=100.0, measured_price=120.0),
+    ):
         result = tr._score_pick(
             "NVDA", "2026-02-01", age_days=60,
             spy_quote=_spy_quote(400.0, 420.0),
@@ -40,7 +43,10 @@ def test_buy_alpha_is_stock_minus_spy_when_stock_beats_spy():
 def test_sell_alpha_sign_flips_so_underperforming_stock_is_a_win():
     """Stock -15%, SPY +5% — raw alpha = -20% but we said SELL, so the
     call was right. Sign-flip: sell alpha = +20% (wise sell)."""
-    with patch.object(tr, "_fetch_quote", return_value=tr._Quote(200.0, 170.0)):
+    with patch.object(
+        tr, "_fetch_quote",
+        return_value=tr.Quote(pick_price=200.0, measured_price=170.0),
+    ):
         result = tr._score_pick(
             "TSLA", "2026-02-01", age_days=60,
             spy_quote=_spy_quote(400.0, 420.0),
@@ -55,7 +61,10 @@ def test_sell_alpha_sign_flips_so_underperforming_stock_is_a_win():
 def test_sell_alpha_is_negative_when_stock_outperforms_spy():
     """If we said SELL and the stock then ripped +20% vs SPY +5%, that's
     a BAD sell call. Sell alpha must be negative."""
-    with patch.object(tr, "_fetch_quote", return_value=tr._Quote(100.0, 120.0)):
+    with patch.object(
+        tr, "_fetch_quote",
+        return_value=tr.Quote(pick_price=100.0, measured_price=120.0),
+    ):
         result = tr._score_pick(
             "AAPL", "2026-02-01", age_days=60,
             spy_quote=_spy_quote(400.0, 420.0),
@@ -67,7 +76,10 @@ def test_sell_alpha_is_negative_when_stock_outperforms_spy():
 def test_pending_when_age_below_mature_threshold():
     """Decisions younger than _MIN_AGE_DAYS don't count toward stats —
     they show as pending with live return only."""
-    with patch.object(tr, "_fetch_quote", return_value=tr._Quote(100.0, 105.0)):
+    with patch.object(
+        tr, "_fetch_quote",
+        return_value=tr.Quote(pick_price=100.0, measured_price=105.0),
+    ):
         result = tr._score_pick(
             "NVDA", "2026-05-01", age_days=10,
             spy_quote=_spy_quote(400.0, 410.0),
@@ -139,10 +151,10 @@ def test_delisted_tickers_are_dropped_not_pending():
         def fake_quote(ticker, pick_date, age_days):
             # MCAH is delisted — yfinance returns empty quote.
             if ticker == "MCAH":
-                return tr._Quote(None, None)
+                return tr.Quote(pick_price=None, measured_price=None)
             if ticker == "SPY":
-                return tr._Quote(400.0, 420.0)
-            return tr._Quote(100.0, 120.0)  # NVDA
+                return tr.Quote(pick_price=400.0, measured_price=420.0)
+            return tr.Quote(pick_price=100.0, measured_price=120.0)  # NVDA
 
         with patch.object(tr, "_fetch_quote", side_effect=fake_quote):
             record = tr.measure_track_record(db_path)

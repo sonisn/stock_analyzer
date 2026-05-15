@@ -8,7 +8,6 @@ a legacy / partial-run fallback that must not crash on edge cases.
 """
 from __future__ import annotations
 
-from stock_analyzer.discover.rebalance_schema import RebalanceAction, RebalancePlan
 from stock_analyzer.discover.report import (
     parse_actions,
     parse_confidence,
@@ -16,7 +15,8 @@ from stock_analyzer.discover.report import (
     parse_rebalance_status,
     parse_verdict,
 )
-from stock_analyzer.discover.schemas import HoldingReview
+from stock_analyzer.models.llm import HoldingReview
+from stock_analyzer.models.rebalance import RebalanceAction, RebalancePlan
 
 
 def _hr(verdict: str, confidence: int) -> HoldingReview:
@@ -101,7 +101,7 @@ def test_parse_actions_reads_structured_plan_in_order():
 def test_parse_picks_reads_structured_ranker_sorted_by_rank():
     """RankerOutput must be unwrapped by parse_picks with output sorted
     by rank ascending (rank 1 is the top pick)."""
-    from stock_analyzer.discover.schemas import RankerOutput
+    from stock_analyzer.models.llm import RankerOutput
     # Build a minimal RankerOutput. Use model_construct() to skip the
     # heavy field requirements of RankerPick — parse_picks only reads
     # rank/ticker/one_liner.
@@ -131,7 +131,7 @@ def test_parse_picks_regex_fallback_on_free_text():
 
 def test_premium_income_renders_table_html():
     from stock_analyzer.discover.report_html import render_html_email
-    from stock_analyzer.discover.report_sections import Section
+    from stock_analyzer.models.reports import Section
 
     sections = [
         Section(kind="heading", text="Test", level=1),
@@ -155,7 +155,7 @@ def test_premium_income_renders_table_html():
 
 def test_round_lot_coverage_html_emits_table():
     from stock_analyzer.discover.report_html import render_html_email
-    from stock_analyzer.discover.report_sections import Section
+    from stock_analyzer.models.reports import Section
 
     sections = [
         Section(kind="round_lot_coverage", data={  # type: ignore[arg-type]
@@ -176,7 +176,7 @@ def test_round_lot_coverage_html_emits_table():
 
 def test_premium_deployment_html_emits_box():
     from stock_analyzer.discover.report_html import render_html_email
-    from stock_analyzer.discover.report_sections import Section
+    from stock_analyzer.models.reports import Section
 
     sections = [
         Section(kind="premium_deployment", data={  # type: ignore[arg-type]
@@ -200,7 +200,7 @@ def test_premium_deployment_html_emits_box():
 
 def test_pdf_renders_with_cc_sections_smoke():
     from stock_analyzer.discover.report_pdf import render_pdf
-    from stock_analyzer.discover.report_sections import Section
+    from stock_analyzer.models.reports import Section
 
     sections = [
         Section(kind="heading", text="Test", level=1),

@@ -7,7 +7,7 @@ here would silently mis-rank every position.
 """
 from __future__ import annotations
 
-from stock_analyzer.discover.schemas import RankerPick, Scenario, expected_return_pct
+from stock_analyzer.models.llm import RankerPick, Scenario, expected_return_pct
 
 
 def _pick(scenarios: list[Scenario]) -> RankerPick:
@@ -68,7 +68,7 @@ def test_market_theme_accepts_under_populated_member_tickers():
     and the entire theme block is lost. The auto-correct in
     cli/discover.py drops <3-member themes at runtime; the schema's job
     is structural validity, not quality enforcement."""
-    from stock_analyzer.discover.schemas import MarketTheme, MarketThemes
+    from stock_analyzer.models.llm import MarketTheme, MarketThemes
     theme = MarketTheme(
         name="Gold miners",
         description="Bullion ride",
