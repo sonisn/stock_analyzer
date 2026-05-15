@@ -25,6 +25,14 @@ def _spy_quote(start: float, end: float) -> tr.Quote:
     return tr.Quote(pick_price=start, measured_price=end)
 
 
+def _empty_dir() -> tr.DirectionStats:
+    return tr.DirectionStats(
+        n_mature=0, n_pending=0,
+        mean_return_pct=None, mean_spy_return_pct=None, mean_alpha_pct=None,
+        winners=0, losers=0, flats=0, sharpe=None,
+    )
+
+
 def test_buy_alpha_is_stock_minus_spy_when_stock_beats_spy():
     """Stock +20%, SPY +5% → buy alpha = +15% (wise buy)."""
     with patch.object(
@@ -333,3 +341,101 @@ def test_compute_model_breakdown_sorted_by_mean_alpha_desc():
     assert out[0].mean_alpha_pct == pytest.approx(18.0)
     assert out[1].opus_model == "strong"
     assert out[1].mean_alpha_pct == pytest.approx(2.0)
+
+
+# --- format_track_record_block rendering ---------------------------------
+
+
+def test_block_renders_all_directions_with_data():
+    """Every direction with n_mature >= 1 renders one line; model_breakdown
+    renders when non-empty; first Sharpe label is spelled out."""
+    buy = tr.DirectionStats(
+        n_mature=6, n_pending=0,
+        mean_return_pct=10.0, mean_spy_return_pct=2.0, mean_alpha_pct=8.0,
+        winners=4, losers=1, flats=1, sharpe=0.42,
+    )
+    hold = tr.DirectionStats(
+        n_mature=3, n_pending=0,
+        mean_return_pct=4.0, mean_spy_return_pct=3.0, mean_alpha_pct=1.0,
+        winners=2, losers=1, flats=0, sharpe=None,
+    )
+    rec = tr.TrackRecord(
+        n_picks_total=9, n_mature=9, n_pending=0,
+        mean_return_pct=7.0, mean_spy_return_pct=2.5, mean_alpha_pct=4.5,
+        winners=6, losers=2, flats=1, overall_sharpe=0.30,
+        buy_stats=buy, hold_stats=hold, trim_stats=_empty_dir(), sell_stats=_empty_dir(),
+        model_breakdown=[
+            tr.ModelStats(opus_model="claude-opus-4-7", n_mature=4, mean_alpha_pct=10.0, sharpe=0.55),
+        ],
+        picks=[], pending=[],
+    )
+    out = tr.format_track_record_block(rec)
+    assert "Buy track record:" in out
+    assert "Hold track record:" in out
+    assert "Trim track record:" not in out
+    assert "Sell track record:" not in out
+    assert "Model breakdown:" in out
+    assert "claude-opus-4-7 (4 picks, +10.0%)" in out
+    # First Sharpe label is the full one; subsequent lines just say Sharpe.
+    assert "Sharpe (per-decision)" in out
+
+
+def test_block_omits_directions_with_zero_mature():
+    """Directions with n_mature == 0 are completely absent from the block."""
+    buy = tr.DirectionStats(
+        n_mature=3, n_pending=0,
+        mean_return_pct=10.0, mean_spy_return_pct=2.0, mean_alpha_pct=8.0,
+        winners=2, losers=0, flats=1, sharpe=None,
+    )
+    rec = tr.TrackRecord(
+        n_picks_total=3, n_mature=3, n_pending=0,
+        mean_return_pct=10.0, mean_spy_return_pct=2.0, mean_alpha_pct=8.0,
+        winners=2, losers=0, flats=1, overall_sharpe=None,
+        buy_stats=buy, hold_stats=_empty_dir(), trim_stats=_empty_dir(), sell_stats=_empty_dir(),
+        model_breakdown=[],
+        picks=[], pending=[],
+    )
+    out = tr.format_track_record_block(rec)
+    assert "Buy track record:" in out
+    assert "Hold track record:" not in out
+    assert "Trim track record:" not in out
+    assert "Sell track record:" not in out
+    assert "Model breakdown:" not in out
+
+
+def test_block_renders_sharpe_na_when_none():
+    """Sharpe None renders as either 'n/a (n<5)' or 'n/a (flat)'."""
+    small_sample = tr.DirectionStats(
+        n_mature=3, n_pending=0,
+        mean_return_pct=10.0, mean_spy_return_pct=2.0, mean_alpha_pct=8.0,
+        winners=2, losers=0, flats=1, sharpe=None,
+    )
+    flat_sample = tr.DirectionStats(
+        n_mature=5, n_pending=0,
+        mean_return_pct=5.0, mean_spy_return_pct=2.0, mean_alpha_pct=3.0,
+        winners=5, losers=0, flats=0, sharpe=None,
+    )
+    rec = tr.TrackRecord(
+        n_picks_total=8, n_mature=8, n_pending=0,
+        mean_return_pct=7.0, mean_spy_return_pct=2.0, mean_alpha_pct=5.0,
+        winners=7, losers=0, flats=1, overall_sharpe=None,
+        buy_stats=small_sample, hold_stats=flat_sample,
+        trim_stats=_empty_dir(), sell_stats=_empty_dir(),
+        model_breakdown=[], picks=[], pending=[],
+    )
+    out = tr.format_track_record_block(rec)
+    assert "n/a (n<5)" in out
+    assert "n/a (flat)" in out
+
+
+def test_block_returns_empty_when_no_decisions():
+    """Empty record renders as empty string (prompt-context gets nothing)."""
+    rec = tr.TrackRecord(
+        n_picks_total=0, n_mature=0, n_pending=0,
+        mean_return_pct=None, mean_spy_return_pct=None, mean_alpha_pct=None,
+        winners=0, losers=0, flats=0, overall_sharpe=None,
+        buy_stats=_empty_dir(), hold_stats=_empty_dir(),
+        trim_stats=_empty_dir(), sell_stats=_empty_dir(),
+        model_breakdown=[], picks=[], pending=[],
+    )
+    assert tr.format_track_record_block(rec) == ""

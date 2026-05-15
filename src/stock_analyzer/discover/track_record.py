@@ -402,10 +402,19 @@ def _empty_record() -> TrackRecord:
 # --- formatters -----------------------------------------------------------
 
 
+def _sharpe_text(sharpe: float | None, n_mature: int) -> str:
+    """Render Sharpe as either '0.42' or 'n/a (n<5)' / 'n/a (flat)'."""
+    if sharpe is not None:
+        return f"{sharpe:.2f}"
+    if n_mature < 5:
+        return "n/a (n<5)"
+    return "n/a (flat)"
+
+
 def format_track_record_summary(record: TrackRecord) -> str:
-    """One-line summary suitable for the LLM prompt header. Renders BOTH
-    directions when each has at least one mature decision; falls back to
-    a single combined line when only one direction exists."""
+    """One-line summary suitable for the dashboard / short prompt context.
+    Renders the OVERALL aggregate plus per-direction sub-totals when each
+    direction has at least one mature decision."""
     if record.n_mature == 0:
         if record.n_pending:
             return (
@@ -419,21 +428,26 @@ def format_track_record_summary(record: TrackRecord) -> str:
     if record.buy_stats.n_mature:
         bs = record.buy_stats
         parts.append(
-            f" Buy picks {bs.n_mature} mature, "
-            f"return {bs.mean_return_pct:+.1f}% vs SPY {bs.mean_spy_return_pct:+.1f}% "
-            f"(alpha {bs.mean_alpha_pct:+.1f}%, "
-            f"{bs.winners}W/{bs.losers}L/{bs.flats}F)."
+            f" Buy {bs.n_mature} mature, "
+            f"alpha {bs.mean_alpha_pct:+.1f}% ({bs.winners}W/{bs.losers}L/{bs.flats}F)."
+        )
+    if record.hold_stats.n_mature:
+        hs = record.hold_stats
+        parts.append(
+            f" Hold {hs.n_mature} mature, "
+            f"alpha {hs.mean_alpha_pct:+.1f}% ({hs.winners}W/{hs.losers}L/{hs.flats}F)."
+        )
+    if record.trim_stats.n_mature:
+        ts = record.trim_stats
+        parts.append(
+            f" Trim {ts.n_mature} mature, "
+            f"alpha {ts.mean_alpha_pct:+.1f}% ({ts.winners}W/{ts.losers}L/{ts.flats}F)."
         )
     if record.sell_stats.n_mature:
         ss = record.sell_stats
-        # For sells, "stock return" is the unflipped raw return — what the
-        # ticker did. Alpha is sign-flipped so positive means the sell call
-        # was right. Report both.
         parts.append(
-            f" Sell calls {ss.n_mature} mature, "
-            f"stock {ss.mean_return_pct:+.1f}% vs SPY {ss.mean_spy_return_pct:+.1f}% "
-            f"(call-alpha {ss.mean_alpha_pct:+.1f}%, "
-            f"{ss.winners}W/{ss.losers}L/{ss.flats}F)."
+            f" Sell {ss.n_mature} mature, "
+            f"alpha {ss.mean_alpha_pct:+.1f}% ({ss.winners}W/{ss.losers}L/{ss.flats}F)."
         )
     if record.n_pending:
         parts.append(f" {record.n_pending} pending.")
@@ -441,9 +455,14 @@ def format_track_record_summary(record: TrackRecord) -> str:
 
 
 def _format_decision_line(p: PickReturn) -> str:
-    """Render one mature decision; sells get a [SELL] tag so the user can
-    tell directions apart in the listing."""
-    tag = "[SELL]" if p.direction == "sell" else "[BUY] "
+    """Render one mature decision; non-buy decisions get a [VERDICT] tag
+    so the user can tell directions apart in the listing."""
+    tag = {
+        "buy": "[BUY] ",
+        "hold": "[HOLD]",
+        "trim": "[TRIM]",
+        "sell": "[SELL]",
+    }.get(p.direction, "[?]   ")
     return (
         f"  {tag} {p.ticker:6s}  {p.pick_date}  age {p.age_days}d  "
         f"return {p.pick_return_pct:+.1f}%  "
@@ -453,32 +472,40 @@ def _format_decision_line(p: PickReturn) -> str:
 
 
 def format_track_record_lines(record: TrackRecord, *, limit: int = 15) -> list[str]:
-    """Per-decision lines for the report body. Buy and sell mature
-    sections rendered separately so the user can see how each direction
-    performed; biggest winners + losers shown per section."""
+    """Per-decision lines for the report body. One section per direction
+    with mature data; each section shows the top decisions by alpha."""
     lines: list[str] = []
-    buy_mature = sorted(
-        [p for p in record.picks if p.direction == "buy"],
-        key=lambda p: p.alpha_pct or 0, reverse=True,
-    )
-    sell_mature = sorted(
-        [p for p in record.picks if p.direction == "sell"],
-        key=lambda p: p.alpha_pct or 0, reverse=True,
-    )
+    by_dir: dict[str, list[PickReturn]] = {
+        "buy": [], "hold": [], "trim": [], "sell": [],
+    }
+    for p in record.picks:
+        by_dir.setdefault(p.direction, []).append(p)
 
-    if buy_mature:
-        lines.append("  -- BUY picks (mature) --")
-        for p in buy_mature[:limit]:
-            lines.append(_format_decision_line(p))
-    if sell_mature:
-        lines.append("  -- SELL calls (mature) --")
-        for p in sell_mature[:limit]:
+    section_headers = [
+        ("buy", "  -- BUY picks (mature) --"),
+        ("hold", "  -- HOLD verdicts (mature) --"),
+        ("trim", "  -- TRIM verdicts (mature) --"),
+        ("sell", "  -- SELL verdicts (mature) --"),
+    ]
+    for direction, header in section_headers:
+        picks = sorted(
+            by_dir[direction], key=lambda p: p.alpha_pct or 0, reverse=True,
+        )
+        if not picks:
+            continue
+        lines.append(header)
+        for p in picks[:limit]:
             lines.append(_format_decision_line(p))
 
     if record.pending:
         lines.append("  -- pending (too young to score) --")
         for p in sorted(record.pending, key=lambda p: p.pick_date, reverse=True)[:5]:
-            tag = "[SELL]" if p.direction == "sell" else "[BUY] "
+            tag = {
+                "buy": "[BUY] ",
+                "hold": "[HOLD]",
+                "trim": "[TRIM]",
+                "sell": "[SELL]",
+            }.get(p.direction, "[?]   ")
             live_ret = (
                 f"live {p.pick_return_pct:+.1f}%"
                 if p.pick_return_pct is not None else "—"
@@ -489,12 +516,52 @@ def format_track_record_lines(record: TrackRecord, *, limit: int = 15) -> list[s
     return lines
 
 
+def _format_direction_block_line(
+    label: str, stats: DirectionStats, *, first_sharpe_label_done: list[bool],
+) -> str:
+    """One line per direction in the multi-line block — sample size, alpha,
+    Sharpe. `first_sharpe_label_done` is a one-element list used as a
+    mutable flag: the FIRST direction line spells out "Sharpe (per-decision)"
+    to communicate the unit, subsequent lines just say "Sharpe"."""
+    label_text = "Sharpe (per-decision)" if not first_sharpe_label_done[0] else "Sharpe"
+    first_sharpe_label_done[0] = True
+    alpha_text = (
+        f"{stats.mean_alpha_pct:+.1f}%"
+        if stats.mean_alpha_pct is not None else "n/a"
+    )
+    return (
+        f"{label} track record: {stats.n_mature} mature, "
+        f"alpha {alpha_text}, "
+        f"{label_text} {_sharpe_text(stats.sharpe, stats.n_mature)}"
+    )
+
+
 def format_track_record_block(record: TrackRecord) -> str:
     """Multi-line block suitable for prepending to the ranker / rebalancer
-    prompt as historical context."""
+    prompt as historical context. Direction lines emitted for every
+    direction with at least one mature decision; model_breakdown rendered
+    on the last header line when non-empty; per-decision detail follows."""
     if record.n_picks_total == 0:
         return ""
-    head = format_track_record_summary(record)
+    lines: list[str] = []
+    first_sharpe_label_done = [False]
+    for label, stats in [
+        ("Buy", record.buy_stats),
+        ("Hold", record.hold_stats),
+        ("Trim", record.trim_stats),
+        ("Sell", record.sell_stats),
+    ]:
+        if stats.n_mature:
+            lines.append(_format_direction_block_line(
+                label, stats, first_sharpe_label_done=first_sharpe_label_done,
+            ))
+    if record.model_breakdown:
+        model_parts = [
+            f"{m.opus_model} ({m.n_mature} picks, {m.mean_alpha_pct:+.1f}%)"
+            for m in record.model_breakdown
+        ]
+        lines.append("Model breakdown: " + " | ".join(model_parts))
+    head = "\n".join(lines) if lines else format_track_record_summary(record)
     body = format_track_record_lines(record, limit=10)
     return head + "\n" + "\n".join(body) if body else head
 
