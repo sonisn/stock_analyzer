@@ -15,21 +15,6 @@ from sqlmodel import Session, select
 from .tables import HoldingReviewRow, Pick, Run
 
 
-def fetch_recent_pick_runs(
-    session: Session, *, lookback_days: int
-) -> list[tuple[str, str]]:
-    """Every (run_at, ticker) for BUY picks in the last `lookback_days`,
-    oldest-first. Dedup happens in the caller."""
-    cutoff = (datetime.now() - timedelta(days=lookback_days)).isoformat()
-    rows = session.exec(
-        select(Run.run_at, Pick.ticker)
-        .join(Pick, Pick.run_id == Run.id)
-        .where(Run.run_at >= cutoff)
-        .order_by(Run.run_at.asc())
-    )
-    return [(row.run_at, row.ticker) for row in rows]
-
-
 def fetch_recent_pick_runs_with_model(
     session: Session, *, lookback_days: int
 ) -> list[tuple[str, str, str | None]]:
@@ -80,7 +65,6 @@ def fetch_recent_sell_runs(
 
 
 __all__ = [
-    "fetch_recent_pick_runs",
     "fetch_recent_pick_runs_with_model",
     "fetch_recent_verdict_runs",
     "fetch_recent_sell_runs",

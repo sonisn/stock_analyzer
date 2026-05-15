@@ -515,18 +515,17 @@ def format_track_record_lines(record: TrackRecord, *, limit: int = 15) -> list[s
 
 
 def _format_direction_block_line(
-    label: str, stats: DirectionStats, *, first_sharpe_label_done: list[bool],
+    label: str, stats: DirectionStats, *, is_first: bool,
 ) -> str:
     """One line per direction in the multi-line block — sample size, alpha,
-    Sharpe. `first_sharpe_label_done` is a one-element list used as a
-    mutable flag: the FIRST direction line spells out "Sharpe (per-decision)"
-    to communicate the unit, subsequent lines just say "Sharpe"."""
-    label_text = "Sharpe (per-decision)" if not first_sharpe_label_done[0] else "Sharpe"
-    first_sharpe_label_done[0] = True
+    Sharpe. The FIRST direction line (``is_first=True``) spells out
+    "Sharpe (per-decision)" to communicate the unit; subsequent lines just
+    say "Sharpe"."""
+    sharpe_label = "Sharpe (per-decision)" if is_first else "Sharpe"
     return (
         f"{label} track record: {stats.n_mature} mature, "
         f"alpha {_alpha_text(stats.mean_alpha_pct)}, "
-        f"{label_text} {_sharpe_text(stats.sharpe, stats.n_mature)}"
+        f"{sharpe_label} {_sharpe_text(stats.sharpe, stats.n_mature)}"
     )
 
 
@@ -538,7 +537,7 @@ def format_track_record_block(record: TrackRecord) -> str:
     if record.n_picks_total == 0:
         return ""
     lines: list[str] = []
-    first_sharpe_label_done = [False]
+    is_first = True
     for label, stats in [
         ("Buy", record.buy_stats),
         ("Hold", record.hold_stats),
@@ -547,8 +546,9 @@ def format_track_record_block(record: TrackRecord) -> str:
     ]:
         if stats.n_mature:
             lines.append(_format_direction_block_line(
-                label, stats, first_sharpe_label_done=first_sharpe_label_done,
+                label, stats, is_first=is_first,
             ))
+            is_first = False
     if record.model_breakdown:
         model_parts = [
             f"{m.opus_model} ({m.n_mature} picks, {m.mean_alpha_pct:+.1f}%)"
