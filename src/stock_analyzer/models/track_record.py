@@ -1,13 +1,15 @@
 """Pydantic models for the track-record measurement pipeline.
 
-Captures one scored decision (``PickReturn``) — buy or sell — plus the
-per-direction stats (``DirectionStats``) and the top-level aggregate
-(``TrackRecord``) used by the report header and the ranker prompt.
+Captures one scored decision (``PickReturn``) — buy / hold / trim / sell —
+plus per-direction stats (``DirectionStats``), per-Opus-model breakdown
+(``ModelStats``), and the top-level aggregate (``TrackRecord``) used by
+the report header and the ranker prompt.
 
 Sign convention for ``alpha_pct``: positive always means "the call was
-right" — for BUY picks ``alpha = stock_ret - spy_ret``; for SELL/TRIM
-calls the raw difference is flipped so a stock that underperformed
-SPY after a SELL still scores positive alpha.
+right". BUY and HOLD use ``alpha = stock_ret - spy_ret`` (the holding
+direction — vindicated when the stock outperforms SPY). TRIM and SELL
+flip the sign — vindicated when the stock underperforms SPY after the
+verdict.
 """
 from __future__ import annotations
 
@@ -15,7 +17,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-Direction = Literal["buy", "sell"]
+Direction = Literal["buy", "hold", "trim", "sell"]
 
 
 class Quote(BaseModel):
@@ -32,9 +34,8 @@ class Quote(BaseModel):
 class PickReturn(BaseModel):
     """One scored decision — its realized return and how it compared to SPY.
 
-    ``direction`` distinguishes buy picks (from discover) from sell/trim calls
-    (from rebalance). ``alpha_pct`` is sign-flipped for sells so positive
-    alpha always means "the call was right".
+    ``direction`` is one of buy / hold / trim / sell. ``alpha_pct`` is
+    sign-adjusted so positive always means "the call was right".
     """
 
     model_config = ConfigDict(frozen=True)
@@ -47,12 +48,12 @@ class PickReturn(BaseModel):
     measured_price: float | None
     pick_return_pct: float | None
     spy_return_pct: float | None
-    alpha_pct: float | None  # direction-aware: positive = right call
-    is_mature: bool          # >= _MIN_AGE_DAYS old
+    alpha_pct: float | None
+    is_mature: bool
 
 
 class DirectionStats(BaseModel):
-    """Aggregate stats for one direction (buy or sell)."""
+    """Aggregate stats for one direction (buy / hold / trim / sell)."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -64,14 +65,28 @@ class DirectionStats(BaseModel):
     winners: int
     losers: int
     flats: int
+    sharpe: float | None  # None when n_mature < 5 or stdev <= 0.001
+
+
+class ModelStats(BaseModel):
+    """Per-Opus-model performance for BUY decisions only."""
+
+    model_config = ConfigDict(frozen=True)
+
+    opus_model: str
+    n_mature: int
+    mean_alpha_pct: float | None
+    sharpe: float | None
 
 
 class TrackRecord(BaseModel):
     """Aggregate summary of mature decisions over the lookback window.
 
     Top-level ``mean_*`` / ``winners`` / ``losers`` / ``flats`` cover ALL
-    mature decisions (buys + sells) so existing consumers keep working.
-    ``buy_stats`` / ``sell_stats`` break it down per direction.
+    mature decisions across every direction. ``buy_stats`` / ``hold_stats`` /
+    ``trim_stats`` / ``sell_stats`` break it down. ``sell_stats`` is
+    SELL-only (TRIM moved to its own field); ``model_breakdown`` carries
+    BUY-only per-Opus-model rows for models with n_mature >= 3.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -82,11 +97,18 @@ class TrackRecord(BaseModel):
     mean_return_pct: float | None
     mean_spy_return_pct: float | None
     mean_alpha_pct: float | None
-    winners: int       # mature decisions where alpha > 0
-    losers: int        # mature decisions where alpha < 0
-    flats: int         # mature decisions where alpha ≈ 0
+    winners: int
+    losers: int
+    flats: int
+    overall_sharpe: float | None
+
     buy_stats: DirectionStats
-    sell_stats: DirectionStats
+    hold_stats: DirectionStats
+    trim_stats: DirectionStats
+    sell_stats: DirectionStats          # SELL-only (was SELL+TRIM bundled).
+
+    model_breakdown: list[ModelStats]
+
     picks: list[PickReturn]
     pending: list[PickReturn]
 
@@ -96,5 +118,6 @@ __all__ = [
     "Quote",
     "PickReturn",
     "DirectionStats",
+    "ModelStats",
     "TrackRecord",
 ]

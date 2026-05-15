@@ -25,16 +25,22 @@ Surfaced two ways:
 """
 from __future__ import annotations
 
+import statistics
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Any
 
 from ..db.session import get_session
-from ..db.track_record import fetch_recent_pick_runs, fetch_recent_sell_runs
+from ..db.track_record import (
+    fetch_recent_pick_runs_with_model,
+    fetch_recent_verdict_runs,
+)
 from ..logging import get_logger
 from ..models.track_record import (
     Direction,
     DirectionStats,
+    ModelStats,
     PickReturn,
     Quote,
     TrackRecord,
@@ -139,10 +145,10 @@ def _score_pick(
     spy_ret = _pct_change(spy_quote.pick_price, spy_quote.measured_price)
     if pick_ret is not None and spy_ret is not None:
         raw_alpha = pick_ret - spy_ret
-        # For sell calls, the call is "right" when the stock UNDERPERFORMS
-        # SPY (you correctly identified the relative loser). Flip the sign
-        # so positive alpha always means "wise call" across directions.
-        alpha = raw_alpha if direction == "buy" else -raw_alpha
+        # BUY and HOLD: vindicated when the stock outperforms SPY (positive raw_alpha).
+        # TRIM and SELL: vindicated when the stock underperforms SPY — sign-flip so
+        # positive always means "the call was right" across all four directions.
+        alpha = raw_alpha if direction in ("buy", "hold") else -raw_alpha
     else:
         alpha = None
     return PickReturn(
@@ -159,31 +165,53 @@ def _score_pick(
     )
 
 
+def _sharpe(alphas: list[float]) -> float | None:
+    """Per-decision Sharpe = mean(alpha) / stdev(alpha). Returns None when
+    the sample is too small (< 5) or effectively flat (stdev < 0.001).
+    Unannualized — matches the unit of the underlying alpha (per-decision
+    measurement over the 90-day window)."""
+    if len(alphas) < 5:
+        return None
+    stdev = statistics.stdev(alphas)
+    if stdev < 0.001:
+        return None
+    return statistics.mean(alphas) / stdev
+
+
 def measure_track_record(
     db_path: str, *, lookback_days: int = 180
 ) -> TrackRecord:
-    """Top-level entry — query past buy picks AND sell calls, fetch prices,
-    summarize per direction.
+    """Top-level entry — query buy picks AND hold/trim/sell verdicts, fetch
+    forward prices, summarize per direction and per Opus model.
 
     `lookback_days` bounds how far back we look; defaults to 180 so the
     system has enough mature decisions to compute meaningful stats once
     it's been running a while. Empty TrackRecord is returned if the DB
-    has neither buys nor sells yet.
+    has no decisions yet.
     """
     try:
         with get_session(db_path) as session:
-            pick_rows = fetch_recent_pick_runs(session, lookback_days=lookback_days)
-            sell_rows = fetch_recent_sell_runs(session, lookback_days=lookback_days)
-        raw_buys = _dedup_oldest(pick_rows)
+            pick_rows = fetch_recent_pick_runs_with_model(session, lookback_days=lookback_days)
+            hold_rows = fetch_recent_verdict_runs(session, "HOLD", lookback_days=lookback_days)
+            trim_rows = fetch_recent_verdict_runs(session, "TRIM", lookback_days=lookback_days)
+            sell_rows = fetch_recent_verdict_runs(session, "SELL", lookback_days=lookback_days)
+        buy_pairs = [(r, t) for r, t, _m in pick_rows]
+        raw_buys = _dedup_oldest(buy_pairs)
+        raw_holds = _dedup_oldest(hold_rows)
+        raw_trims = _dedup_oldest(trim_rows)
         raw_sells = _dedup_oldest(sell_rows)
+        ticker_model: dict[str, str | None] = {}
+        for _r, ticker, model in pick_rows:
+            ticker_model.setdefault(ticker, model)
     except Exception as e:
         logger.warning("track-record fetch failed (%s) — returning empty", e)
         return _empty_record()
-    if not raw_buys and not raw_sells:
+    if not (raw_buys or raw_holds or raw_trims or raw_sells):
         return _empty_record()
 
-    # SPY benchmarks — one per distinct decision date so we don't refetch.
-    distinct_dates = sorted({d for _, d, _ in raw_buys + raw_sells})
+    distinct_dates = sorted({
+        d for _, d, _ in raw_buys + raw_holds + raw_trims + raw_sells
+    })
     spy_cache: dict[str, Quote] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         for d, q in zip(distinct_dates, ex.map(_fetch_spy_quote, distinct_dates), strict=False):
@@ -197,6 +225,16 @@ def measure_track_record(
                 _score_pick, t, d, a,
                 spy_cache.get(d, Quote(pick_price=None, measured_price=None)), "buy",
             ))
+        for t, d, a in raw_holds:
+            futures.append(ex.submit(
+                _score_pick, t, d, a,
+                spy_cache.get(d, Quote(pick_price=None, measured_price=None)), "hold",
+            ))
+        for t, d, a in raw_trims:
+            futures.append(ex.submit(
+                _score_pick, t, d, a,
+                spy_cache.get(d, Quote(pick_price=None, measured_price=None)), "trim",
+            ))
         for t, d, a in raw_sells:
             futures.append(ex.submit(
                 _score_pick, t, d, a,
@@ -208,10 +246,6 @@ def measure_track_record(
             except Exception as e:
                 logger.debug("decision scoring failed: %s", e)
 
-    # Drop decisions where yfinance returned no price data — these are
-    # delisted tickers from old picks/sells that still live in the DB.
-    # Including them as "pending" inflates the count with zombie entries
-    # that will never mature; better to silently skip and log the count.
     delisted = [p for p in decisions if p.pick_price is None]
     if delisted:
         logger.info(
@@ -229,9 +263,21 @@ def measure_track_record(
         [p for p in mature if p.direction == "buy"],
         pending_count=sum(1 for p in pending if p.direction == "buy"),
     )
+    hold_stats = _aggregate(
+        [p for p in mature if p.direction == "hold"],
+        pending_count=sum(1 for p in pending if p.direction == "hold"),
+    )
+    trim_stats = _aggregate(
+        [p for p in mature if p.direction == "trim"],
+        pending_count=sum(1 for p in pending if p.direction == "trim"),
+    )
     sell_stats = _aggregate(
         [p for p in mature if p.direction == "sell"],
         pending_count=sum(1 for p in pending if p.direction == "sell"),
+    )
+
+    model_breakdown = _compute_model_breakdown(
+        [p for p in mature if p.direction == "buy"], ticker_model,
     )
 
     record = TrackRecord(
@@ -244,36 +290,67 @@ def measure_track_record(
         winners=overall.winners,
         losers=overall.losers,
         flats=overall.flats,
+        overall_sharpe=overall.sharpe,
         buy_stats=buy_stats,
+        hold_stats=hold_stats,
+        trim_stats=trim_stats,
         sell_stats=sell_stats,
+        model_breakdown=model_breakdown,
         picks=mature,
         pending=pending,
     )
     logger.info(
-        "Track record: buys %d mature alpha %s%% (%dW/%dL), "
-        "sells %d mature alpha %s%% (%dW/%dL), %d pending",
-        buy_stats.n_mature,
-        f"{buy_stats.mean_alpha_pct:+.1f}" if buy_stats.mean_alpha_pct is not None else "—",
-        buy_stats.winners, buy_stats.losers,
-        sell_stats.n_mature,
-        f"{sell_stats.mean_alpha_pct:+.1f}" if sell_stats.mean_alpha_pct is not None else "—",
-        sell_stats.winners, sell_stats.losers,
+        "Track record: buys=%d hold=%d trim=%d sell=%d mature; %d pending; "
+        "overall_sharpe=%s",
+        buy_stats.n_mature, hold_stats.n_mature,
+        trim_stats.n_mature, sell_stats.n_mature,
         record.n_pending,
+        f"{record.overall_sharpe:.2f}" if record.overall_sharpe is not None else "n/a",
     )
     return record
+
+
+def _compute_model_breakdown(
+    buy_mature: list[PickReturn],
+    ticker_model: dict[str, str | None],
+) -> list[ModelStats]:
+    """Group mature BUY decisions by their originating opus_model. Models
+    with n_mature < 3 are dropped — their stats are too noisy to report
+    individually (the decisions still appear in the overall buy aggregate).
+    Picks whose opus_model is None are grouped under 'unknown'."""
+    by_model: dict[str, list[PickReturn]] = defaultdict(list)
+    for p in buy_mature:
+        model = ticker_model.get(p.ticker) or "unknown"
+        by_model[model].append(p)
+    out: list[ModelStats] = []
+    for model, picks in by_model.items():
+        if len(picks) < 3:
+            continue
+        alphas = [p.alpha_pct for p in picks if p.alpha_pct is not None]
+        if not alphas:
+            continue
+        out.append(ModelStats(
+            opus_model=model,
+            n_mature=len(picks),
+            mean_alpha_pct=sum(alphas) / len(alphas),
+            sharpe=_sharpe(alphas),
+        ))
+    return sorted(
+        out, key=lambda m: m.mean_alpha_pct or 0, reverse=True,
+    )
 
 
 def _aggregate(
     mature: list[PickReturn], *, pending_count: int = 0
 ) -> DirectionStats:
-    """Compute mean returns + win/loss/flat counts for a list of mature
-    decisions. Alpha is already direction-aware (positive = right call),
-    so we threshold ±0.5% on alpha regardless of direction."""
+    """Compute mean returns + win/loss/flat counts + Sharpe for a list of
+    mature decisions. Alpha is already direction-aware (positive = right
+    call), so we threshold ±0.5% on alpha regardless of direction."""
     if not mature:
         return DirectionStats(
             n_mature=0, n_pending=pending_count,
             mean_return_pct=None, mean_spy_return_pct=None, mean_alpha_pct=None,
-            winners=0, losers=0, flats=0,
+            winners=0, losers=0, flats=0, sharpe=None,
         )
     mean_ret = sum(p.pick_return_pct or 0 for p in mature) / len(mature)
     mean_spy = sum(p.spy_return_pct or 0 for p in mature) / len(mature)
@@ -281,6 +358,7 @@ def _aggregate(
     winners = sum(1 for p in mature if (p.alpha_pct or 0) > 0.5)
     losers = sum(1 for p in mature if (p.alpha_pct or 0) < -0.5)
     flats = len(mature) - winners - losers
+    alphas = [p.alpha_pct for p in mature if p.alpha_pct is not None]
     return DirectionStats(
         n_mature=len(mature),
         n_pending=pending_count,
@@ -290,6 +368,7 @@ def _aggregate(
         winners=winners,
         losers=losers,
         flats=flats,
+        sharpe=_sharpe(alphas),
     )
 
 
@@ -297,13 +376,17 @@ def _empty_record() -> TrackRecord:
     empty_dir = DirectionStats(
         n_mature=0, n_pending=0,
         mean_return_pct=None, mean_spy_return_pct=None, mean_alpha_pct=None,
-        winners=0, losers=0, flats=0,
+        winners=0, losers=0, flats=0, sharpe=None,
     )
     return TrackRecord(
         n_picks_total=0, n_mature=0, n_pending=0,
         mean_return_pct=None, mean_spy_return_pct=None, mean_alpha_pct=None,
-        winners=0, losers=0, flats=0,
-        buy_stats=empty_dir, sell_stats=empty_dir,
+        winners=0, losers=0, flats=0, overall_sharpe=None,
+        buy_stats=empty_dir,
+        hold_stats=empty_dir,
+        trim_stats=empty_dir,
+        sell_stats=empty_dir,
+        model_breakdown=[],
         picks=[], pending=[],
     )
 
