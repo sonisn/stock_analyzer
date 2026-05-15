@@ -408,24 +408,6 @@ def format_track_record_block(record: TrackRecord) -> str:
     return head + "\n" + "\n".join(body) if body else head
 
 
-__all__ = [
-    "Direction",
-    "Quote",
-    "PickReturn",
-    "DirectionStats",
-    "TrackRecord",
-    "measure_track_record",
-    "score_covered_call",
-    "format_track_record_block",
-    "format_track_record_summary",
-    "format_track_record_lines",
-]
-
-
-def _ages_for_test() -> tuple[int, int]:
-    return _MIN_AGE_DAYS, _MEASUREMENT_WINDOW_DAYS
-
-
 # --- Covered call scoring --------------------------------------------------
 
 

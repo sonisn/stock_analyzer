@@ -23,13 +23,7 @@ from .brokerage import _client, _credentials, _extract_ticker, _unwrap
 
 logger = get_logger(__name__)
 
-# Re-export the model classes so legacy import paths keep working
-# during Phase 1. Group C strips this shim once every callsite has
-# moved to ``..models.portfolio``.
-__all__ = [
-    "Lot", "TickerTaxSummary",
-    "fetch_transaction_history", "to_tax_payloads",
-]
+__all__ = ["fetch_transaction_history", "to_tax_payloads"]
 
 
 def _coerce_date(value: Any) -> date | None:
