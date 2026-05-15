@@ -1,27 +1,25 @@
 """Track-record measurement — close the feedback loop.
 
-Reads two kinds of past decisions out of `discover.db`, fetches forward
-prices via yfinance, scores both:
+Reads four kinds of past decisions out of `discover.db`, fetches forward
+prices via yfinance, and scores each:
 
-  BUY decisions  (`picks` table)    — ranker top picks from discover runs
-  SELL decisions (`holdings_reviews`)— SELL or TRIM verdicts from rebalance
-                                       runs (TRIM is a softer SELL but
-                                       still says "reduce exposure")
+  BUY  decisions (`picks` table)            — discover-run top picks
+  HOLD decisions (`holdings_reviews` HOLD)  — rebalance "keep it" verdicts
+  TRIM decisions (`holdings_reviews` TRIM)  — rebalance "reduce by X%" verdicts
+  SELL decisions (`holdings_reviews` SELL)  — rebalance "exit" verdicts
 
-Alpha sign convention: positive alpha always means "the call was right":
-  - BUY:  alpha = stock_ret - spy_ret  (stock beat SPY → wise buy)
-  - SELL: alpha = spy_ret - stock_ret  (stock underperformed SPY after
-                                        we said sell → wise sell)
+Alpha sign convention: positive alpha always means "the call was right".
+  - BUY  / HOLD: alpha = stock_ret - spy_ret  (vindicated when stock beats SPY)
+  - TRIM / SELL: alpha = spy_ret - stock_ret  (vindicated when stock lags SPY)
 
 Mature decision = at least `_MIN_AGE_DAYS` old. Newer ones are listed
 separately as "pending" so their noise doesn't pollute the stats.
 
 Surfaced two ways:
-  1. As a header section in the email + PDF report ("Buy track record:
-     23 mature, mean +6.4% vs SPY +2.1% — Sell track record: 8 mature,
-     alpha +3.1%, 5W/3L")
+  1. As a header section in the email + PDF report (one line per direction
+     with mean alpha + per-decision Sharpe, plus an opus-model breakdown row)
   2. As context in the Opus ranker prompt so the LLM can reason about
-     its own historical accuracy on BOTH directions
+     its own historical accuracy by direction AND by which model picked
 """
 from __future__ import annotations
 
@@ -317,7 +315,13 @@ def _compute_model_breakdown(
     """Group mature BUY decisions by their originating opus_model. Models
     with n_mature < 3 are dropped — their stats are too noisy to report
     individually (the decisions still appear in the overall buy aggregate).
-    Picks whose opus_model is None are grouped under 'unknown'."""
+    Picks whose opus_model is None are grouped under 'unknown'.
+
+    `n_mature` in the returned `ModelStats` counts only picks with a
+    measurable alpha (not the raw bucket size), so the reported mean is
+    always derived from exactly `n_mature` data points. Today's caller
+    pre-filters to alpha-bearing picks, but this guarantee makes the
+    function safe under wider future use."""
     by_model: dict[str, list[PickReturn]] = defaultdict(list)
     for p in buy_mature:
         model = ticker_model.get(p.ticker) or "unknown"
@@ -327,16 +331,19 @@ def _compute_model_breakdown(
         if len(picks) < 3:
             continue
         alphas = [p.alpha_pct for p in picks if p.alpha_pct is not None]
-        if not alphas:
+        if len(alphas) < 3:
             continue
         out.append(ModelStats(
             opus_model=model,
-            n_mature=len(picks),
+            n_mature=len(alphas),
             mean_alpha_pct=sum(alphas) / len(alphas),
             sharpe=_sharpe(alphas),
         ))
+    # mean_alpha_pct is always non-None for surviving rows (we just computed it
+    # from a non-empty alphas list); the `or 0.0` is a typing-narrowing fallback.
     return sorted(
-        out, key=lambda m: m.mean_alpha_pct or 0, reverse=True,
+        out, key=lambda m: m.mean_alpha_pct if m.mean_alpha_pct is not None else 0.0,
+        reverse=True,
     )
 
 
