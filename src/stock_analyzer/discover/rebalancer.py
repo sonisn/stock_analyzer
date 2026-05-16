@@ -451,10 +451,10 @@ Your response is validated against a small Pydantic schema
     place that detail lives. The PDF/email renders straight from it.
   - option_writes: parallel to WRITE_CALL actions. One entry per
     WRITE_CALL with ticker, account (the brokerage account the call is
-    being written in — must match an eligible_holdings account),
-    strike, expiry (YYYY-MM-DD), contracts, est_premium_per_share,
-    delta, assignment_probability, notes. Empty list when no calls are
-    recommended.
+    being written in — must match an account listed in the
+    COVERED-CALL CONTEXT block), strike, expiry (YYYY-MM-DD), contracts,
+    est_premium_per_share, delta, assignment_probability, notes. Empty
+    list when no calls are recommended.
 
 Structured `actions` must agree with `full_text` — if full_text says
 "Action 1: SELL MRVL", actions[0] must be {{SELL, MRVL, ...}}.

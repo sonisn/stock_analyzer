@@ -34,7 +34,7 @@ def validate_option_writes(
 
     # Index eligibility by (ticker, account) for O(1) lookup.
     index: dict[tuple[str, str], EligibleHolding] = {}
-    for ticker, accounts in eligibility.items():
+    for accounts in eligibility.values():
         for eh in accounts:
             index[(eh.ticker, eh.account)] = eh
 
