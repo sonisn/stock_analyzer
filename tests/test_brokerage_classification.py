@@ -88,7 +88,10 @@ def test_fetch_open_option_positions_groups_short_calls_by_underlying():
          patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")):
         coverage = fetch_open_option_positions()
 
-    assert coverage == {"NVDA": 3, "AAPL": 2}
+    assert coverage == {
+        "NVDA": {"Test Acct": 3},
+        "AAPL": {"Test Acct": 2},
+    }
     assert "TSLA" not in coverage
     assert "GOOG" not in coverage
 
@@ -107,6 +110,58 @@ def test_fetch_open_option_positions_returns_empty_when_no_accounts():
     with patch("stock_analyzer.data.brokerage._client", return_value=fake_client), \
          patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")):
         assert fetch_open_option_positions() == {}
+
+
+def test_fetch_open_option_positions_returns_per_account_shape(monkeypatch):
+    """Per-account map: ticker → {account_name: contracts}.
+
+    A short call in Fidelity IRA must NOT reduce Fidelity Taxable's CC
+    capacity. The per-account shape is what makes that correct downstream.
+    """
+    from unittest.mock import MagicMock
+
+    from stock_analyzer.data import brokerage
+
+    # Mock credentials.
+    monkeypatch.setattr(brokerage, "_credentials", lambda: ("uid", "secret"))
+
+    # Mock the SnapTrade client to return two accounts, each with one short
+    # NVDA call.
+    fake_client = MagicMock()
+    fake_client.account_information.list_user_accounts.return_value = [
+        {"id": "acct-ira", "name": "Fidelity IRA"},
+        {"id": "acct-tax", "name": "Fidelity Taxable"},
+    ]
+
+    def _positions(*, user_id, user_secret, account_id):
+        # Format follows the existing SnapTrade shape used in
+        # fetch_open_option_positions: a single short call per account.
+        # OCC symbol uses 6-char space-padded root, e.g. "NVDA  ".
+        if account_id == "acct-ira":
+            return [{"symbol": "NVDA  260620C00260000", "units": -1}]
+        return [{"symbol": "NVDA  260620C00260000", "units": -2}]
+
+    fake_client.account_information.get_user_account_positions.side_effect = (
+        lambda **kw: _positions(**kw)
+    )
+    # _unwrap passes the value through when it's not a Pydantic model.
+    monkeypatch.setattr(brokerage, "_client", lambda: fake_client)
+
+    out = brokerage.fetch_open_option_positions()
+    assert out == {
+        "NVDA": {"Fidelity IRA": 1, "Fidelity Taxable": 2},
+    }
+
+
+def test_fetch_open_option_positions_empty_when_unavailable(monkeypatch):
+    """When credentials are missing, return {}."""
+    from stock_analyzer.data import brokerage
+
+    def _raise():
+        raise RuntimeError("no creds")
+
+    monkeypatch.setattr(brokerage, "_credentials", _raise)
+    assert brokerage.fetch_open_option_positions() == {}
 
 
 def test_fetch_portfolio_holdings_skips_option_symbols():

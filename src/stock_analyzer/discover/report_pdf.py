@@ -675,11 +675,12 @@ def _pdf_premium_income(data: dict, styles) -> list:
     """Render the Premium Income section as a ReportLab table + caption."""
     flow: list = []
     flow.append(Paragraph("<b>Premium Income</b>", styles["Heading3"]))
-    header = ["Ticker", "Strike", "Expiry", "Qty", "Premium", "Δ", "Assign %"]
+    header = ["Ticker", "Account", "Strike", "Expiry", "Qty", "Premium", "Δ", "Assign %"]
     rows = [header]
     for r in data.get("rows") or []:
         rows.append([
-            r["ticker"], f"${r['strike']:,.2f}", r["expiry"],
+            r["ticker"], r.get("account", "—"),
+            f"${r['strike']:,.2f}", r["expiry"],
             str(r["contracts"]), f"${r['premium_usd']:,.0f}",
             f"{r['delta']:.2f}", f"{r['assignment_pct']}%",
         ])
@@ -688,7 +689,7 @@ def _pdf_premium_income(data: dict, styles) -> list:
         ("BACKGROUND", (0, 0), (-1, 0), _CC_HEADER_BG),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
         ("GRID", (0, 0), (-1, -1), 0.25, _CC_GRID),
-        ("ALIGN", (1, 1), (-1, -1), "RIGHT"),
+        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
     ]))
     flow.append(t)
     flow.append(Spacer(1, 6))

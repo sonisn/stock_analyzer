@@ -33,28 +33,35 @@ logger = get_logger(__name__)
 #   "3 contracts $260C 2026-06-20"
 #   "2 contracts $230.00C 2026-06-20"
 #   "5 contracts $1,250C expiring 2026-07-18"
+#   "2 contracts $260C 2026-06-20 in Fidelity IRA"
 _SIZING_RE = re.compile(
-    r"(\d+)\s+contracts?\s+\$?([\d,]+(?:\.\d+)?)C\s+(?:expir\w+\s+)?(\d{4}-\d{2}-\d{2})",
-    re.IGNORECASE,
+    r"(?P<contracts>\d+)\s+contracts?\s+\$?(?P<strike>[\d,]+(?:\.\d+)?)C\s+"
+    r"(?:expir\w+\s+)?(?P<expiry>\d{4}-\d{2}-\d{2})"
+    r"(?:\s+in\s+(?P<account>[^,;\n]+?))?\s*$",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
-def _parse_sizing(sizing: str) -> tuple[int, float, str] | None:
-    """Return (contracts, strike, expiry_iso) or None if not parseable."""
+def _parse_sizing(sizing: str) -> tuple[int, float, str, str | None] | None:
+    """Return (contracts, strike, expiry_iso, account_or_None) or None."""
     if not isinstance(sizing, str):
         return None
     m = _SIZING_RE.search(sizing)
     if not m:
         return None
     try:
-        contracts = int(m.group(1))
-        strike = float(m.group(2).replace(",", ""))
-        expiry = m.group(3)
-        # Sanity check the date.
+        contracts = int(m.group("contracts"))
+        strike = float(m.group("strike").replace(",", ""))
+        expiry = m.group("expiry")
+        account = m.group("account")
+        if account is not None:
+            account = account.strip()
+            if not account:
+                account = None
         date.fromisoformat(expiry)
         if contracts <= 0 or strike <= 0:
             return None
-        return contracts, strike, expiry
+        return contracts, strike, expiry, account
     except (ValueError, TypeError):
         return None
 
@@ -101,13 +108,13 @@ def backfill_option_writes(
     no chain, or whose strike/expiry has no match in the chain are left
     alone (validation will drop them with a warning, as before).
     """
-    existing_ow_tickers = {ow.ticker for ow in plan.option_writes}
+    existing_ow_pairs: set[tuple[str, str]] = {
+        (ow.ticker, ow.account) for ow in plan.option_writes
+    }
     new_writes: list[OptionWrite] = list(plan.option_writes)
 
     for action in plan.actions:
         if action.action != "WRITE_CALL":
-            continue
-        if action.ticker in existing_ow_tickers:
             continue
 
         parsed = _parse_sizing(action.sizing)
@@ -120,7 +127,11 @@ def backfill_option_writes(
             )
             continue
 
-        contracts, strike, expiry_iso = parsed
+        contracts, strike, expiry_iso, account = parsed
+        candidate_account = account or "UNKNOWN"
+        if (action.ticker, candidate_account) in existing_ow_pairs:
+            continue
+
         chain = chains.get(action.ticker)
         if chain is None or not chain.calls:
             logger.warning(
@@ -145,6 +156,7 @@ def backfill_option_writes(
         delta_val = max(0.0, min(1.0, delta_val))
         new_writes.append(OptionWrite(
             ticker=action.ticker,
+            account=candidate_account,
             strike=match["strike"],
             expiry=match["expiry"],
             contracts=contracts,
@@ -153,11 +165,12 @@ def backfill_option_writes(
             assignment_probability=delta_val,
             notes="backfilled from chain after Opus omitted option_writes",
         ))
-        existing_ow_tickers.add(action.ticker)
+        existing_ow_pairs.add((action.ticker, candidate_account))
         logger.info(
-            "CC backfill: synthesized OptionWrite for %s (%d × $%.2fC %s, "
+            "CC backfill: synthesized OptionWrite for %s in %s (%d × $%.2fC %s, "
             "premium $%.2f/share, Δ %.2f) from chain data.",
-            action.ticker, contracts, match["strike"], expiry_iso,
+            action.ticker, candidate_account, contracts,
+            match["strike"], expiry_iso,
             match["est_premium_per_share"], delta_val,
         )
 

@@ -23,25 +23,35 @@ logger = get_logger(__name__)
 def validate_option_writes(
     plan: RebalancePlan,
     *,
-    eligibility: dict[str, EligibleHolding],
+    eligibility: dict[str, list[EligibleHolding]],
 ) -> tuple[RebalancePlan, list[str]]:
-    """Drop orphan WRITE_CALL actions, drop orphan option_writes, clamp
-    oversized `contracts`, drop unknown tickers. Returns a new
-    (frozen) plan with the same other fields untouched.
+    """Drop orphan WRITE_CALL actions, drop OptionWrites with unknown
+    (ticker, account) pairs, clamp oversized contract counts against the
+    matching account's max_contracts. Returns a new (frozen) plan with
+    the same other fields untouched.
     """
     warnings: list[str] = []
+
+    # Index eligibility by (ticker, account) for O(1) lookup.
+    index: dict[tuple[str, str], EligibleHolding] = {}
+    for ticker, accounts in eligibility.items():
+        for eh in accounts:
+            index[(eh.ticker, eh.account)] = eh
 
     write_call_tickers = {
         a.ticker for a in plan.actions if a.action == "WRITE_CALL"
     }
-    option_write_tickers = {ow.ticker for ow in plan.option_writes}
 
-    kept: set[str] = set()
+    kept_tickers: set[str] = set()
     cleaned_option_writes: list[OptionWrite] = []
+    seen_pairs: set[tuple[str, str]] = set()
     for ow in plan.option_writes:
-        if ow.ticker not in eligibility:
+        key = (ow.ticker, ow.account)
+        match = index.get(key)
+        if match is None:
             warnings.append(
-                f"OptionWrite for {ow.ticker} dropped: ticker not eligible"
+                f"OptionWrite for {ow.ticker} in account {ow.account!r} "
+                f"dropped: no matching eligibility entry"
             )
             logger.warning("CC validation: %s", warnings[-1])
             continue
@@ -51,30 +61,38 @@ def validate_option_writes(
             )
             logger.warning("CC validation: %s", warnings[-1])
             continue
-        elig = eligibility[ow.ticker]
-        contracts = ow.contracts
-        if contracts > elig.max_contracts:
+        if key in seen_pairs:
             warnings.append(
-                f"OptionWrite for {ow.ticker} clamped from "
-                f"{contracts} -> {elig.max_contracts} contracts "
-                f"(available_shares={elig.available_shares})"
+                f"OptionWrite for {ow.ticker} in {ow.account!r} dropped: "
+                f"duplicate (only first kept)"
             )
             logger.warning("CC validation: %s", warnings[-1])
-            contracts = elig.max_contracts
+            continue
+        contracts = ow.contracts
+        if contracts > match.max_contracts:
+            warnings.append(
+                f"OptionWrite for {ow.ticker} in {ow.account!r} clamped "
+                f"from {contracts} -> {match.max_contracts} contracts "
+                f"(available_shares={match.available_shares})"
+            )
+            logger.warning("CC validation: %s", warnings[-1])
+            contracts = match.max_contracts
         if contracts <= 0:
             warnings.append(
-                f"OptionWrite for {ow.ticker} dropped: clamped contracts=0"
+                f"OptionWrite for {ow.ticker} in {ow.account!r} dropped: "
+                f"clamped contracts=0"
             )
             logger.warning("CC validation: %s", warnings[-1])
             continue
         cleaned_option_writes.append(
             ow.model_copy(update={"contracts": contracts})
         )
-        kept.add(ow.ticker)
+        seen_pairs.add(key)
+        kept_tickers.add(ow.ticker)
 
     cleaned_actions: list[RebalanceAction] = []
     for a in plan.actions:
-        if a.action == "WRITE_CALL" and a.ticker not in kept:
+        if a.action == "WRITE_CALL" and a.ticker not in kept_tickers:
             warnings.append(
                 f"WRITE_CALL action for {a.ticker} dropped: orphan "
                 f"(no matching OptionWrite after validation)"
@@ -82,12 +100,6 @@ def validate_option_writes(
             logger.warning("CC validation: %s", warnings[-1])
             continue
         cleaned_actions.append(a)
-
-    for orphan in write_call_tickers - option_write_tickers:
-        warnings.append(
-            f"WRITE_CALL action for {orphan} had NO OptionWrite in the plan"
-        )
-        logger.warning("CC validation: %s", warnings[-1])
 
     cleaned_plan = plan.model_copy(update={
         "actions": cleaned_actions,

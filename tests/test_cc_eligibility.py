@@ -6,7 +6,7 @@ from datetime import date, datetime
 from stock_analyzer.discover.cc_eligibility import (
     apply_earnings_filter,
     build_cc_context_block,
-    eligible_holdings,
+    eligible_holdings_per_account,
     round_lot_coverage,
 )
 from stock_analyzer.models.llm import HoldingReview
@@ -18,55 +18,165 @@ def _pos(units: int) -> dict[str, float | int]:
     return {"units": units, "avg_buy_price": 100.0, "cost_basis": units * 100.0}
 
 
-def test_eligibility_excludes_under_100_shares():
-    positions = {
-        "AAPL": _pos(99),
-        "TSLA": _pos(335),
+def _splits_entry(account: str, tax_status: str, units: int) -> dict[str, object]:
+    return {
+        "account": account,
+        "tax_status": tax_status,
+        "units": float(units),
+        "avg_buy_price": 100.0,
+        "cost_basis": float(units) * 100.0,
     }
-    out = eligible_holdings(positions, open_short_calls={}, denylist=())
-    assert "AAPL" not in out
-    assert "TSLA" in out
 
 
-def test_eligibility_subtracts_open_short_calls():
-    positions = {"NVDA": _pos(400)}
-    out = eligible_holdings(
-        positions, open_short_calls={"NVDA": 1}, denylist=(),
+def _splits(ticker_to_splits: dict[str, list[dict[str, object]]]) -> dict[str, dict[str, object]]:
+    """Mimic the position_splits shape produced by _build_position_splits."""
+    out: dict[str, dict[str, object]] = {}
+    for ticker, splits in ticker_to_splits.items():
+        total_units = sum(s["units"] for s in splits)
+        ta_units = sum(s["units"] for s in splits if s["tax_status"] == "tax_advantaged")
+        tx_units = sum(s["units"] for s in splits if s["tax_status"] == "taxable")
+        out[ticker] = {
+            "total_units": total_units,
+            "splits": splits,
+            "has_tax_advantaged": ta_units > 0,
+            "has_taxable": tx_units > 0,
+            "tax_advantaged_units": ta_units,
+            "taxable_units": tx_units,
+        }
+    return out
+
+
+def test_per_account_eligibility_keeps_only_accounts_with_round_lots():
+    """250 shares in IRA + 50 in Taxable → one EligibleHolding (IRA),
+    Taxable drops because < 100 shares."""
+    position_splits = _splits({
+        "NVDA": [
+            _splits_entry("Fidelity IRA", "tax_advantaged", 250),
+            _splits_entry("Fidelity Taxable", "taxable", 50),
+        ],
+    })
+    out = eligible_holdings_per_account(
+        position_splits,
+        open_short_calls_by_account={},
+        denylist=(),
     )
-    # 400 - 100 = 300 available, max_contracts = 3
-    assert out["NVDA"].available_shares == 300
-    assert out["NVDA"].max_contracts == 3
+    assert "NVDA" in out
+    assert len(out["NVDA"]) == 1
+    eh = out["NVDA"][0]
+    assert eh.account == "Fidelity IRA"
+    assert eh.shares_held == 250
+    assert eh.max_contracts == 2
+    assert eh.tax_status == "tax_advantaged"
 
 
-def test_eligibility_excludes_when_coverage_zero():
-    positions = {"NVDA": _pos(150)}
-    out = eligible_holdings(
-        positions, open_short_calls={"NVDA": 1}, denylist=(),
+def test_per_account_eligibility_supports_multiple_eligible_accounts():
+    """250 IRA + 150 Taxable → both eligible, separate entries."""
+    position_splits = _splits({
+        "NVDA": [
+            _splits_entry("Fidelity IRA", "tax_advantaged", 250),
+            _splits_entry("Fidelity Taxable", "taxable", 150),
+        ],
+    })
+    out = eligible_holdings_per_account(
+        position_splits,
+        open_short_calls_by_account={},
+        denylist=(),
     )
-    # 150 - 100 = 50 < 100 → not eligible
+    assert "NVDA" in out
+    accounts = sorted(eh.account for eh in out["NVDA"])
+    assert accounts == ["Fidelity IRA", "Fidelity Taxable"]
+    max_contracts_by_account = {eh.account: eh.max_contracts for eh in out["NVDA"]}
+    assert max_contracts_by_account == {"Fidelity IRA": 2, "Fidelity Taxable": 1}
+
+
+def test_per_account_eligibility_subtracts_per_account_short_calls():
+    """300 IRA, 1 short call in IRA → 200 available in IRA."""
+    position_splits = _splits({
+        "NVDA": [_splits_entry("Fidelity IRA", "tax_advantaged", 300)],
+    })
+    out = eligible_holdings_per_account(
+        position_splits,
+        open_short_calls_by_account={"NVDA": {"Fidelity IRA": 1}},
+        denylist=(),
+    )
+    eh = out["NVDA"][0]
+    assert eh.shares_held == 300
+    assert eh.open_short_call_contracts == 1
+    assert eh.available_shares == 200
+    assert eh.max_contracts == 2
+
+
+def test_per_account_eligibility_short_call_in_other_account_does_not_reduce_coverage():
+    """300 IRA shares, 0 short calls in IRA, 1 short call in Taxable → IRA still 300 available."""
+    position_splits = _splits({
+        "NVDA": [_splits_entry("Fidelity IRA", "tax_advantaged", 300)],
+    })
+    out = eligible_holdings_per_account(
+        position_splits,
+        open_short_calls_by_account={"NVDA": {"Fidelity Taxable": 1}},
+        denylist=(),
+    )
+    eh = out["NVDA"][0]
+    # 300 IRA shares, 0 IRA short calls (the Taxable short call doesn't count).
+    assert eh.available_shares == 300
+    assert eh.max_contracts == 3
+
+
+def test_per_account_eligibility_drops_account_when_short_calls_cover_all_shares():
+    """100 shares in IRA, 1 short call in IRA → 0 available → not eligible."""
+    position_splits = _splits({
+        "NVDA": [_splits_entry("Fidelity IRA", "tax_advantaged", 100)],
+    })
+    out = eligible_holdings_per_account(
+        position_splits,
+        open_short_calls_by_account={"NVDA": {"Fidelity IRA": 1}},
+        denylist=(),
+    )
     assert "NVDA" not in out
 
 
-def test_eligibility_respects_denylist():
-    positions = {"AAPL": _pos(200), "MSFT": _pos(200)}
-    out = eligible_holdings(
-        positions, open_short_calls={}, denylist=("AAPL",),
+def test_per_account_eligibility_respects_denylist():
+    """Denylist applies at ticker level — drops ALL accounts of that ticker."""
+    position_splits = _splits({
+        "NVDA": [_splits_entry("Fidelity IRA", "tax_advantaged", 250)],
+        "AAPL": [_splits_entry("Fidelity IRA", "tax_advantaged", 200)],
+    })
+    out = eligible_holdings_per_account(
+        position_splits,
+        open_short_calls_by_account={},
+        denylist=("NVDA",),
     )
-    assert "AAPL" not in out
-    assert "MSFT" in out
+    assert "NVDA" not in out
+    assert "AAPL" in out
 
 
-def test_eligibility_record_shape():
-    out = eligible_holdings(
-        {"NVDA": _pos(335)}, open_short_calls={}, denylist=(),
+def test_per_account_eligibility_returns_empty_dict_when_no_round_lots():
+    position_splits = _splits({
+        "TINY": [_splits_entry("Fidelity IRA", "tax_advantaged", 50)],
+    })
+    out = eligible_holdings_per_account(
+        position_splits,
+        open_short_calls_by_account={},
+        denylist=(),
     )
-    rec = out["NVDA"]
-    assert isinstance(rec, EligibleHolding)
-    assert rec.ticker == "NVDA"
-    assert rec.shares_held == 335
-    assert rec.available_shares == 335
-    assert rec.max_contracts == 3
-    assert rec.open_short_call_contracts == 0
+    assert out == {}
+
+
+def test_per_account_eligibility_skips_zero_share_entries():
+    """A split with 0 units (data hiccup) is dropped silently."""
+    position_splits = _splits({
+        "NVDA": [
+            _splits_entry("Fidelity IRA", "tax_advantaged", 0),
+            _splits_entry("Fidelity Taxable", "taxable", 200),
+        ],
+    })
+    out = eligible_holdings_per_account(
+        position_splits,
+        open_short_calls_by_account={},
+        denylist=(),
+    )
+    assert len(out["NVDA"]) == 1
+    assert out["NVDA"][0].account == "Fidelity Taxable"
 
 
 def _chain(ticker: str, expiries: list[str]) -> OptionChain:
@@ -118,9 +228,22 @@ def _review(verdict: str, confidence: int) -> HoldingReview:
     )
 
 
+def _elig_list(ticker: str, shares: int, account: str = "Test Account",
+               tax_status: str = "taxable",
+               open_short_call_contracts: int = 0) -> list[EligibleHolding]:
+    available = shares - 100 * open_short_call_contracts
+    return [EligibleHolding(
+        ticker=ticker, account=account, tax_status=tax_status,  # type: ignore[arg-type]
+        shares_held=shares,
+        open_short_call_contracts=open_short_call_contracts,
+        available_shares=available,
+        max_contracts=available // 100,
+    )]
+
+
 def test_context_block_basic():
     positions = {"NVDA": {"units": 400}}
-    elig = eligible_holdings(positions, open_short_calls={"NVDA": 1}, denylist=())
+    elig = {"NVDA": _elig_list("NVDA", 400, open_short_call_contracts=1)}
     coverage = round_lot_coverage(positions, spots={"NVDA": 235.0})
     chain = _chain("NVDA", ["2026-06-20"])
     block = build_cc_context_block(
@@ -133,7 +256,7 @@ def test_context_block_basic():
     )
     assert "TICKER: NVDA" in block
     assert "Reviewer verdict:        HOLD (confidence 8/10)" in block
-    assert "Shares held:             400" in block
+    assert "Shares:                  400" in block
     assert "Available for CC:        300 (100 already collateralizing open short call" in block
     assert "Earnings-blacklist:      2026-05-21" in block
     assert "2026-06-20" in block
@@ -141,7 +264,7 @@ def test_context_block_basic():
 
 def test_context_block_marks_unavailable_chain():
     positions = {"AAPL": {"units": 200}}
-    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    elig = {"AAPL": _elig_list("AAPL", 200)}
     coverage = round_lot_coverage(positions, spots={"AAPL": 215.0})
     block = build_cc_context_block(
         eligible=elig, chains={}, coverage=coverage,
@@ -153,7 +276,10 @@ def test_context_block_marks_unavailable_chain():
 
 def test_context_block_round_lot_section():
     positions = {"TSLA": {"units": 335}, "AAPL": {"units": 215}}
-    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    elig = {
+        "TSLA": _elig_list("TSLA", 335),
+        "AAPL": _elig_list("AAPL", 215),
+    }
     coverage = round_lot_coverage(
         positions, spots={"TSLA": 300.0, "AAPL": 215.0},
     )
@@ -193,7 +319,7 @@ def test_context_block_truncates_at_size_cap():
         trim_pct=None, full_text="x",
     )
     positions = {"BIG": {"units": 400}}
-    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    elig = {"BIG": _elig_list("BIG", 400)}
     coverage = round_lot_coverage(positions, spots={"BIG": 100.0})
     # Use the per-ticker review string (which doesn't include
     # position_context). To exercise truncation we need to inject bulk
@@ -248,7 +374,7 @@ def test_context_block_renders_iv_hv_regime_when_provided():
     from stock_analyzer.models.portfolio import IvHvRegime
 
     positions = {"NVDA": {"units": 400}}
-    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    elig = {"NVDA": _elig_list("NVDA", 400)}
     coverage = round_lot_coverage(positions, spots={"NVDA": 235.0})
     iv_hv_regimes = {"NVDA": IvHvRegime(
         ticker="NVDA", current_iv=0.32, hv_annualized=0.27,
@@ -266,7 +392,7 @@ def test_context_block_renders_iv_hv_regime_when_provided():
 
 def test_context_block_marks_iv_hv_regime_unknown_when_no_data():
     positions = {"NVDA": {"units": 400}}
-    elig = eligible_holdings(positions, open_short_calls={}, denylist=())
+    elig = {"NVDA": _elig_list("NVDA", 400)}
     coverage = round_lot_coverage(positions, spots={"NVDA": 235.0})
     block = build_cc_context_block(
         eligible=elig, chains={}, coverage=coverage,
@@ -356,3 +482,76 @@ def test_compute_iv_hv_regime_depressed():
 def test_compute_iv_hv_regime_handles_missing_data():
     from stock_analyzer.discover.cc_eligibility import compute_iv_hv_regime
     assert compute_iv_hv_regime(chain=None, hv=None) is None
+
+
+def test_build_cc_context_block_renders_per_account_blocks():
+    """A ticker with two eligible accounts renders two account subsections."""
+    from datetime import datetime as _dt
+
+    from stock_analyzer.models.market import OptionChain
+    from stock_analyzer.models.portfolio import EligibleHolding, RoundLotCoverage
+
+    eligible = {
+        "NVDA": [
+            EligibleHolding(
+                ticker="NVDA", account="Fidelity IRA",
+                tax_status="tax_advantaged",
+                shares_held=250, open_short_call_contracts=0,
+                available_shares=250, max_contracts=2,
+            ),
+            EligibleHolding(
+                ticker="NVDA", account="Fidelity Taxable",
+                tax_status="taxable",
+                shares_held=150, open_short_call_contracts=0,
+                available_shares=150, max_contracts=1,
+            ),
+        ],
+    }
+    chains = {"NVDA": OptionChain(
+        ticker="NVDA", spot=235.0, asof=_dt.now(),
+        calls=[], source="missing",
+    )}
+    coverage: dict[str, RoundLotCoverage] = {}
+    block = build_cc_context_block(
+        eligible=eligible, chains=chains, coverage=coverage,
+        reviews={}, earnings={}, stub_pool_total_usd=0.0,
+    )
+    assert "Fidelity IRA" in block
+    assert "Fidelity Taxable" in block
+    assert "2 contract" in block  # IRA max_contracts=2
+    assert "1 contract" in block  # Taxable max_contracts=1
+
+
+def test_build_cc_context_block_handles_single_account_per_ticker():
+    """Most tickers have one eligible account — the block still renders."""
+    from datetime import datetime as _dt
+
+    from stock_analyzer.models.market import OptionChain
+    from stock_analyzer.models.portfolio import EligibleHolding
+
+    eligible = {
+        "NVDA": [EligibleHolding(
+            ticker="NVDA", account="Fidelity IRA",
+            tax_status="tax_advantaged",
+            shares_held=250, open_short_call_contracts=0,
+            available_shares=250, max_contracts=2,
+        )],
+    }
+    chains = {"NVDA": OptionChain(
+        ticker="NVDA", spot=235.0, asof=_dt.now(),
+        calls=[], source="missing",
+    )}
+    block = build_cc_context_block(
+        eligible=eligible, chains=chains, coverage={},
+        reviews={}, earnings={}, stub_pool_total_usd=0.0,
+    )
+    assert "TICKER: NVDA" in block
+    assert "Fidelity IRA" in block
+
+
+def test_build_cc_context_block_empty_eligibility_returns_empty_string():
+    out = build_cc_context_block(
+        eligible={}, chains={}, coverage={},
+        reviews={}, earnings={}, stub_pool_total_usd=0.0,
+    )
+    assert out == ""

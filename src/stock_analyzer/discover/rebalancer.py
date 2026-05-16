@@ -450,9 +450,11 @@ Your response is validated against a small Pydantic schema
     concentration check, etc.) belongs here — full_text is the only
     place that detail lives. The PDF/email renders straight from it.
   - option_writes: parallel to WRITE_CALL actions. One entry per
-    WRITE_CALL with ticker, strike, expiry (YYYY-MM-DD), contracts,
-    est_premium_per_share, delta, assignment_probability, notes.
-    Empty list when no calls are recommended.
+    WRITE_CALL with ticker, account (the brokerage account the call is
+    being written in — must match an eligible_holdings account),
+    strike, expiry (YYYY-MM-DD), contracts, est_premium_per_share,
+    delta, assignment_probability, notes. Empty list when no calls are
+    recommended.
 
 Structured `actions` must agree with `full_text` — if full_text says
 "Action 1: SELL MRVL", actions[0] must be {{SELL, MRVL, ...}}.
@@ -465,6 +467,11 @@ listed under COVERED-CALL CONTEXT.
 
 TARGET BAND
   Δ {cc_target_delta_min:.2f}-{cc_target_delta_max:.2f}, DTE {cc_dte_min}-{cc_dte_max} days. Stay inside the band.
+
+ELIGIBILITY KEY
+  Each (ticker, account) row in the COVERED-CALL CONTEXT block is
+  independent. The same ticker may appear under multiple accounts;
+  treat each as its own eligibility unit.
 
 STRIKE WITHIN BAND
   - HOLD verdict with confidence >= 7  → pick Δ closer to {cc_target_delta_min:.2f}
@@ -512,12 +519,21 @@ ANNUALIZED YIELD (state in full_text)
   (e.g., earnings reduction, regime hedge).
 
 OUTPUT
-  - Add one WRITE_CALL action per eligible ticker (max one).
-    `sizing` format: "<N> contracts $<strike>C <YYYY-MM-DD>"
-    Example: "3 contracts $260C 2026-06-20"
-  - Add a matching `option_writes` entry with strike, expiry, contracts,
-    est_premium_per_share (mid of bid/ask), delta, assignment_probability
-    (~ delta unless you have reason to differ), and a one-line `notes`.
+  - Add one WRITE_CALL action per (eligible ticker, eligible account).
+    A single ticker may have round-lot shares in MULTIPLE accounts; you
+    may emit one WRITE_CALL per account, sized to that account's
+    available_shares only. Contract counts are independent per account:
+    account A's 250 shares back at most 2 contracts in account A even if
+    account B has 500 shares of the same ticker.
+
+    `sizing` format MUST include the account name. Use exactly:
+        "<N> contracts $<strike>C <YYYY-MM-DD> in <ACCOUNT NAME>"
+    Example: "2 contracts $260C 2026-06-20 in Fidelity IRA"
+
+  - Add a matching `option_writes` entry with ticker, account, strike,
+    expiry, contracts, est_premium_per_share (mid of bid/ask), delta,
+    assignment_probability (~ delta unless you have reason to differ),
+    and a one-line `notes`.
 
 ========================================================================
 PREMIUM REINVESTMENT

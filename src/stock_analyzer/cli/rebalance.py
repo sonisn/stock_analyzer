@@ -513,7 +513,7 @@ class RebalancePipeline(DiscoverPipeline):
             from ..discover.cc_eligibility import (
                 apply_earnings_filter,
                 build_cc_context_block,
-                eligible_holdings,
+                eligible_holdings_per_account,
                 round_lot_coverage,
             )
 
@@ -544,35 +544,38 @@ class RebalancePipeline(DiscoverPipeline):
             else:
                 logger.info("CC: no existing short-call coverage detected")
 
-            eligible = eligible_holdings(
-                positions, open_short_calls=open_short_calls, denylist=denylist,
+            position_splits = self.state.get("position_splits") or {}
+            eligible = eligible_holdings_per_account(
+                position_splits,
+                open_short_calls_by_account=open_short_calls,
+                denylist=denylist,
             )
 
-            # Bound eligible holdings to cap prompt size.
+            # Bound eligible tickers to cap prompt size. Rank by total dollar
+            # exposure across all eligible accounts (proxy for premium potential).
             if len(eligible) > _CC_MAX_ELIGIBLE_FOR_PROMPT:
-                # Rank by available dollar exposure (proxy for premium potential).
-                # Larger positions get prompt priority — they unlock more contracts
-                # and more premium per contract.
                 def _exposure(t: str) -> float:
-                    rec = eligible[t]
                     spot = (
                         self.state.get("holdings_technicals", {}).get(t) or {}
                     ).get("price") or 0.0
-                    return float(rec.available_shares) * float(spot)
+                    total = sum(eh.available_shares for eh in eligible[t])
+                    return float(total) * float(spot)
                 kept = sorted(eligible, key=_exposure, reverse=True)[:_CC_MAX_ELIGIBLE_FOR_PROMPT]
                 dropped = sorted(set(eligible) - set(kept))
                 logger.warning(
-                    "CC: %d eligible holdings exceed prompt cap (%d); "
+                    "CC: %d eligible tickers exceed prompt cap (%d); "
                     "keeping top %d by exposure, dropping %s",
                     len(eligible), _CC_MAX_ELIGIBLE_FOR_PROMPT,
                     len(kept), dropped,
                 )
                 eligible = {t: eligible[t] for t in kept}
 
+            n_pairs = sum(len(v) for v in eligible.values())
             logger.info(
-                "CC eligibility: %d/%d positions eligible (≥100 shares, not denylisted, "
-                "post-short-call coverage). Eligible: %s",
-                len(eligible), len(positions), sorted(eligible.keys()),
+                "CC eligibility: %d ticker(s) / %d (ticker, account) pair(s) eligible. "
+                "Pairs: %s",
+                len(eligible), n_pairs,
+                sorted((eh.ticker, eh.account) for v in eligible.values() for eh in v),
             )
             if not eligible:
                 logger.warning(

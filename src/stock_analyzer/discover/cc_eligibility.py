@@ -20,49 +20,73 @@ from ..models.portfolio import EligibleHolding, IvHvRegime, RoundLotCoverage
 if TYPE_CHECKING:
     from ..models.market import RealizedVolatility
 
-# Re-export the new model classes from this legacy import path so any
-# Phase-1 callsite that still imports them from here keeps working.
-# Group C will strip these once every callsite has migrated.
 __all__ = [
     "EligibleHolding", "RoundLotCoverage", "IvHvRegime",
-    "eligible_holdings", "round_lot_coverage",
+    "eligible_holdings_per_account", "round_lot_coverage",
     "apply_earnings_filter", "compute_iv_hv_regime",
     "build_cc_context_block",
 ]
 
 
-def eligible_holdings(
-    positions: dict[str, dict[str, float]],
+def eligible_holdings_per_account(
+    position_splits: dict[str, dict[str, object]],
     *,
-    open_short_calls: dict[str, int],
+    open_short_calls_by_account: dict[str, dict[str, int]],
     denylist: tuple[str, ...],
-) -> dict[str, EligibleHolding]:
-    """Return {ticker: EligibleHolding} for every position that:
-      - holds ≥ 100 shares
-      - has ≥ 100 shares NOT already collateralizing an open short call
-      - is not in `denylist`
+) -> dict[str, list[EligibleHolding]]:
+    """Return {ticker: [EligibleHolding, ...]} keyed by ticker, with one
+    EligibleHolding entry per (ticker, account) pair where:
+      - the account holds >= 100 shares
+      - the account has >= 100 shares NOT collateralizing an open short call
+      - the ticker is not in `denylist`
 
-    `positions` matches the shape produced by `_aggregate_positions`
-    in `cli/rebalance.py` — {ticker: {"units": float, ...}}.
+    `position_splits` matches the shape produced by `_build_position_splits`
+    in `cli/rebalance.py` — `{ticker: {"splits": [{"account": str,
+    "tax_status": str, "units": float, ...}, ...], ...}}`.
+
+    `open_short_calls_by_account` matches the new shape of
+    `fetch_open_option_positions` — `{ticker: {account_name: contracts}}`.
+
+    Tickers with no eligible account are omitted from the result entirely
+    (no empty-list value).
     """
     denyset = {t.upper() for t in denylist}
-    out: dict[str, EligibleHolding] = {}
-    for ticker, pos in positions.items():
+    out: dict[str, list[EligibleHolding]] = {}
+    for ticker, info in position_splits.items():
         if ticker.upper() in denyset:
             continue
-        shares = int(pos.get("units") or 0)
-        if shares < 100:
+        splits = info.get("splits") or []  # type: ignore[assignment]
+        if not isinstance(splits, list):
             continue
-        short_contracts = int(open_short_calls.get(ticker, 0))
-        available = shares - 100 * short_contracts
-        if available < 100:
-            continue
-        out[ticker] = EligibleHolding(
-            ticker=ticker, shares_held=shares,
-            open_short_call_contracts=short_contracts,
-            available_shares=available,
-            max_contracts=available // 100,
-        )
+        per_account_calls = open_short_calls_by_account.get(ticker, {})
+        entries: list[EligibleHolding] = []
+        for s in splits:
+            if not isinstance(s, dict):
+                continue
+            account = s.get("account")
+            if not isinstance(account, str) or not account:
+                continue
+            shares = int(s.get("units") or 0)
+            if shares < 100:
+                continue
+            tax_status = s.get("tax_status") or "taxable"
+            if tax_status not in ("taxable", "tax_advantaged"):
+                tax_status = "taxable"
+            short_contracts = int(per_account_calls.get(account, 0))
+            available = shares - 100 * short_contracts
+            if available < 100:
+                continue
+            entries.append(EligibleHolding(
+                ticker=ticker,
+                account=account,
+                tax_status=tax_status,  # type: ignore[arg-type]
+                shares_held=shares,
+                open_short_call_contracts=short_contracts,
+                available_shares=available,
+                max_contracts=available // 100,
+            ))
+        if entries:
+            out[ticker] = entries
     return out
 
 
@@ -193,10 +217,31 @@ def _format_chain_row(q: OptionQuote) -> str:
     )
 
 
+def _format_account_block(
+    *,
+    eh: EligibleHolding,
+) -> str:
+    plural = "s" if eh.open_short_call_contracts != 1 else ""
+    if eh.open_short_call_contracts:
+        avail_line = (
+            f"    Available for CC:        {eh.available_shares} "
+            f"({100 * eh.open_short_call_contracts} already collateralizing "
+            f"open short call{plural})"
+        )
+    else:
+        avail_line = f"    Available for CC:        {eh.available_shares}"
+    return (
+        f"  Account: {eh.account} ({eh.tax_status})\n"
+        f"    Shares:                  {eh.shares_held}\n"
+        f"{avail_line}\n"
+        f"    Max contracts:           {eh.max_contracts}"
+    )
+
+
 def _format_ticker_block(
     *, ticker: str,
     review: HoldingReview | str | None,
-    eligible: EligibleHolding,
+    accounts: list[EligibleHolding],
     chain: OptionChain | None,
     earnings_date: date | None,
     iv_hv: IvHvRegime | None = None,
@@ -210,16 +255,17 @@ def _format_ticker_block(
     else:
         verdict_line = "  Reviewer verdict:        UNKNOWN"
     lines.append(verdict_line)
-    lines.append(f"  Shares held:             {eligible.shares_held}")
-    if eligible.open_short_call_contracts:
-        plural = "s" if eligible.open_short_call_contracts > 1 else ""
-        lines.append(
-            f"  Available for CC:        {eligible.available_shares} "
-            f"({100 * eligible.open_short_call_contracts} already "
-            f"collateralizing open short call{plural})"
-        )
-    else:
-        lines.append(f"  Available for CC:        {eligible.available_shares}")
+    total_shares = sum(a.shares_held for a in accounts)
+    lines.append(f"  Total CC-eligible shares (across accounts): {total_shares}")
+    for a in accounts:
+        lines.append(_format_account_block(eh=a))
+        # Account-level summary line that includes "<N> contract(s)" so prompt
+        # tests can grep it.
+        if a.max_contracts:
+            lines.append(
+                f"    → up to {a.max_contracts} contract"
+                f"{'s' if a.max_contracts != 1 else ''}"
+            )
     if earnings_date is not None:
         lo = earnings_date - timedelta(days=EARNINGS_BLACKLIST_DAYS)
         hi = earnings_date + timedelta(days=EARNINGS_BLACKLIST_DAYS)
@@ -252,7 +298,7 @@ def _format_ticker_block(
 
 def build_cc_context_block(
     *,
-    eligible: dict[str, EligibleHolding],
+    eligible: dict[str, list[EligibleHolding]],
     chains: dict[str, OptionChain],
     coverage: dict[str, RoundLotCoverage],
     reviews: dict[str, HoldingReview | str],
@@ -261,18 +307,22 @@ def build_cc_context_block(
     iv_hv_regimes: dict[str, IvHvRegime] | None = None,
 ) -> str:
     """Compose the COVERED-CALL CONTEXT block consumed by the rebalancer
-    prompt. Returns the empty string when no positions are eligible
-    (in which case the rebalancer prompt simply doesn't include a CC
-    section)."""
+    prompt. Returns the empty string when no positions are eligible.
+
+    `eligible` is `dict[str, list[EligibleHolding]]` — one entry per
+    (ticker, account) pair the user can write covered calls in."""
     if not eligible:
         return ""
 
     per_ticker: list[str] = []
     for ticker in sorted(eligible):
+        accounts = eligible[ticker]
+        if not accounts:
+            continue
         per_ticker.append(_format_ticker_block(
             ticker=ticker,
             review=reviews.get(ticker),
-            eligible=eligible[ticker],
+            accounts=accounts,
             chain=chains.get(ticker),
             earnings_date=earnings.get(ticker),
             iv_hv=(iv_hv_regimes or {}).get(ticker),

@@ -235,15 +235,16 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
     return out
 
 
-def fetch_open_option_positions() -> dict[str, int]:
-    """Return {underlying_ticker: open_short_call_contracts} across every
-    connected SnapTrade account.
+def fetch_open_option_positions() -> dict[str, dict[str, int]]:
+    """Return {underlying_ticker: {account_name: short_call_contracts}}.
 
-    Only SHORT calls (units < 0) are counted — these are the positions
-    that reduce the share count available to back NEW covered calls.
-    Long calls and short puts are ignored. Returns {} when SnapTrade is
-    unavailable or no positions are found (graceful degradation — the
-    eligibility filter then simply subtracts zero).
+    Per-account is required because each short call only collateralizes
+    shares of the same underlying IN THE SAME ACCOUNT. A short call in
+    Account A does NOT reduce CC capacity in Account B.
+
+    Only SHORT calls (units < 0) are counted. Long calls and any puts are
+    ignored. Returns {} when SnapTrade is unavailable or no positions are
+    found.
     """
     try:
         user_id, user_secret = _credentials()
@@ -262,9 +263,16 @@ def fetch_open_option_positions() -> dict[str, int]:
         logger.info("SnapTrade list_user_accounts failed: %s", e)
         return {}
 
-    coverage: dict[str, int] = {}
+    coverage: dict[str, dict[str, int]] = {}
     for account in accounts:
-        account_id = account.get("id") if isinstance(account, dict) else getattr(account, "id", None)
+        if isinstance(account, dict):
+            account_id = account.get("id")
+            account_name = account.get("name") or account.get("id") or "Unknown"
+        else:
+            account_id = getattr(account, "id", None)
+            account_name = (
+                getattr(account, "name", None) or account_id or "Unknown"
+            )
         if not account_id:
             continue
         try:
@@ -286,13 +294,14 @@ def fetch_open_option_positions() -> dict[str, int]:
             try:
                 parsed = parse_occ(symbol)
             except OCCParseError:
-                continue  # equity row, skip
+                continue
             if parsed.option_type != "C":
-                continue  # short puts and long puts don't reduce CC coverage
+                continue
             units = float(pos.get("units") or 0)
             if units >= 0:
-                continue  # only SHORT calls reduce coverage
-            coverage[parsed.ticker] = coverage.get(parsed.ticker, 0) + int(-units)
+                continue
+            per_account = coverage.setdefault(parsed.ticker, {})
+            per_account[account_name] = per_account.get(account_name, 0) + int(-units)
     return coverage
 
 

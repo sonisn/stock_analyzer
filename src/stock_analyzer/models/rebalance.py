@@ -21,11 +21,16 @@ class OptionWrite(BaseModel):
 
     Joined to its corresponding RebalanceAction by ticker. Premium is
     quoted PER SHARE (the standard options convention); multiply by 100
-    to get dollars per contract."""
+    to get dollars per contract.
+
+    `account` identifies which brokerage account the call is being
+    written against — covered calls collateralize shares of one account
+    only, never aggregate across accounts."""
 
     model_config = ConfigDict(frozen=True)
 
     ticker: str
+    account: str = Field(..., description="Brokerage account name; must match an EligibleHolding.account.")
     strike: float
     expiry: str = Field(..., description="ISO date YYYY-MM-DD.")
     contracts: int = Field(..., gt=0, description="Number of contracts to write.")

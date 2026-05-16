@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -165,11 +165,17 @@ class TickerTaxSummaryMut(TickerTaxSummary):
 
 
 class EligibleHolding(BaseModel):
-    """A position that's eligible to write covered calls against."""
+    """A (ticker, account) pair eligible to write covered calls against.
+
+    Each entry represents one specific brokerage account. The same
+    ticker can appear in multiple EligibleHolding entries when round-lot
+    shares sit in more than one account."""
 
     model_config = ConfigDict(frozen=True)
 
     ticker: str
+    account: str
+    tax_status: Literal["taxable", "tax_advantaged"] = "taxable"
     shares_held: int
     open_short_call_contracts: int
     available_shares: int   # shares_held - 100 × open_short_call_contracts

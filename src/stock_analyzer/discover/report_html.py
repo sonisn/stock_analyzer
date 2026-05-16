@@ -588,6 +588,7 @@ def _render_premium_income(data: dict) -> str:
     rows_html = "".join(
         f"<tr>"
         f"<td>{r['ticker']}</td>"
+        f"<td>{r.get('account', '—')}</td>"
         f"<td>${r['strike']:,.2f}</td>"
         f"<td>{r['expiry']}</td>"
         f"<td>{r['contracts']}</td>"
@@ -603,7 +604,7 @@ def _render_premium_income(data: dict) -> str:
         '<h3 style="margin:0 0 8px 0;">Premium Income</h3>'
         '<table style="width:100%; border-collapse:collapse;">'
         '<thead><tr style="text-align:left; border-bottom:1px solid #d1d5db;">'
-        '<th>Ticker</th><th>Strike</th><th>Expiry</th><th>Qty</th>'
+        '<th>Ticker</th><th>Account</th><th>Strike</th><th>Expiry</th><th>Qty</th>'
         '<th>Premium</th><th>Δ</th><th>Assign %</th>'
         '</tr></thead>'
         f'<tbody>{rows_html}</tbody>'

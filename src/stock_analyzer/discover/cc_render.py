@@ -29,6 +29,7 @@ def compute_premium_income(
         gross += premium
         rows.append({
             "ticker": ow.ticker,
+            "account": ow.account,
             "strike": ow.strike,
             "expiry": ow.expiry,
             "contracts": ow.contracts,

@@ -14,9 +14,11 @@ from stock_analyzer.models.rebalance import (
 )
 
 
-def _ow(ticker: str, contracts: int, premium: float) -> OptionWrite:
+def _ow(ticker: str, contracts: int, premium: float,
+        account: str = "Test Account") -> OptionWrite:
     return OptionWrite(
-        ticker=ticker, strike=200.0, expiry="2026-06-20",
+        ticker=ticker, account=account,
+        strike=200.0, expiry="2026-06-20",
         contracts=contracts, est_premium_per_share=premium,
         delta=0.4, assignment_probability=0.4,
     )
@@ -73,6 +75,29 @@ def test_premium_deployment_with_stub_consolidation_row():
     )
     assert out["stub_consolidation_usd"] == 10500.0
     assert out["total_dry_powder_usd"] == 11_998.0
+
+
+def test_premium_income_row_carries_account():
+    from stock_analyzer.discover.cc_render import compute_premium_income
+    from stock_analyzer.models.rebalance import (
+        OptionWrite,
+        RebalancePlan,
+    )
+
+    plan = RebalancePlan(
+        status="ACTION", aggressiveness_applied="aggressive",
+        actions=[],
+        option_writes=[OptionWrite(
+            ticker="NVDA", account="Fidelity IRA",
+            strike=260.0, expiry="2026-06-20",
+            contracts=2, est_premium_per_share=2.30,
+            delta=0.36, assignment_probability=0.36,
+        )],
+        full_text="…",
+    )
+    out = compute_premium_income(plan, slippage_buffer=0.10)
+    assert len(out["rows"]) == 1
+    assert out["rows"][0]["account"] == "Fidelity IRA"
 
 
 def test_round_lot_summary():

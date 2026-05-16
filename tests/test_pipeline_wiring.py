@@ -551,7 +551,8 @@ def test_end_to_end_with_write_call_action():
             RebalanceAction(action="ADD", ticker="AMZN", sizing="$1,400"),
         ],
         option_writes=[OptionWrite(
-            ticker="NVDA", strike=260.0, expiry="2026-06-20",
+            ticker="NVDA", account="Test Account",
+            strike=260.0, expiry="2026-06-20",
             contracts=3, est_premium_per_share=2.40,
             delta=0.36, assignment_probability=0.36,
             notes="HOLD-8, near-band lower",
@@ -573,10 +574,12 @@ def test_end_to_end_with_write_call_action():
         ),
     }
     eligibility = {
-        "NVDA": EligibleHolding(
-            ticker="NVDA", shares_held=400, open_short_call_contracts=0,
+        "NVDA": [EligibleHolding(
+            ticker="NVDA", account="Test Account",
+            tax_status="taxable",
+            shares_held=400, open_short_call_contracts=0,
             available_shares=400, max_contracts=4,
-        ),
+        )],
     }
     sections = _build_rebalance_sections(
         rebalance_text="…",
@@ -645,16 +648,19 @@ def test_validation_summary_log_includes_per_call_details(caplog):
         actions=[RebalanceAction(action="WRITE_CALL", ticker="NVDA",
                                  sizing="3 contracts $260C 2026-06-20")],
         option_writes=[OptionWrite(
-            ticker="NVDA", strike=260.0, expiry="2026-06-20",
+            ticker="NVDA", account="Test Account",
+            strike=260.0, expiry="2026-06-20",
             contracts=3, est_premium_per_share=2.40,
             delta=0.36, assignment_probability=0.36,
         )],
         full_text="…",
     )
-    elig = {"NVDA": EligibleHolding(
-        ticker="NVDA", shares_held=400, open_short_call_contracts=0,
+    elig = {"NVDA": [EligibleHolding(
+        ticker="NVDA", account="Test Account",
+        tax_status="taxable",
+        shares_held=400, open_short_call_contracts=0,
         available_shares=400, max_contracts=4,
-    )}
+    )]}
     # Just sanity that validation returns the plan cleanly.
     cleaned, warnings = validate_option_writes(plan, eligibility=elig)
     assert warnings == []
@@ -707,3 +713,18 @@ def test_rebalancer_instructions_default_constant_intact():
     # still passes against the defaults.
     assert "0.35" in REBALANCER_INSTRUCTIONS
     assert "0.45" in REBALANCER_INSTRUCTIONS
+
+
+def test_rebalancer_prompt_documents_account_in_write_call():
+    """The prompt must instruct Opus to emit one WRITE_CALL per
+    (ticker, account) and include the account in sizing."""
+    from stock_analyzer.discover.rebalancer import REBALANCER_INSTRUCTIONS
+
+    text = REBALANCER_INSTRUCTIONS
+    # Sizing format mentions "in <ACCOUNT NAME>" or equivalent.
+    assert "in <ACCOUNT" in text or "in <account" in text.lower()
+    # Per-account guidance mentioned.
+    assert "per (ticker, account)" in text.lower() or \
+           "per account" in text.lower()
+    # OptionWrite schema description mentions account.
+    assert "account" in text.lower()
