@@ -18,7 +18,6 @@ Run history shares the discover.db SQLite file.
 """
 from __future__ import annotations
 
-import contextlib
 import os
 from datetime import date
 from pathlib import Path
@@ -31,7 +30,6 @@ from dotenv import load_dotenv
 
 from ..config import Settings
 from ..data.brokerage import fetch_account_meta, fetch_portfolio_holdings, fetch_total_cash
-from ..data.chart_img import fetch_charts
 from ..data.finnhub import batch_finnhub_signals
 from ..data.fundamentals import batch_fundamentals
 from ..data.insider_selling import insider_selling_mentions
@@ -40,61 +38,44 @@ from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
 from ..data.transactions import fetch_transaction_history, to_tax_payloads
 from ..data.transcripts import batch_transcript_snippets
-from ..db.repository import (
-    fetch_recent_holdings_history,
-    insert_candidate,
-    insert_holdings_review,
-    insert_pick,
-    insert_run,
-    insert_run_outputs,
-    insert_scorecard,
-)
+from ..db.repository import fetch_recent_holdings_history
 from ..db.session import get_session
 from ..discover.peers import batch_peer_comparison
 from ..discover.premortem import PreMortemAgent
+from ..discover.rebalance_cc import (
+    apply_cc_plan_validation,
+    cc_empty_state,
+    log_rebalancer_input_estimate,
+    run_cc_data_pipeline,
+)
+from ..discover.rebalance_holdings import build_holding_review_payloads
+from ..discover.rebalance_persist import (
+    deliver_rebalance_email,
+    fetch_pick_charts,
+    gross_premium_from_plan,
+    log_full_analysis,
+    persist_rebalance_run,
+    print_rebalance_terminal,
+)
 from ..discover.rebalancer import Rebalancer
 from ..discover.report import (
-    build_sections,
-    parse_confidence,
-    parse_rebalance_status,
-    parse_verdict,
-    print_terminal_summary,
+    build_rebalance_sections,
     render_html_email,
     render_pdf,
 )
 from ..discover.reviewer import Reviewer, review_batch
-from ..discover.tax_lot_helper import enrich_tax_lots_with_impact
-from ..logging import current_log_file, get_logger
-from ..models.reports import PreMortem, Section
+from ..logging import get_logger
 from ..preflight import PreflightError, preflight
-from ..reporting.smtp import SmtpServer
 from .discover import (
     _QUARTERLY_MDA_CHARS,
     _RISK_FACTORS_CHARS,
     _TRANSCRIPT_CHARS,
     DiscoverPipeline,
-    _trim,
 )
 
 logger = get_logger(__name__)
 
-# Cap CC eligible holdings sent to the rebalancer to bound prompt size.
-# 25 covers virtually every realistic portfolio while keeping the
-# CC context block <~40KB (per-ticker ~1.5KB × 25 + round-lot table).
-_CC_MAX_ELIGIBLE_FOR_PROMPT = 25
-
-
-def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
-    """Persist the PDF to ~/.stock_analyzer/reports/ so a missed email
-    never costs the user the report. Override via REPORTS_DIR env."""
-    reports_dir = Path(
-        os.path.expanduser(os.getenv("REPORTS_DIR", "~/.stock_analyzer/reports"))
-    )
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    path = reports_dir / filename
-    path.write_bytes(pdf_bytes)
-    return path
-
+_build_rebalance_sections = build_rebalance_sections
 
 def _build_history_block(db_path: str, *, n_runs: int = 3) -> str:
     """Reach into the discover DB and produce a compact `Previous decisions`
@@ -128,42 +109,6 @@ def _build_history_block(db_path: str, *, n_runs: int = 3) -> str:
         lines.append(f"{ticker}: {' -> '.join(parts)}")
     return "\n".join(lines)
 
-
-def _log_full_analysis(
-    *,
-    delivered: bool,
-    delivery_error: str | None,
-    local_pdf_path: str,
-    rebalance_text: str,
-    ranker_text: str,
-    redteam_text: str,
-    sizer_text: str,
-    holdings_reviews: dict[str, Any],
-) -> None:
-    """Dump every analyst-produced section to the logger so the user can
-    recover the full report from the log file when email fails."""
-    from ..models.llm import HoldingReview
-    bar = "=" * 70
-    if not delivered:
-        logger.error(
-            "%s\nEMAIL NOT DELIVERED — full analysis follows in this log.\n"
-            "Reason: %s\nPDF: %s\n%s",
-            bar,
-            delivery_error or "EMAIL_TO not configured",
-            local_pdf_path,
-            bar,
-        )
-    logger.info("%s\nREBALANCE PLAN\n%s\n%s", bar, bar, rebalance_text)
-    logger.info("%s\nRANKER — discover picks\n%s\n%s", bar, bar, ranker_text)
-    logger.info("%s\nRED TEAM — bear cases\n%s\n%s", bar, bar, redteam_text)
-    logger.info("%s\nSIZER — allocation\n%s\n%s", bar, bar, sizer_text)
-    for ticker in sorted(holdings_reviews):
-        review = holdings_reviews.get(ticker)
-        text = (
-            review.full_text if isinstance(review, HoldingReview)
-            else (review or "(review unavailable)")
-        )
-        logger.info("%s\nHOLDING REVIEW — %s\n%s\n%s", bar, ticker, bar, text)
 
 
 def _aggregate_positions(
@@ -399,83 +344,26 @@ class RebalancePipeline(DiscoverPipeline):
         )
 
     def step_review_holdings(self, step_input: StepInput) -> StepOutput:
-        positions = self.state["holdings_positions"]
-        fund = self.state["holdings_fundamentals"]
-        tech = self.state["holdings_technicals"]
-        rfs = self.state["holdings_risk_factors"]
-        selling = self.state.get("insider_selling", {})
-        finnhub_signals = self.state.get("finnhub_signals", {})
-        eps_revisions = self.state.get("eps_revisions", {})
-        position_splits = self.state.get("position_splits", {})
-        account_meta = self.state.get("account_meta", {})
-        tax_lots_raw = self.state.get("tax_lots", {})
-
-        payloads: dict[str, dict[str, Any]] = {}
-        for ticker, pos in positions.items():
-            t = tech.get(ticker) or {}
-            current = t.get("price")
-            avg = pos["avg_buy_price"]
-            units = pos["units"]
-            pnl = None
-            pnl_pct = None
-            if current and avg:
-                pnl = (current - avg) * units
-                pnl_pct = (current - avg) / avg * 100
-            fh = finnhub_signals.get(ticker) or {}
-            insider_activity: Any = fh.get("insider_activity") or {
-                "mention_count": selling.get(ticker, 0)
-            }
-            splits_info = position_splits.get(ticker) or {}
-            payloads[ticker] = {
-                "position": {
-                    "units": units,
-                    "avg_buy_price": avg,
-                    "current_price": current,
-                    "cost_basis": pos["cost_basis"],
-                    "unrealized_pnl": pnl,
-                    "unrealized_pnl_pct": pnl_pct,
-                    # NEW: per-account splits so the reviewer knows
-                    # whether trims trigger tax. tax_advantaged_units
-                    # are FREE to trim (no realized gains, no tax).
-                    "account_splits": splits_info.get("splits") or [],
-                    "tax_advantaged_units": splits_info.get(
-                        "tax_advantaged_units", 0
-                    ),
-                    "taxable_units": splits_info.get("taxable_units", 0),
-                    "has_tax_advantaged": splits_info.get(
-                        "has_tax_advantaged", False
-                    ),
-                    "has_taxable": splits_info.get("has_taxable", True),
-                },
-                "fundamentals": fund.get(ticker) or {},
-                "technicals": t,
-                "insider_activity": insider_activity,
-                "earnings_surprise_history": fh.get("earnings_surprise") or [],
-                "recommendation_trend": fh.get("recommendation_trend") or [],
-                "analyst_price_targets": fh.get("price_targets") or {},
-                "eps_revisions": eps_revisions.get(ticker) or {},
-                "share_trades": self.state.get("share_trades", {}).get(ticker),
-                "risk_factors_10k": _trim(
-                    (rfs.get(ticker) or {}).get("risk_factors"),
-                    _RISK_FACTORS_CHARS,
-                ),
-                "quarterly_mda": _trim(
-                    (self.state.get("holdings_quarterly_mda", {}).get(ticker) or {}).get("mda"),
-                    _QUARTERLY_MDA_CHARS,
-                ),
-                "peers": self.state.get("holdings_peers", {}).get(ticker),
-                "earnings_transcript": _trim(
-                    (self.state.get("holdings_transcripts", {}).get(ticker) or {}).get("snippet"),
-                    _TRANSCRIPT_CHARS,
-                ),
-                "news": (self.state.get("news") or {}).get(ticker, []),
-                "tax_lots": enrich_tax_lots_with_impact(
-                    tax_lots_raw.get(ticker) or {},
-                    current or 0.0,
-                    account_meta,
-                ),
-            }
-
+        payloads = build_holding_review_payloads(
+            positions=self.state["holdings_positions"],
+            fund=self.state["holdings_fundamentals"],
+            tech=self.state["holdings_technicals"],
+            rfs=self.state["holdings_risk_factors"],
+            insider_selling=self.state.get("insider_selling", {}),
+            finnhub_signals=self.state.get("finnhub_signals", {}),
+            eps_revisions=self.state.get("eps_revisions", {}),
+            position_splits=self.state.get("position_splits", {}),
+            account_meta=self.state.get("account_meta", {}),
+            tax_lots_raw=self.state.get("tax_lots", {}),
+            share_trades=self.state.get("share_trades", {}),
+            holdings_quarterly_mda=self.state.get("holdings_quarterly_mda", {}),
+            holdings_peers=self.state.get("holdings_peers", {}),
+            holdings_transcripts=self.state.get("holdings_transcripts", {}),
+            news=self.state.get("news") or {},
+            risk_factors_chars=_RISK_FACTORS_CHARS,
+            quarterly_mda_chars=_QUARTERLY_MDA_CHARS,
+            transcript_chars=_TRANSCRIPT_CHARS,
+        )
         reviewer = Reviewer("claude", self.settings.discover_sonnet_model)
         self.state["holdings_reviews"] = review_batch(reviewer, payloads)
         return StepOutput(
@@ -483,224 +371,30 @@ class RebalancePipeline(DiscoverPipeline):
         )
 
     def step_cc_data(self, step_input: StepInput) -> StepOutput:
-        """Build the COVERED-CALL CONTEXT block consumed by the rebalancer.
-
-        Pulls option chains, parses open short-call positions, computes
-        eligibility + round-lot coverage + earnings-filtered chains,
-        and stashes the assembled prompt block in
-        `self.state['cc_context_block']`.
-
-        Gracefully degrades: if CC_ENABLED is false or no holdings are
-        eligible, `cc_context_block` is "" and the rebalancer prompt
-        simply omits the CC section.
-        """
+        """Build the COVERED-CALL CONTEXT block consumed by the rebalancer."""
         if not self.settings.cc_enabled:
-            self.state["cc_context_block"] = ""
-            self.state["cc_eligibility"] = {}
-            self.state["cc_round_lot_coverage"] = {}
-            self.state["cc_stub_pool_total_usd"] = 0.0
+            self.state.update(cc_empty_state())
             return StepOutput(content="cc_data: disabled via CC_ENABLED=0")
 
-        # Safe defaults — populated below on success.
-        self.state["cc_context_block"] = ""
-        self.state["cc_eligibility"] = {}
-        self.state["cc_round_lot_coverage"] = {}
-        self.state["cc_stub_pool_total_usd"] = 0.0
-
+        self.state.update(cc_empty_state())
         try:
-            from ..data.brokerage import fetch_open_option_positions
-            from ..data.options_chain import fetch_chains
-            from ..discover.cc_eligibility import (
-                apply_earnings_filter,
-                build_cc_context_block,
-                eligible_holdings_per_account,
-                round_lot_coverage,
-            )
-
-            logger.info(
-                "CC pipeline starting: CC_ENABLED=%s, delta_band=[%.2f, %.2f], "
-                "DTE_band=[%d, %d], min_premium=$%.0f, slippage_buffer=%.0f%%",
-                self.settings.cc_enabled,
-                self.settings.cc_target_delta_min, self.settings.cc_target_delta_max,
-                self.settings.cc_dte_min, self.settings.cc_dte_max,
-                self.settings.cc_min_premium_usd,
-                self.settings.cc_slippage_buffer * 100,
-            )
-
-            positions = self.state.get("holdings_positions") or {}
-            denylist = self.settings.cc_denylist
-
-            try:
-                open_short_calls = fetch_open_option_positions()
-            except Exception as e:
-                logger.warning("open option position fetch failed: %s", e)
-                open_short_calls = {}
-
-            if open_short_calls:
-                logger.info(
-                    "CC: %d ticker(s) already collateralizing short calls: %s",
-                    len(open_short_calls), dict(open_short_calls),
-                )
-            else:
-                logger.info("CC: no existing short-call coverage detected")
-
-            position_splits = self.state.get("position_splits") or {}
-            eligible = eligible_holdings_per_account(
-                position_splits,
-                open_short_calls_by_account=open_short_calls,
-                denylist=denylist,
-            )
-
-            # Bound eligible tickers to cap prompt size. Rank by total dollar
-            # exposure across all eligible accounts (proxy for premium potential).
-            if len(eligible) > _CC_MAX_ELIGIBLE_FOR_PROMPT:
-                def _exposure(t: str) -> float:
-                    spot = (
-                        self.state.get("holdings_technicals", {}).get(t) or {}
-                    ).get("price") or 0.0
-                    total = sum(eh.available_shares for eh in eligible[t])
-                    return float(total) * float(spot)
-                kept = sorted(eligible, key=_exposure, reverse=True)[:_CC_MAX_ELIGIBLE_FOR_PROMPT]
-                dropped = sorted(set(eligible) - set(kept))
-                logger.warning(
-                    "CC: %d eligible tickers exceed prompt cap (%d); "
-                    "keeping top %d by exposure, dropping %s",
-                    len(eligible), _CC_MAX_ELIGIBLE_FOR_PROMPT,
-                    len(kept), dropped,
-                )
-                eligible = {t: eligible[t] for t in kept}
-
-            n_pairs = sum(len(v) for v in eligible.values())
-            logger.info(
-                "CC eligibility: %d ticker(s) / %d (ticker, account) pair(s) eligible. "
-                "Pairs: %s",
-                len(eligible), n_pairs,
-                sorted((eh.ticker, eh.account) for v in eligible.values() for eh in v),
-            )
-            if not eligible:
-                logger.warning(
-                    "CC: NO eligible holdings — rebalancer will produce NO WRITE_CALL "
-                    "recommendations. Reasons: positions < 100 shares OR all in denylist "
-                    "OR fully collateralized by existing short calls."
-                )
-
-            spots = {
-                t: (self.state.get("holdings_technicals", {}).get(t) or {}).get("price") or 0.0
-                for t in positions
-            }
-            coverage = round_lot_coverage(positions, spots=spots)
-            stub_pool = sum(
-                rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares
-            )
-
-            stub_eligible = sum(1 for rec in coverage.values() if rec.stub_dollar_value >= self.settings.cc_min_stub_usd)
-            logger.info(
-                "CC round-lot coverage: %d holding(s) have stubs, $%s total stub pool; "
-                "%d stub(s) exceed CC_MIN_STUB_USD=$%s threshold",
-                sum(1 for r in coverage.values() if r.stub_shares > 0),
-                f"{stub_pool:,.0f}",
-                stub_eligible,
-                f"{self.settings.cc_min_stub_usd:,.0f}",
-            )
-
-            chains = fetch_chains(
-                list(eligible),
-                dte_min=self.settings.cc_dte_min,
-                dte_max=self.settings.cc_dte_max,
-            )
-
-            chain_sources = {}
-            for c in chains.values():
-                chain_sources[c.source] = chain_sources.get(c.source, 0) + 1
-            logger.info(
-                "CC chain fetch: %d eligible ticker(s); sources: %s",
-                len(chains), dict(chain_sources),
-            )
-            if chains and all(c.source == "missing" for c in chains.values()):
-                logger.error(
-                    "CC: ALL chain fetches failed (SnapTrade + yfinance both miss). "
-                    "Opus will see UNAVAILABLE for every ticker and won't emit "
-                    "WRITE_CALL. Check yfinance connectivity + SnapTrade tier."
-                )
-
-            finnhub_signals = self.state.get("finnhub_signals") or {}
-            earnings_map: dict[str, date] = {}
-            for ticker in eligible:
-                sig = finnhub_signals.get(ticker) or {}
-                raw = sig.get("next_earnings_date") or sig.get("earnings_date")
-                if isinstance(raw, str):
-                    with contextlib.suppress(ValueError):
-                        earnings_map[ticker] = date.fromisoformat(raw[:10])
-                elif isinstance(raw, date):
-                    earnings_map[ticker] = raw
-
-            logger.info(
-                "CC earnings dates: %d/%d eligible tickers have known earnings date(s)",
-                len(earnings_map), len(eligible),
-            )
-
-            filtered_chains: dict[str, object] = {}
-            for ticker, chain in chains.items():
-                filtered, _ = apply_earnings_filter(
-                    chain, earnings_date=earnings_map.get(ticker),
-                )
-                filtered_chains[ticker] = filtered
-
-            # Stash chains so step_rebalance can backfill OptionWrite
-            # entries from WRITE_CALL sizing strings if Opus only fills
-            # the actions list (observed in production).
-            self.state["cc_chains"] = filtered_chains
-
-            # Free IV-rank proxy: compute realized-vol per eligible ticker
-            # from yfinance close prices, then compare to chain IV to get
-            # a regime label. Doesn't depend on any paid subscription.
-            from ..data.historical_volatility import fetch_realized_volatility
-            from ..discover.cc_eligibility import compute_iv_hv_regime
-            from ..models.portfolio import IvHvRegime
-            hv_data = fetch_realized_volatility(list(eligible))
-            iv_hv_regimes: dict[str, IvHvRegime] = {}
-            for ticker in eligible:
-                regime = compute_iv_hv_regime(
-                    chain=filtered_chains.get(ticker),
-                    hv=hv_data.get(ticker),
-                )
-                if regime is not None:
-                    iv_hv_regimes[ticker] = regime
-            self.state["cc_iv_hv_regimes"] = iv_hv_regimes
-            logger.info(
-                "CC IV/HV regimes: %s",
-                {t: f"{r.iv_hv_ratio:.2f}x ({r.label})"
-                 for t, r in iv_hv_regimes.items()},
-            )
-
-            block = build_cc_context_block(
-                eligible=eligible, chains=filtered_chains,
-                coverage=coverage, reviews=self.state.get("holdings_reviews", {}),
-                earnings=earnings_map, stub_pool_total_usd=stub_pool,
-                iv_hv_regimes=iv_hv_regimes,
-            )
-            self.state["cc_context_block"] = block
-            self.state["cc_eligibility"] = eligible
-            self.state["cc_round_lot_coverage"] = coverage
-            self.state["cc_stub_pool_total_usd"] = stub_pool
-
-            logger.info(
-                "CC context block built: %d chars (will be fed to rebalancer Opus)",
-                len(block),
-            )
-            return StepOutput(content=(
-                f"cc_data: {len(eligible)} eligible holding(s); "
-                f"chain sources {sorted(chain_sources.keys())}; "
-                f"stub pool ${stub_pool:,.0f}; "
-                f"context block {len(block)} chars"
-            ))
+            result = run_cc_data_pipeline(self.state, self.settings)
+            self.state["cc_context_block"] = result.context_block
+            self.state["cc_eligibility"] = result.eligibility
+            self.state["cc_round_lot_coverage"] = result.coverage
+            self.state["cc_stub_pool_total_usd"] = result.stub_pool
+            self.state["cc_chains"] = result.chains
+            self.state["cc_iv_hv_regimes"] = result.iv_hv_regimes
+            return StepOutput(content=result.content)
         except Exception as e:
             logger.error(
                 "step_cc_data crashed (%s) — rebalance will run WITHOUT "
                 "CC context. Investigate the traceback below.",
                 e, exc_info=True,
             )
-            return StepOutput(content=f"cc_data: failed ({type(e).__name__}); CC disabled for this run")
+            return StepOutput(
+                content=f"cc_data: failed ({type(e).__name__}); CC disabled for this run"
+            )
 
     def step_rebalance(self, step_input: StepInput) -> StepOutput:
         history_block = _build_history_block(self.settings.discover_db_path)
@@ -709,10 +403,6 @@ class RebalancePipeline(DiscoverPipeline):
                 "Cross-run context: %d holdings have prior decisions",
                 history_block.count("\n"),
             )
-        # Defensive: when discover stages (ranker/sizer) fail their retry
-        # budget, the rebalancer can still produce a holdings-only plan
-        # off the per-holding reviews. Pass empty discover context rather
-        # than KeyError-ing the whole run.
         ranker_text = self.state.get("ranker_text") or ""
         if not ranker_text:
             logger.warning(
@@ -731,40 +421,9 @@ class RebalancePipeline(DiscoverPipeline):
             cc_min_stub_usd=self.settings.cc_min_stub_usd,
             cc_stub_optimization=self.settings.cc_stub_optimization,
         )
-
-        # Pre-flight: estimate the rebalancer's prompt size so any
-        # context-window pressure is visible before we burn the call.
-        reviews_block_chars = sum(
-            len(getattr(r, "full_text", str(r)) or "")
-            for r in (self.state.get("holdings_reviews") or {}).values()
+        log_rebalancer_input_estimate(
+            self.state, ranker_text=ranker_text, history_block=history_block,
         )
-        cc_block_chars = len(self.state.get("cc_context_block") or "")
-        ranker_chars = len(ranker_text)
-        history_chars = len(history_block)
-        themes_chars = len(self.state.get("market_themes_block", "") or "")
-        macro_chars = len(self.state.get("macro_summary", "") or "")
-        total_input_chars = (
-            reviews_block_chars + cc_block_chars + ranker_chars
-            + history_chars + themes_chars + macro_chars
-        )
-        # Rough estimate: ~4 chars per token for English with markdown.
-        approx_input_tokens = total_input_chars // 4
-        logger.info(
-            "Rebalancer input estimate: %d total chars (~%d tokens). "
-            "Breakdown: reviews=%d, cc_block=%d, ranker=%d, history=%d, "
-            "themes=%d, macro=%d. (Opus 4.7 input limit: 200,000 tokens.)",
-            total_input_chars, approx_input_tokens,
-            reviews_block_chars, cc_block_chars, ranker_chars,
-            history_chars, themes_chars, macro_chars,
-        )
-        if approx_input_tokens > 150_000:
-            logger.warning(
-                "Rebalancer input is approaching the 200K-token context "
-                "limit (estimated %d tokens). Consider reducing the number "
-                "of holdings reviewed, or shortening reviewer.full_text.",
-                approx_input_tokens,
-            )
-
         plan = rebalancer.decide(
             self.state.get("holdings_reviews", {}),
             ranker_text,
@@ -776,59 +435,14 @@ class RebalancePipeline(DiscoverPipeline):
             cc_context_block=self.state.get("cc_context_block", ""),
         )
         try:
-            from ..discover.cc_backfill import backfill_option_writes
-            from ..discover.cc_validation import validate_option_writes
-            # Synthesize OptionWrite entries for any WRITE_CALL actions
-            # that Opus emitted without matching option_writes (observed
-            # in production — Opus sometimes only fills the actions list
-            # and the prose, dropping the structured field).
-            plan = backfill_option_writes(
-                plan, chains=self.state.get("cc_chains") or {},
-            )
-            plan, cc_warnings = validate_option_writes(
-                plan, eligibility=self.state.get("cc_eligibility") or {},
+            plan, cc_warnings = apply_cc_plan_validation(
+                plan,
+                chains=self.state.get("cc_chains") or {},
+                eligibility=self.state.get("cc_eligibility") or {},
+                cc_context_block=self.state.get("cc_context_block") or "",
             )
             if cc_warnings:
                 self.state["cc_warnings"] = cc_warnings
-                for w in cc_warnings:
-                    logger.warning("CC plan validation: %s", w)
-
-            n_write_calls = sum(1 for a in plan.actions if a.action == "WRITE_CALL")
-            if n_write_calls > 0:
-                total_premium = sum(
-                    ow.contracts * ow.est_premium_per_share * 100.0
-                    for ow in plan.option_writes
-                )
-                logger.info(
-                    "CC validation passed: %d WRITE_CALL action(s), "
-                    "$%s gross premium estimated. Details:",
-                    n_write_calls, f"{total_premium:,.0f}",
-                )
-                for ow in plan.option_writes:
-                    contract_premium = ow.contracts * ow.est_premium_per_share * 100.0
-                    logger.info(
-                        "  - %s: %d contracts @ $%.2f strike, expires %s, "
-                        "Δ=%.2f, ~$%s premium, assignment %.0f%%",
-                        ow.ticker, ow.contracts, ow.strike, ow.expiry,
-                        ow.delta, f"{contract_premium:,.0f}",
-                        ow.assignment_probability * 100,
-                    )
-            else:
-                # Distinguish "rebalancer chose not to" from "CC was disabled / data missing"
-                cc_block = self.state.get("cc_context_block") or ""
-                if not cc_block:
-                    logger.info(
-                        "CC: no WRITE_CALL recommendations — CC context was empty "
-                        "this run (no eligible holdings or CC_ENABLED=false)."
-                    )
-                else:
-                    logger.warning(
-                        "CC: rebalancer received CC context (%d chars) but emitted "
-                        "0 WRITE_CALL actions. Possible reasons: every eligible chain "
-                        "failed the liquidity guard (bid<$0.20, OI<100, spread>15%%), "
-                        "every eligible position is a SELL verdict, or Opus declined.",
-                        len(cc_block),
-                    )
         except Exception as e:
             logger.error(
                 "CC validation crashed (%s) — using unvalidated plan. "
@@ -837,8 +451,6 @@ class RebalancePipeline(DiscoverPipeline):
             )
             self.state["cc_warnings"] = [f"validation crashed: {e}"]
         self.state["rebalance_plan"] = plan
-        # `rebalance_text` is the prose rendering, kept under the same key
-        # so the PDF/email layer and the log-dump fallback need no change.
         self.state["rebalance_text"] = plan.full_text
         return StepOutput(
             content=(
@@ -882,11 +494,6 @@ class RebalancePipeline(DiscoverPipeline):
         )
 
     def step_persist_and_email_rebalance(self, step_input: StepInput) -> StepOutput:
-        # Defensive .get() reads throughout: any earlier discover stage
-        # (universe / screen / ranker / sizer) can exhaust its retry budget
-        # without setting state, and persisting + emailing the holdings
-        # reviews is still valuable when that happens. KeyError-ing the
-        # whole pipeline at the last step costs the user the entire run.
         candidates = self.state.get("candidates") or []
         survivors = self.state.get("survivors") or []
         picks = self.state.get("picks") or []
@@ -895,92 +502,22 @@ class RebalancePipeline(DiscoverPipeline):
         redteam_text = self.state.get("redteam_text") or ""
         sizer_text = self.state.get("sizer_text") or ""
 
-        # Persist run + candidates + scorecards + picks + outputs.
         with get_session(self.settings.discover_db_path) as session:
-            run_id = insert_run(
+            run_id = persist_rebalance_run(
                 session,
-                universe_size=len(candidates),
-                survivors=len(survivors),
-                picks=len(picks),
-                opus_model=self.settings.discover_opus_model,
-                sonnet_model=self.settings.discover_sonnet_model,
-                cash_budget=self.state.get("cash_balance"),
-                kind="rebalance",
-            )
-            for c in candidates:
-                insert_candidate(
-                    session,
-                    run_id,
-                    c["ticker"],
-                    passed_filter=c["passed_filter"],
-                    fail_reasons=c["fail_reasons"],
-                    score=c["score"],
-                    score_components=c["score_components"],
-                    score_breakdown=c["score_breakdown"],
-                    sources=c["sources"],
-                    conviction=c["conviction"],
-                    sector=c["sector"],
-                    price=c["price"],
-                )
-            for ticker, report in analyses.items():
-                analyst_text = getattr(report, "full_text", None) or (
-                    report if isinstance(report, str) else ""
-                )
-                insert_scorecard(session, run_id, ticker, analyst_text)
-            for ticker, review in self.state.get("holdings_reviews", {}).items():
-                if not review:
-                    continue
-                # `review` is a HoldingReview (Phase 4a). Fall back gracefully
-                # if a legacy str leaks through.
-                review_text = getattr(review, "full_text", None) or (
-                    review if isinstance(review, str) else ""
-                )
-                insert_holdings_review(
-                    session,
-                    run_id,
-                    ticker,
-                    verdict=parse_verdict(review),
-                    confidence=parse_confidence(review),
-                    review_text=review_text,
-                )
-            for rank, ticker, _ in picks:
-                insert_pick(
-                    session,
-                    run_id,
-                    rank=rank,
-                    ticker=ticker,
-                    ranker_text=ranker_text,
-                    bear_case_text=redteam_text,
-                    allocation_text=sizer_text,
-                )
-            plan = self.state.get("rebalance_plan")
-            # Use .get() with empty-string defaults for the rebalancer's
-            # outputs so a failed rebalance step (e.g. LLM error after
-            # max retries) doesn't compound into a KeyError that
-            # tanks persistence too.
-            insert_run_outputs(
-                session,
-                run_id,
-                ranker_full=ranker_text,
-                redteam_full=redteam_text,
-                sizer_full=sizer_text,
-                holdings_summary=self.state.get("holdings_summary", "") or "",
-                rebalance_text=self.state.get("rebalance_text", "") or "",
-                dashboard_data=plan.model_dump(mode="json") if plan else None,
+                state=self.state,
+                settings=self.settings,
+                candidates=candidates,
+                survivors=survivors,
+                picks=picks,
+                analyses=analyses,
+                ranker_text=ranker_text,
+                redteam_text=redteam_text,
+                sizer_text=sizer_text,
             )
 
-        # Charts for the BUY candidates (discover picks). If Ranker
-        # failed, picks list is empty and we just skip — the holdings
-        # reviews still render fine without ticker charts.
-        pick_tickers = [t for _, t, _ in picks]
-        charts: dict[str, bytes] = {}
-        try:
-            charts = fetch_charts(pick_tickers) if pick_tickers else {}
-        except Exception as e:
-            logger.warning("Chart fetch failed (%s) — report will omit charts", e)
-        chart_cids = {t: f"chart-{t.replace('.', '-')}" for t in charts}
-
-        sections = _build_rebalance_sections(
+        charts, chart_cids = fetch_pick_charts(picks)
+        sections = build_rebalance_sections(
             rebalance_text=self.state.get("rebalance_text", "") or "",
             holdings_reviews=self.state.get("holdings_reviews", {}),
             ranker_text=ranker_text,
@@ -1009,14 +546,7 @@ class RebalancePipeline(DiscoverPipeline):
 
         today = date.today()
         plan = self.state.get("rebalance_plan")
-        gross_premium = 0.0
-        if plan is not None and getattr(plan, "option_writes", None):
-            gross_premium = sum(
-                ow.contracts * ow.est_premium_per_share * 100.0
-                for ow in plan.option_writes
-            )
-        action_count = len(plan.actions) if plan else 0
-
+        action_count, gross_premium = gross_premium_from_plan(plan)
         if gross_premium > 0:
             logger.info(
                 "CC summary at email time: %d WRITE_CALL(s), $%s gross premium "
@@ -1029,39 +559,16 @@ class RebalancePipeline(DiscoverPipeline):
             action_count=action_count, gross_premium_usd=gross_premium,
         )
         pdf_filename = f"rebalance-{today.isoformat()}.pdf"
-
-        # Save PDF locally BEFORE the email attempt so a delivery failure
-        # (SMTP outage, wrong creds, etc.) never costs the user the report.
-        local_pdf_path = _save_local_pdf(pdf_bytes, pdf_filename)
-        logger.info("Saved rebalance PDF locally: %s", local_pdf_path)
-
-        delivered = False
-        delivery_error: str | None = None
-        if self.settings.email_to:
-            try:
-                SmtpServer().send_email(
-                    self.settings.email_to,
-                    subject,
-                    html_body,
-                    content_type="html",
-                    inline_images={
-                        chart_cids[t]: data for t, data in charts.items()
-                    } or None,
-                    attachments=[(pdf_filename, pdf_bytes, "pdf")],
-                )
-                delivered = True
-                logger.info(
-                    "Sent rebalance email to %s", self.settings.email_to
-                )
-            except Exception as e:
-                delivery_error = str(e)
-                logger.error("Email delivery failed: %s", e)
-        else:
-            logger.warning("EMAIL_TO not set; skipping email")
-
-        # Always dump the full analysis to the log so the user can recover
-        # every section — even when email is offline or wasn't configured.
-        _log_full_analysis(
+        delivered, delivery_error, local_pdf_path = deliver_rebalance_email(
+            self.settings,
+            subject=subject,
+            html_body=html_body,
+            charts=charts,
+            chart_cids=chart_cids,
+            pdf_bytes=pdf_bytes,
+            pdf_filename=pdf_filename,
+        )
+        log_full_analysis(
             delivered=delivered,
             delivery_error=delivery_error,
             local_pdf_path=str(local_pdf_path),
@@ -1071,46 +578,14 @@ class RebalancePipeline(DiscoverPipeline):
             sizer_text=sizer_text,
             holdings_reviews=self.state.get("holdings_reviews", {}),
         )
-
-        # CC summary — visible in terminal so the user sees at-a-glance
-        # whether the covered-call flow triggered.
-        plan = self.state.get("rebalance_plan")
-        if plan is not None:
-            n_writes = sum(1 for a in plan.actions if a.action == "WRITE_CALL")
-            print("\n" + "=" * 60)
-            print("COVERED-CALL SUMMARY")
-            print("=" * 60)
-            if n_writes > 0:
-                gross = sum(
-                    ow.contracts * ow.est_premium_per_share * 100.0
-                    for ow in plan.option_writes
-                )
-                print(f"  Recommendations: {n_writes} WRITE_CALL action(s)")
-                print(f"  Gross premium:   ${gross:,.0f}")
-                for ow in plan.option_writes:
-                    print(
-                        f"    {ow.ticker}: {ow.contracts}x ${ow.strike:.2f}C "
-                        f"expires {ow.expiry}, Δ={ow.delta:.2f}, "
-                        f"premium ${ow.contracts * ow.est_premium_per_share * 100:,.0f}"
-                    )
-            else:
-                cc_block = self.state.get("cc_context_block") or ""
-                if not cc_block:
-                    print("  No recommendations: CC context was empty.")
-                    print("  (No eligible ≥100-share holdings, CC_ENABLED=0, or chain fetch failed.)")
-                else:
-                    print("  No recommendations: rebalancer declined to write calls this run.")
-                    print(f"  CC context ({len(cc_block)} chars) WAS provided to Opus.")
-
-        print_terminal_summary(ranker_text, sizer_text)
-        print("\n" + "=" * 60)
-        print("REBALANCE PLAN")
-        print("=" * 60)
-        print(self.state.get("rebalance_text") or "(no plan produced)")
-        print(f"\nPDF saved: {local_pdf_path}")
-        log_path = current_log_file()
-        if log_path:
-            print(f"Log file:  {log_path}")
+        print_rebalance_terminal(
+            plan=plan,
+            cc_block=self.state.get("cc_context_block") or "",
+            ranker_text=ranker_text,
+            sizer_text=sizer_text,
+            rebalance_text=self.state.get("rebalance_text", "") or "",
+            local_pdf_path=local_pdf_path,
+        )
 
         self.state["run_id"] = run_id
         self.state["pdf_bytes"] = pdf_bytes
@@ -1186,302 +661,6 @@ class RebalancePipeline(DiscoverPipeline):
                 ),
             ],
         )
-
-
-def _build_rebalance_sections(
-    *,
-    rebalance_text: str,
-    holdings_reviews: dict[str, Any],
-    ranker_text: str,
-    redteam_text: str,
-    sizer_text: str,
-    candidates: list[dict[str, Any]],
-    cash_balance: float | None,
-    macro_summary: str,
-    sector_rotation: dict[str, Any] | None,
-    holdings_positions: dict[str, dict[str, Any]],
-    holdings_technicals: dict[str, dict[str, Any]],
-    holdings_fundamentals: dict[str, dict[str, Any]],
-    track_record_block: str = "",
-    rebalance_plan: object = None,
-    market_themes: object = None,
-    premortem: object = None,
-    holdings_news: dict[str, list[dict[str, Any]]] | None = None,
-    cc_eligibility: dict[str, Any] | None = None,
-    cc_round_lot_coverage: dict[str, Any] | None = None,
-    cc_stub_pool_total_usd: float = 0.0,
-    cc_warnings: list[str] | None = None,
-    cc_slippage_buffer: float = 0.10,
-) -> list[Section]:
-    """Rebalance-specific layout — status banner + metrics + dashboard +
-    sector pie at the top, then the LLM's plan + per-holding reviews +
-    discover-picks appendix.
-
-    `rebalance_plan` is the structured RebalancePlan from the LLM (Phase 3);
-    `rebalance_text` is the prose rendering (plan.full_text). The plan is
-    used to determine status without regex; the prose is what we render."""
-    today = date.today().isoformat()
-
-    # ---- Parse status + collect dashboard rows ----------------------------
-    # Prefer the structured plan; fall back to regex on text only when not
-    # available (legacy or partial runs).
-    status = parse_rebalance_status(rebalance_plan or rebalance_text)
-    status_label = (
-        "STATUS: NO ACTION RECOMMENDED" if status == "NO_ACTION"
-        else "STATUS: ACTION RECOMMENDED" if status == "ACTION"
-        else "STATUS: REVIEW REQUIRED"
-    )
-
-    dashboard_rows: list[dict[str, Any]] = []
-    total_value = 0.0
-    total_cost = 0.0
-    sector_value: dict[str, float] = {}
-    for ticker in sorted(holdings_positions.keys()):
-        pos = holdings_positions[ticker]
-        tech = holdings_technicals.get(ticker, {})
-        fund = holdings_fundamentals.get(ticker, {})
-        review = holdings_reviews.get(ticker) or ""
-        current = tech.get("price")
-        units = pos.get("units", 0)
-        cost = pos.get("cost_basis", 0)
-        value = (current or 0) * units
-        total_value += value
-        total_cost += cost
-        pnl_pct = ((value - cost) / cost * 100) if cost else None
-        sector = fund.get("sector") or "Unknown"
-        if value > 0:
-            sector_value[sector] = sector_value.get(sector, 0) + value
-        dashboard_rows.append({
-            "ticker": ticker,
-            "verdict": parse_verdict(review),
-            "confidence": parse_confidence(review),
-            "pnl_pct": pnl_pct,
-            "sector": sector,
-            "note": "",
-        })
-
-    total_pnl_pct = ((total_value - total_cost) / total_cost * 100) if total_cost else None
-
-    # ---- Build sections ---------------------------------------------------
-    sections: list[Section] = [
-        Section(kind="heading", text=f"Portfolio Rebalance — {today}", level=1),
-        Section(kind="status_banner", text=status_label, status=status),
-    ]
-
-    metrics: list[tuple[str, str]] = [
-        ("Holdings", f"{len(holdings_positions)}"),
-        ("Portfolio value", f"${total_value:,.0f}" if total_value else "—"),
-        ("Total P/L", f"{total_pnl_pct:+.1f}%" if total_pnl_pct is not None else "—"),
-        ("Cash", f"${cash_balance:,.0f}" if cash_balance is not None else "—"),
-    ]
-    sections.append(Section(kind="metric_strip", metrics=metrics))
-
-    if dashboard_rows:
-        sections.append(Section(kind="heading", text="Holdings dashboard", level=2))
-        sections.append(
-            Section(kind="holdings_dashboard", holdings=dashboard_rows)
-        )
-
-    # Recent catalysts — informational only. Surfaces fresh headlines per
-    # holding so the user can spot catalysts that postdate the latest 10-Q
-    # or earnings transcript. Does NOT drive sizing or verdicts — those
-    # decisions stay with the Reviewer / Rebalancer.
-    catalyst_rows: list[list[str]] = []
-    if holdings_news:
-        for ticker in sorted(holdings_positions.keys()):
-            items = holdings_news.get(ticker) or []
-            for item in items[:2]:
-                title = (item.get("title") or "").strip()
-                if title:
-                    catalyst_rows.append([ticker, title])
-    if catalyst_rows:
-        sections.append(Section(
-            kind="heading", text="Recent catalysts (informational)", level=2,
-        ))
-        sections.append(Section(
-            kind="para",
-            text=(
-                "Headlines worth scanning. Not used to compute verdicts or "
-                "position sizing — your Reviewer/Rebalancer reads news as "
-                "qualitative context only."
-            ),
-        ))
-        sections.append(Section(
-            kind="table",
-            table_header=["Ticker", "Headline"],
-            table_rows=catalyst_rows,
-        ))
-
-    if sector_value:
-        pie_data = sorted(sector_value.items(), key=lambda x: x[1], reverse=True)
-        sections.append(Section(kind="heading", text="Sector allocation", level=2))
-        sections.append(Section(kind="sector_pie", pie_data=pie_data))
-
-    if track_record_block:
-        sections.append(Section(kind="heading", text="Track record", level=2))
-        sections.append(Section(kind="preformatted", text=track_record_block))
-
-    from ..models.llm import MarketThemes
-    if isinstance(market_themes, MarketThemes) and market_themes.themes:
-        sections.append(Section(kind="heading", text="Current market themes", level=2))
-        sections.append(Section(
-            kind="market_themes_panel",
-            data={
-                "themes": [
-                    {
-                        "name": t.name,
-                        "description": t.description,
-                        "strength": t.strength,
-                        "trending": t.trending,
-                        "member_tickers": list(t.member_tickers),
-                    }
-                    for t in market_themes.themes
-                ],
-            },
-        ))
-
-    if macro_summary:
-        sections.append(Section(kind="heading", text="Macro regime", level=2))
-        sections.append(Section(kind="blockquote", text=macro_summary))
-
-    sections.append(Section(kind="page_break"))
-    sections.append(Section(kind="heading", text="Rebalance plan (action list)", level=1))
-    # Structured action table when status=ACTION — one styled row per
-    # action with a SELL/TRIM/ADD/BUY badge. NO_ACTION runs have no
-    # actions; skip the table entirely (status banner already conveys
-    # the verdict).
-    from ..models.rebalance import RebalancePlan
-    plan = rebalance_plan if isinstance(rebalance_plan, RebalancePlan) else None
-    if plan and plan.actions:
-        sections.append(Section(
-            kind="rebalance_action_table",
-            data={
-                "actions": [
-                    {"action": a.action, "ticker": a.ticker, "sizing": a.sizing}
-                    for a in plan.actions
-                ],
-                "summary": plan.summary,
-            },
-        ))
-
-    if isinstance(premortem, PreMortem) and (premortem.failures or premortem.summary):
-        sections.append(Section(
-            kind="heading", text="Pre-mortem (adversarial hindsight)", level=2,
-        ))
-        sections.append(Section(
-            kind="premortem_panel",
-            data={
-                "overall_verdict": premortem.overall_verdict,
-                "summary": premortem.summary,
-                "failures": [
-                    {
-                        "likelihood": f.likelihood,
-                        "severity": f.severity,
-                        "triggering_action": f.triggering_action,
-                        "failure_narrative": f.failure_narrative,
-                        "early_warning": f.early_warning,
-                    }
-                    for f in premortem.failures
-                ],
-            },
-        ))
-
-    # Covered-call report sections — rendered only when relevant.
-    from ..discover.cc_render import (
-        compute_premium_deployment,
-        compute_premium_income,
-        compute_round_lot_summary,
-    )
-    if plan is not None and plan.option_writes:
-        sections.append(Section(
-            kind="premium_income",
-            data=compute_premium_income(plan, slippage_buffer=cc_slippage_buffer),
-        ))
-    if cc_round_lot_coverage:
-        rls = compute_round_lot_summary(cc_round_lot_coverage)
-        if rls["rows"]:
-            sections.append(Section(kind="round_lot_coverage", data=rls))
-    if plan is not None and (
-        plan.option_writes
-        or any(
-            a.action in ("ADD", "BUY")
-            or (a.action == "TRIM" and "stub" in a.sizing.lower())
-            for a in plan.actions
-        )
-    ):
-        stub_usd = 0.0
-        if cc_round_lot_coverage:
-            for a in plan.actions:
-                if a.action == "TRIM" and "stub" in a.sizing.lower():
-                    rec = cc_round_lot_coverage.get(a.ticker)
-                    if rec is not None:
-                        stub_usd += getattr(rec, "stub_dollar_value", 0.0)
-        deployment = compute_premium_deployment(
-            plan, cash_balance=cash_balance, slippage_buffer=cc_slippage_buffer,
-            stub_consolidation_usd=stub_usd,
-        )
-        if (
-            deployment["gross_premium_usd"] > 0
-            or deployment["deployments"]
-            or stub_usd > 0
-        ):
-            sections.append(Section(kind="premium_deployment", data=deployment))
-
-    if cc_warnings:
-        sections.append(Section(
-            kind="para",
-            text="CC plan adjustments: " + "; ".join(cc_warnings),
-        ))
-
-    sections.append(Section(kind="preformatted", text=rebalance_text))
-
-    sections.append(Section(kind="page_break"))
-    sections.append(Section(kind="heading", text="Per-holding reviews", level=1))
-    from ..models.llm import HoldingReview
-    for ticker in sorted(holdings_reviews.keys()):
-        review = holdings_reviews[ticker]
-        if isinstance(review, HoldingReview):
-            # Structured card — pills, labeled sections, tax lot list,
-            # wash-sale callout. Renders much nicer than the monospace
-            # preformatted dump.
-            sections.append(Section(
-                kind="holding_review_card",
-                data={
-                    "ticker": ticker,
-                    "verdict": review.verdict,
-                    "confidence": review.confidence,
-                    "trim_pct": review.trim_pct,
-                    "position_context": review.position_context,
-                    "forward_outlook": review.forward_outlook,
-                    "reasoning": review.reasoning,
-                    "tax_lot_plan": list(review.tax_lot_plan),
-                    "what_would_change_mind": review.what_would_change_mind,
-                    "wash_sale_notice": review.wash_sale_notice,
-                },
-            ))
-        else:
-            # Legacy free-text path — keep the old layout.
-            text = review or ""
-            sections.append(Section(kind="heading", text=ticker, level=2))
-            sections.append(Section(kind="preformatted", text=text))
-
-    # Discover picks as appendix — drop their own H1 + summary since we have ours.
-    discover_sections = build_sections(
-        ranker_text=ranker_text,
-        redteam_text=redteam_text,
-        sizer_text=sizer_text,
-        candidates=candidates,
-        universe_size=len(candidates),
-        holdings_summary="",
-        macro_summary="",
-        sector_rotation=sector_rotation,
-    )
-    sections.append(Section(kind="page_break"))
-    sections.append(
-        Section(kind="heading", text="Discover picks (input to rebalancer)", level=1)
-    )
-    sections.extend(discover_sections[2:])
-    return sections
 
 
 def run() -> None:
