@@ -1,4 +1,5 @@
 """Holdings review payload assembly for the rebalance pipeline."""
+
 from __future__ import annotations
 
 from typing import Any

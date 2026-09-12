@@ -7,6 +7,7 @@ so the user can recover analysis even if email delivery fails.
 Override the log file location with `LOG_FILE=/path/to.log` or the
 directory with `LOG_DIR=/path/to/dir`. Override level with `LOG_LEVEL`.
 """
+
 from __future__ import annotations
 
 import logging
@@ -41,9 +42,7 @@ def _configure() -> None:
         log_file = os.path.expanduser(log_file)
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     else:
-        log_dir = Path(
-            os.path.expanduser(os.getenv("LOG_DIR", "~/.stock_analyzer/logs"))
-        )
+        log_dir = Path(os.path.expanduser(os.getenv("LOG_DIR", "~/.stock_analyzer/logs")))
         log_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y-%m-%d-%H%M%S")
         log_file = str(log_dir / f"stock-analyzer-{ts}.log")

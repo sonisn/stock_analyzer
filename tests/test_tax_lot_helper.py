@@ -4,6 +4,7 @@ Wrong numbers here mean wrong sell-ordering advice and real-dollar tax
 mistakes. These tests pin down the gain / loss / tax-advantaged paths
 plus the aggregate `if_all_sold_today` rollup.
 """
+
 from __future__ import annotations
 
 from stock_analyzer.discover.tax_lot_helper import (
@@ -67,11 +68,13 @@ def test_long_term_gain_lower_rate_than_short_term_gain():
     would advise the user to sell the wrong lot first."""
     lt = _compute_lot_impact(
         {**_LOT_100SH_50, "treatment": "long_term"},
-        current_price=80.0, account_tax_status="taxable",
+        current_price=80.0,
+        account_tax_status="taxable",
     )
     st = _compute_lot_impact(
         {**_LOT_100SH_50, "treatment": "short_term"},
-        current_price=80.0, account_tax_status="taxable",
+        current_price=80.0,
+        account_tax_status="taxable",
     )
     assert lt["estimated_tax_dollars"] < st["estimated_tax_dollars"]
 
@@ -81,37 +84,56 @@ def test_long_term_gain_lower_rate_than_short_term_gain():
 
 def test_aggregate_if_all_sold_today_sums_per_status():
     """Mix of taxable gain + IRA gain + taxable loss should report:
-      - n_lots_taxable_gain = 1
-      - n_lots_taxable_loss_harvest = 1
-      - n_lots_free_to_trim = 1
-      - total_estimated_tax = gain_tax + 0 + (-benefit)
+    - n_lots_taxable_gain = 1
+    - n_lots_taxable_loss_harvest = 1
+    - n_lots_free_to_trim = 1
+    - total_estimated_tax = gain_tax + 0 + (-benefit)
     """
     tax_payload = {
         "lots": [
-            {"account": "Taxable", "units": 100, "price_per_share": 50.0,
-             "total_cost": 5000.0, "treatment": "long_term"},
-            {"account": "IRA", "units": 100, "price_per_share": 50.0,
-             "total_cost": 5000.0, "treatment": "long_term"},
-            {"account": "Taxable", "units": 100, "price_per_share": 50.0,
-             "total_cost": 5000.0, "treatment": "short_term"},
+            {
+                "account": "Taxable",
+                "units": 100,
+                "price_per_share": 50.0,
+                "total_cost": 5000.0,
+                "treatment": "long_term",
+            },
+            {
+                "account": "IRA",
+                "units": 100,
+                "price_per_share": 50.0,
+                "total_cost": 5000.0,
+                "treatment": "long_term",
+            },
+            {
+                "account": "Taxable",
+                "units": 100,
+                "price_per_share": 50.0,
+                "total_cost": 5000.0,
+                "treatment": "short_term",
+            },
         ],
     }
     accounts = {
         "Taxable": {"tax_status": "taxable"},
-        "IRA":     {"tax_status": "tax_advantaged"},
+        "IRA": {"tax_status": "tax_advantaged"},
     }
     # Current price $80: taxable LT gain = +$3000, IRA gain irrelevant,
     # taxable ST gain = +$3000 (same $80 vs $50). Make the third a LOSS
     # by changing its cost basis higher than current price.
     tax_payload["lots"][2] = {
-        "account": "Taxable", "units": 100, "price_per_share": 100.0,
-        "total_cost": 10000.0, "treatment": "short_term",
+        "account": "Taxable",
+        "units": 100,
+        "price_per_share": 100.0,
+        "total_cost": 10000.0,
+        "treatment": "short_term",
     }
-    out = enrich_tax_lots_with_impact(tax_payload, current_price=80.0,
-                                      account_meta_by_name=accounts)
+    out = enrich_tax_lots_with_impact(
+        tax_payload, current_price=80.0, account_meta_by_name=accounts
+    )
     summary = out["if_all_sold_today"]
-    assert summary["n_lots_taxable_gain"] == 1     # taxable LT gain lot
-    assert summary["n_lots_free_to_trim"] == 1     # IRA lot
+    assert summary["n_lots_taxable_gain"] == 1  # taxable LT gain lot
+    assert summary["n_lots_free_to_trim"] == 1  # IRA lot
     assert summary["n_lots_taxable_loss_harvest"] == 1  # taxable ST loss lot
 
     # total_estimated_tax = $540 (LT gain) + $0 (IRA) + -$640 (ST loss × 32%)

@@ -8,6 +8,7 @@ _apply_legacy_migrations runs the same idempotent ALTER TABLEs that
 discover/persistence.py used, so old local DBs created before the kind /
 rebalance_text / dashboard_data columns existed still migrate forward.
 """
+
 from __future__ import annotations
 
 import os
@@ -43,6 +44,13 @@ _LEGACY_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("runs", "ALTER TABLE runs ADD COLUMN kind TEXT NOT NULL DEFAULT 'discover'"),
     ("run_outputs", "ALTER TABLE run_outputs ADD COLUMN rebalance_text TEXT"),
     ("run_outputs", "ALTER TABLE run_outputs ADD COLUMN dashboard_data TEXT"),
+    # Forecast columns for calibration scoring. Pre-existing picks keep NULL
+    # and are simply excluded from calibration stats — there is no way to
+    # recover a conviction or a probability that was never written down.
+    ("picks", "ALTER TABLE picks ADD COLUMN conviction INTEGER"),
+    ("picks", "ALTER TABLE picks ADD COLUMN ev_pct REAL"),
+    ("picks", "ALTER TABLE picks ADD COLUMN entry_price REAL"),
+    ("picks", "ALTER TABLE picks ADD COLUMN time_horizon TEXT"),
 )
 
 

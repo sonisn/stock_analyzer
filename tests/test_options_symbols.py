@@ -1,4 +1,5 @@
 """Tests for OCC option-symbol parser."""
+
 from __future__ import annotations
 
 from datetime import date

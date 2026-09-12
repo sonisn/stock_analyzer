@@ -3,6 +3,7 @@
 Returns the fields the screen and analyst stages need. Missing fields are
 left as None; downstream filters treat None as 'failed' (conservative).
 """
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -15,7 +16,14 @@ from ..logging import get_logger
 
 logger = get_logger(__name__)
 
-_MAX_WORKERS = 5
+# yfinance concurrency. The discover pipeline now screens a real sampling
+# frame (S&P 500 + watchlist + holdings, ~500 names) rather than the ~50
+# tickers the news feeds happened to mention, so this batch is the
+# wall-clock floor for a run. 10 is a deliberate middle: enough to keep a
+# ~500-name fetch in the low minutes, low enough to stay clear of
+# yfinance's throttling. The expensive LLM stages are unaffected —
+# MAX_CANDIDATES_FOR_LLM caps those at 25 regardless of frame size.
+_MAX_WORKERS = 10
 
 _OCF_ROW_NAMES = (
     "Operating Cash Flow",
@@ -65,7 +73,7 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
     if current_price and target_mean:
         try:
             target_upside_pct = (target_mean - current_price) / current_price
-        except (TypeError, ZeroDivisionError):
+        except TypeError, ZeroDivisionError:
             target_upside_pct = None
 
     return {

@@ -14,6 +14,7 @@ Functions silently return empty dicts for tickers Finnhub can't serve
 (non-US, suspended, etc.) so the pipeline degrades gracefully rather
 than failing.
 """
+
 from __future__ import annotations
 
 import os
@@ -77,39 +78,39 @@ def fetch_earnings_surprise(client: finnhub.Client, ticker: str) -> list[dict[st
         return []
     out: list[dict[str, Any]] = []
     for q in raw:
-        out.append({
-            "period": q.get("period"),
-            "actual": q.get("actual"),
-            "estimate": q.get("estimate"),
-            "surprise": q.get("surprise"),
-            "surprise_pct": q.get("surprisePercent"),
-        })
+        out.append(
+            {
+                "period": q.get("period"),
+                "actual": q.get("actual"),
+                "estimate": q.get("estimate"),
+                "surprise": q.get("surprise"),
+                "surprise_pct": q.get("surprisePercent"),
+            }
+        )
     return out
 
 
-def fetch_recommendation_trend(
-    client: finnhub.Client, ticker: str
-) -> list[dict[str, Any]]:
+def fetch_recommendation_trend(client: finnhub.Client, ticker: str) -> list[dict[str, Any]]:
     """Last 4 months of analyst consensus.
 
     Returns [{period, strong_buy, buy, hold, sell, strong_sell}, ...]
     with most recent first. Captures DOWNGRADES / UPGRADES — compare
     period[0] vs period[3] to see direction of analyst opinion."""
-    raw = _safe_call(
-        "recommendation_trend", ticker, client.recommendation_trends, ticker
-    )
+    raw = _safe_call("recommendation_trend", ticker, client.recommendation_trends, ticker)
     if not raw:
         return []
     out: list[dict[str, Any]] = []
     for m in raw[:4]:  # last 4 months
-        out.append({
-            "period": m.get("period"),
-            "strong_buy": m.get("strongBuy"),
-            "buy": m.get("buy"),
-            "hold": m.get("hold"),
-            "sell": m.get("sell"),
-            "strong_sell": m.get("strongSell"),
-        })
+        out.append(
+            {
+                "period": m.get("period"),
+                "strong_buy": m.get("strongBuy"),
+                "buy": m.get("buy"),
+                "hold": m.get("hold"),
+                "sell": m.get("sell"),
+                "strong_sell": m.get("strongSell"),
+            }
+        )
     return out
 
 
@@ -130,9 +131,7 @@ def fetch_price_targets(client: finnhub.Client, ticker: str) -> dict[str, Any]:
     }
 
 
-def fetch_insider_activity(
-    client: finnhub.Client, ticker: str, days: int = 90
-) -> dict[str, Any]:
+def fetch_insider_activity(client: finnhub.Client, ticker: str, days: int = 90) -> dict[str, Any]:
     """Recent Form 4 insider transactions for the ticker.
 
     Returns a structured summary preferable to a raw mention count:
@@ -175,9 +174,7 @@ def fetch_insider_activity(
             n_buys += 1
             buy_value += change * price
 
-    data_sorted = sorted(
-        data, key=lambda t: t.get("transactionDate") or "", reverse=True
-    )
+    data_sorted = sorted(data, key=lambda t: t.get("transactionDate") or "", reverse=True)
     return {
         "net_shares": net_shares,
         "n_sells": n_sells,
@@ -197,17 +194,13 @@ def fetch_insider_activity(
     }
 
 
-def fetch_signals(
-    client: finnhub.Client, ticker: str, *, insider_days: int = 90
-) -> dict[str, Any]:
+def fetch_signals(client: finnhub.Client, ticker: str, *, insider_days: int = 90) -> dict[str, Any]:
     """Fetch all four signals for one ticker."""
     return {
         "earnings_surprise": fetch_earnings_surprise(client, ticker),
         "recommendation_trend": fetch_recommendation_trend(client, ticker),
         "price_targets": fetch_price_targets(client, ticker),
-        "insider_activity": fetch_insider_activity(
-            client, ticker, days=insider_days
-        ),
+        "insider_activity": fetch_insider_activity(client, ticker, days=insider_days),
     }
 
 
@@ -222,16 +215,13 @@ def batch_finnhub_signals(
     simple downstream."""
     client = _client()
     if client is None:
-        logger.warning(
-            "FINNHUB_API_KEY not set; skipping Finnhub signals (returning empty)"
-        )
+        logger.warning("FINNHUB_API_KEY not set; skipping Finnhub signals (returning empty)")
         return {t: {} for t in tickers}
 
     out: dict[str, dict[str, Any]] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         futures = {
-            ex.submit(fetch_signals, client, t, insider_days=insider_days): t
-            for t in tickers
+            ex.submit(fetch_signals, client, t, insider_days=insider_days): t for t in tickers
         }
         for fut in futures:
             ticker = futures[fut]

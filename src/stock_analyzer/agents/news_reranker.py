@@ -1,4 +1,5 @@
 """Rank candidate news items by materiality to a stock using an LLM."""
+
 from __future__ import annotations
 
 import json

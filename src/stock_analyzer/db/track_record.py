@@ -4,6 +4,7 @@ These produce the (run_at, ticker) tuples consumed by _dedup_oldest in
 the orchestration module. Query logic stays here so SQL stays out of
 the business layer; the orchestrator handles ordering + deduplication.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta
@@ -53,9 +54,7 @@ def fetch_recent_verdict_runs(
     return [(row.run_at, row.ticker) for row in rows]
 
 
-def fetch_recent_sell_runs(
-    session: Session, *, lookback_days: int
-) -> list[tuple[str, str]]:
+def fetch_recent_sell_runs(session: Session, *, lookback_days: int) -> list[tuple[str, str]]:
     """Back-compat wrapper: SELL + TRIM combined. New code should call
     fetch_recent_verdict_runs per verdict instead so trim/sell can be
     reported separately."""

@@ -7,6 +7,7 @@ so the output is ticker-keyed rather than article-keyed.
 Used by the discover pipeline as a bearish flag — heavy recent insider
 selling on a candidate is a major red signal the ranker should weigh.
 """
+
 from __future__ import annotations
 
 import os
@@ -31,9 +32,7 @@ INSIDER_DOMAINS: list[str] = [
 ]
 
 
-def fetch_insider_selling_coverage(
-    days: int = 14, max_results: int = 20
-) -> list[dict[str, Any]]:
+def fetch_insider_selling_coverage(days: int = 14, max_results: int = 20) -> list[dict[str, Any]]:
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:
         logger.warning("TAVILY_API_KEY not set; insider-selling fetch returns empty")
@@ -76,9 +75,7 @@ def fetch_insider_selling_coverage(
     return deduped[:max_results]
 
 
-def insider_selling_mentions(
-    survivor_tickers: set[str], days: int = 14
-) -> dict[str, int]:
+def insider_selling_mentions(survivor_tickers: set[str], days: int = 14) -> dict[str, int]:
     """Return {ticker: mention_count} for survivors that appear in recent
     insider-selling coverage. Missing tickers = no signal (no rows)."""
     items = fetch_insider_selling_coverage(days=days)

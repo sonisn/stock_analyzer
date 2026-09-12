@@ -3,6 +3,7 @@
 Structured analysis per ticker: competitive position, growth runway, top 3
 risks (extracted from 10-K + news), valuation context, catalyst calendar.
 """
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -160,10 +161,7 @@ class Analyst:
         )
 
     def analyze(self, ticker: str, payload: dict[str, Any]) -> AnalystReport | None:
-        prompt = (
-            f"Candidate ticker: {ticker}\n\n"
-            f"```json\n{dumps_pretty(payload)}\n```"
-        )
+        prompt = f"Candidate ticker: {ticker}\n\n```json\n{dumps_pretty(payload)}\n```"
         logger.info("Analyzing %s", ticker)
         result = self.agent.run(prompt).content
         if result is None:
@@ -176,13 +174,15 @@ class Analyst:
                 return AnalystReport.model_validate_json(result)
             except Exception as e:
                 logger.warning(
-                    "Analyst for %s returned a string that wasn't valid "
-                    "AnalystReport JSON: %s", ticker, e,
+                    "Analyst for %s returned a string that wasn't valid AnalystReport JSON: %s",
+                    ticker,
+                    e,
                 )
                 return None
         logger.warning(
             "Analyst for %s returned unexpected type %s; skipping",
-            ticker, type(result).__name__,
+            ticker,
+            type(result).__name__,
         )
         return None
 

@@ -6,6 +6,7 @@ Session instead of a sqlite3.Connection. JSON marshalling lives here:
 the table classes hold raw TEXT, the repository converts to/from
 Python types at the boundary.
 """
+
 from __future__ import annotations
 
 import json
@@ -18,12 +19,14 @@ from .tables import (
     Candidate,
     HoldingReviewRow,
     Pick,
+    PickScenario,
     Run,
     RunOutput,
     Scorecard,
 )
 
 # --- runs -----------------------------------------------------------------
+
 
 def insert_run(
     session: Session,
@@ -56,6 +59,7 @@ def insert_run(
 
 # --- candidates -----------------------------------------------------------
 
+
 def insert_candidate(
     session: Session,
     run_id: int,
@@ -71,30 +75,32 @@ def insert_candidate(
     sector: str | None,
     price: float | None,
 ) -> None:
-    session.add(Candidate(
-        run_id=run_id,
-        ticker=ticker,
-        passed_filter=int(passed_filter),
-        fail_reasons=json.dumps(fail_reasons),
-        score=score,
-        score_components=json.dumps(score_components) if score_components else None,
-        score_breakdown=json.dumps(score_breakdown) if score_breakdown else None,
-        sources=json.dumps(sources),
-        conviction=conviction,
-        sector=sector,
-        price=price,
-    ))
+    session.add(
+        Candidate(
+            run_id=run_id,
+            ticker=ticker,
+            passed_filter=int(passed_filter),
+            fail_reasons=json.dumps(fail_reasons),
+            score=score,
+            score_components=json.dumps(score_components) if score_components else None,
+            score_breakdown=json.dumps(score_breakdown) if score_breakdown else None,
+            sources=json.dumps(sources),
+            conviction=conviction,
+            sector=sector,
+            price=price,
+        )
+    )
 
 
 # --- scorecards -----------------------------------------------------------
 
-def insert_scorecard(
-    session: Session, run_id: int, ticker: str, text: str
-) -> None:
+
+def insert_scorecard(session: Session, run_id: int, ticker: str, text: str) -> None:
     session.add(Scorecard(run_id=run_id, ticker=ticker, analyst_text=text))
 
 
 # --- picks ----------------------------------------------------------------
+
 
 def insert_pick(
     session: Session,
@@ -105,18 +111,59 @@ def insert_pick(
     ranker_text: str,
     bear_case_text: str | None,
     allocation_text: str | None,
+    conviction: int | None = None,
+    ev_pct: float | None = None,
+    entry_price: float | None = None,
+    time_horizon: str | None = None,
+    scenarios: list[dict[str, Any]] | None = None,
 ) -> None:
-    session.add(Pick(
-        run_id=run_id,
-        rank=rank,
-        ticker=ticker,
-        ranker_text=ranker_text,
-        bear_case_text=bear_case_text,
-        allocation_text=allocation_text,
-    ))
+    """Persist one pick plus the forecast behind it.
+
+    The forecast args are what make calibration possible: without
+    `conviction`, `ev_pct` and the `scenarios` rows there is no way to ask
+    later whether conviction-9 picks actually beat conviction-6 ones, or
+    whether the stated bear probabilities were too low. They default to
+    None so older callers keep working, but the discover pipeline always
+    passes them.
+
+    Each scenario dict is {"label", "probability", "target_return_pct"}.
+    """
+    session.add(
+        Pick(
+            run_id=run_id,
+            rank=rank,
+            ticker=ticker,
+            ranker_text=ranker_text,
+            bear_case_text=bear_case_text,
+            allocation_text=allocation_text,
+            conviction=conviction,
+            ev_pct=ev_pct,
+            entry_price=entry_price,
+            time_horizon=time_horizon,
+        )
+    )
+    for scenario in scenarios or []:
+        label = str(scenario.get("label") or "").strip().lower()
+        if label not in ("bull", "base", "bear"):
+            continue
+        probability = scenario.get("probability")
+        target = scenario.get("target_return_pct")
+        if probability is None or target is None:
+            continue
+        session.add(
+            PickScenario(
+                run_id=run_id,
+                rank=rank,
+                label=label,
+                ticker=ticker,
+                probability=float(probability),
+                target_return_pct=float(target),
+            )
+        )
 
 
 # --- holdings reviews -----------------------------------------------------
+
 
 def insert_holdings_review(
     session: Session,
@@ -127,13 +174,15 @@ def insert_holdings_review(
     confidence: int | None,
     review_text: str,
 ) -> None:
-    session.add(HoldingReviewRow(
-        run_id=run_id,
-        ticker=ticker,
-        verdict=verdict,
-        confidence=confidence,
-        review_text=review_text,
-    ))
+    session.add(
+        HoldingReviewRow(
+            run_id=run_id,
+            ticker=ticker,
+            verdict=verdict,
+            confidence=confidence,
+            review_text=review_text,
+        )
+    )
 
 
 def fetch_recent_holdings_history(
@@ -143,12 +192,11 @@ def fetch_recent_holdings_history(
     the last `n_runs` runs of `kind`. Same shape as the legacy function."""
     # DESC + LIMIT to grab the most recent N rows; then reverse to chronological
     # (ascending) order so the LLM reads them oldest-first.
-    recent_runs = list(session.exec(
-        select(Run.id, Run.run_at)
-        .where(Run.kind == kind)
-        .order_by(Run.id.desc())
-        .limit(n_runs)
-    ))
+    recent_runs = list(
+        session.exec(
+            select(Run.id, Run.run_at).where(Run.kind == kind).order_by(Run.id.desc()).limit(n_runs)
+        )
+    )
     if not recent_runs:
         return {}
     recent_runs.reverse()
@@ -162,15 +210,18 @@ def fetch_recent_holdings_history(
             ).where(HoldingReviewRow.run_id == run_row.id)
         )
         for review_row in rows:
-            out.setdefault(review_row.ticker, []).append({
-                "run_at": run_row.run_at,
-                "verdict": review_row.verdict,
-                "confidence": review_row.confidence,
-            })
+            out.setdefault(review_row.ticker, []).append(
+                {
+                    "run_at": run_row.run_at,
+                    "verdict": review_row.verdict,
+                    "confidence": review_row.confidence,
+                }
+            )
     return out
 
 
 # --- run outputs ----------------------------------------------------------
+
 
 def insert_run_outputs(
     session: Session,
@@ -183,17 +234,17 @@ def insert_run_outputs(
     rebalance_text: str | None = None,
     dashboard_data: dict[str, Any] | None = None,
 ) -> None:
-    session.add(RunOutput(
-        run_id=run_id,
-        ranker_full=ranker_full,
-        redteam_full=redteam_full,
-        sizer_full=sizer_full,
-        holdings_summary=holdings_summary,
-        rebalance_text=rebalance_text,
-        dashboard_data=(
-            json.dumps(dashboard_data) if dashboard_data is not None else None
-        ),
-    ))
+    session.add(
+        RunOutput(
+            run_id=run_id,
+            ranker_full=ranker_full,
+            redteam_full=redteam_full,
+            sizer_full=sizer_full,
+            holdings_summary=holdings_summary,
+            rebalance_text=rebalance_text,
+            dashboard_data=(json.dumps(dashboard_data) if dashboard_data is not None else None),
+        )
+    )
 
 
 __all__ = [

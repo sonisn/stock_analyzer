@@ -4,6 +4,7 @@ Hits screen + persistence + report rendering end-to-end against fixture data.
 Skips the actual LLM calls (those cost money). Use for verifying wiring
 hasn't broken without paying for Opus.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -156,7 +157,11 @@ def test_screen_filter_and_score_on_fixture():
 def test_parse_picks_finds_both_picks():
     picks = parse_picks(RANKER_OUTPUT)
     assert len(picks) == 2
-    assert picks[0] == (1, "NVDA", "Premier AI infrastructure provider with sustained data center demand")
+    assert picks[0] == (
+        1,
+        "NVDA",
+        "Premier AI infrastructure provider with sustained data center demand",
+    )
     assert picks[1][1] == "AMD"
 
 
@@ -175,7 +180,9 @@ def test_persistence_round_trip(tmp_path: Path):
         assert run_id > 0
 
         insert_candidate(
-            session, run_id, "NVDA",
+            session,
+            run_id,
+            "NVDA",
             passed_filter=True,
             fail_reasons=[],
             score=85.0,
@@ -187,7 +194,9 @@ def test_persistence_round_trip(tmp_path: Path):
             price=500.0,
         )
         insert_candidate(
-            session, run_id, "XYZ",
+            session,
+            run_id,
+            "XYZ",
             passed_filter=False,
             fail_reasons=["market_cap=1e9 < $5B"],
             score=None,
@@ -200,14 +209,17 @@ def test_persistence_round_trip(tmp_path: Path):
         )
         insert_scorecard(session, run_id, "NVDA", "TICKER: NVDA\nScore: 9\n...")
         insert_pick(
-            session, run_id,
-            rank=1, ticker="NVDA",
+            session,
+            run_id,
+            rank=1,
+            ticker="NVDA",
             ranker_text=RANKER_OUTPUT,
             bear_case_text=REDTEAM_OUTPUT,
             allocation_text=SIZER_OUTPUT,
         )
         insert_run_outputs(
-            session, run_id,
+            session,
+            run_id,
             ranker_full=RANKER_OUTPUT,
             redteam_full=REDTEAM_OUTPUT,
             sizer_full=SIZER_OUTPUT,
@@ -316,21 +328,44 @@ def test_html_renders_visual_sections():
     from stock_analyzer.discover.report import Section, render_html_email
 
     sections = [
-        Section(kind="status_banner", text="STATUS: NO ACTION RECOMMENDED",
-                status="NO_ACTION"),
-        Section(kind="metric_strip", metrics=[
-            ("Holdings", "13"), ("Cash", "$53"), ("P/L", "+18.4%"),
-        ]),
-        Section(kind="holdings_dashboard", holdings=[
-            {"ticker": "NVDA", "verdict": "HOLD", "confidence": 8,
-             "pnl_pct": 85.4, "sector": "Technology", "note": ""},
-            {"ticker": "MRVL", "verdict": "TRIM", "confidence": 5,
-             "pnl_pct": 120.2, "sector": "Technology",
-             "note": "RSI overbought"},
-        ]),
-        Section(kind="sector_pie", pie_data=[
-            ("Technology", 50_000), ("Energy", 12_000), ("Industrials", 8_000),
-        ]),
+        Section(kind="status_banner", text="STATUS: NO ACTION RECOMMENDED", status="NO_ACTION"),
+        Section(
+            kind="metric_strip",
+            metrics=[
+                ("Holdings", "13"),
+                ("Cash", "$53"),
+                ("P/L", "+18.4%"),
+            ],
+        ),
+        Section(
+            kind="holdings_dashboard",
+            holdings=[
+                {
+                    "ticker": "NVDA",
+                    "verdict": "HOLD",
+                    "confidence": 8,
+                    "pnl_pct": 85.4,
+                    "sector": "Technology",
+                    "note": "",
+                },
+                {
+                    "ticker": "MRVL",
+                    "verdict": "TRIM",
+                    "confidence": 5,
+                    "pnl_pct": 120.2,
+                    "sector": "Technology",
+                    "note": "RSI overbought",
+                },
+            ],
+        ),
+        Section(
+            kind="sector_pie",
+            pie_data=[
+                ("Technology", 50_000),
+                ("Energy", 12_000),
+                ("Industrials", 8_000),
+            ],
+        ),
     ]
     out = render_html_email(sections, chart_cids={})
     assert "STATUS: NO ACTION RECOMMENDED" in out
@@ -360,6 +395,7 @@ def test_pdf_renders_without_charts():
 def test_orchestrator_imports():
     """If the orchestrator can be imported, all module wiring is consistent."""
     from stock_analyzer.cli.discover import run
+
     assert callable(run)
 
 
@@ -376,9 +412,7 @@ def test_rebalance_pipeline_imports_and_assembles(tmp_path, monkeypatch):
     pipeline = RebalancePipeline(Settings.from_env())
     wf = pipeline.build_workflow()
     assert wf.name == "Portfolio Rebalance"
-    step_names = [
-        getattr(step, "name", type(step).__name__) for step in wf.steps
-    ]
+    step_names = [getattr(step, "name", type(step).__name__) for step in wf.steps]
     # Rebalance adds 3 steps vs discover's 10; persist step is renamed.
     assert "review_holdings" in step_names
     assert "rebalance" in step_names
@@ -420,9 +454,7 @@ def test_rebalance_section_layout():
     # Plan must appear before reviews must appear before discover appendix
     plan_idx = next(i for i, s in enumerate(sections) if "Rebalance plan" in s.text)
     reviews_idx = next(i for i, s in enumerate(sections) if "Per-holding reviews" in s.text)
-    discover_idx = next(
-        i for i, s in enumerate(sections) if "Discover picks" in s.text
-    )
+    discover_idx = next(i for i, s in enumerate(sections) if "Discover picks" in s.text)
     assert plan_idx < reviews_idx < discover_idx
     # All holding tickers appear as headings
     headings = [s.text for s in sections if s.kind == "heading"]
@@ -513,6 +545,7 @@ def test_decide_omits_cc_block_when_empty():
 
 def test_premortem_prompt_includes_cc_redteam_paragraph():
     from stock_analyzer.discover.premortem import PREMORTEM_INSTRUCTIONS
+
     assert "WRITE_CALL" in PREMORTEM_INSTRUCTIONS
     assert "assignment lock-in" in PREMORTEM_INSTRUCTIONS
     assert "IV crush" in PREMORTEM_INSTRUCTIONS
@@ -520,6 +553,7 @@ def test_premortem_prompt_includes_cc_redteam_paragraph():
 
 def test_subject_without_premium():
     from stock_analyzer.cli.rebalance import build_email_subject
+
     subject = build_email_subject(action_count=2, gross_premium_usd=0.0)
     assert subject.startswith("Portfolio Rebalance")
     assert "premium" not in subject
@@ -527,6 +561,7 @@ def test_subject_without_premium():
 
 def test_subject_with_premium_annotates():
     from stock_analyzer.cli.rebalance import build_email_subject
+
     subject = build_email_subject(action_count=4, gross_premium_usd=1550.0)
     assert "$1,550 premium" in subject
 
@@ -544,19 +579,27 @@ def test_end_to_end_with_write_call_action():
     )
 
     plan = RebalancePlan(
-        status="ACTION", aggressiveness_applied="aggressive",
+        status="ACTION",
+        aggressiveness_applied="aggressive",
         actions=[
-            RebalanceAction(action="WRITE_CALL", ticker="NVDA",
-                            sizing="3 contracts $260C 2026-06-20"),
+            RebalanceAction(
+                action="WRITE_CALL", ticker="NVDA", sizing="3 contracts $260C 2026-06-20"
+            ),
             RebalanceAction(action="ADD", ticker="AMZN", sizing="$1,400"),
         ],
-        option_writes=[OptionWrite(
-            ticker="NVDA", account="Test Account",
-            strike=260.0, expiry="2026-06-20",
-            contracts=3, est_premium_per_share=2.40,
-            delta=0.36, assignment_probability=0.36,
-            notes="HOLD-8, near-band lower",
-        )],
+        option_writes=[
+            OptionWrite(
+                ticker="NVDA",
+                account="Test Account",
+                strike=260.0,
+                expiry="2026-06-20",
+                contracts=3,
+                est_premium_per_share=2.40,
+                delta=0.36,
+                assignment_probability=0.36,
+                notes="HOLD-8, near-band lower",
+            )
+        ],
         summary="Write NVDA Jun-260 and deploy premium to AMZN.",
         full_text="…",
     )
@@ -569,23 +612,37 @@ def test_end_to_end_with_write_call_action():
 
     coverage = {
         "NVDA": RoundLotCoverage(
-            ticker="NVDA", shares=400, round_lots=4, stub_shares=0,
-            stub_dollar_value=0.0, to_next_lot_shares=0, to_next_lot_cost=0.0,
+            ticker="NVDA",
+            shares=400,
+            round_lots=4,
+            stub_shares=0,
+            stub_dollar_value=0.0,
+            to_next_lot_shares=0,
+            to_next_lot_cost=0.0,
         ),
     }
     eligibility = {
-        "NVDA": [EligibleHolding(
-            ticker="NVDA", account="Test Account",
-            tax_status="taxable",
-            shares_held=400, open_short_call_contracts=0,
-            available_shares=400, max_contracts=4,
-        )],
+        "NVDA": [
+            EligibleHolding(
+                ticker="NVDA",
+                account="Test Account",
+                tax_status="taxable",
+                shares_held=400,
+                open_short_call_contracts=0,
+                available_shares=400,
+                max_contracts=4,
+            )
+        ],
     }
     sections = _build_rebalance_sections(
         rebalance_text="…",
         holdings_reviews={},
-        ranker_text="", redteam_text="", sizer_text="",
-        candidates=[], cash_balance=850.0, macro_summary="",
+        ranker_text="",
+        redteam_text="",
+        sizer_text="",
+        candidates=[],
+        cash_balance=850.0,
+        macro_summary="",
         sector_rotation=None,
         holdings_positions={"NVDA": {"units": 400, "avg_buy_price": 200.0, "cost_basis": 80000.0}},
         holdings_technicals={"NVDA": {"price": 235.0}},
@@ -644,23 +701,40 @@ def test_validation_summary_log_includes_per_call_details(caplog):
     )
 
     plan = RebalancePlan(
-        status="ACTION", aggressiveness_applied="aggressive",
-        actions=[RebalanceAction(action="WRITE_CALL", ticker="NVDA",
-                                 sizing="3 contracts $260C 2026-06-20")],
-        option_writes=[OptionWrite(
-            ticker="NVDA", account="Test Account",
-            strike=260.0, expiry="2026-06-20",
-            contracts=3, est_premium_per_share=2.40,
-            delta=0.36, assignment_probability=0.36,
-        )],
+        status="ACTION",
+        aggressiveness_applied="aggressive",
+        actions=[
+            RebalanceAction(
+                action="WRITE_CALL", ticker="NVDA", sizing="3 contracts $260C 2026-06-20"
+            )
+        ],
+        option_writes=[
+            OptionWrite(
+                ticker="NVDA",
+                account="Test Account",
+                strike=260.0,
+                expiry="2026-06-20",
+                contracts=3,
+                est_premium_per_share=2.40,
+                delta=0.36,
+                assignment_probability=0.36,
+            )
+        ],
         full_text="…",
     )
-    elig = {"NVDA": [EligibleHolding(
-        ticker="NVDA", account="Test Account",
-        tax_status="taxable",
-        shares_held=400, open_short_call_contracts=0,
-        available_shares=400, max_contracts=4,
-    )]}
+    elig = {
+        "NVDA": [
+            EligibleHolding(
+                ticker="NVDA",
+                account="Test Account",
+                tax_status="taxable",
+                shares_held=400,
+                open_short_call_contracts=0,
+                available_shares=400,
+                max_contracts=4,
+            )
+        ]
+    }
     # Just sanity that validation returns the plan cleanly.
     cleaned, warnings = validate_option_writes(plan, eligibility=elig)
     assert warnings == []
@@ -697,6 +771,7 @@ def test_rebalancer_instructions_template_respects_overrides():
 
 def test_rebalancer_instructions_omit_stub_section_when_disabled():
     from stock_analyzer.discover.rebalancer import _build_rebalancer_instructions
+
     s = _build_rebalancer_instructions(cc_stub_optimization=False)
     assert "STUB CONSOLIDATION" not in s
 
@@ -708,6 +783,7 @@ def test_rebalancer_instructions_default_constant_intact():
         REBALANCER_INSTRUCTIONS,
         _build_rebalancer_instructions,
     )
+
     assert _build_rebalancer_instructions() == REBALANCER_INSTRUCTIONS
     # The existing assertion in test_rebalancer_prompt_includes_cc_rules
     # still passes against the defaults.
@@ -724,7 +800,6 @@ def test_rebalancer_prompt_documents_account_in_write_call():
     # Sizing format mentions "in <ACCOUNT NAME>" or equivalent.
     assert "in <ACCOUNT" in text or "in <account" in text.lower()
     # Per-account guidance mentioned.
-    assert "per (ticker, account)" in text.lower() or \
-           "per account" in text.lower()
+    assert "per (ticker, account)" in text.lower() or "per account" in text.lower()
     # OptionWrite schema description mentions account.
     assert "account" in text.lower()

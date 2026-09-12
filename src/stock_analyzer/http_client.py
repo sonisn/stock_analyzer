@@ -20,6 +20,7 @@ SDK-based integrations (finnhub-python, tavily-python, snaptrade_client,
 yfinance) stay on their SDKs — they have their own clients and
 rewriting on raw HTTP loses the SDKs' response parsing for no real win.
 """
+
 from __future__ import annotations
 
 import threading
@@ -130,9 +131,7 @@ class HttpClient:
         )
         self._retry = retry_policy or RetryPolicy()
         # 0 disables rate limiting; otherwise enforce min interval between calls.
-        self._min_interval = (
-            60.0 / rate_limit_per_min if rate_limit_per_min else 0.0
-        )
+        self._min_interval = 60.0 / rate_limit_per_min if rate_limit_per_min else 0.0
         self._rate_lock = threading.Lock()
         self._last_call_ts = 0.0
 
@@ -166,9 +165,7 @@ class HttpClient:
             attempt += 1
             self._throttle()
             try:
-                logger.debug(
-                    "%s %s %s (attempt %d)", self._name, method, url, attempt
-                )
+                logger.debug("%s %s %s (attempt %d)", self._name, method, url, attempt)
                 resp = self._client.request(method, url, **kwargs)
             except (
                 httpx.ConnectError,
@@ -183,7 +180,11 @@ class HttpClient:
                     ) from e
                 logger.info(
                     "%s network error (%s) — retry %d/%d after %.1fs",
-                    self._name, e, attempt, retry.max_attempts, backoff,
+                    self._name,
+                    e,
+                    attempt,
+                    retry.max_attempts,
+                    backoff,
                 )
                 time.sleep(backoff)
                 backoff = min(backoff * retry.backoff_multiplier, retry.max_backoff)
@@ -195,7 +196,8 @@ class HttpClient:
             if resp.status_code == 401:
                 raise AuthError(
                     f"{self._name}: 401 Unauthorized for {url}",
-                    status=401, url=url,
+                    status=401,
+                    url=url,
                 )
 
             if resp.status_code == 429:
@@ -203,13 +205,19 @@ class HttpClient:
                 if attempt >= retry.max_attempts:
                     raise RateLimitError(
                         f"{self._name}: 429 after {attempt} attempts ({url})",
-                        status=429, url=url, retry_after=retry_after,
+                        status=429,
+                        url=url,
+                        retry_after=retry_after,
                     )
                 sleep_for = retry_after if retry_after is not None else backoff
                 sleep_for = min(sleep_for, retry.max_backoff)
                 logger.info(
                     "%s 429 — retry %d/%d after %.1fs (retry-after=%s)",
-                    self._name, attempt, retry.max_attempts, sleep_for, retry_after,
+                    self._name,
+                    attempt,
+                    retry.max_attempts,
+                    sleep_for,
+                    retry_after,
                 )
                 time.sleep(sleep_for)
                 backoff = min(backoff * retry.backoff_multiplier, retry.max_backoff)
@@ -219,11 +227,16 @@ class HttpClient:
                 if attempt >= retry.max_attempts:
                     raise ServerError(
                         f"{self._name}: {resp.status_code} after {attempt} attempts ({url})",
-                        status=resp.status_code, url=url,
+                        status=resp.status_code,
+                        url=url,
                     )
                 logger.info(
                     "%s %d — retry %d/%d after %.1fs",
-                    self._name, resp.status_code, attempt, retry.max_attempts, backoff,
+                    self._name,
+                    resp.status_code,
+                    attempt,
+                    retry.max_attempts,
+                    backoff,
                 )
                 time.sleep(backoff)
                 backoff = min(backoff * retry.backoff_multiplier, retry.max_backoff)
@@ -233,7 +246,8 @@ class HttpClient:
             body_preview = (resp.text or "")[:200]
             raise ClientError(
                 f"{self._name}: {resp.status_code} {url}: {body_preview}",
-                status=resp.status_code, url=url,
+                status=resp.status_code,
+                url=url,
             )
 
     # Convenience wrappers ----------------------------------------------------

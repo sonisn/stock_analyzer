@@ -14,6 +14,7 @@ risk or concentration risk the rebalancer rationalized away.
 
 Skipped on NO_ACTION plans (nothing to pre-mortem).
 """
+
 from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider
@@ -86,9 +87,7 @@ Treat each of these as a candidate failure mode.\
 
 
 class PreMortemAgent:
-    def __init__(
-        self, provider: Provider, model: str, *, effort: str = "medium"
-    ):
+    def __init__(self, provider: Provider, model: str, *, effort: str = "medium"):
         self.agent = AgnoAgent(
             "PreMortem",
             provider,
@@ -129,12 +128,13 @@ class PreMortemAgent:
                 return PreMortem.model_validate_json(result)
             except Exception as e:
                 logger.warning(
-                    "Pre-mortem returned a string that wasn't valid "
-                    "PreMortem JSON: %s", e,
+                    "Pre-mortem returned a string that wasn't valid PreMortem JSON: %s",
+                    e,
                 )
                 return None
         logger.warning(
-            "Pre-mortem returned unexpected type %s", type(result).__name__,
+            "Pre-mortem returned unexpected type %s",
+            type(result).__name__,
         )
         return None
 

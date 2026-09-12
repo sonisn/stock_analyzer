@@ -10,6 +10,7 @@ All via yfinance (no extra API key). Adds a derived `insider_signal`
 classification so the LLM can latch onto the signal without parsing
 the raw aggregate every time.
 """
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -36,7 +37,7 @@ def _row_value(df: pd.DataFrame | None, label: str) -> float | None:
     v = matches.iloc[0, 1]
     try:
         return float(v) if pd.notna(v) else None
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
@@ -50,7 +51,7 @@ def _row_count(df: pd.DataFrame | None, label: str) -> int | None:
     v = matches.iloc[0, 2]
     try:
         return int(v) if pd.notna(v) else None
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
@@ -106,8 +107,7 @@ def fetch_share_trade_data(ticker: str) -> dict[str, Any] | None:
                 if "Value" in row and pd.notna(row["Value"])
                 else None,
                 "date": str(row["Transaction Start Date"])
-                if "Transaction Start Date" in row
-                and pd.notna(row["Transaction Start Date"])
+                if "Transaction Start Date" in row and pd.notna(row["Transaction Start Date"])
                 else None,
                 "ownership": str(row["Ownership"])
                 if "Ownership" in row and pd.notna(row["Ownership"])
@@ -128,7 +128,7 @@ def fetch_share_trade_data(ticker: str) -> dict[str, Any] | None:
                 if val is not None and pd.notna(val):
                     try:
                         mh_dict[str(idx)] = float(val)
-                    except (ValueError, TypeError):
+                    except ValueError, TypeError:
                         continue
         except Exception:
             mh_dict = {}
@@ -143,20 +143,22 @@ def fetch_share_trade_data(ticker: str) -> dict[str, Any] | None:
     if ih is not None and not ih.empty:
         top_holders: list[dict[str, Any]] = []
         for _, row in ih.head(5).iterrows():
-            top_holders.append({
-                "holder": str(row["Holder"])
-                if "Holder" in row and pd.notna(row["Holder"])
-                else None,
-                "value_usd": float(row["Value"])
-                if "Value" in row and pd.notna(row["Value"])
-                else None,
-                "pct_change": float(row["pctChange"])
-                if "pctChange" in row and pd.notna(row["pctChange"])
-                else None,
-                "date_reported": str(row["Date Reported"])
-                if "Date Reported" in row and pd.notna(row["Date Reported"])
-                else None,
-            })
+            top_holders.append(
+                {
+                    "holder": str(row["Holder"])
+                    if "Holder" in row and pd.notna(row["Holder"])
+                    else None,
+                    "value_usd": float(row["Value"])
+                    if "Value" in row and pd.notna(row["Value"])
+                    else None,
+                    "pct_change": float(row["pctChange"])
+                    if "pctChange" in row and pd.notna(row["pctChange"])
+                    else None,
+                    "date_reported": str(row["Date Reported"])
+                    if "Date Reported" in row and pd.notna(row["Date Reported"])
+                    else None,
+                }
+            )
         out["top_institutional_holders"] = top_holders
 
     if len(out) == 1:  # only "ticker" key — no data

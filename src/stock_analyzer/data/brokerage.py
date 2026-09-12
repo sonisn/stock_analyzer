@@ -1,4 +1,5 @@
 """SnapTrade brokerage integration — fetch holdings across connected accounts."""
+
 from __future__ import annotations
 
 import os
@@ -21,16 +22,39 @@ TaxStatus = Literal["taxable", "tax_advantaged"]
 # the longest first to avoid e.g. "RothIRA" matching "IRA" then losing
 # the Roth signal. Case-insensitive.
 _TAX_ADVANTAGED_NAME_PATTERNS = (
-    "ROTH IRA", "TRAD IRA", "TRADITIONAL IRA",
-    "ROLLOVER IRA", "SEP IRA", "SIMPLE IRA",
-    "ROTH", "IRA", "HSA", "401K", "401(K)", "403B", "457",
-    "PENSION", "RRSP", "TFSA",
+    "ROTH IRA",
+    "TRAD IRA",
+    "TRADITIONAL IRA",
+    "ROLLOVER IRA",
+    "SEP IRA",
+    "SIMPLE IRA",
+    "ROTH",
+    "IRA",
+    "HSA",
+    "401K",
+    "401(K)",
+    "403B",
+    "457",
+    "PENSION",
+    "RRSP",
+    "TFSA",
 )
 # SnapTrade-reported `type` values that map to tax-advantaged.
 _TAX_ADVANTAGED_TYPES = {
-    "IRA", "ROTH IRA", "TRADITIONAL IRA", "ROLLOVER IRA",
-    "SEP IRA", "SIMPLE IRA", "401K", "401(K)", "403B", "457",
-    "HSA", "RRSP", "TFSA", "RETIREMENT",
+    "IRA",
+    "ROTH IRA",
+    "TRADITIONAL IRA",
+    "ROLLOVER IRA",
+    "SEP IRA",
+    "SIMPLE IRA",
+    "401K",
+    "401(K)",
+    "403B",
+    "457",
+    "HSA",
+    "RRSP",
+    "TFSA",
+    "RETIREMENT",
 }
 
 
@@ -59,9 +83,7 @@ def _name_token_match(name_upper: str, pattern: str) -> bool:
     return False
 
 
-def classify_tax_status(
-    account_type: str | None, account_name: str | None
-) -> TaxStatus:
+def classify_tax_status(account_type: str | None, account_name: str | None) -> TaxStatus:
     """Determine whether trades in this account have tax consequences.
 
     Strategy:
@@ -93,9 +115,7 @@ def _client() -> SnapTrade:
     client_id = os.getenv("SNAPTRADE_CLIENT_ID")
     consumer_key = os.getenv("SNAPTRADE_CONSUMER_KEY")
     if not (client_id and consumer_key):
-        raise RuntimeError(
-            "SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY must be set"
-        )
+        raise RuntimeError("SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY must be set")
     return SnapTrade(client_id=client_id, consumer_key=consumer_key)
 
 
@@ -103,9 +123,7 @@ def _credentials() -> tuple[str, str]:
     user_id = os.getenv("SNAPTRADE_USER_ID")
     user_secret = os.getenv("SNAPTRADE_USER_SECRET")
     if not (user_id and user_secret):
-        raise RuntimeError(
-            "SNAPTRADE_USER_ID and SNAPTRADE_USER_SECRET must be set"
-        )
+        raise RuntimeError("SNAPTRADE_USER_ID and SNAPTRADE_USER_SECRET must be set")
     return user_id, user_secret
 
 
@@ -132,11 +150,14 @@ def fetch_account_meta() -> dict[str, dict[str, Any]]:
     try:
         user_id, user_secret = _credentials()
         client = _client()
-        accounts = _unwrap(
-            client.account_information.list_user_accounts(
-                user_id=user_id, user_secret=user_secret
+        accounts = (
+            _unwrap(
+                client.account_information.list_user_accounts(
+                    user_id=user_id, user_secret=user_secret
+                )
             )
-        ) or []
+            or []
+        )
     except Exception as e:
         logger.warning("Could not list accounts for tax-status meta: %s", e)
         return {}
@@ -145,10 +166,7 @@ def fetch_account_meta() -> dict[str, dict[str, Any]]:
     for account in accounts:
         account_id = account.get("id")
         account_name = (
-            account.get("name")
-            or account.get("institution_name")
-            or account_id
-            or "unknown"
+            account.get("name") or account.get("institution_name") or account_id or "unknown"
         )
         if not account_id:
             continue
@@ -166,7 +184,9 @@ def fetch_account_meta() -> dict[str, dict[str, Any]]:
     n_advantaged = sum(1 for m in out.values() if m["tax_status"] == "tax_advantaged")
     logger.info(
         "Account tax classification: %d taxable, %d tax-advantaged (out of %d)",
-        len(out) - n_advantaged, n_advantaged, len(out),
+        len(out) - n_advantaged,
+        n_advantaged,
+        len(out),
     )
     return out
 
@@ -177,21 +197,19 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
     client = _client()
 
     logger.info("Fetching SnapTrade accounts")
-    accounts = _unwrap(
-        client.account_information.list_user_accounts(
-            user_id=user_id, user_secret=user_secret
+    accounts = (
+        _unwrap(
+            client.account_information.list_user_accounts(user_id=user_id, user_secret=user_secret)
         )
-    ) or []
+        or []
+    )
     logger.info("Found %d SnapTrade accounts", len(accounts))
 
     out: dict[str, list[dict]] = {}
     for account in accounts:
         account_id = account.get("id")
         account_name = (
-            account.get("name")
-            or account.get("institution_name")
-            or account_id
-            or "unknown"
+            account.get("name") or account.get("institution_name") or account_id or "unknown"
         )
         if not account_id:
             continue
@@ -228,7 +246,8 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
         if option_skip_count > 0:
             logger.info(
                 "Skipped %d option position(s) from %s — handled separately by fetch_open_option_positions",
-                option_skip_count, account_name
+                option_skip_count,
+                account_name,
             )
         out[account_name] = holdings
 
@@ -254,11 +273,15 @@ def fetch_open_option_positions() -> dict[str, dict[str, int]]:
         return {}
 
     try:
-        accounts = _unwrap(
-            client.account_information.list_user_accounts(
-                user_id=user_id, user_secret=user_secret,
+        accounts = (
+            _unwrap(
+                client.account_information.list_user_accounts(
+                    user_id=user_id,
+                    user_secret=user_secret,
+                )
             )
-        ) or []
+            or []
+        )
     except Exception as e:
         logger.info("SnapTrade list_user_accounts failed: %s", e)
         return {}
@@ -270,19 +293,20 @@ def fetch_open_option_positions() -> dict[str, dict[str, int]]:
             account_name = account.get("name") or account.get("id") or "Unknown"
         else:
             account_id = getattr(account, "id", None)
-            account_name = (
-                getattr(account, "name", None) or account_id or "Unknown"
-            )
+            account_name = getattr(account, "name", None) or account_id or "Unknown"
         if not account_id:
             continue
         try:
-            positions = _unwrap(
-                client.account_information.get_user_account_positions(
-                    user_id=user_id,
-                    user_secret=user_secret,
-                    account_id=account_id,
+            positions = (
+                _unwrap(
+                    client.account_information.get_user_account_positions(
+                        user_id=user_id,
+                        user_secret=user_secret,
+                        account_id=account_id,
+                    )
                 )
-            ) or []
+                or []
+            )
         except Exception as e:
             logger.info("SnapTrade positions fetch failed for %s: %s", account_id, e)
             continue
@@ -315,11 +339,14 @@ def fetch_total_cash() -> float | None:
     try:
         user_id, user_secret = _credentials()
         client = _client()
-        accounts = _unwrap(
-            client.account_information.list_user_accounts(
-                user_id=user_id, user_secret=user_secret
+        accounts = (
+            _unwrap(
+                client.account_information.list_user_accounts(
+                    user_id=user_id, user_secret=user_secret
+                )
             )
-        ) or []
+            or []
+        )
     except Exception as e:
         logger.warning("Could not list accounts for cash balance: %s", e)
         return None
@@ -354,7 +381,7 @@ def fetch_total_cash() -> float | None:
             try:
                 total += float(cash)
                 found_any = True
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
     return total if found_any else None
 

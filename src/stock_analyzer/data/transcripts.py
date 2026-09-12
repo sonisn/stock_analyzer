@@ -12,6 +12,7 @@ Quality varies wildly by ticker:
 
 Graceful degradation: any failure returns None and the pipeline keeps going.
 """
+
 from __future__ import annotations
 
 import os

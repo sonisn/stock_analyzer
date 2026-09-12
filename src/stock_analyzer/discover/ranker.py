@@ -4,6 +4,7 @@ Takes all candidate analyses + user holdings, picks top N with comparative
 theses. The single LLM call that does most of the work in this pipeline —
 Opus's reasoning depth pays off here vs N isolated per-ticker calls.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -79,6 +80,23 @@ A downstream Sizer + analytics layer computes expected return
 deterministically as Σ(probability × target_return_pct). Calibrate
 your numbers as if you'll be measured on the EV vs realized return.
 
+You ARE measured on it. Every pick's conviction, EV and three scenario
+probabilities are persisted, and a calibration pass grades them once the
+horizon elapses. When a "Your forecast calibration" block appears in the
+input, it is your own scorecard, and you must act on it:
+  - A negative mean EV error means your past forecasts were too
+    optimistic. Lower your target_return_pct values and/or shift
+    probability mass from bull toward base and bear.
+  - A positive mean EV error means you were too conservative.
+  - If the block says your conviction scores are NOT ordered by realized
+    alpha, your confidence has been carrying no information. Spread the
+    conviction numbers only where the forward evidence actually differs
+    between candidates, and say in "Why this over alternatives" what
+    separates them.
+  - If a scenario's observed frequency is far from the probability you
+    stated (e.g. bear landed 35% of the time while you averaged 12%),
+    move your probabilities toward the observed frequency.
+
 CITATION RULE (anti-hallucination):
 Every numerical claim you make (forward EPS, P/E, growth %, target
 upside, margin, P/L) MUST appear in the analyst-reports input the user
@@ -108,12 +126,21 @@ class Ranker:
         *,
         effort: str = "high",
         consensus_runs: int = 1,
+        consensus_temperature: float = 0.7,
     ):
         # Opus 4.7+ moved from `thinking.type=enabled` + budget_tokens to the
         # adaptive thinking API: Claude decides how much thinking to spend,
         # gated by `output_config.effort` (low | medium | high).
-        # temperature=0 + consensus_runs > 1 → near-deterministic + variance check.
         self.consensus_runs = max(1, consensus_runs)
+        # Temperature is coupled to the vote, because the two settings only
+        # make sense together. Self-consistency voting extracts information
+        # from DISAGREEMENT between samples; at temperature 0 the decoder is
+        # near-deterministic, so N runs return the same answer N times and
+        # the majority vote is a tautology that costs N x Opus. So: a single
+        # run stays deterministic (temperature 0, reproducible), and a
+        # consensus run samples (temperature > 0) so the agreement rate is a
+        # real confidence signal.
+        self.temperature = consensus_temperature if self.consensus_runs > 1 else 0.0
         # Opus 4.7 adaptive thinking spends part of `max_tokens` on
         # the thinking trace, so the JSON output competes with it. Our
         # response is rich (5 picks × 3 scenarios × bull/bear prose +
@@ -128,7 +155,7 @@ class Ranker:
                 "thinking": {"type": "adaptive"},
                 "output_config": {"effort": effort},
                 "max_tokens": 16000,
-                "temperature": 0,
+                "temperature": self.temperature,
             },
             instructions=RANKER_INSTRUCTIONS,
             output_schema=RankerOutput,
@@ -142,6 +169,7 @@ class Ranker:
         macro_context: str,
         track_record_block: str = "",
         market_themes_block: str = "",
+        calibration_block: str = "",
     ) -> RankerOutput:
         # `analyses` is dict[ticker, AnalystReport] from Phase 4b; for
         # legacy callers it may be dict[ticker, str]. Unwrap to prose for
@@ -155,18 +183,30 @@ class Ranker:
             f"Current dominant market themes (favor candidates that ride a "
             f"strong theme trending up; flag if a candidate is in a fading "
             f"or rolling-over theme):\n{market_themes_block}\n\n"
-            if market_themes_block else ""
+            if market_themes_block
+            else ""
         )
         track_block = (
             f"Historical track record (your own past buy picks and sell calls, "
             f"with alpha vs SPY — positive alpha = call was right regardless "
-            f"of direction):\n{track_record_block}\n\n"
-            if track_record_block else ""
+            f"of direction; 'beta-adj' strips out market exposure, and is the "
+            f"part attributable to picking):\n{track_record_block}\n\n"
+            if track_record_block
+            else ""
+        )
+        calib_block = (
+            f"Your own forecast calibration — how your past conviction "
+            f"scores, expected returns and scenario probabilities actually "
+            f"held up. Adjust this run's numbers accordingly:\n"
+            f"{calibration_block}\n\n"
+            if calibration_block
+            else ""
         )
         prompt = (
             f"{macro_block}"
             f"{themes_block}"
             f"{track_block}"
+            f"{calib_block}"
             f"You will pick the top {top_n} from {len(analyses)} candidates.\n\n"
             f"Current holdings summary:\n{holdings_summary or '(none)'}\n\n"
             f"Candidate analyses:\n\n{candidates_block}"
@@ -178,9 +218,7 @@ class Ranker:
             return result
         if isinstance(result, str):
             return RankerOutput.model_validate_json(result)
-        raise RuntimeError(
-            f"Ranker returned unexpected type {type(result).__name__}."
-        )
+        raise RuntimeError(f"Ranker returned unexpected type {type(result).__name__}.")
 
     def rank(
         self,
@@ -190,54 +228,71 @@ class Ranker:
         macro_context: str = "",
         track_record_block: str = "",
         market_themes_block: str = "",
+        calibration_block: str = "",
     ) -> RankerOutput:
         """Single call when consensus_runs=1; otherwise run N times and
         return the run whose picks best overlap the majority-consensus set."""
         logger.info(
             "Ranking %d candidates with Opus (adaptive thinking, macro=%s, "
-            "consensus_runs=%d)",
+            "consensus_runs=%d, temperature=%.2f)",
             len(analyses),
             bool(macro_context),
             self.consensus_runs,
+            self.temperature,
         )
         if self.consensus_runs <= 1:
             return self._rank_once(
-                analyses, holdings_summary, top_n, macro_context,
-                track_record_block, market_themes_block,
+                analyses,
+                holdings_summary,
+                top_n,
+                macro_context,
+                track_record_block,
+                market_themes_block,
+                calibration_block,
             )
 
         outputs: list[RankerOutput] = []
         pick_sets: list[set[str]] = []
         for i in range(self.consensus_runs):
             output = self._rank_once(
-                analyses, holdings_summary, top_n, macro_context,
-                track_record_block, market_themes_block,
+                analyses,
+                holdings_summary,
+                top_n,
+                macro_context,
+                track_record_block,
+                market_themes_block,
+                calibration_block,
             )
             outputs.append(output)
             picks = {p.ticker for p in output.picks}
             pick_sets.append(picks)
             logger.info(
                 "Ranker run %d/%d picked %s",
-                i + 1, self.consensus_runs, sorted(picks),
+                i + 1,
+                self.consensus_runs,
+                sorted(picks),
             )
 
         # Majority threshold = ceil(N/2). With N=3 → 2 runs agreeing.
         threshold = (self.consensus_runs + 1) // 2
         all_tickers = set().union(*pick_sets)
-        consensus = {
-            t for t in all_tickers
-            if sum(1 for s in pick_sets if t in s) >= threshold
-        }
+        consensus = {t for t in all_tickers if sum(1 for s in pick_sets if t in s) >= threshold}
         logger.info(
             "Consensus: %d of %d distinct picks agreed in >=%d runs: %s",
-            len(consensus), len(all_tickers), threshold, sorted(consensus),
+            len(consensus),
+            len(all_tickers),
+            threshold,
+            sorted(consensus),
         )
 
         if not consensus:
             logger.warning(
-                "No consensus reached across %d ranker runs; "
-                "returning first run's output verbatim",
+                "No consensus reached across %d ranker runs at temperature "
+                "%.2f — the candidate set does not separate cleanly. Returning "
+                "the first run's output verbatim; treat these picks as "
+                "low-confidence.",
                 self.consensus_runs,
+                self.temperature,
             )
             return outputs[0]
 
@@ -247,6 +302,7 @@ class Ranker:
         )
         logger.info(
             "Using run %d's output (overlaps consensus by %d picks)",
-            best_idx + 1, len(pick_sets[best_idx] & consensus),
+            best_idx + 1,
+            len(pick_sets[best_idx] & consensus),
         )
         return outputs[best_idx]

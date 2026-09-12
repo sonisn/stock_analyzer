@@ -4,6 +4,7 @@ The renderer (HTML/PDF) reads these dicts directly — it does NOT parse
 Opus's prose, so the box values are always internally consistent. Opus's
 narrative remains in `full_text` for human context.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -27,16 +28,18 @@ def compute_premium_income(
     for ow in plan.option_writes:
         premium = ow.contracts * ow.est_premium_per_share * 100.0
         gross += premium
-        rows.append({
-            "ticker": ow.ticker,
-            "account": ow.account,
-            "strike": ow.strike,
-            "expiry": ow.expiry,
-            "contracts": ow.contracts,
-            "premium_usd": premium,
-            "delta": ow.delta,
-            "assignment_pct": int(round(ow.assignment_probability * 100)),
-        })
+        rows.append(
+            {
+                "ticker": ow.ticker,
+                "account": ow.account,
+                "strike": ow.strike,
+                "expiry": ow.expiry,
+                "contracts": ow.contracts,
+                "premium_usd": premium,
+                "delta": ow.delta,
+                "assignment_pct": int(round(ow.assignment_probability * 100)),
+            }
+        )
     buffer = round(gross * slippage_buffer, 2)
     return {
         "rows": rows,
@@ -66,13 +69,21 @@ def compute_premium_deployment(
     deployments: list[dict[str, str]] = []
     for a in plan.actions:
         if a.action in ("ADD", "BUY"):
-            deployments.append({
-                "ticker": a.ticker, "action": a.action, "sizing": a.sizing,
-            })
+            deployments.append(
+                {
+                    "ticker": a.ticker,
+                    "action": a.action,
+                    "sizing": a.sizing,
+                }
+            )
         elif a.action == "TRIM" and "stub" in a.sizing.lower():
-            deployments.append({
-                "ticker": a.ticker, "action": "TRIM", "sizing": a.sizing,
-            })
+            deployments.append(
+                {
+                    "ticker": a.ticker,
+                    "action": "TRIM",
+                    "sizing": a.sizing,
+                }
+            )
     return {
         "gross_premium_usd": inc["gross_premium_usd"],
         "slippage_buffer_usd": inc["slippage_buffer_usd"],
@@ -99,16 +110,18 @@ def compute_round_lot_summary(
         rec = coverage[ticker]
         if rec.stub_shares == 0:
             continue
-        rows.append({
-            "ticker": rec.ticker,
-            "shares": rec.shares,
-            "round_lots": rec.round_lots,
-            "round_lot_shares": rec.round_lots * 100,
-            "stub_shares": rec.stub_shares,
-            "stub_dollar_value": rec.stub_dollar_value,
-            "to_next_lot_shares": rec.to_next_lot_shares,
-            "to_next_lot_cost": rec.to_next_lot_cost,
-        })
+        rows.append(
+            {
+                "ticker": rec.ticker,
+                "shares": rec.shares,
+                "round_lots": rec.round_lots,
+                "round_lot_shares": rec.round_lots * 100,
+                "stub_shares": rec.stub_shares,
+                "stub_dollar_value": rec.stub_dollar_value,
+                "to_next_lot_shares": rec.to_next_lot_shares,
+                "to_next_lot_cost": rec.to_next_lot_cost,
+            }
+        )
         pool += rec.stub_dollar_value
     rows.sort(key=lambda r: r["stub_dollar_value"], reverse=True)
     return {"rows": rows, "stub_pool_total_usd": round(pool, 2)}

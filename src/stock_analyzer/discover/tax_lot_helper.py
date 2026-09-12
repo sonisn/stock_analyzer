@@ -12,6 +12,7 @@ explicitly references the pre-computed numbers — eliminates the
 hallucination class where Sonnet invented realized gains that don't
 match the actual lot data.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -19,8 +20,8 @@ from typing import Any
 # Federal tax rate assumptions — rough enough that the LLM can use them
 # as ranking signal but explicit enough to flag in prose. The user's
 # actual bracket may differ, so the LLM cites these as estimates.
-_LONG_TERM_RATE = 0.18    # mid-bracket long-term cap gains + state
-_SHORT_TERM_RATE = 0.32   # high-bracket ordinary income
+_LONG_TERM_RATE = 0.18  # mid-bracket long-term cap gains + state
+_SHORT_TERM_RATE = 0.32  # high-bracket ordinary income
 
 
 def _compute_lot_impact(
@@ -76,7 +77,7 @@ def _compute_lot_impact(
             "free_to_trim": False,
             "note": (
                 f"Taxable gain — realizing ${realized:.0f} at "
-                f"~{int(rate*100)}% rate = ~${estimated_tax:.0f} tax owed."
+                f"~{int(rate * 100)}% rate = ~${estimated_tax:.0f} tax owed."
             ),
         }
 

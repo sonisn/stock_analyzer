@@ -1,4 +1,5 @@
 """Recent top hedge fund trade coverage via Tavily."""
+
 from __future__ import annotations
 
 import os

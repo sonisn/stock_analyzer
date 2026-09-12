@@ -6,6 +6,7 @@ prompts. It falls back to stdlib `json.dumps` only when orjson rejects
 the payload (it strictly rejects NaN/Inf floats, which yfinance
 occasionally emits for missing data — stdlib silently accepts them).
 """
+
 from __future__ import annotations
 
 import json
@@ -26,7 +27,7 @@ def dumps_pretty(payload: Any) -> str:
             default=str,
             option=orjson.OPT_INDENT_2,
         ).decode("utf-8")
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         # NaN/Inf or some other type orjson refuses — stdlib accepts both
         # and the LLM doesn't care, so preserve the old behavior.
         return json.dumps(payload, default=str, indent=2)

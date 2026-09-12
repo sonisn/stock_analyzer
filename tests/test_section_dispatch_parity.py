@@ -10,6 +10,7 @@ kind in the SectionKind Literal and asserts the output is non-empty.
 Adding a new kind to the Literal and forgetting to wire either
 renderer will fail here.
 """
+
 from __future__ import annotations
 
 from typing import Any, get_args
@@ -25,43 +26,65 @@ from stock_analyzer.discover.report import (
 # is added to SectionKind, add an entry here too — the test below
 # enforces this.
 _FIXTURES: dict[str, dict[str, Any]] = {
-    "heading":               {"text": "H", "level": 2},
-    "para":                  {"text": "p"},
-    "preformatted":          {"text": "x"},
-    "image":                 {"image_ticker": "NVDA"},
-    "blockquote":            {"text": "q"},
-    "table":                 {"table_header": ["A"], "table_rows": [["1"]]},
-    "page_break":            {},
-    "status_banner":         {"text": "STATUS", "status": "ACTION"},
-    "metric_strip":          {"metrics": [("k", "v")]},
-    "holdings_dashboard":    {"holdings": [{"ticker": "X", "verdict": "HOLD",
-                                            "confidence": 5, "pnl_pct": 1.0,
-                                            "sector": "Tech", "note": ""}]},
-    "sector_pie":            {"pie_data": [("Tech", 1.0), ("Auto", 2.0)]},
-    "pick_card":             {"data": {"ticker": "NVDA", "rank": 1,
-                                       "one_liner": "x"}},
-    "allocation_table":      {"data": {"allocations": [{"ticker": "X",
-                                                        "pct": 10.0,
-                                                        "rationale": "y"}]}},
-    "rebalance_action_table": {"data": {"actions": [{"action": "SELL",
-                                                     "ticker": "X",
-                                                     "sizing": "all"}]}},
-    "holding_review_card":   {"data": {"ticker": "X", "verdict": "HOLD"}},
-    "market_themes_panel":   {"data": {"themes": [{"name": "T",
-                                                   "description": "d",
-                                                   "strength": 7,
-                                                   "trending": "up",
-                                                   "member_tickers": ["X"]}]}},
-    "premortem_panel":       {"data": {"overall_verdict": "proceed_with_caveat",
-                                       "summary": "s",
-                                       "failures": [{"likelihood": "high",
-                                                     "severity": "severe",
-                                                     "triggering_action": "a",
-                                                     "failure_narrative": "n",
-                                                     "early_warning": "w"}]}},
-    "premium_income":        {"data": {"rows": []}},
-    "round_lot_coverage":    {"data": {"rows": []}},
-    "premium_deployment":    {"data": {"rows": []}},
+    "heading": {"text": "H", "level": 2},
+    "para": {"text": "p"},
+    "preformatted": {"text": "x"},
+    "image": {"image_ticker": "NVDA"},
+    "blockquote": {"text": "q"},
+    "table": {"table_header": ["A"], "table_rows": [["1"]]},
+    "page_break": {},
+    "status_banner": {"text": "STATUS", "status": "ACTION"},
+    "metric_strip": {"metrics": [("k", "v")]},
+    "holdings_dashboard": {
+        "holdings": [
+            {
+                "ticker": "X",
+                "verdict": "HOLD",
+                "confidence": 5,
+                "pnl_pct": 1.0,
+                "sector": "Tech",
+                "note": "",
+            }
+        ]
+    },
+    "sector_pie": {"pie_data": [("Tech", 1.0), ("Auto", 2.0)]},
+    "pick_card": {"data": {"ticker": "NVDA", "rank": 1, "one_liner": "x"}},
+    "allocation_table": {"data": {"allocations": [{"ticker": "X", "pct": 10.0, "rationale": "y"}]}},
+    "rebalance_action_table": {
+        "data": {"actions": [{"action": "SELL", "ticker": "X", "sizing": "all"}]}
+    },
+    "holding_review_card": {"data": {"ticker": "X", "verdict": "HOLD"}},
+    "market_themes_panel": {
+        "data": {
+            "themes": [
+                {
+                    "name": "T",
+                    "description": "d",
+                    "strength": 7,
+                    "trending": "up",
+                    "member_tickers": ["X"],
+                }
+            ]
+        }
+    },
+    "premortem_panel": {
+        "data": {
+            "overall_verdict": "proceed_with_caveat",
+            "summary": "s",
+            "failures": [
+                {
+                    "likelihood": "high",
+                    "severity": "severe",
+                    "triggering_action": "a",
+                    "failure_narrative": "n",
+                    "early_warning": "w",
+                }
+            ],
+        }
+    },
+    "premium_income": {"data": {"rows": []}},
+    "round_lot_coverage": {"data": {"rows": []}},
+    "premium_deployment": {"data": {"rows": []}},
 }
 
 
@@ -89,8 +112,7 @@ def test_every_section_kind_renders_in_both_html_and_pdf():
 
         html_out = render_html_email([section], cids)
         between = html_out[
-            html_out.index(body_open) + len(body_open):
-            html_out.index(body_close)
+            html_out.index(body_open) + len(body_open) : html_out.index(body_close)
         ].strip()
         assert between, (
             f"HTML renderer produced empty body for kind={kind!r} — "

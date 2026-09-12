@@ -9,6 +9,7 @@ structured fields cover only what the codebase actually reads
 programmatically (parse_rebalance_status, parse_actions, dashboard
 persistence).
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -30,12 +31,15 @@ class OptionWrite(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     ticker: str
-    account: str = Field(..., description="Brokerage account name; must match an EligibleHolding.account.")
+    account: str = Field(
+        ..., description="Brokerage account name; must match an EligibleHolding.account."
+    )
     strike: float
     expiry: str = Field(..., description="ISO date YYYY-MM-DD.")
     contracts: int = Field(..., gt=0, description="Number of contracts to write.")
     est_premium_per_share: float = Field(
-        ..., ge=0,
+        ...,
+        ge=0,
         description="Mid of bid/ask in dollars per share. ×100 = per contract.",
     )
     delta: float = Field(..., ge=0.0, le=1.0)

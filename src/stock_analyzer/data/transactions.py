@@ -12,6 +12,7 @@ US tax treatment encoded:
 This module returns RAW lot data; the LLM reviewer/rebalancer reasons
 about which specific lots to sell per recommendation.
 """
+
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
@@ -43,9 +44,7 @@ def _coerce_date(value: Any) -> date | None:
     return None
 
 
-def _activity_account_name(
-    activity: dict[str, Any], account_id_to_name: dict[str, str]
-) -> str:
+def _activity_account_name(activity: dict[str, Any], account_id_to_name: dict[str, str]) -> str:
     """Pull a friendly account name from an activity. The activity's `account`
     field may be a nested dict (AccountSimple) or an id string depending on
     how the SDK deserializes."""
@@ -92,7 +91,9 @@ def _fetch_account_activities(
         except Exception as e:
             logger.warning(
                 "Could not fetch activities for account %s (offset=%d): %s",
-                account_id, offset, e,
+                account_id,
+                offset,
+                e,
             )
             return all_activities
         # SnapTrade may return either a paginated dict {data: [...], pagination: ...}
@@ -130,21 +131,21 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
     start_date_ = today - timedelta(days=years_back * 365)
 
     try:
-        accounts = _unwrap(
-            client.account_information.list_user_accounts(
-                user_id=user_id, user_secret=user_secret
+        accounts = (
+            _unwrap(
+                client.account_information.list_user_accounts(
+                    user_id=user_id, user_secret=user_secret
+                )
             )
-        ) or []
+            or []
+        )
     except Exception as e:
         logger.warning("Could not list accounts for transactions: %s", e)
         return {}
 
     account_id_to_name: dict[str, str] = {
         str(a.get("id")): (
-            a.get("name")
-            or a.get("institution_name")
-            or str(a.get("id"))
-            or "unknown"
+            a.get("name") or a.get("institution_name") or str(a.get("id")) or "unknown"
         )
         for a in accounts
         if a.get("id")
@@ -196,12 +197,10 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
             try:
                 units_sold = abs(float(activity.get("units") or 0))
                 sell_price = float(activity.get("price") or 0)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
             summary.total_units_sold += units_sold
-            sell_date = _coerce_date(
-                activity.get("trade_date") or activity.get("settlement_date")
-            )
+            sell_date = _coerce_date(activity.get("trade_date") or activity.get("settlement_date"))
             if sell_date and units_sold > 0:
                 days_ago = (today - sell_date).days
                 if 0 <= days_ago <= 60:
@@ -221,10 +220,7 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
         years_back,
     )
     # Freeze each per-ticker aggregate back into the immutable public type.
-    return {
-        t: TickerTaxSummary.model_validate(mut.model_dump())
-        for t, mut in working.items()
-    }
+    return {t: TickerTaxSummary.model_validate(mut.model_dump()) for t, mut in working.items()}
 
 
 def to_tax_payloads(

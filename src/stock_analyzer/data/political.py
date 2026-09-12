@@ -1,4 +1,5 @@
 """Recent congressional trade coverage via Tavily."""
+
 from __future__ import annotations
 
 import os
@@ -115,5 +116,9 @@ def fetch_political_trades(days: int = 5, max_results: int = 20) -> list[dict[st
             )
 
     out.sort(key=lambda x: (not x["is_watchlist"], -x["score"]))
-    logger.info("Political fetch: %d items (%d watchlist matches)", len(out), sum(x["is_watchlist"] for x in out))
+    logger.info(
+        "Political fetch: %d items (%d watchlist matches)",
+        len(out),
+        sum(x["is_watchlist"] for x in out),
+    )
     return out[:max_results]

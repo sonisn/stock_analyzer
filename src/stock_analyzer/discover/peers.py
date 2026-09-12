@@ -9,6 +9,7 @@ Peers are identified by a Haiku call (cheap, ~$0.001/call, trained-data
 knowledge of well-known competitive sets). Then yfinance fetches a
 minimal fundamentals snapshot for each peer.
 """
+
 from __future__ import annotations
 
 import json
@@ -70,9 +71,7 @@ class PeerFinder:
             instructions=PEER_FINDER_INSTRUCTIONS,
         )
 
-    def find(
-        self, ticker: str, *, name: str | None = None, sector: str | None = None
-    ) -> list[str]:
+    def find(self, ticker: str, *, name: str | None = None, sector: str | None = None) -> list[str]:
         prompt = f"Ticker: {ticker}"
         if name:
             prompt += f"\nName: {name}"
@@ -88,10 +87,7 @@ class PeerFinder:
         sec_map = load_ticker_cik_map()
         if sec_map:
             valid = set(sec_map.keys())
-            peers = [
-                p for p in peers
-                if p in valid or p.replace(".", "-") in valid
-            ]
+            peers = [p for p in peers if p in valid or p.replace(".", "-") in valid]
         # De-dupe and exclude the target itself.
         out: list[str] = []
         seen = {ticker.upper()}
@@ -111,7 +107,7 @@ def _parse_peer_list(text: str) -> list[str]:
         return []
     try:
         arr = json.loads(m.group(0))
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return []
     return [
         str(t).strip().upper()
@@ -163,9 +159,7 @@ def batch_peer_comparison(
         meta = target_meta.get(t, {})
         return (
             t,
-            fetch_peer_comparison(
-                finder, t, name=meta.get("name"), sector=meta.get("sector")
-            ),
+            fetch_peer_comparison(finder, t, name=meta.get("name"), sector=meta.get("sector")),
         )
 
     results: dict[str, dict[str, Any]] = {}

@@ -3,6 +3,7 @@
 Cheap data (one yfinance batch call). The ranker prompt uses this so it can
 overweight stocks in leading sectors and warn about lagging-sector picks.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -58,7 +59,7 @@ def fetch_sector_returns(months: int = 6) -> dict[str, float]:
     for etf in unique_etfs:
         try:
             series = closes[etf].dropna()
-        except (KeyError, TypeError):
+        except KeyError, TypeError:
             continue
         if len(series) < 2:
             continue

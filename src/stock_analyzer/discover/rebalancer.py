@@ -9,6 +9,7 @@ Aggressive churn: explicitly encouraged in the prompt — recommend SELLs
 where a meaningfully better alternative exists, even if the existing
 holding is fine in isolation.
 """
+
 from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider
@@ -34,7 +35,10 @@ def _build_rebalancer_instructions(
     so `.env` overrides actually flow into the LLM context.
     """
     buffer_pct = int(round(cc_slippage_buffer * 100))
-    stub_section = "" if not cc_stub_optimization else f"""
+    stub_section = (
+        ""
+        if not cc_stub_optimization
+        else f"""
 ========================================================================
 STUB CONSOLIDATION (round-lot optimization)
 ========================================================================
@@ -59,6 +63,7 @@ e.g. "100 shares (1 lot)".
 
 Tax-aware: prefer LTCG lots for stub sales (see existing tax-lot
 guidance)."""
+    )
 
     return f"""\
 You are a portfolio manager producing a rebalance action list — or
@@ -642,8 +647,7 @@ class Rebalancer:
         # or the legacy free-text form ({ticker: str}). For the LLM prompt
         # we need prose, so unwrap HoldingReview.full_text.
         reviews_block = "\n\n".join(
-            f"=== {ticker} ===\n"
-            f"{r.full_text if isinstance(r, HoldingReview) else r}"
+            f"=== {ticker} ===\n{r.full_text if isinstance(r, HoldingReview) else r}"
             for ticker, r in holdings_reviews.items()
         )
         cash_line = (
@@ -660,19 +664,18 @@ class Rebalancer:
             )
             agg = "balanced"
         history_section = (
-            f"Previous decisions (last 3 rebalance runs, oldest first):\n"
-            f"{history_block}\n\n"
-            if history_block else ""
+            f"Previous decisions (last 3 rebalance runs, oldest first):\n{history_block}\n\n"
+            if history_block
+            else ""
         )
         themes_section = (
             f"Current dominant market themes (use to validate continued "
             f"holding of theme members vs trimming positions in fading "
             f"themes):\n{market_themes_block}\n\n"
-            if market_themes_block else ""
+            if market_themes_block
+            else ""
         )
-        cc_section = (
-            f"{cc_context_block}\n\n" if cc_context_block else ""
-        )
+        cc_section = f"{cc_context_block}\n\n" if cc_context_block else ""
         prompt = (
             f"AGGRESSIVENESS: {agg}\n"
             f"(Apply the {agg} rule set from your instructions. The "
@@ -707,8 +710,7 @@ class Rebalancer:
                     result = RebalancePlan.model_validate_json(result)
                 except Exception as e:
                     raise RuntimeError(
-                        f"Rebalancer returned a string that wasn't valid "
-                        f"RebalancePlan JSON: {e}"
+                        f"Rebalancer returned a string that wasn't valid RebalancePlan JSON: {e}"
                     ) from e
             else:
                 raise RuntimeError(
@@ -717,7 +719,6 @@ class Rebalancer:
                 )
         if not result.full_text:
             raise RuntimeError(
-                "Rebalancer returned a plan with empty full_text — nothing to "
-                "render in the report."
+                "Rebalancer returned a plan with empty full_text — nothing to render in the report."
             )
         return result

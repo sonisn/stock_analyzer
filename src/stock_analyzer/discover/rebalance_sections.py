@@ -1,11 +1,12 @@
 """Rebalance report section IR — HTML/PDF layout for portfolio rebalance runs."""
+
 from __future__ import annotations
 
 from datetime import date
 from typing import Any
 
-from ..models.reports import PreMortem, Section
 from ..models.rebalance import RebalancePlan
+from ..models.reports import PreMortem, Section
 from .report_sections import (
     build_sections,
     parse_confidence,
@@ -41,14 +42,16 @@ def build_holdings_dashboard_rows(
         sector = fund.get("sector") or "Unknown"
         if value > 0:
             sector_value[sector] = sector_value.get(sector, 0) + value
-        dashboard_rows.append({
-            "ticker": ticker,
-            "verdict": parse_verdict(review),
-            "confidence": parse_confidence(review),
-            "pnl_pct": pnl_pct,
-            "sector": sector,
-            "note": "",
-        })
+        dashboard_rows.append(
+            {
+                "ticker": ticker,
+                "verdict": parse_verdict(review),
+                "confidence": parse_confidence(review),
+                "pnl_pct": pnl_pct,
+                "sector": sector,
+                "note": "",
+            }
+        )
     total_pnl_pct = ((total_value - total_cost) / total_cost * 100) if total_cost else None
     return dashboard_rows, total_value, total_cost, sector_value, total_pnl_pct
 
@@ -70,10 +73,12 @@ def append_rebalance_overview(
     market_themes: object,
     macro_summary: str,
 ) -> None:
-    sections.extend([
-        Section(kind="heading", text=f"Portfolio Rebalance — {today}", level=1),
-        Section(kind="status_banner", text=status_label, status=status),
-    ])
+    sections.extend(
+        [
+            Section(kind="heading", text=f"Portfolio Rebalance — {today}", level=1),
+            Section(kind="status_banner", text=status_label, status=status),
+        ]
+    )
     metrics: list[tuple[str, str]] = [
         ("Holdings", f"{len(holdings_positions)}"),
         ("Portfolio value", f"${total_value:,.0f}" if total_value else "—"),
@@ -95,22 +100,30 @@ def append_rebalance_overview(
                 if title:
                     catalyst_rows.append([ticker, title])
     if catalyst_rows:
-        sections.append(Section(
-            kind="heading", text="Recent catalysts (informational)", level=2,
-        ))
-        sections.append(Section(
-            kind="para",
-            text=(
-                "Headlines worth scanning. Not used to compute verdicts or "
-                "position sizing — your Reviewer/Rebalancer reads news as "
-                "qualitative context only."
-            ),
-        ))
-        sections.append(Section(
-            kind="table",
-            table_header=["Ticker", "Headline"],
-            table_rows=catalyst_rows,
-        ))
+        sections.append(
+            Section(
+                kind="heading",
+                text="Recent catalysts (informational)",
+                level=2,
+            )
+        )
+        sections.append(
+            Section(
+                kind="para",
+                text=(
+                    "Headlines worth scanning. Not used to compute verdicts or "
+                    "position sizing — your Reviewer/Rebalancer reads news as "
+                    "qualitative context only."
+                ),
+            )
+        )
+        sections.append(
+            Section(
+                kind="table",
+                table_header=["Ticker", "Headline"],
+                table_rows=catalyst_rows,
+            )
+        )
 
     if sector_value:
         pie_data = sorted(sector_value.items(), key=lambda x: x[1], reverse=True)
@@ -122,23 +135,26 @@ def append_rebalance_overview(
         sections.append(Section(kind="preformatted", text=track_record_block))
 
     from ..models.llm import MarketThemes
+
     if isinstance(market_themes, MarketThemes) and market_themes.themes:
         sections.append(Section(kind="heading", text="Current market themes", level=2))
-        sections.append(Section(
-            kind="market_themes_panel",
-            data={
-                "themes": [
-                    {
-                        "name": t.name,
-                        "description": t.description,
-                        "strength": t.strength,
-                        "trending": t.trending,
-                        "member_tickers": list(t.member_tickers),
-                    }
-                    for t in market_themes.themes
-                ],
-            },
-        ))
+        sections.append(
+            Section(
+                kind="market_themes_panel",
+                data={
+                    "themes": [
+                        {
+                            "name": t.name,
+                            "description": t.description,
+                            "strength": t.strength,
+                            "trending": t.trending,
+                            "member_tickers": list(t.member_tickers),
+                        }
+                        for t in market_themes.themes
+                    ],
+                },
+            )
+        )
 
     if macro_summary:
         sections.append(Section(kind="heading", text="Macro regime", level=2))
@@ -161,49 +177,60 @@ def append_rebalance_plan_body(
 
     plan = rebalance_plan if isinstance(rebalance_plan, RebalancePlan) else None
     if plan and plan.actions:
-        sections.append(Section(
-            kind="rebalance_action_table",
-            data={
-                "actions": [
-                    {"action": a.action, "ticker": a.ticker, "sizing": a.sizing}
-                    for a in plan.actions
-                ],
-                "summary": plan.summary,
-            },
-        ))
+        sections.append(
+            Section(
+                kind="rebalance_action_table",
+                data={
+                    "actions": [
+                        {"action": a.action, "ticker": a.ticker, "sizing": a.sizing}
+                        for a in plan.actions
+                    ],
+                    "summary": plan.summary,
+                },
+            )
+        )
 
     if isinstance(premortem, PreMortem) and (premortem.failures or premortem.summary):
-        sections.append(Section(
-            kind="heading", text="Pre-mortem (adversarial hindsight)", level=2,
-        ))
-        sections.append(Section(
-            kind="premortem_panel",
-            data={
-                "overall_verdict": premortem.overall_verdict,
-                "summary": premortem.summary,
-                "failures": [
-                    {
-                        "likelihood": f.likelihood,
-                        "severity": f.severity,
-                        "triggering_action": f.triggering_action,
-                        "failure_narrative": f.failure_narrative,
-                        "early_warning": f.early_warning,
-                    }
-                    for f in premortem.failures
-                ],
-            },
-        ))
+        sections.append(
+            Section(
+                kind="heading",
+                text="Pre-mortem (adversarial hindsight)",
+                level=2,
+            )
+        )
+        sections.append(
+            Section(
+                kind="premortem_panel",
+                data={
+                    "overall_verdict": premortem.overall_verdict,
+                    "summary": premortem.summary,
+                    "failures": [
+                        {
+                            "likelihood": f.likelihood,
+                            "severity": f.severity,
+                            "triggering_action": f.triggering_action,
+                            "failure_narrative": f.failure_narrative,
+                            "early_warning": f.early_warning,
+                        }
+                        for f in premortem.failures
+                    ],
+                },
+            )
+        )
 
     from .cc_render import (
         compute_premium_deployment,
         compute_premium_income,
         compute_round_lot_summary,
     )
+
     if plan is not None and plan.option_writes:
-        sections.append(Section(
-            kind="premium_income",
-            data=compute_premium_income(plan, slippage_buffer=cc_slippage_buffer),
-        ))
+        sections.append(
+            Section(
+                kind="premium_income",
+                data=compute_premium_income(plan, slippage_buffer=cc_slippage_buffer),
+            )
+        )
     if cc_round_lot_coverage:
         rls = compute_round_lot_summary(cc_round_lot_coverage)
         if rls["rows"]:
@@ -211,8 +238,7 @@ def append_rebalance_plan_body(
     if plan is not None and (
         plan.option_writes
         or any(
-            a.action in ("ADD", "BUY")
-            or (a.action == "TRIM" and "stub" in a.sizing.lower())
+            a.action in ("ADD", "BUY") or (a.action == "TRIM" and "stub" in a.sizing.lower())
             for a in plan.actions
         )
     ):
@@ -224,21 +250,21 @@ def append_rebalance_plan_body(
                     if rec is not None:
                         stub_usd += getattr(rec, "stub_dollar_value", 0.0)
         deployment = compute_premium_deployment(
-            plan, cash_balance=cash_balance, slippage_buffer=cc_slippage_buffer,
+            plan,
+            cash_balance=cash_balance,
+            slippage_buffer=cc_slippage_buffer,
             stub_consolidation_usd=stub_usd,
         )
-        if (
-            deployment["gross_premium_usd"] > 0
-            or deployment["deployments"]
-            or stub_usd > 0
-        ):
+        if deployment["gross_premium_usd"] > 0 or deployment["deployments"] or stub_usd > 0:
             sections.append(Section(kind="premium_deployment", data=deployment))
 
     if cc_warnings:
-        sections.append(Section(
-            kind="para",
-            text="CC plan adjustments: " + "; ".join(cc_warnings),
-        ))
+        sections.append(
+            Section(
+                kind="para",
+                text="CC plan adjustments: " + "; ".join(cc_warnings),
+            )
+        )
 
     sections.append(Section(kind="preformatted", text=rebalance_text))
 
@@ -250,24 +276,27 @@ def append_holding_review_sections(
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Per-holding reviews", level=1))
     from ..models.llm import HoldingReview
+
     for ticker in sorted(holdings_reviews.keys()):
         review = holdings_reviews[ticker]
         if isinstance(review, HoldingReview):
-            sections.append(Section(
-                kind="holding_review_card",
-                data={
-                    "ticker": ticker,
-                    "verdict": review.verdict,
-                    "confidence": review.confidence,
-                    "trim_pct": review.trim_pct,
-                    "position_context": review.position_context,
-                    "forward_outlook": review.forward_outlook,
-                    "reasoning": review.reasoning,
-                    "tax_lot_plan": list(review.tax_lot_plan),
-                    "what_would_change_mind": review.what_would_change_mind,
-                    "wash_sale_notice": review.wash_sale_notice,
-                },
-            ))
+            sections.append(
+                Section(
+                    kind="holding_review_card",
+                    data={
+                        "ticker": ticker,
+                        "verdict": review.verdict,
+                        "confidence": review.confidence,
+                        "trim_pct": review.trim_pct,
+                        "position_context": review.position_context,
+                        "forward_outlook": review.forward_outlook,
+                        "reasoning": review.reasoning,
+                        "tax_lot_plan": list(review.tax_lot_plan),
+                        "what_would_change_mind": review.what_would_change_mind,
+                        "wash_sale_notice": review.wash_sale_notice,
+                    },
+                )
+            )
         else:
             text = review or ""
             sections.append(Section(kind="heading", text=ticker, level=2))
@@ -294,9 +323,7 @@ def append_discover_appendix(
         sector_rotation=sector_rotation,
     )
     sections.append(Section(kind="page_break"))
-    sections.append(
-        Section(kind="heading", text="Discover picks (input to rebalancer)", level=1)
-    )
+    sections.append(Section(kind="heading", text="Discover picks (input to rebalancer)", level=1))
     sections.extend(discover_sections[2:])
 
 
@@ -333,8 +360,10 @@ def build_rebalance_sections(
     today = date.today().isoformat()
     status = parse_rebalance_status(rebalance_plan or rebalance_text)
     status_label = (
-        "STATUS: NO ACTION RECOMMENDED" if status == "NO_ACTION"
-        else "STATUS: ACTION RECOMMENDED" if status == "ACTION"
+        "STATUS: NO ACTION RECOMMENDED"
+        if status == "NO_ACTION"
+        else "STATUS: ACTION RECOMMENDED"
+        if status == "ACTION"
         else "STATUS: REVIEW REQUIRED"
     )
 

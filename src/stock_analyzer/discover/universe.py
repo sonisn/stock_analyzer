@@ -1,16 +1,33 @@
 """Build the candidate universe for discovery.
 
-Sources combined:
-  - Tickers mentioned in recent insider buying coverage
-  - Tickers mentioned in billionaire investor holdings/coverage
-  - Tickers in watchlist (DISCOVER_WATCHLIST env var)
+The universe has two distinct layers, and keeping them separate matters
+more than anything else in this module:
 
-Tickers are extracted from coverage article text via regex + a blacklist of
-common false positives. Counts feed a coarse `conviction` integer used as a
-tiebreaker in the screen — billionaire mentions weighted 2x, watchlist 5x.
-S&P 500 enumeration is intentionally NOT in v1: the screen's RS_6mo>0 +
-price>200DMA filters already select for index-leading names.
+  SAMPLING FRAME — which names are ELIGIBLE to be picked at all. This is
+  the S&P 500 snapshot in `data/universe_base.py`, plus the user's
+  watchlist and current holdings. A filter can only remove names the frame
+  already contained, so the frame sets the ceiling on pick quality.
+
+  CONVICTION OVERLAY — which of those names the press has been talking
+  about: recent insider-buying coverage and hedge-fund/billionaire
+  coverage, extracted from article text by regex. These ADD a conviction
+  signal to names already in the frame, and may also admit an off-frame
+  name that survives SEC validation.
+
+Earlier versions used the overlay AS the frame, which made "appeared in
+last month's coverage" a precondition for every pick — a recency and
+popularity filter applied before any fundamental screen, and one that by
+construction only surfaces theses already in print. The old rationale
+("the screen's RS_6mo>0 + price>200DMA filters already select for
+index-leading names") conflated filtering with sampling.
+
+Mention counts feed a coarse `conviction` integer. It is a MEDIA ATTENTION
+measure, not an edge — high attention is associated with crowding — so the
+screen weights it lightly and `in_base_universe` / `sources` are what
+callers should reason about. Watchlist membership grants eligibility, not
+score: see `screen._score_conviction`.
 """
+
 from __future__ import annotations
 
 import re
@@ -20,25 +37,119 @@ from typing import Any
 from ..data.hedge_funds import fetch_hedge_fund_trades
 from ..data.insider import fetch_insider_trades
 from ..data.sec_edgar import load_ticker_cik_map
+from ..data.universe_base import load_base_universe
 from ..logging import get_logger
 
 logger = get_logger(__name__)
 
 # Common acronyms / English words that match the bare [A-Z]{2,5} pattern.
 # Adding to this list is the right move when you see noise in the universe.
-_FALSE_POSITIVES = frozenset({
-    "AN", "AND", "ALL", "AM", "AS", "AT", "BE", "BY", "DO", "FOR", "FROM",
-    "GO", "HAS", "HE", "I", "IF", "IN", "IS", "IT", "ITS", "MY", "NEW", "NO",
-    "NOT", "OF", "OK", "ON", "OR", "SO", "TO", "UP", "US", "WE", "YOU", "THE",
-    "USA", "USD", "EUR", "GBP", "JPY", "CNY",
-    "CEO", "CFO", "COO", "CTO", "CMO", "CIO",
-    "FED", "FOMC", "GDP", "CPI", "PPI", "PMI", "FDA", "SEC", "IRS", "DOJ",
-    "FTC", "DOE", "EPA", "DOD", "NSA", "CIA", "FBI", "NYSE", "AMEX", "OTC",
-    "ETF", "IPO", "FYI", "AI", "ML", "AR", "VR", "EV", "OS",
-    "PR", "PE", "EPS", "ROE", "ROI", "ROA", "FY", "Q1", "Q2", "Q3", "Q4",
-    "YOY", "QOQ", "YTD", "MTD", "AGM", "PIE", "PT", "ST", "MT", "LT",
-    "UK", "EU", "ASEAN", "G7", "G20",
-})
+_FALSE_POSITIVES = frozenset(
+    {
+        "AN",
+        "AND",
+        "ALL",
+        "AM",
+        "AS",
+        "AT",
+        "BE",
+        "BY",
+        "DO",
+        "FOR",
+        "FROM",
+        "GO",
+        "HAS",
+        "HE",
+        "I",
+        "IF",
+        "IN",
+        "IS",
+        "IT",
+        "ITS",
+        "MY",
+        "NEW",
+        "NO",
+        "NOT",
+        "OF",
+        "OK",
+        "ON",
+        "OR",
+        "SO",
+        "TO",
+        "UP",
+        "US",
+        "WE",
+        "YOU",
+        "THE",
+        "USA",
+        "USD",
+        "EUR",
+        "GBP",
+        "JPY",
+        "CNY",
+        "CEO",
+        "CFO",
+        "COO",
+        "CTO",
+        "CMO",
+        "CIO",
+        "FED",
+        "FOMC",
+        "GDP",
+        "CPI",
+        "PPI",
+        "PMI",
+        "FDA",
+        "SEC",
+        "IRS",
+        "DOJ",
+        "FTC",
+        "DOE",
+        "EPA",
+        "DOD",
+        "NSA",
+        "CIA",
+        "FBI",
+        "NYSE",
+        "AMEX",
+        "OTC",
+        "ETF",
+        "IPO",
+        "FYI",
+        "AI",
+        "ML",
+        "AR",
+        "VR",
+        "EV",
+        "OS",
+        "PR",
+        "PE",
+        "EPS",
+        "ROE",
+        "ROI",
+        "ROA",
+        "FY",
+        "Q1",
+        "Q2",
+        "Q3",
+        "Q4",
+        "YOY",
+        "QOQ",
+        "YTD",
+        "MTD",
+        "AGM",
+        "PIE",
+        "PT",
+        "ST",
+        "MT",
+        "LT",
+        "UK",
+        "EU",
+        "ASEAN",
+        "G7",
+        "G20",
+    }
+)
 
 _CASHTAG_RE = re.compile(r"\$([A-Z]{1,5})\b")
 _EXCHANGE_RE = re.compile(r"(?:NYSE|NASDAQ|NYSEARCA|AMEX)\s*:\s*([A-Z]{1,5})\b")
@@ -70,32 +181,70 @@ def _tickers_from_items(items: list[dict[str, Any]]) -> Counter[str]:
     return counter
 
 
-def build_universe(watchlist: tuple[str, ...] = ()) -> dict[str, dict[str, Any]]:
-    """Return {ticker: {sources, conviction}}.
+def build_universe(
+    watchlist: tuple[str, ...] = (),
+    holdings: tuple[str, ...] = (),
+    *,
+    base_universe: tuple[str, ...] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Return {ticker: {sources, conviction, in_base_universe}}.
 
-    sources: list[str] — which feeds the ticker appeared in
-    conviction: int  — weighted sum of mentions across sources
+    sources: list[str]       — which layers the ticker came from
+    conviction: int          — weighted media-mention count (attention, not edge)
+    in_base_universe: bool   — was it in the sampling frame, or news-only
+
+    `base_universe` defaults to `load_base_universe()` (the bundled S&P 500
+    snapshot, overridable via DISCOVER_UNIVERSE_FILE). Pass an explicit
+    tuple in tests or to screen a different frame.
     """
+    frame = load_base_universe() if base_universe is None else tuple(base_universe)
+
+    universe: dict[str, dict[str, Any]] = {}
+
+    def _entry(ticker: str) -> dict[str, Any]:
+        return universe.setdefault(
+            ticker,
+            {"sources": [], "conviction": 0, "in_base_universe": False},
+        )
+
+    # --- layer 1: the sampling frame ---
+    for ticker in frame:
+        u = _entry(ticker)
+        u["in_base_universe"] = True
+        if "index" not in u["sources"]:
+            u["sources"].append("index")
+    # Watchlist and holdings are part of the frame by definition: the user
+    # told us these matter, so they are always eligible for analysis. That
+    # is an INCLUSION rule — it deliberately carries no score bonus, so the
+    # ranking tests the user's prior instead of confirming it.
+    for ticker in watchlist:
+        u = _entry(ticker)
+        u["in_base_universe"] = True
+        if "watchlist" not in u["sources"]:
+            u["sources"].append("watchlist")
+    for ticker in holdings:
+        u = _entry(ticker)
+        u["in_base_universe"] = True
+        if "holding" not in u["sources"]:
+            u["sources"].append("holding")
+
+    # --- layer 2: the conviction overlay ---
     insider_items = fetch_insider_trades(days=30, max_results=40)
     hedge_items = fetch_hedge_fund_trades(days=30, max_results=40)
 
     insider_counts = _tickers_from_items(insider_items)
     hedge_counts = _tickers_from_items(hedge_items)
 
-    universe: dict[str, dict[str, Any]] = {}
     for ticker, n in insider_counts.items():
-        u = universe.setdefault(ticker, {"sources": [], "conviction": 0})
-        u["sources"].append("insider")
+        u = _entry(ticker)
+        if "insider" not in u["sources"]:
+            u["sources"].append("insider")
         u["conviction"] += n
     for ticker, n in hedge_counts.items():
-        u = universe.setdefault(ticker, {"sources": [], "conviction": 0})
-        u["sources"].append("billionaire")
+        u = _entry(ticker)
+        if "billionaire" not in u["sources"]:
+            u["sources"].append("billionaire")
         u["conviction"] += n * 2
-    for ticker in watchlist:
-        u = universe.setdefault(ticker, {"sources": [], "conviction": 0})
-        if "watchlist" not in u["sources"]:
-            u["sources"].append("watchlist")
-            u["conviction"] += 5
 
     # Validate against the SEC's authoritative ticker→CIK map. The regex-based
     # extraction catches a lot of English words (HOME, TABLE, OFF, LP, LLC, etc.)
@@ -106,10 +255,14 @@ def build_universe(watchlist: tuple[str, ...] = ()) -> dict[str, dict[str, Any]]
     if sec_tickers:
         before = len(universe)
         valid = set(sec_tickers.keys())
+        # Only the regex-derived names need policing. A frame entry (index /
+        # watchlist / holding) is there because a human or an index listed
+        # it, so an SEC map that is stale or fetched badly must not silently
+        # empty the sampling frame.
         universe = {
             t: data
             for t, data in universe.items()
-            if t in valid or t.replace(".", "-") in valid
+            if data.get("in_base_universe") or t in valid or t.replace(".", "-") in valid
         }
         logger.info(
             "Universe: %d candidates after SEC validation (was %d)",
@@ -123,10 +276,23 @@ def build_universe(watchlist: tuple[str, ...] = ()) -> dict[str, dict[str, Any]]
             len(universe),
         )
 
+    news_only = sum(1 for data in universe.values() if not data.get("in_base_universe"))
     logger.info(
-        "Sources: insider %d, billionaire %d, watchlist %d",
+        "Universe: %d total — frame %d (index %d + watchlist %d + holdings %d), "
+        "news-only %d. Overlay: insider %d, billionaire %d.",
+        len(universe),
+        len(universe) - news_only,
+        len(frame),
+        len(watchlist),
+        len(holdings),
+        news_only,
         len(insider_counts),
         len(hedge_counts),
-        len(watchlist),
     )
+    if not frame:
+        logger.warning(
+            "Base universe is EMPTY — the pipeline is running on news-derived "
+            "names only, which is the weak sampling frame this layer exists "
+            "to replace. Check DISCOVER_UNIVERSE_FILE or the bundled snapshot."
+        )
     return universe

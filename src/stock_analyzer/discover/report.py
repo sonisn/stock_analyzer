@@ -13,12 +13,13 @@ and they share palettes from `report_sections` so colors stay identical.
 Existing callers (cli/discover.py, cli/rebalance.py, tests) import from
 this module — keep the re-exports stable so the split is invisible to them.
 """
+
 from __future__ import annotations
 
 from ..models.reports import Section, SectionKind
+from .rebalance_sections import build_rebalance_sections
 from .report_html import render_html_email
 from .report_pdf import render_pdf
-from .rebalance_sections import build_rebalance_sections
 from .report_sections import (
     build_sections,
     parse_actions,

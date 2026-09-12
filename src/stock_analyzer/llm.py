@@ -1,4 +1,5 @@
 """LLM provider abstraction — wraps `agno.Agent` for Claude and Gemini."""
+
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -29,8 +30,7 @@ class AgnoAgent:
     ) -> None:
         if provider not in _MODEL_REGISTRY:
             raise ValueError(
-                f"Unsupported provider {provider!r}. "
-                f"Expected one of {sorted(_MODEL_REGISTRY)}."
+                f"Unsupported provider {provider!r}. Expected one of {sorted(_MODEL_REGISTRY)}."
             )
 
         self.name = name

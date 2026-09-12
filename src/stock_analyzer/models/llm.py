@@ -8,6 +8,7 @@ are the source of truth for parsers, dashboards, analytics, and the
 modernized report layout (per-pick cards, verdict badges, fragility
 chips, sizing tables).
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -145,9 +146,7 @@ class RankerPick(BaseModel):
     time_horizon: str = Field(default="6-12 months")
     sector_concentration_check: str = Field(
         ...,
-        description=(
-            "Does this overlap with current holdings? Flag concentration risk."
-        ),
+        description=("Does this overlap with current holdings? Flag concentration risk."),
     )
     bull_thesis: str = Field(
         ...,
@@ -259,8 +258,7 @@ class BearCase(BaseModel):
     fragility_rank: FragilityRank = Field(
         ...,
         description=(
-            "1 = most fragile (highest probability of disappointment), "
-            "5 = most resilient."
+            "1 = most fragile (highest probability of disappointment), 5 = most resilient."
         ),
     )
 
@@ -394,8 +392,7 @@ class Allocation(BaseModel):
     rationale: str = Field(
         ...,
         description=(
-            "1-2 sentences citing conviction, fragility rank, correlation "
-            "to existing holdings."
+            "1-2 sentences citing conviction, fragility rank, correlation to existing holdings."
         ),
     )
 

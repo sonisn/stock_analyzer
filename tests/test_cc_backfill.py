@@ -1,4 +1,5 @@
 """Tests for OptionWrite backfill from WRITE_CALL sizing strings."""
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -16,28 +17,20 @@ from stock_analyzer.models.rebalance import (
 
 
 def test_parse_sizing_canonical():
-    assert _parse_sizing("1 contract $450C expiring 2026-06-18") == (
-        1, 450.0, "2026-06-18", None
-    )
+    assert _parse_sizing("1 contract $450C expiring 2026-06-18") == (1, 450.0, "2026-06-18", None)
 
 
 def test_parse_sizing_no_expiring_keyword():
-    assert _parse_sizing("3 contracts $260C 2026-06-20") == (
-        3, 260.0, "2026-06-20", None
-    )
+    assert _parse_sizing("3 contracts $260C 2026-06-20") == (3, 260.0, "2026-06-20", None)
 
 
 def test_parse_sizing_decimal_strike():
-    assert _parse_sizing("2 contracts $230.00C 2026-06-20") == (
-        2, 230.0, "2026-06-20", None
-    )
+    assert _parse_sizing("2 contracts $230.00C 2026-06-20") == (2, 230.0, "2026-06-20", None)
 
 
 def test_parse_sizing_with_comma():
     # Sometimes Opus formats large strikes with thousand separators.
-    assert _parse_sizing("1 contract $1,250C 2026-07-18") == (
-        1, 1250.0, "2026-07-18", None
-    )
+    assert _parse_sizing("1 contract $1,250C 2026-07-18") == (1, 1250.0, "2026-07-18", None)
 
 
 def test_parse_sizing_rejects_garbage():
@@ -46,32 +39,50 @@ def test_parse_sizing_rejects_garbage():
     assert _parse_sizing(None) is None  # type: ignore[arg-type]
 
 
-def _chain(ticker: str, strike: float, expiry: str,
-           bid: float = 3.0, ask: float = 3.2,
-           delta: float = 0.36, iv: float = 0.30) -> OptionChain:
+def _chain(
+    ticker: str,
+    strike: float,
+    expiry: str,
+    bid: float = 3.0,
+    ask: float = 3.2,
+    delta: float = 0.36,
+    iv: float = 0.30,
+) -> OptionChain:
     return OptionChain(
-        ticker=ticker, spot=100.0, asof=datetime.now(),
-        calls=[OptionQuote(
-            strike=strike, expiry=date.fromisoformat(expiry),
-            bid=bid, ask=ask, iv=iv, delta=delta,
-            open_interest=1000, volume=500,
-        )],
+        ticker=ticker,
+        spot=100.0,
+        asof=datetime.now(),
+        calls=[
+            OptionQuote(
+                strike=strike,
+                expiry=date.fromisoformat(expiry),
+                bid=bid,
+                ask=ask,
+                iv=iv,
+                delta=delta,
+                open_interest=1000,
+                volume=500,
+            )
+        ],
         source="yfinance",
     )
 
 
 def test_backfill_synthesizes_optionwrite_for_orphan_write_call():
     plan = RebalancePlan(
-        status="ACTION", aggressiveness_applied="aggressive",
+        status="ACTION",
+        aggressiveness_applied="aggressive",
         actions=[
-            RebalanceAction(action="WRITE_CALL", ticker="NVDA",
-                            sizing="3 contracts $260C 2026-06-20 in Test Account"),
+            RebalanceAction(
+                action="WRITE_CALL",
+                ticker="NVDA",
+                sizing="3 contracts $260C 2026-06-20 in Test Account",
+            ),
         ],
         option_writes=[],  # orphan
         full_text="…",
     )
-    chains = {"NVDA": _chain("NVDA", 260.0, "2026-06-20",
-                              bid=2.20, ask=2.40, delta=0.36, iv=0.29)}
+    chains = {"NVDA": _chain("NVDA", 260.0, "2026-06-20", bid=2.20, ask=2.40, delta=0.36, iv=0.29)}
     out = backfill_option_writes(plan, chains=chains)
     assert len(out.option_writes) == 1
     ow = out.option_writes[0]
@@ -89,15 +100,26 @@ def test_backfill_synthesizes_optionwrite_for_orphan_write_call():
 def test_backfill_skips_when_already_present():
     """If Opus did populate option_writes for a ticker, don't double-write."""
     existing = OptionWrite(
-        ticker="NVDA", account="Fidelity IRA",
-        strike=260.0, expiry="2026-06-20",
-        contracts=3, est_premium_per_share=2.40,
-        delta=0.36, assignment_probability=0.36, notes="from Opus",
+        ticker="NVDA",
+        account="Fidelity IRA",
+        strike=260.0,
+        expiry="2026-06-20",
+        contracts=3,
+        est_premium_per_share=2.40,
+        delta=0.36,
+        assignment_probability=0.36,
+        notes="from Opus",
     )
     plan = RebalancePlan(
-        status="ACTION", aggressiveness_applied="aggressive",
-        actions=[RebalanceAction(action="WRITE_CALL", ticker="NVDA",
-                                  sizing="3 contracts $260C 2026-06-20 in Fidelity IRA")],
+        status="ACTION",
+        aggressiveness_applied="aggressive",
+        actions=[
+            RebalanceAction(
+                action="WRITE_CALL",
+                ticker="NVDA",
+                sizing="3 contracts $260C 2026-06-20 in Fidelity IRA",
+            )
+        ],
         option_writes=[existing],
         full_text="…",
     )
@@ -109,9 +131,13 @@ def test_backfill_skips_when_already_present():
 
 def test_backfill_skips_unparseable_sizing():
     plan = RebalancePlan(
-        status="ACTION", aggressiveness_applied="aggressive",
-        actions=[RebalanceAction(action="WRITE_CALL", ticker="NVDA",
-                                  sizing="some opaque sizing description")],
+        status="ACTION",
+        aggressiveness_applied="aggressive",
+        actions=[
+            RebalanceAction(
+                action="WRITE_CALL", ticker="NVDA", sizing="some opaque sizing description"
+            )
+        ],
         option_writes=[],
         full_text="…",
     )
@@ -123,9 +149,13 @@ def test_backfill_skips_when_no_chain_match():
     """Opus picked a strike that's not in our chain (off-cycle expiry,
     hallucinated strike, etc.). Backfill should NOT invent data."""
     plan = RebalancePlan(
-        status="ACTION", aggressiveness_applied="aggressive",
-        actions=[RebalanceAction(action="WRITE_CALL", ticker="NVDA",
-                                  sizing="1 contract $999C 2026-06-20")],
+        status="ACTION",
+        aggressiveness_applied="aggressive",
+        actions=[
+            RebalanceAction(
+                action="WRITE_CALL", ticker="NVDA", sizing="1 contract $999C 2026-06-20"
+            )
+        ],
         option_writes=[],
         full_text="…",
     )
@@ -135,9 +165,13 @@ def test_backfill_skips_when_no_chain_match():
 
 def test_backfill_skips_when_no_chain_for_ticker():
     plan = RebalancePlan(
-        status="ACTION", aggressiveness_applied="aggressive",
-        actions=[RebalanceAction(action="WRITE_CALL", ticker="MYSTERY",
-                                  sizing="1 contract $100C 2026-06-20")],
+        status="ACTION",
+        aggressiveness_applied="aggressive",
+        actions=[
+            RebalanceAction(
+                action="WRITE_CALL", ticker="MYSTERY", sizing="1 contract $100C 2026-06-20"
+            )
+        ],
         option_writes=[],
         full_text="…",
     )
@@ -149,14 +183,19 @@ def test_backfill_handles_five_orphan_write_calls():
     """Real production scenario: Opus emitted 5 WRITE_CALL actions but
     zero option_writes. Backfill should synthesize all 5."""
     tickers = [
-        ("NVDA", 260.0), ("AVGO", 450.0), ("BE", 350.0),
-        ("GOOGL", 420.0), ("TSLA", 460.0),
+        ("NVDA", 260.0),
+        ("AVGO", 450.0),
+        ("BE", 350.0),
+        ("GOOGL", 420.0),
+        ("TSLA", 460.0),
     ]
     plan = RebalancePlan(
-        status="ACTION", aggressiveness_applied="aggressive",
+        status="ACTION",
+        aggressiveness_applied="aggressive",
         actions=[
             RebalanceAction(
-                action="WRITE_CALL", ticker=t,
+                action="WRITE_CALL",
+                ticker=t,
                 sizing=f"1 contract ${k:.0f}C expiring 2026-06-20 in Fidelity IRA",
             )
             for t, k in tickers
@@ -186,11 +225,15 @@ def test_backfill_parses_no_account_when_absent():
 def test_backfill_synthesizes_with_explicit_account():
     """Happy path: sizing has 'in X', backfill uses it."""
     plan = RebalancePlan(
-        status="ACTION", aggressiveness_applied="aggressive",
-        actions=[RebalanceAction(
-            action="WRITE_CALL", ticker="NVDA",
-            sizing="3 contracts $260C 2026-06-20 in Fidelity IRA",
-        )],
+        status="ACTION",
+        aggressiveness_applied="aggressive",
+        actions=[
+            RebalanceAction(
+                action="WRITE_CALL",
+                ticker="NVDA",
+                sizing="3 contracts $260C 2026-06-20 in Fidelity IRA",
+            )
+        ],
         option_writes=[],
         full_text="…",
     )
@@ -204,11 +247,15 @@ def test_backfill_defaults_account_to_unknown_when_absent():
     """Sizing without an account → backfill stamps account='UNKNOWN'.
     The validator drops these as orphan-account entries downstream."""
     plan = RebalancePlan(
-        status="ACTION", aggressiveness_applied="aggressive",
-        actions=[RebalanceAction(
-            action="WRITE_CALL", ticker="NVDA",
-            sizing="3 contracts $260C 2026-06-20",
-        )],
+        status="ACTION",
+        aggressiveness_applied="aggressive",
+        actions=[
+            RebalanceAction(
+                action="WRITE_CALL",
+                ticker="NVDA",
+                sizing="3 contracts $260C 2026-06-20",
+            )
+        ],
         option_writes=[],
         full_text="…",
     )

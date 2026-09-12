@@ -7,6 +7,7 @@ its inputs. CLI wiring (`cli/rebalance.py`) is responsible for fetching
 holdings, chains, open short-call positions, and earnings dates, then
 passing them in.
 """
+
 from __future__ import annotations
 
 import math
@@ -21,9 +22,13 @@ if TYPE_CHECKING:
     from ..models.market import RealizedVolatility
 
 __all__ = [
-    "EligibleHolding", "RoundLotCoverage", "IvHvRegime",
-    "eligible_holdings_per_account", "round_lot_coverage",
-    "apply_earnings_filter", "compute_iv_hv_regime",
+    "EligibleHolding",
+    "RoundLotCoverage",
+    "IvHvRegime",
+    "eligible_holdings_per_account",
+    "round_lot_coverage",
+    "apply_earnings_filter",
+    "compute_iv_hv_regime",
     "build_cc_context_block",
 ]
 
@@ -76,15 +81,17 @@ def eligible_holdings_per_account(
             available = shares - 100 * short_contracts
             if available < 100:
                 continue
-            entries.append(EligibleHolding(
-                ticker=ticker,
-                account=account,
-                tax_status=tax_status,  # type: ignore[arg-type]
-                shares_held=shares,
-                open_short_call_contracts=short_contracts,
-                available_shares=available,
-                max_contracts=available // 100,
-            ))
+            entries.append(
+                EligibleHolding(
+                    ticker=ticker,
+                    account=account,
+                    tax_status=tax_status,  # type: ignore[arg-type]
+                    shares_held=shares,
+                    open_short_call_contracts=short_contracts,
+                    available_shares=available,
+                    max_contracts=available // 100,
+                )
+            )
         if entries:
             out[ticker] = entries
     return out
@@ -111,8 +118,10 @@ def round_lot_coverage(
         spot = float(spots.get(ticker) or 0.0)
         to_next_shares = (100 - stub) if stub else 0
         out[ticker] = RoundLotCoverage(
-            ticker=ticker, shares=shares,
-            round_lots=round_lots, stub_shares=stub,
+            ticker=ticker,
+            shares=shares,
+            round_lots=round_lots,
+            stub_shares=stub,
             stub_dollar_value=stub * spot,
             to_next_lot_shares=to_next_shares,
             to_next_lot_cost=to_next_shares * spot,
@@ -139,8 +148,11 @@ def apply_earnings_filter(
     survived = [q for q in chain.calls if q.expiry < lo or q.expiry > hi]
     return (
         OptionChain(
-            ticker=chain.ticker, spot=chain.spot, asof=chain.asof,
-            calls=survived, source=chain.source,
+            ticker=chain.ticker,
+            spot=chain.spot,
+            asof=chain.asof,
+            calls=survived,
+            source=chain.source,
         ),
         (lo, hi),
     )
@@ -239,7 +251,8 @@ def _format_account_block(
 
 
 def _format_ticker_block(
-    *, ticker: str,
+    *,
+    ticker: str,
     review: HoldingReview | str | None,
     accounts: list[EligibleHolding],
     chain: OptionChain | None,
@@ -249,8 +262,7 @@ def _format_ticker_block(
     lines: list[str] = [f"TICKER: {ticker}"]
     if isinstance(review, HoldingReview):
         verdict_line = (
-            f"  Reviewer verdict:        {review.verdict} "
-            f"(confidence {review.confidence}/10)"
+            f"  Reviewer verdict:        {review.verdict} (confidence {review.confidence}/10)"
         )
     else:
         verdict_line = "  Reviewer verdict:        UNKNOWN"
@@ -263,8 +275,7 @@ def _format_ticker_block(
         # tests can grep it.
         if a.max_contracts:
             lines.append(
-                f"    → up to {a.max_contracts} contract"
-                f"{'s' if a.max_contracts != 1 else ''}"
+                f"    → up to {a.max_contracts} contract{'s' if a.max_contracts != 1 else ''}"
             )
     if earnings_date is not None:
         lo = earnings_date - timedelta(days=EARNINGS_BLACKLIST_DAYS)
@@ -274,9 +285,7 @@ def _format_ticker_block(
             f"(skip expiries {lo.isoformat()} .. {hi.isoformat()})"
         )
     else:
-        lines.append(
-            "  Earnings-blacklist:      earnings_unknown — be conservative on DTE"
-        )
+        lines.append("  Earnings-blacklist:      earnings_unknown — be conservative on DTE")
     if iv_hv is not None:
         lines.append(
             f"  IV/HV regime:            IV {iv_hv.current_iv * 100:.0f}%  "
@@ -284,9 +293,7 @@ def _format_ticker_block(
             f"ratio {iv_hv.iv_hv_ratio:.2f}x  ({iv_hv.label})"
         )
     else:
-        lines.append(
-            "  IV/HV regime:            unknown (insufficient data)"
-        )
+        lines.append("  IV/HV regime:            unknown (insufficient data)")
     if not isinstance(chain, OptionChain) or chain.source == "missing" or not chain.calls:
         lines.append("  Option chain: UNAVAILABLE")
     else:
@@ -319,14 +326,16 @@ def build_cc_context_block(
         accounts = eligible[ticker]
         if not accounts:
             continue
-        per_ticker.append(_format_ticker_block(
-            ticker=ticker,
-            review=reviews.get(ticker),
-            accounts=accounts,
-            chain=chains.get(ticker),
-            earnings_date=earnings.get(ticker),
-            iv_hv=(iv_hv_regimes or {}).get(ticker),
-        ))
+        per_ticker.append(
+            _format_ticker_block(
+                ticker=ticker,
+                review=reviews.get(ticker),
+                accounts=accounts,
+                chain=chains.get(ticker),
+                earnings_date=earnings.get(ticker),
+                iv_hv=(iv_hv_regimes or {}).get(ticker),
+            )
+        )
 
     rlc_lines: list[str] = [
         "",

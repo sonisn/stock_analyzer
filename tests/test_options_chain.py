@@ -1,4 +1,5 @@
 """Tests for options_chain.py — providers, orchestrator, fallback."""
+
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
@@ -17,9 +18,14 @@ from stock_analyzer.models.market import OptionChain, OptionQuote
 
 def test_optionquote_frozen_and_typed():
     q = OptionQuote(
-        strike=260.0, expiry=date(2026, 6, 20),
-        bid=2.20, ask=2.40, iv=0.29, delta=0.36,
-        open_interest=2890, volume=540,
+        strike=260.0,
+        expiry=date(2026, 6, 20),
+        bid=2.20,
+        ask=2.40,
+        iv=0.29,
+        delta=0.36,
+        open_interest=2890,
+        volume=540,
     )
     assert q.strike == 260.0
     assert q.delta == 0.36
@@ -27,8 +33,11 @@ def test_optionquote_frozen_and_typed():
 
 def test_optionchain_dataclass():
     chain = OptionChain(
-        ticker="NVDA", spot=235.0, asof=datetime(2026, 5, 13, 16, 0, 0),
-        calls=[], source="missing",
+        ticker="NVDA",
+        spot=235.0,
+        asof=datetime(2026, 5, 13, 16, 0, 0),
+        calls=[],
+        source="missing",
     )
     assert chain.ticker == "NVDA"
     assert chain.source == "missing"
@@ -56,10 +65,12 @@ def test_yfinance_filters_to_dte_band_and_otm():
     e_too_close = (today + timedelta(days=10)).isoformat()
     e_too_far = (today + timedelta(days=120)).isoformat()
     chains = {
-        e_in_band: _calls_df([
-            (250.0, 3.10, 3.30, 0.31, 4210, 850),  # OTM
-            (230.0, 8.00, 8.20, 0.33, 1000, 200),  # ITM — should be filtered
-        ]),
+        e_in_band: _calls_df(
+            [
+                (250.0, 3.10, 3.30, 0.31, 4210, 850),  # OTM
+                (230.0, 8.00, 8.20, 0.33, 1000, 200),  # ITM — should be filtered
+            ]
+        ),
         e_too_close: _calls_df([(260.0, 0.50, 0.60, 0.28, 100, 10)]),
         e_too_far: _calls_df([(260.0, 5.50, 5.60, 0.28, 100, 10)]),
     }
@@ -94,10 +105,27 @@ def test_yfinance_no_expiries_returns_empty_chain_with_source_set():
 _FIXTURES = Path(__file__).parent / "fixtures"
 
 
+def _patch_tradier_json(payload_for_url):
+    """Patch the shared HTTP client's JSON fetch for TradierChain.
+
+    TradierChain goes through `HttpClient` (retries + rate limiting) rather
+    than calling `requests.get` directly, so tests stub `get_json`.
+    `payload_for_url(url)` returns the decoded payload for a given path;
+    raising from it simulates a transport failure.
+    """
+    from stock_analyzer.http_client import HttpClient
+
+    def _fake_get_json(url, **_kwargs):
+        return payload_for_url(url)
+
+    return patch.object(HttpClient, "get_json", side_effect=_fake_get_json)
+
+
 def test_tradier_returns_none_when_key_missing(monkeypatch):
     """TradierChain must degrade silently to None when the env var is unset."""
     monkeypatch.delenv("TRADIER_API_KEY", raising=False)
     from stock_analyzer.data.options_chain import TradierChain
+
     out = TradierChain().fetch("NVDA", dte_min=30, dte_max=45)
     assert out is None
 
@@ -111,37 +139,42 @@ def test_tradier_parses_canned_chain(monkeypatch):
     in_band_str = (today + timedelta(days=35)).isoformat()
     out_of_band_str = (today + timedelta(days=120)).isoformat()
 
-    def _fake_get(url, params=None, headers=None, timeout=None):
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
+    def _payload_for_url(url):
         if "expirations" in url:
-            resp.json.return_value = {
-                "expirations": {"date": [in_band_str, out_of_band_str]}
-            }
-        elif "chains" in url:
-            resp.json.return_value = {
+            return {"expirations": {"date": [in_band_str, out_of_band_str]}}
+        if "chains" in url:
+            return {
                 "options": {
                     "option": [
                         {
                             "symbol": "NVDA260620C00260000",
-                            "strike": 260, "bid": 2.2, "ask": 2.4,
-                            "volume": 1105, "open_interest": 8249,
+                            "strike": 260,
+                            "bid": 2.2,
+                            "ask": 2.4,
+                            "volume": 1105,
+                            "open_interest": 8249,
                             "option_type": "call",
                             "expiration_date": in_band_str,
                             "greeks": {"delta": 0.36, "mid_iv": 0.291},
                         },
                         {
                             "symbol": "NVDA260620P00260000",
-                            "strike": 260, "bid": 1.0, "ask": 1.1,
-                            "volume": 100, "open_interest": 50,
+                            "strike": 260,
+                            "bid": 1.0,
+                            "ask": 1.1,
+                            "volume": 100,
+                            "open_interest": 50,
                             "option_type": "put",  # filtered out
                             "expiration_date": in_band_str,
                             "greeks": {"delta": -0.4, "mid_iv": 0.30},
                         },
                         {
                             "symbol": "NVDA260620C00230000",
-                            "strike": 230, "bid": 8.0, "ask": 8.2,
-                            "volume": 1000, "open_interest": 1000,
+                            "strike": 230,
+                            "bid": 8.0,
+                            "ask": 8.2,
+                            "volume": 1000,
+                            "open_interest": 1000,
                             "option_type": "call",
                             "expiration_date": in_band_str,
                             "greeks": {"delta": 0.65, "mid_iv": 0.31},
@@ -150,18 +183,11 @@ def test_tradier_parses_canned_chain(monkeypatch):
                     ]
                 }
             }
-        elif "quotes" in url:
-            resp.json.return_value = {
-                "quotes": {"quote": {"symbol": "NVDA", "last": 235.0}}
-            }
-        else:
-            resp.json.return_value = {}
-        return resp
+        if "quotes" in url:
+            return {"quotes": {"quote": {"symbol": "NVDA", "last": 235.0}}}
+        return {}
 
-    with patch(
-        "stock_analyzer.data.options_chain.requests.get",
-        side_effect=_fake_get,
-    ):
+    with _patch_tradier_json(_payload_for_url):
         chain = TradierChain().fetch("NVDA", dte_min=30, dte_max=45)
 
     assert chain is not None
@@ -184,23 +210,16 @@ def test_tradier_handles_expirations_string_form(monkeypatch):
     today = date.today()
     only_expiry = (today + timedelta(days=35)).isoformat()
 
-    def _fake_get(url, params=None, headers=None, timeout=None):
-        resp = MagicMock()
-        resp.raise_for_status = MagicMock()
+    def _payload_for_url(url):
         if "expirations" in url:
-            resp.json.return_value = {"expirations": {"date": only_expiry}}
-        elif "chains" in url:
-            resp.json.return_value = {"options": {"option": []}}
-        elif "quotes" in url:
-            resp.json.return_value = {"quotes": {"quote": {"last": 100.0}}}
-        else:
-            resp.json.return_value = {}
-        return resp
+            return {"expirations": {"date": only_expiry}}
+        if "chains" in url:
+            return {"options": {"option": []}}
+        if "quotes" in url:
+            return {"quotes": {"quote": {"last": 100.0}}}
+        return {}
 
-    with patch(
-        "stock_analyzer.data.options_chain.requests.get",
-        side_effect=_fake_get,
-    ):
+    with _patch_tradier_json(_payload_for_url):
         chain = TradierChain().fetch("X", dte_min=30, dte_max=45)
     assert chain is not None
     # Empty chain (no options in fake response) but source set correctly.
@@ -209,21 +228,27 @@ def test_tradier_handles_expirations_string_form(monkeypatch):
 
 def test_tradier_returns_none_on_network_error(monkeypatch):
     monkeypatch.setenv("TRADIER_API_KEY", "fake")
-    with patch(
-        "stock_analyzer.data.options_chain.requests.get",
-        side_effect=RuntimeError("network down"),
-    ):
+
+    def _boom(_url):
+        raise RuntimeError("network down")
+
+    with _patch_tradier_json(_boom):
         out = TradierChain().fetch("NVDA", dte_min=30, dte_max=45)
     assert out is None
 
 
 def test_fetch_chains_uses_tradier_when_available():
     fake_chain = OptionChain(
-        ticker="NVDA", spot=235.0, asof=datetime.now(),
-        calls=[], source="tradier",
+        ticker="NVDA",
+        spot=235.0,
+        asof=datetime.now(),
+        calls=[],
+        source="tradier",
     )
-    with patch.object(TradierChain, "fetch", return_value=fake_chain) as tradier, \
-         patch.object(YFinanceChain, "fetch") as yfin:
+    with (
+        patch.object(TradierChain, "fetch", return_value=fake_chain) as tradier,
+        patch.object(YFinanceChain, "fetch") as yfin,
+    ):
         out = fetch_chains(["NVDA"], dte_min=30, dte_max=45)
     tradier.assert_called_once()
     yfin.assert_not_called()
@@ -232,18 +257,25 @@ def test_fetch_chains_uses_tradier_when_available():
 
 def test_fetch_chains_falls_back_to_yfinance():
     fake = OptionChain(
-        ticker="AAPL", spot=215.0, asof=datetime.now(),
-        calls=[], source="yfinance",
+        ticker="AAPL",
+        spot=215.0,
+        asof=datetime.now(),
+        calls=[],
+        source="yfinance",
     )
-    with patch.object(TradierChain, "fetch", return_value=None), \
-         patch.object(YFinanceChain, "fetch", return_value=fake):
+    with (
+        patch.object(TradierChain, "fetch", return_value=None),
+        patch.object(YFinanceChain, "fetch", return_value=fake),
+    ):
         out = fetch_chains(["AAPL"], dte_min=30, dte_max=45)
     assert out["AAPL"].source == "yfinance"
 
 
 def test_fetch_chains_marks_missing_when_all_fail():
-    with patch.object(TradierChain, "fetch", return_value=None), \
-         patch.object(YFinanceChain, "fetch", return_value=None):
+    with (
+        patch.object(TradierChain, "fetch", return_value=None),
+        patch.object(YFinanceChain, "fetch", return_value=None),
+    ):
         out = fetch_chains(["XYZ"], dte_min=30, dte_max=45)
     assert out["XYZ"].source == "missing"
     assert out["XYZ"].calls == []
@@ -291,5 +323,3 @@ def test_yfinance_handles_nan_bid_ask_iv():
     assert q.bid == 0.0
     assert q.ask == 0.0
     assert q.iv is None  # None preserved for missing greeks/IV
-
-

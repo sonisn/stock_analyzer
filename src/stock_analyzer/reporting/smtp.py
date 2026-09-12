@@ -1,4 +1,5 @@
 """SMTP transport — reads credentials from env, sends HTML or plain mail."""
+
 from __future__ import annotations
 
 import os
@@ -35,9 +36,7 @@ class SmtpServer:
         self.password = _required_env("SMTP_PASSWORD")
         self.sender = os.environ.get("SMTP_FROM", self.username)
         self.use_ssl = os.environ.get("SMTP_USE_SSL", "false").lower() == "true"
-        self.skip_verify = (
-            os.environ.get("SMTP_INSECURE_SKIP_VERIFY", "false").lower() == "true"
-        )
+        self.skip_verify = os.environ.get("SMTP_INSECURE_SKIP_VERIFY", "false").lower() == "true"
 
     def _ssl_context(self) -> ssl.SSLContext:
         ctx = ssl.create_default_context()
@@ -69,14 +68,12 @@ class SmtpServer:
         msg["Subject"] = subject
 
         if inline_images and content_type == "html":
-            msg.set_content(
-                "This message contains images. View it in an HTML-capable client."
-            )
+            msg.set_content("This message contains images. View it in an HTML-capable client.")
             msg.add_alternative(content, subtype="html")
             html_part = next(
-                p for p in msg.iter_parts()
-                if isinstance(p, EmailMessage)
-                and p.get_content_type() == "text/html"
+                p
+                for p in msg.iter_parts()
+                if isinstance(p, EmailMessage) and p.get_content_type() == "text/html"
             )
             for cid, img_bytes in inline_images.items():
                 html_part.add_related(
@@ -95,9 +92,7 @@ class SmtpServer:
                 maintype, subtype = "text", mime_subtype.removeprefix("text/")
             elif mime_subtype.startswith("image/"):
                 maintype, subtype = "image", mime_subtype.removeprefix("image/")
-            msg.add_attachment(
-                data, maintype=maintype, subtype=subtype, filename=filename
-            )
+            msg.add_attachment(data, maintype=maintype, subtype=subtype, filename=filename)
 
         logger.info(
             "Sending email to %s (subject=%r, inline_images=%d, attachments=%d)",
@@ -114,9 +109,7 @@ class SmtpServer:
                 server.login(self.username, self.password)
                 server.send_message(msg)
         else:
-            with smtplib.SMTP(
-                self.host, self.port, timeout=SMTP_TIMEOUT_SECONDS
-            ) as server:
+            with smtplib.SMTP(self.host, self.port, timeout=SMTP_TIMEOUT_SECONDS) as server:
                 server.starttls(context=context)
                 server.login(self.username, self.password)
                 server.send_message(msg)

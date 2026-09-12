@@ -48,7 +48,7 @@ def _parse(report: str) -> tuple[str, list[TickerSection]]:
     tickers: list[TickerSection] = []
     for block in blocks:
         if block.startswith(SENTIMENT_PREFIX):
-            text = block[len(SENTIMENT_PREFIX):].strip()
+            text = block[len(SENTIMENT_PREFIX) :].strip()
             sentiment = _strip_preamble_lines(text)
         else:
             section = _parse_ticker_block(block)
@@ -88,9 +88,7 @@ def _parse_ticker_block(block: str) -> TickerSection | None:
         label_match = LABEL_LINE_RE.match(line)
         if label_match:
             if current_label is not None:
-                section.fields.append(
-                    (current_label, " ".join(current_value).strip())
-                )
+                section.fields.append((current_label, " ".join(current_value).strip()))
             current_label = label_match.group(1).strip()
             current_value = [label_match.group(2).strip()]
         else:
@@ -111,20 +109,18 @@ def _render_sentiment(text: str) -> str:
 
 def _render_ticker(t: TickerSection, chart_cids: dict[str, str]) -> str:
     rows = "".join(
-        f'<tr><th>{html.escape(label)}</th>'
-        f'<td>{html.escape(value)}</td></tr>'
+        f"<tr><th>{html.escape(label)}</th><td>{html.escape(value)}</td></tr>"
         for label, value in t.fields
     )
     cid = chart_cids.get(t.symbol)
     chart_img = (
-        f'<img class="chart" src="cid:{html.escape(cid)}" '
-        f'alt="{html.escape(t.symbol)} chart">'
+        f'<img class="chart" src="cid:{html.escape(cid)}" alt="{html.escape(t.symbol)} chart">'
         if cid
         else ""
     )
     return (
         '<section class="ticker">'
-        f'<h2>{html.escape(t.symbol)} '
+        f"<h2>{html.escape(t.symbol)} "
         f'<span class="company">{html.escape(t.name)}</span></h2>'
         f"{chart_img}"
         f"<table>{rows}</table>"

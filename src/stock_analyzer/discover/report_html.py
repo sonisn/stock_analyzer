@@ -8,6 +8,7 @@ referenced via `cid:` so the SMTP layer can attach the PNG charts.
 Stays in sync with `report_pdf.py` because both pull palettes from
 `report_sections` — see `_VERDICT_COLORS`, `_STATUS_COLORS`, etc.
 """
+
 from __future__ import annotations
 
 import html
@@ -146,9 +147,7 @@ def _svg_pie(pie_data: list[tuple[str, float]], diameter: int = 180) -> str:
             f"L {x3:.2f} {y3:.2f} A {inner_r} {inner_r} 0 {large} 0 "
             f"{x4:.2f} {y4:.2f} Z"
         )
-        paths.append(
-            f'<path d="{d}" fill="{color}" stroke="#fff" stroke-width="1.5"/>'
-        )
+        paths.append(f'<path d="{d}" fill="{color}" stroke="#fff" stroke-width="1.5"/>')
         legend_items.append(
             f"<li><span class='legend-swatch' style='background:{color}'></span>"
             f"<span style='flex:1'>{html.escape(label)}</span>"
@@ -161,9 +160,7 @@ def _svg_pie(pie_data: list[tuple[str, float]], diameter: int = 180) -> str:
         f"<svg width='{diameter}' height='{diameter}' viewBox='0 0 {diameter} {diameter}'>"
         + "".join(paths)
         + "</svg>"
-        "<div class='pie-legend'><ul>"
-        + "".join(legend_items)
-        + "</ul></div></div>"
+        "<div class='pie-legend'><ul>" + "".join(legend_items) + "</ul></div></div>"
     )
 
 
@@ -189,14 +186,16 @@ def _pick_card_html(d: dict[str, Any]) -> str:
     rank_html = (
         f"<span style='background:#1f2937;color:#fff;padding:3px 10px;"
         f"border-radius:12px;font-size:12px;font-weight:600'>#{rank}</span>"
-        if rank is not None else ""
+        if rank is not None
+        else ""
     )
     conv_color = _conviction_swatch(conviction if isinstance(conviction, int) else None)
     conv_html = (
         f"<span style='background:{conv_color};color:#fff;padding:3px 10px;"
         f"border-radius:12px;font-size:12px;font-weight:600'>"
         f"Conviction {conviction}/10</span>"
-        if conviction is not None else ""
+        if conviction is not None
+        else ""
     )
     frag_html = ""
     if isinstance(fragility, int) and fragility in _FRAGILITY_COLORS:
@@ -245,8 +244,7 @@ def _pick_card_html(d: dict[str, Any]) -> str:
         )
     if watch_metric:
         sections_html.append(
-            f"<div style='margin-top:4px;color:#374151'>"
-            f"<b>Watch:</b> {watch_metric}</div>"
+            f"<div style='margin-top:4px;color:#374151'><b>Watch:</b> {watch_metric}</div>"
         )
     if why_over:
         sections_html.append(
@@ -291,8 +289,7 @@ def _allocation_table_html(d: dict[str, Any]) -> str:
         pct = a.get("pct")
         usd = a.get("usd")
         size_str = (
-            f"{pct:.1f}%" if pct is not None
-            else (f"${usd:,.0f}" if usd is not None else "—")
+            f"{pct:.1f}%" if pct is not None else (f"${usd:,.0f}" if usd is not None else "—")
         )
         rows_html.append(
             f"<tr><td><b>{html.escape(str(a.get('ticker', '')))}</b></td>"
@@ -333,18 +330,16 @@ def _market_themes_panel_html(d: dict[str, Any]) -> str:
         trending = str(theme.get("trending") or "flat")
         members = theme.get("member_tickers") or []
         glyph, glyph_color = _TREND_GLYPHS.get(trending, _TREND_GLYPHS["flat"])
-        strength_color = _theme_strength_color(
-            strength if isinstance(strength, int) else None
-        )
+        strength_color = _theme_strength_color(strength if isinstance(strength, int) else None)
         strength_pill = (
             f"<span style='background:{strength_color};color:#fff;"
             f"padding:2px 10px;border-radius:10px;font-size:11px;"
             f"font-weight:700'>{strength}/10</span>"
-            if isinstance(strength, int) else ""
+            if isinstance(strength, int)
+            else ""
         )
         trend_pill = (
-            f"<span style='color:{glyph_color};font-weight:700;"
-            f"font-size:13px'>{glyph}</span>"
+            f"<span style='color:{glyph_color};font-weight:700;font-size:13px'>{glyph}</span>"
         )
         # Pack member tickers into a tight monospace strip.
         member_strip = ", ".join(
@@ -353,7 +348,7 @@ def _market_themes_panel_html(d: dict[str, Any]) -> str:
             for t in members[:18]
         )
         if len(members) > 18:
-            member_strip += f" <span style='color:#6b7280'>+{len(members)-18} more</span>"
+            member_strip += f" <span style='color:#6b7280'>+{len(members) - 18} more</span>"
         cards.append(
             f"<div style='border:1px solid #e5e7eb;border-radius:8px;"
             f"padding:12px 14px;margin:8px 0;background:#fafbfc'>"
@@ -381,9 +376,9 @@ def _premortem_panel_html(d: dict[str, Any]) -> str:
 
     vp = _VERDICT_PALETTE_PREMORTEM.get(verdict, _VERDICT_PALETTE_PREMORTEM["proceed_with_caveat"])
     verdict_label = {
-        "proceed_as_planned":  "PROCEED AS PLANNED",
+        "proceed_as_planned": "PROCEED AS PLANNED",
         "proceed_with_caveat": "PROCEED WITH CAVEAT",
-        "reconsider":          "RECONSIDER",
+        "reconsider": "RECONSIDER",
     }.get(verdict, verdict.upper())
 
     parts: list[str] = []
@@ -394,10 +389,7 @@ def _premortem_panel_html(d: dict[str, Any]) -> str:
         f"Verdict: {html.escape(verdict_label)}</div>"
     )
     if summary:
-        parts.append(
-            f"<p style='color:#374151;margin:8px 0 16px'>"
-            f"{html.escape(summary)}</p>"
-        )
+        parts.append(f"<p style='color:#374151;margin:8px 0 16px'>{html.escape(summary)}</p>")
     for f in failures:
         likelihood = str(f.get("likelihood") or "medium").lower()
         severity = str(f.get("severity") or "moderate").lower()
@@ -493,8 +485,7 @@ def _holding_review_card_html(d: dict[str, Any]) -> str:
 
     if tax_lot_plan:
         items = "".join(
-            f"<li style='margin:3px 0'>{html.escape(str(line))}</li>"
-            for line in tax_lot_plan
+            f"<li style='margin:3px 0'>{html.escape(str(line))}</li>" for line in tax_lot_plan
         )
         body_parts.append(
             f"<div style='margin-top:12px'>"
@@ -524,9 +515,9 @@ def _holding_review_card_html(d: dict[str, Any]) -> str:
         )
 
     pos_html = (
-        f"<div style='color:#6b7280;font-size:13px;margin-top:6px'>"
-        f"{position_context}</div>"
-        if position_context else ""
+        f"<div style='color:#6b7280;font-size:13px;margin-top:6px'>{position_context}</div>"
+        if position_context
+        else ""
     )
 
     return (
@@ -604,17 +595,17 @@ def _render_premium_income(data: dict) -> str:
         '<h3 style="margin:0 0 8px 0;">Premium Income</h3>'
         '<table style="width:100%; border-collapse:collapse;">'
         '<thead><tr style="text-align:left; border-bottom:1px solid #d1d5db;">'
-        '<th>Ticker</th><th>Account</th><th>Strike</th><th>Expiry</th><th>Qty</th>'
-        '<th>Premium</th><th>Δ</th><th>Assign %</th>'
-        '</tr></thead>'
-        f'<tbody>{rows_html}</tbody>'
-        '</table>'
+        "<th>Ticker</th><th>Account</th><th>Strike</th><th>Expiry</th><th>Qty</th>"
+        "<th>Premium</th><th>Δ</th><th>Assign %</th>"
+        "</tr></thead>"
+        f"<tbody>{rows_html}</tbody>"
+        "</table>"
         f'<p style="margin:8px 0 0 0;">'
-        f'Gross premium: <strong>${data.get("gross_premium_usd", 0):,.0f}</strong>'
-        f' &nbsp; Slippage buffer (10%): -${data.get("slippage_buffer_usd", 0):,.0f}'
-        f' &nbsp; Deployable: <strong>${data.get("deployable_premium_usd", 0):,.0f}</strong>'
-        f'</p>'
-        '</div>'
+        f"Gross premium: <strong>${data.get('gross_premium_usd', 0):,.0f}</strong>"
+        f" &nbsp; Slippage buffer (10%): -${data.get('slippage_buffer_usd', 0):,.0f}"
+        f" &nbsp; Deployable: <strong>${data.get('deployable_premium_usd', 0):,.0f}</strong>"
+        f"</p>"
+        "</div>"
     )
 
 
@@ -637,15 +628,15 @@ def _render_round_lot_coverage(data: dict) -> str:
         '<h3 style="margin:0 0 8px 0;">Round-Lot Coverage</h3>'
         '<table style="width:100%; border-collapse:collapse;">'
         '<thead><tr style="text-align:left; border-bottom:1px solid #d1d5db;">'
-        '<th>Position</th><th>Shares</th><th>Round Lots</th>'
-        '<th>Stub</th><th>Stub $</th><th>To-next-lot</th>'
-        '</tr></thead>'
-        f'<tbody>{rows_html}</tbody>'
-        '</table>'
+        "<th>Position</th><th>Shares</th><th>Round Lots</th>"
+        "<th>Stub</th><th>Stub $</th><th>To-next-lot</th>"
+        "</tr></thead>"
+        f"<tbody>{rows_html}</tbody>"
+        "</table>"
         f'<p style="margin:8px 0 0 0;">'
-        f'Stub pool total: <strong>${data.get("stub_pool_total_usd", 0):,.0f}</strong>'
-        f'</p>'
-        '</div>'
+        f"Stub pool total: <strong>${data.get('stub_pool_total_usd', 0):,.0f}</strong>"
+        f"</p>"
+        "</div>"
     )
 
 
@@ -655,26 +646,22 @@ def _render_premium_deployment(data: dict) -> str:
         for d in (data.get("deployments") or [])
     )
     stub_usd = data.get("stub_consolidation_usd", 0)
-    stub_row = (
-        f'<tr><td>Stub consolidation:</td>'
-        f'<td>${stub_usd:,.0f}</td></tr>'
-        if stub_usd else ""
-    )
+    stub_row = f"<tr><td>Stub consolidation:</td><td>${stub_usd:,.0f}</td></tr>" if stub_usd else ""
     return (
         '<div style="border:1px solid #d1d5db; padding:12px; '
         'margin:16px 0; background:#eff6ff;">'
         '<h3 style="margin:0 0 8px 0;">Premium → Deployment</h3>'
         '<table style="margin:0;">'
-        f'<tr><td>Deployable premium:</td>'
-        f'<td>${data.get("deployable_premium_usd", 0):,.0f}</td></tr>'
-        f'<tr><td>Existing cash:</td>'
-        f'<td>${data.get("existing_cash_usd", 0):,.0f}</td></tr>'
-        f'{stub_row}'
-        f'<tr><td><strong>Total dry powder:</strong></td>'
-        f'<td><strong>${data.get("total_dry_powder_usd", 0):,.0f}</strong></td></tr>'
-        '</table>'
+        f"<tr><td>Deployable premium:</td>"
+        f"<td>${data.get('deployable_premium_usd', 0):,.0f}</td></tr>"
+        f"<tr><td>Existing cash:</td>"
+        f"<td>${data.get('existing_cash_usd', 0):,.0f}</td></tr>"
+        f"{stub_row}"
+        f"<tr><td><strong>Total dry powder:</strong></td>"
+        f"<td><strong>${data.get('total_dry_powder_usd', 0):,.0f}</strong></td></tr>"
+        "</table>"
         f'<ul style="margin:8px 0 0 16px;">{deps_html}</ul>'
-        '</div>'
+        "</div>"
     )
 
 
@@ -696,9 +683,7 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
         elif s.kind == "image" and s.image_ticker:
             cid = chart_cids.get(s.image_ticker)
             if cid:
-                parts.append(
-                    f"<img src='cid:{cid}' alt='{html.escape(s.image_ticker)} chart' />"
-                )
+                parts.append(f"<img src='cid:{cid}' alt='{html.escape(s.image_ticker)} chart' />")
 
         elif s.kind == "table" and s.table_header and s.table_rows:
             parts.append("<table><thead><tr>")
@@ -734,17 +719,17 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
             parts.append("</div>")
 
         elif s.kind == "holdings_dashboard" and s.holdings:
-            parts.append("<table class='dashboard'><thead><tr>"
-                         "<th>Ticker</th><th>Verdict</th><th>Conf</th>"
-                         "<th>P/L</th><th>Sector</th><th>Forward note</th>"
-                         "</tr></thead><tbody>")
+            parts.append(
+                "<table class='dashboard'><thead><tr>"
+                "<th>Ticker</th><th>Verdict</th><th>Conf</th>"
+                "<th>P/L</th><th>Sector</th><th>Forward note</th>"
+                "</tr></thead><tbody>"
+            )
             for h_row in s.holdings:
                 verdict = (h_row.get("verdict") or "HOLD").upper()
                 conf = h_row.get("confidence")
                 pnl = h_row.get("pnl_pct")
-                pnl_str = (
-                    f"{pnl:+.1f}%" if isinstance(pnl, (int, float)) else "—"
-                )
+                pnl_str = f"{pnl:+.1f}%" if isinstance(pnl, (int, float)) else "—"
                 pl_cls = _pl_class(pnl if isinstance(pnl, (int, float)) else None)
                 parts.append(
                     f"<tr>"

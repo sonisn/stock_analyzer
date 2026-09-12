@@ -1,4 +1,5 @@
 """Covered-call data pipeline and rebalancer plan validation for rebalance runs."""
+
 from __future__ import annotations
 
 import contextlib
@@ -44,9 +45,11 @@ def resolve_eligible_holdings(
     kept = sorted(eligible, key=_exposure, reverse=True)[:cap]
     dropped = sorted(set(eligible) - set(kept))
     logger.warning(
-        "CC: %d eligible tickers exceed prompt cap (%d); "
-        "keeping top %d by exposure, dropping %s",
-        len(eligible), cap, len(kept), dropped,
+        "CC: %d eligible tickers exceed prompt cap (%d); keeping top %d by exposure, dropping %s",
+        len(eligible),
+        cap,
+        len(kept),
+        dropped,
     )
     return {t: eligible[t] for t in kept}
 
@@ -76,7 +79,8 @@ def filter_chains_by_earnings(
     filtered: dict[str, object] = {}
     for ticker, chain in chains.items():
         filtered_chain, _ = apply_earnings_filter(
-            chain, earnings_date=earnings_map.get(ticker),
+            chain,
+            earnings_date=earnings_map.get(ticker),
         )
         filtered[ticker] = filtered_chain
     return filtered
@@ -126,8 +130,10 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
         "CC pipeline starting: CC_ENABLED=%s, delta_band=[%.2f, %.2f], "
         "DTE_band=[%d, %d], min_premium=$%.0f, slippage_buffer=%.0f%%",
         settings.cc_enabled,
-        settings.cc_target_delta_min, settings.cc_target_delta_max,
-        settings.cc_dte_min, settings.cc_dte_max,
+        settings.cc_target_delta_min,
+        settings.cc_target_delta_max,
+        settings.cc_dte_min,
+        settings.cc_dte_max,
         settings.cc_min_premium_usd,
         settings.cc_slippage_buffer * 100,
     )
@@ -144,7 +150,8 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
     if open_short_calls:
         logger.info(
             "CC: %d ticker(s) already collateralizing short calls: %s",
-            len(open_short_calls), dict(open_short_calls),
+            len(open_short_calls),
+            dict(open_short_calls),
         )
     else:
         logger.info("CC: no existing short-call coverage detected")
@@ -162,9 +169,9 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
 
     n_pairs = sum(len(v) for v in eligible.values())
     logger.info(
-        "CC eligibility: %d ticker(s) / %d (ticker, account) pair(s) eligible. "
-        "Pairs: %s",
-        len(eligible), n_pairs,
+        "CC eligibility: %d ticker(s) / %d (ticker, account) pair(s) eligible. Pairs: %s",
+        len(eligible),
+        n_pairs,
         sorted((eh.ticker, eh.account) for v in eligible.values() for eh in v),
     )
     if not eligible:
@@ -179,13 +186,10 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
         for t in positions
     }
     coverage = round_lot_coverage(positions, spots=spots)
-    stub_pool = sum(
-        rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares
-    )
+    stub_pool = sum(rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares)
 
     stub_eligible = sum(
-        1 for rec in coverage.values()
-        if rec.stub_dollar_value >= settings.cc_min_stub_usd
+        1 for rec in coverage.values() if rec.stub_dollar_value >= settings.cc_min_stub_usd
     )
     logger.info(
         "CC round-lot coverage: %d holding(s) have stubs, $%s total stub pool; "
@@ -207,7 +211,8 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
         chain_sources[c.source] = chain_sources.get(c.source, 0) + 1
     logger.info(
         "CC chain fetch: %d eligible ticker(s); sources: %s",
-        len(chains), dict(chain_sources),
+        len(chains),
+        dict(chain_sources),
     )
     if chains and all(c.source == "missing" for c in chains.values()):
         logger.error(
@@ -220,7 +225,8 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
     earnings_map = earnings_dates_from_signals(eligible, finnhub_signals)
     logger.info(
         "CC earnings dates: %d/%d eligible tickers have known earnings date(s)",
-        len(earnings_map), len(eligible),
+        len(earnings_map),
+        len(eligible),
     )
 
     filtered_chains = filter_chains_by_earnings(chains, earnings_map)
@@ -276,17 +282,26 @@ def log_rebalancer_input_estimate(
     themes_chars = len(state.get("market_themes_block", "") or "")
     macro_chars = len(state.get("macro_summary", "") or "")
     total_input_chars = (
-        reviews_block_chars + cc_block_chars + ranker_chars
-        + history_chars + themes_chars + macro_chars
+        reviews_block_chars
+        + cc_block_chars
+        + ranker_chars
+        + history_chars
+        + themes_chars
+        + macro_chars
     )
     approx_input_tokens = total_input_chars // 4
     logger.info(
         "Rebalancer input estimate: %d total chars (~%d tokens). "
         "Breakdown: reviews=%d, cc_block=%d, ranker=%d, history=%d, "
         "themes=%d, macro=%d. (Opus 4.7 input limit: 200,000 tokens.)",
-        total_input_chars, approx_input_tokens,
-        reviews_block_chars, cc_block_chars, ranker_chars,
-        history_chars, themes_chars, macro_chars,
+        total_input_chars,
+        approx_input_tokens,
+        reviews_block_chars,
+        cc_block_chars,
+        ranker_chars,
+        history_chars,
+        themes_chars,
+        macro_chars,
     )
     if approx_input_tokens > 150_000:
         logger.warning(
@@ -315,21 +330,24 @@ def apply_cc_plan_validation(
     n_write_calls = sum(1 for a in plan.actions if a.action == "WRITE_CALL")
     if n_write_calls > 0:
         total_premium = sum(
-            ow.contracts * ow.est_premium_per_share * 100.0
-            for ow in plan.option_writes
+            ow.contracts * ow.est_premium_per_share * 100.0 for ow in plan.option_writes
         )
         logger.info(
-            "CC validation passed: %d WRITE_CALL action(s), "
-            "$%s gross premium estimated. Details:",
-            n_write_calls, f"{total_premium:,.0f}",
+            "CC validation passed: %d WRITE_CALL action(s), $%s gross premium estimated. Details:",
+            n_write_calls,
+            f"{total_premium:,.0f}",
         )
         for ow in plan.option_writes:
             contract_premium = ow.contracts * ow.est_premium_per_share * 100.0
             logger.info(
                 "  - %s: %d contracts @ $%.2f strike, expires %s, "
                 "Δ=%.2f, ~$%s premium, assignment %.0f%%",
-                ow.ticker, ow.contracts, ow.strike, ow.expiry,
-                ow.delta, f"{contract_premium:,.0f}",
+                ow.ticker,
+                ow.contracts,
+                ow.strike,
+                ow.expiry,
+                ow.delta,
+                f"{contract_premium:,.0f}",
                 ow.assignment_probability * 100,
             )
     elif not cc_context_block:

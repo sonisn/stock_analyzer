@@ -10,6 +10,7 @@ to disk so repeated runs are instant.
 Requests are serialized with a 2-second pacing gap — that is the free-tier
 limit (parallel fetches were getting 429-throttled).
 """
+
 from __future__ import annotations
 
 import json
@@ -55,7 +56,7 @@ def _load_exchange_cache() -> dict[str, str]:
         return {}
     try:
         return json.loads(_EXCHANGE_CACHE_PATH.read_text())
-    except (OSError, json.JSONDecodeError):
+    except OSError, json.JSONDecodeError:
         return {}
 
 
@@ -109,20 +110,26 @@ def _build_payload(symbol: str) -> dict:
         "timezone": "America/New_York",
         "studies": [
             {"name": "Volume", "forceOverlay": False},
-            {"name": "Moving Average", "input": {
-                "length": 50,
-                "source": "close",
-                "offset": 0,
-                "smoothingLine": "SMA",
-                "smoothingLength": 50
-            }},
-            {"name": "Moving Average", "input": {
-                "length": 200,
-                "source": "close",
-                "offset": 0,
-                "smoothingLine": "SMA",
-                "smoothingLength": 200
-            }},
+            {
+                "name": "Moving Average",
+                "input": {
+                    "length": 50,
+                    "source": "close",
+                    "offset": 0,
+                    "smoothingLine": "SMA",
+                    "smoothingLength": 50,
+                },
+            },
+            {
+                "name": "Moving Average",
+                "input": {
+                    "length": 200,
+                    "source": "close",
+                    "offset": 0,
+                    "smoothingLine": "SMA",
+                    "smoothingLength": 200,
+                },
+            },
         ],
     }
 
@@ -149,7 +156,8 @@ def fetch_chart(symbol: str, *, api_key: str | None = None) -> bytes | None:
     except RateLimitError as e:
         logger.warning(
             "chart-img 429 for %s after retries; skipping chart (retry-after=%s)",
-            symbol, e.retry_after,
+            symbol,
+            e.retry_after,
         )
     except HttpClientError as e:
         logger.warning("chart-img request failed for %s: %s", symbol, e)

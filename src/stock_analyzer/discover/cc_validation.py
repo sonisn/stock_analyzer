@@ -11,6 +11,7 @@ rendered. Guarantees that:
 Returns a cleaned plan plus a list of human-readable warning strings,
 which the caller logs (loudly) and surfaces in the email summary.
 """
+
 from __future__ import annotations
 
 from ..logging import get_logger
@@ -38,9 +39,7 @@ def validate_option_writes(
         for eh in accounts:
             index[(eh.ticker, eh.account)] = eh
 
-    write_call_tickers = {
-        a.ticker for a in plan.actions if a.action == "WRITE_CALL"
-    }
+    write_call_tickers = {a.ticker for a in plan.actions if a.action == "WRITE_CALL"}
 
     kept_tickers: set[str] = set()
     cleaned_option_writes: list[OptionWrite] = []
@@ -56,9 +55,7 @@ def validate_option_writes(
             logger.warning("CC validation: %s", warnings[-1])
             continue
         if ow.ticker not in write_call_tickers:
-            warnings.append(
-                f"OptionWrite for {ow.ticker} dropped: no matching WRITE_CALL action"
-            )
+            warnings.append(f"OptionWrite for {ow.ticker} dropped: no matching WRITE_CALL action")
             logger.warning("CC validation: %s", warnings[-1])
             continue
         if key in seen_pairs:
@@ -79,14 +76,11 @@ def validate_option_writes(
             contracts = match.max_contracts
         if contracts <= 0:
             warnings.append(
-                f"OptionWrite for {ow.ticker} in {ow.account!r} dropped: "
-                f"clamped contracts=0"
+                f"OptionWrite for {ow.ticker} in {ow.account!r} dropped: clamped contracts=0"
             )
             logger.warning("CC validation: %s", warnings[-1])
             continue
-        cleaned_option_writes.append(
-            ow.model_copy(update={"contracts": contracts})
-        )
+        cleaned_option_writes.append(ow.model_copy(update={"contracts": contracts}))
         seen_pairs.add(key)
         kept_tickers.add(ow.ticker)
 
@@ -101,8 +95,10 @@ def validate_option_writes(
             continue
         cleaned_actions.append(a)
 
-    cleaned_plan = plan.model_copy(update={
-        "actions": cleaned_actions,
-        "option_writes": cleaned_option_writes,
-    })
+    cleaned_plan = plan.model_copy(
+        update={
+            "actions": cleaned_actions,
+            "option_writes": cleaned_option_writes,
+        }
+    )
     return cleaned_plan, warnings

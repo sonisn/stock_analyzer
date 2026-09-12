@@ -15,6 +15,7 @@ This module recovers those structured fields by:
 Runs BEFORE validation — so validation finds matched pairs and keeps
 the WRITE_CALLs.
 """
+
 from __future__ import annotations
 
 import math
@@ -62,12 +63,14 @@ def _parse_sizing(sizing: str) -> tuple[int, float, str, str | None] | None:
         if contracts <= 0 or strike <= 0:
             return None
         return contracts, strike, expiry, account
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None
 
 
 def _match_chain_row(
-    chain: OptionChain, strike: float, expiry_iso: str,
+    chain: OptionChain,
+    strike: float,
+    expiry_iso: str,
 ) -> dict[str, Any] | None:
     """Find the chain row matching strike + expiry. Tolerate small
     floating-point error on strike. Returns a dict of the relevant
@@ -108,9 +111,7 @@ def backfill_option_writes(
     no chain, or whose strike/expiry has no match in the chain are left
     alone (validation will drop them with a warning, as before).
     """
-    existing_ow_pairs: set[tuple[str, str]] = {
-        (ow.ticker, ow.account) for ow in plan.option_writes
-    }
+    existing_ow_pairs: set[tuple[str, str]] = {(ow.ticker, ow.account) for ow in plan.option_writes}
     new_writes: list[OptionWrite] = list(plan.option_writes)
 
     for action in plan.actions:
@@ -123,7 +124,8 @@ def backfill_option_writes(
                 "CC backfill: could not parse sizing %r for %s — "
                 "OptionWrite will not be synthesized; validation will drop "
                 "this WRITE_CALL.",
-                action.sizing, action.ticker,
+                action.sizing,
+                action.ticker,
             )
             continue
 
@@ -147,31 +149,39 @@ def backfill_option_writes(
                 "CC backfill: no chain row matching %s $%.2fC %s — "
                 "Opus may have hallucinated a strike. OptionWrite will "
                 "not be synthesized.",
-                action.ticker, strike, expiry_iso,
+                action.ticker,
+                strike,
+                expiry_iso,
             )
             continue
 
         delta_val = match["delta"]
         # delta in [0,1] per OptionWrite constraint; clamp defensively.
         delta_val = max(0.0, min(1.0, delta_val))
-        new_writes.append(OptionWrite(
-            ticker=action.ticker,
-            account=candidate_account,
-            strike=match["strike"],
-            expiry=match["expiry"],
-            contracts=contracts,
-            est_premium_per_share=match["est_premium_per_share"],
-            delta=delta_val,
-            assignment_probability=delta_val,
-            notes="backfilled from chain after Opus omitted option_writes",
-        ))
+        new_writes.append(
+            OptionWrite(
+                ticker=action.ticker,
+                account=candidate_account,
+                strike=match["strike"],
+                expiry=match["expiry"],
+                contracts=contracts,
+                est_premium_per_share=match["est_premium_per_share"],
+                delta=delta_val,
+                assignment_probability=delta_val,
+                notes="backfilled from chain after Opus omitted option_writes",
+            )
+        )
         existing_ow_pairs.add((action.ticker, candidate_account))
         logger.info(
             "CC backfill: synthesized OptionWrite for %s in %s (%d × $%.2fC %s, "
             "premium $%.2f/share, Δ %.2f) from chain data.",
-            action.ticker, candidate_account, contracts,
-            match["strike"], expiry_iso,
-            match["est_premium_per_share"], delta_val,
+            action.ticker,
+            candidate_account,
+            contracts,
+            match["strike"],
+            expiry_iso,
+            match["est_premium_per_share"],
+            delta_val,
         )
 
     if len(new_writes) == len(plan.option_writes):

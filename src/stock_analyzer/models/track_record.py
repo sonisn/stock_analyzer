@@ -10,7 +10,21 @@ right". BUY and HOLD use ``alpha = stock_ret - spy_ret`` (the holding
 direction — vindicated when the stock outperforms SPY). TRIM and SELL
 flip the sign — vindicated when the stock underperforms SPY after the
 verdict.
+
+Every scored row carries the ``horizon_days`` it was measured over, and
+stats are only ever aggregated WITHIN one horizon (``HorizonStats``).
+Averaging a 15-day outcome against a 90-day one produced a number that
+tracked how recently the pipeline had run rather than how good the calls
+were, so the horizon is now part of the data rather than an assumption.
+
+``beta_adjusted_alpha_pct`` exists because the screen selects for
+high-beta momentum leaders by design (above 200DMA, positive RS, near
+52-week highs). Raw excess return over SPY therefore credits market
+exposure as stock-selection skill in a rising tape, and reverses in a
+drawdown. Beta is estimated on daily returns in the window BEFORE the
+decision date, so it never peeks at the outcome it adjusts.
 """
+
 from __future__ import annotations
 
 from typing import Literal
@@ -19,16 +33,13 @@ from pydantic import BaseModel, ConfigDict
 
 Direction = Literal["buy", "hold", "trim", "sell"]
 
-
-class Quote(BaseModel):
-    """One yfinance price snapshot: pick-date close and measurement-date
-    close (renamed from ``_Quote`` now that it's part of the public
-    model surface)."""
-
-    model_config = ConfigDict(frozen=True)
-
-    pick_price: float | None
-    measured_price: float | None
+# Why a decision could not be scored. "too_young" is the benign case (not
+# enough elapsed time yet); "no_price_data" means the forward price lookup
+# came back empty where SPY had data — a delisting, or a bad symbol from
+# the news-regex universe. Dropping the latter silently biased the mean
+# upward by removing exactly the worst outcomes, so it is now counted and
+# surfaced instead.
+UnmeasurableReason = Literal["too_young", "no_price_data"]
 
 
 class PickReturn(BaseModel):
@@ -41,14 +52,22 @@ class PickReturn(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     ticker: str
-    pick_date: str          # ISO yyyy-mm-dd
+    pick_date: str  # ISO yyyy-mm-dd
     age_days: int
     direction: Direction = "buy"
+    # The completed window this row was measured over. 0 marks a "pending"
+    # row, whose return is a live mark rather than a finished measurement.
+    horizon_days: int = 0
+    measured_date: str | None = None
     pick_price: float | None
     measured_price: float | None
     pick_return_pct: float | None
     spy_return_pct: float | None
     alpha_pct: float | None
+    # Trailing beta vs SPY estimated on the pre-decision window, and the
+    # alpha that remains once the market exposure it implies is removed.
+    beta: float | None = None
+    beta_adjusted_alpha_pct: float | None = None
     is_mature: bool
 
 
@@ -62,6 +81,10 @@ class DirectionStats(BaseModel):
     mean_return_pct: float | None
     mean_spy_return_pct: float | None
     mean_alpha_pct: float | None
+    # Mean of ret - beta*spy_ret (direction-adjusted). None when no row in
+    # the sample had an estimable beta.
+    mean_beta_adjusted_alpha_pct: float | None = None
+    n_beta_adjusted: int = 0
     winners: int
     losers: int
     flats: int
@@ -79,6 +102,44 @@ class ModelStats(BaseModel):
     sharpe: float | None
 
 
+class UnmeasurableDecision(BaseModel):
+    """A decision that could not be scored, and why.
+
+    Reported rather than dropped: a ``no_price_data`` row is usually a
+    delisting (the worst possible BUY outcome) or a bad symbol, and
+    removing those from the sample silently inflates measured alpha.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    ticker: str
+    pick_date: str
+    direction: Direction
+    age_days: int
+    reason: UnmeasurableReason
+
+
+class HorizonStats(BaseModel):
+    """Every stat for ONE measurement horizon. Never mixed across horizons.
+
+    ``overall`` deduplicates across directions by ticker (keeping the
+    earliest decision) so a name that is both a BUY pick and a HOLD
+    verdict is not counted twice in the headline number; the per-direction
+    fields keep every decision.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    horizon_days: int
+    overall: DirectionStats
+    buy_stats: DirectionStats
+    hold_stats: DirectionStats
+    trim_stats: DirectionStats
+    sell_stats: DirectionStats
+    model_breakdown: list[ModelStats]
+    decisions: list[PickReturn]
+
+
 class TrackRecord(BaseModel):
     """Aggregate summary of mature decisions over the lookback window.
 
@@ -94,6 +155,13 @@ class TrackRecord(BaseModel):
     n_picks_total: int
     n_mature: int
     n_pending: int
+    # The horizon the top-level fields and `picks` describe: the primary
+    # horizon when it has data, else the longest horizon that does. Always
+    # rendered explicitly so a reader never has to guess the window.
+    reported_horizon_days: int = 0
+    horizons: list[HorizonStats] = []
+    n_unmeasurable: int = 0
+    unmeasurable: list[UnmeasurableDecision] = []
     mean_return_pct: float | None
     mean_spy_return_pct: float | None
     mean_alpha_pct: float | None
@@ -105,7 +173,7 @@ class TrackRecord(BaseModel):
     buy_stats: DirectionStats
     hold_stats: DirectionStats
     trim_stats: DirectionStats
-    sell_stats: DirectionStats          # SELL-only (was SELL+TRIM bundled).
+    sell_stats: DirectionStats  # SELL-only (was SELL+TRIM bundled).
 
     model_breakdown: list[ModelStats]
 
@@ -115,9 +183,11 @@ class TrackRecord(BaseModel):
 
 __all__ = [
     "Direction",
-    "Quote",
+    "UnmeasurableReason",
     "PickReturn",
     "DirectionStats",
     "ModelStats",
+    "UnmeasurableDecision",
+    "HorizonStats",
     "TrackRecord",
 ]

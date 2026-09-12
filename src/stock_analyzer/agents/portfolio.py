@@ -1,4 +1,5 @@
 """Portfolio analysis agent: market sentiment + per-ticker synthesis."""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -128,9 +129,7 @@ class PortfolioAgent:
         # data + LLM round-trip that doesn't depend on ticker data, so the
         # whole pipeline can finish in roughly max(sentiment, slowest-batch)
         # rather than the sum.
-        with ThreadPoolExecutor(
-            max_workers=_TICKER_MAX_WORKERS + 1
-        ) as ex:
+        with ThreadPoolExecutor(max_workers=_TICKER_MAX_WORKERS + 1) as ex:
             sentiment_future = ex.submit(self._run_sentiment)
             ticker_results = list(ex.map(self._run_ticker, stocks))
             sentiment = sentiment_future.result()
@@ -166,9 +165,7 @@ class PortfolioAgent:
         items = fetch_market_sentiment_news()
         if not items:
             return "Social/Economic Sentiment: market news data unavailable."
-        listing = "\n".join(
-            f"- {it['title']}: {it.get('snippet', '')}" for it in items
-        )
+        listing = "\n".join(f"- {it['title']}: {it.get('snippet', '')}" for it in items)
         prompt = f"Today's US market news:\n\n{listing}"
         logger.info("Synthesizing sentiment from %d items", len(items))
         return self.sentiment_agent.run(prompt).content
@@ -176,21 +173,15 @@ class PortfolioAgent:
     def _run_ticker(self, ticker: str) -> str:
         data = fetch_ticker_data(ticker)
         if data.get("news"):
-            data["news"] = self.news_reranker.rerank(
-                data["news"], data["symbol"], data.get("name")
-            )
+            data["news"] = self.news_reranker.rerank(data["news"], data["symbol"], data.get("name"))
         position = self._build_position_block(ticker, data.get("price"))
         if position:
             data["position"] = position
-        prompt = (
-            f"Ticker data:\n```json\n{dumps_pretty(data)}\n```"
-        )
+        prompt = f"Ticker data:\n```json\n{dumps_pretty(data)}\n```"
         logger.info("Synthesizing block for %s", ticker)
         return self.ticker_agent.run(prompt).content
 
-    def _build_position_block(
-        self, ticker: str, current_price_str: str | None
-    ) -> dict | None:
+    def _build_position_block(self, ticker: str, current_price_str: str | None) -> dict | None:
         pos = self._positions_by_ticker.get(ticker)
         if not pos:
             return None
@@ -198,9 +189,7 @@ class PortfolioAgent:
         units = pos["units"]
         avg = pos["avg_buy_price"]
         block: dict = {
-            "units": (
-                f"{int(units)}" if units == int(units) else f"{units:.4f}"
-            ),
+            "units": (f"{int(units)}" if units == int(units) else f"{units:.4f}"),
             "avg_buy_price": f"${avg:,.2f}",
         }
         try:
@@ -208,6 +197,6 @@ class PortfolioAgent:
             pl_per_share = current - avg
             block["unrealized_pl"] = f"${pl_per_share * units:+,.2f}"
             block["pl_pct"] = f"{(pl_per_share / avg * 100):+.2f}%" if avg else None
-        except (ValueError, AttributeError, TypeError):
+        except ValueError, AttributeError, TypeError:
             pass
         return block

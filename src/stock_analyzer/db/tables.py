@@ -8,6 +8,7 @@ on-disk format byte-identical to the legacy raw-sqlite schema.
 Composite primary keys use multiple Field(primary_key=True) entries.
 Foreign keys preserve ON DELETE CASCADE via the ondelete arg.
 """
+
 from __future__ import annotations
 
 from sqlmodel import Field, SQLModel
@@ -37,11 +38,11 @@ class Candidate(SQLModel, table=True):
     )
     ticker: str = Field(primary_key=True)
     passed_filter: int
-    fail_reasons: str | None = None          # JSON list
+    fail_reasons: str | None = None  # JSON list
     score: float | None = None
-    score_components: str | None = None      # JSON
-    score_breakdown: str | None = None       # JSON
-    sources: str | None = None               # JSON list
+    score_components: str | None = None  # JSON
+    score_breakdown: str | None = None  # JSON
+    sources: str | None = None  # JSON list
     conviction: int | None = None
     sector: str | None = None
     price: float | None = None
@@ -60,6 +61,19 @@ class Scorecard(SQLModel, table=True):
 
 
 class Pick(SQLModel, table=True):
+    """One of a discover run's top picks.
+
+    The forecast columns below (`conviction`, `ev_pct`, `entry_price`) and
+    the `PickScenario` rows exist so the ranker's own calibration can be
+    measured. The ranker prompt tells Opus it will be "measured on the EV
+    vs realized return"; until these were persisted that promise could not
+    be kept, because only the prose rendering reached disk and the
+    probabilities were recomputed for the report and then discarded.
+
+    `entry_price` is the screen-time price, stored rather than refetched so
+    calibration never reprices a historical pick with today's data.
+    """
+
     __tablename__ = "picks"
 
     run_id: int = Field(
@@ -72,6 +86,33 @@ class Pick(SQLModel, table=True):
     ranker_text: str
     bear_case_text: str | None = None
     allocation_text: str | None = None
+    # --- forecast, for calibration scoring ---
+    conviction: int | None = None
+    ev_pct: float | None = None  # Σ(probability × target_return_pct)
+    entry_price: float | None = None
+    time_horizon: str | None = None
+
+
+class PickScenario(SQLModel, table=True):
+    """One bull/base/bear scenario behind a pick's expected return.
+
+    Stored per scenario rather than as a JSON blob on `picks` so a
+    reliability check ("of the picks where you said bear was 15% likely,
+    how often did the bear case actually land?") is a plain query.
+    """
+
+    __tablename__ = "pick_scenarios"
+
+    run_id: int = Field(
+        foreign_key="runs.id",
+        primary_key=True,
+        ondelete="CASCADE",
+    )
+    rank: int = Field(primary_key=True)
+    label: str = Field(primary_key=True)  # bull | base | bear
+    ticker: str
+    probability: float
+    target_return_pct: float
 
 
 class HoldingReviewRow(SQLModel, table=True):
@@ -105,9 +146,15 @@ class RunOutput(SQLModel, table=True):
     sizer_full: str | None = None
     holdings_summary: str | None = None
     rebalance_text: str | None = None
-    dashboard_data: str | None = None        # JSON
+    dashboard_data: str | None = None  # JSON
 
 
 __all__ = [
-    "Run", "Candidate", "Scorecard", "Pick", "HoldingReviewRow", "RunOutput",
+    "Run",
+    "Candidate",
+    "Scorecard",
+    "Pick",
+    "PickScenario",
+    "HoldingReviewRow",
+    "RunOutput",
 ]

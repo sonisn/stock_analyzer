@@ -1,8 +1,8 @@
 """Persistence, delivery, and terminal output for rebalance pipeline runs."""
+
 from __future__ import annotations
 
 import os
-from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -18,13 +18,13 @@ from ..db.repository import (
     insert_run_outputs,
     insert_scorecard,
 )
+from ..logging import current_log_file, get_logger
+from ..reporting.smtp import SmtpServer
 from .report import (
     parse_confidence,
     parse_verdict,
     print_terminal_summary,
 )
-from ..logging import current_log_file, get_logger
-from ..reporting.smtp import SmtpServer
 
 logger = get_logger(__name__)
 
@@ -124,9 +124,7 @@ def fetch_pick_charts(
 
 
 def save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
-    reports_dir = Path(
-        os.path.expanduser(os.getenv("REPORTS_DIR", "~/.stock_analyzer/reports"))
-    )
+    reports_dir = Path(os.path.expanduser(os.getenv("REPORTS_DIR", "~/.stock_analyzer/reports")))
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / filename
     path.write_bytes(pdf_bytes)
@@ -155,9 +153,7 @@ def deliver_rebalance_email(
                 subject,
                 html_body,
                 content_type="html",
-                inline_images={
-                    chart_cids[t]: data for t, data in charts.items()
-                } or None,
+                inline_images={chart_cids[t]: data for t, data in charts.items()} or None,
                 attachments=[(pdf_filename, pdf_bytes, "pdf")],
             )
             delivered = True
@@ -186,8 +182,7 @@ def log_full_analysis(
     bar = "=" * 70
     if not delivered:
         logger.error(
-            "%s\nEMAIL NOT DELIVERED — full analysis follows in this log.\n"
-            "Reason: %s\nPDF: %s\n%s",
+            "%s\nEMAIL NOT DELIVERED — full analysis follows in this log.\nReason: %s\nPDF: %s\n%s",
             bar,
             delivery_error or "EMAIL_TO not configured",
             local_pdf_path,
@@ -200,7 +195,8 @@ def log_full_analysis(
     for ticker in sorted(holdings_reviews):
         review = holdings_reviews.get(ticker)
         text = (
-            review.full_text if isinstance(review, HoldingReview)
+            review.full_text
+            if isinstance(review, HoldingReview)
             else (review or "(review unavailable)")
         )
         logger.info("%s\nHOLDING REVIEW — %s\n%s\n%s", bar, ticker, bar, text)
@@ -222,8 +218,7 @@ def print_rebalance_terminal(
         print("=" * 60)
         if n_writes > 0:
             gross = sum(
-                ow.contracts * ow.est_premium_per_share * 100.0
-                for ow in plan.option_writes
+                ow.contracts * ow.est_premium_per_share * 100.0 for ow in plan.option_writes
             )
             print(f"  Recommendations: {n_writes} WRITE_CALL action(s)")
             print(f"  Gross premium:   ${gross:,.0f}")
@@ -235,14 +230,9 @@ def print_rebalance_terminal(
                 )
         elif not cc_block:
             print("  No recommendations: CC context was empty.")
-            print(
-                "  (No eligible ≥100-share holdings, CC_ENABLED=0, "
-                "or chain fetch failed.)"
-            )
+            print("  (No eligible ≥100-share holdings, CC_ENABLED=0, or chain fetch failed.)")
         else:
-            print(
-                "  No recommendations: rebalancer declined to write calls this run."
-            )
+            print("  No recommendations: rebalancer declined to write calls this run.")
             print(f"  CC context ({len(cc_block)} chars) WAS provided to Opus.")
 
     print_terminal_summary(ranker_text, sizer_text)
@@ -261,8 +251,7 @@ def gross_premium_from_plan(plan: object | None) -> tuple[int, float]:
     action_count = 0
     if plan is not None and getattr(plan, "option_writes", None):
         gross_premium = sum(
-            ow.contracts * ow.est_premium_per_share * 100.0
-            for ow in plan.option_writes
+            ow.contracts * ow.est_premium_per_share * 100.0 for ow in plan.option_writes
         )
     if plan is not None:
         action_count = len(plan.actions)

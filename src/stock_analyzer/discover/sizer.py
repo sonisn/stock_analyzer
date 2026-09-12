@@ -3,6 +3,7 @@
 Allocate new capital across picks given conviction scores, fragility ranks
 from the red-team, and the user's current holdings (for sector concentration).
 """
+
 from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider
@@ -65,9 +66,7 @@ prose plan in `full_text`. Structured fields must match the prose.\
 
 
 class Sizer:
-    def __init__(
-        self, provider: Provider, model: str, *, effort: str = "medium"
-    ):
+    def __init__(self, provider: Provider, model: str, *, effort: str = "medium"):
         # Adaptive thinking is sufficient for sizing (constraint optimization,
         # not open-ended reasoning). Medium effort.
         self.agent = AgnoAgent(
@@ -100,7 +99,8 @@ class Sizer:
         ev_block = (
             f"Expected return table (deterministic, computed from your "
             f"ranker's probability-weighted scenarios):\n{ev_table}\n\n"
-            if ev_table else ""
+            if ev_table
+            else ""
         )
         prompt = (
             f"{budget_line}\n\n"
@@ -117,6 +117,4 @@ class Sizer:
             return result
         if isinstance(result, str):
             return SizerOutput.model_validate_json(result)
-        raise RuntimeError(
-            f"Sizer returned unexpected type {type(result).__name__}."
-        )
+        raise RuntimeError(f"Sizer returned unexpected type {type(result).__name__}.")

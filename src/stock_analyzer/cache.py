@@ -1,4 +1,5 @@
 """File-based result cache used by both pipelines."""
+
 from __future__ import annotations
 
 from pathlib import Path

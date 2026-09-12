@@ -5,6 +5,7 @@ a word-boundary character, so "Vanguard 401(K)" wasn't detected as
 tax-advantaged. The custom `_name_token_match` replaces `\\b`. These
 tests pin that down + the broader detection contract.
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -77,15 +78,15 @@ def test_fetch_open_option_positions_groups_short_calls_by_underlying():
     fake_accounts = [{"id": "acct-1", "name": "Test Acct"}]
 
     fake_client = MagicMock()
-    fake_client.account_information.list_user_accounts.return_value = MagicMock(
-        body=fake_accounts
-    )
+    fake_client.account_information.list_user_accounts.return_value = MagicMock(body=fake_accounts)
     fake_client.account_information.get_user_account_positions.return_value = MagicMock(
         body=fake_positions
     )
 
-    with patch("stock_analyzer.data.brokerage._client", return_value=fake_client), \
-         patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")):
+    with (
+        patch("stock_analyzer.data.brokerage._client", return_value=fake_client),
+        patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")),
+    ):
         coverage = fetch_open_option_positions()
 
     assert coverage == {
@@ -107,8 +108,10 @@ def test_fetch_open_option_positions_returns_empty_on_credential_error():
 def test_fetch_open_option_positions_returns_empty_when_no_accounts():
     fake_client = MagicMock()
     fake_client.account_information.list_user_accounts.return_value = MagicMock(body=[])
-    with patch("stock_analyzer.data.brokerage._client", return_value=fake_client), \
-         patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")):
+    with (
+        patch("stock_analyzer.data.brokerage._client", return_value=fake_client),
+        patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")),
+    ):
         assert fetch_open_option_positions() == {}
 
 
@@ -141,8 +144,8 @@ def test_fetch_open_option_positions_returns_per_account_shape(monkeypatch):
             return [{"symbol": "NVDA  260620C00260000", "units": -1}]
         return [{"symbol": "NVDA  260620C00260000", "units": -2}]
 
-    fake_client.account_information.get_user_account_positions.side_effect = (
-        lambda **kw: _positions(**kw)
+    fake_client.account_information.get_user_account_positions.side_effect = lambda **kw: (
+        _positions(**kw)
     )
     # _unwrap passes the value through when it's not a Pydantic model.
     monkeypatch.setattr(brokerage, "_client", lambda: fake_client)
@@ -174,25 +177,29 @@ def test_fetch_portfolio_holdings_skips_option_symbols():
     fake_accounts = [{"id": "acct-1", "name": "Test Acct"}]
     fake_positions = [
         # Equity rows
-        {"symbol": {"symbol": {"symbol": "NVDA"}},
-         "units": 400, "average_purchase_price": 200.0},
-        {"symbol": {"symbol": {"symbol": "AAPL"}},
-         "units": 200, "average_purchase_price": 150.0},
+        {"symbol": {"symbol": {"symbol": "NVDA"}}, "units": 400, "average_purchase_price": 200.0},
+        {"symbol": {"symbol": {"symbol": "AAPL"}}, "units": 200, "average_purchase_price": 150.0},
         # Option rows — must be filtered out
-        {"symbol": {"symbol": {"symbol": "NVDA  260620C00260000"}},
-         "units": -3, "average_purchase_price": 2.40},
-        {"symbol": {"symbol": {"symbol": "TSLA  260815C00300000"}},
-         "units": 1, "average_purchase_price": 5.0},
+        {
+            "symbol": {"symbol": {"symbol": "NVDA  260620C00260000"}},
+            "units": -3,
+            "average_purchase_price": 2.40,
+        },
+        {
+            "symbol": {"symbol": {"symbol": "TSLA  260815C00300000"}},
+            "units": 1,
+            "average_purchase_price": 5.0,
+        },
     ]
     fake_client = MagicMock()
-    fake_client.account_information.list_user_accounts.return_value = MagicMock(
-        body=fake_accounts
-    )
+    fake_client.account_information.list_user_accounts.return_value = MagicMock(body=fake_accounts)
     fake_client.account_information.get_user_account_positions.return_value = MagicMock(
         body=fake_positions
     )
-    with patch("stock_analyzer.data.brokerage._client", return_value=fake_client), \
-         patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")):
+    with (
+        patch("stock_analyzer.data.brokerage._client", return_value=fake_client),
+        patch("stock_analyzer.data.brokerage._credentials", return_value=("u", "s")),
+    ):
         holdings = fetch_portfolio_holdings()
 
     # All accounts collapsed into one for assertion clarity:

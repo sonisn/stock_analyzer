@@ -4,7 +4,8 @@ A personal portfolio analyzer that runs two pipelines on top of Claude
 (Opus + Sonnet), market data, and brokerage holdings:
 
 - **`discover-stocks`** — surface 5 medium-term picks from a screened
-  universe. Sonnet writes per-ticker analyst reports, Opus ranks them
+  universe (S&P 500 snapshot + watchlist + holdings, with news coverage as
+  a conviction overlay rather than the candidate pool). Sonnet writes per-ticker analyst reports, Opus ranks them
   with probability-weighted scenarios, a red-team Opus pass writes
   bear cases, and an Opus sizer allocates the new capital.
 - **`rebalance-portfolio`** — review every brokerage holding with
@@ -20,11 +21,11 @@ full analysis to the log so you never lose a run to an email failure.
 
 | Stage | Model | What it does |
 |---|---|---|
-| Universe | — | Pull tickers from S&P 500 + watchlist + holdings |
+| Universe | — | Sampling frame (S&P 500 snapshot + watchlist + holdings) plus a news-derived conviction overlay |
 | Fundamentals / Technicals / EPS revisions / Sector rotation / Macro | — | Parallel data fetches (yfinance, FRED, FinnHub) |
-| Track record | — | Score past BUY picks + SELL/TRIM calls against SPY |
+| Track record | — | Score past BUY/HOLD/TRIM/SELL calls vs SPY at fixed 30d + 90d horizons, beta-adjusted |
 | Market themes | Sonnet | Identify 3-8 themes grounded in actual price + revision data |
-| Screen | — | Hard filters + 0-100 composite score |
+| Screen | — | Hard filters + 0-100 composite score (45 fundamentals / 45 trend / 10 attention) |
 | Enrichment (parallel) | — | News, earnings, insider selling, share trades, peers, 10-Q MD&A, transcripts |
 | Analyst | Sonnet | Per-ticker analyst report with structured output |
 | Ranker | Opus | Top-N picks with 3 scenarios (bull/base/bear) + EV |
@@ -128,8 +129,8 @@ src/stock_analyzer/
 │   ├── analyst.py / ranker.py / redteam.py / sizer.py
 │   ├── reviewer.py / rebalancer.py / premortem.py
 │   ├── market_themes.py / track_record.py / tax_lot_helper.py
-│   ├── schemas.py / rebalance_schema.py     # Pydantic structured outputs
-│   ├── persistence.py                       # SQLite layer
+│   ├── calibration.py                       # grade the ranker's own EV + conviction
+│   ├── score_validation.py                   # grade the screen score vs forward returns
 │   ├── report.py                            # public re-exports (shim)
 │   ├── report_sections.py                   # Section IR + parsers + palettes
 │   ├── report_html.py                       # HTML email renderer
@@ -167,18 +168,52 @@ a regex.
 
 ## Track record
 
-Both BUY picks and SELL/TRIM calls are scored against SPY over a
-90-day window. Alpha is sign-flipped for sells so positive alpha
-always means "the call was right":
+BUY / HOLD / TRIM / SELL decisions are all scored against SPY. Alpha is
+sign-flipped for sells so positive alpha always means "the call was right":
 
 ```
 BUY  alpha = stock_ret - spy_ret  (stock beat SPY → wise buy)
 SELL alpha = spy_ret - stock_ret  (stock lagged SPY → wise sell)
 ```
 
-Mature decisions (≥14 days old) flow into the aggregate stats; newer
-ones show in a separate "pending" bucket. Delisted tickers (no
-yfinance price) are dropped from output entirely.
+Three things the measurement is careful about, because this number is fed
+back into the Opus ranker prompt as the system's own accuracy:
+
+- **One horizon per number.** Each decision is measured over *completed*
+  fixed windows (30d and 90d) and only aggregated with decisions measured
+  over the same window. Blending a 15-day outcome into the same mean as a
+  90-day one made the statistic track how recently you'd run the pipeline.
+  Decisions younger than 30 days show as "pending" with a live mark.
+- **Nothing is silently dropped.** A decision with no forward price data is
+  usually a delisting (the worst outcome a BUY can have) or a bad symbol;
+  those are counted and reported rather than removed, because dropping them
+  deletes the left tail and inflates measured alpha.
+- **Beta is not skill.** The screen selects high-beta momentum leaders by
+  construction, so every row also carries `beta-adj` alpha
+  (`ret - β·spy_ret`), with β estimated only on pre-decision data.
+
+## Grading the system's own forecasts
+
+```bash
+uv run validate-screen                      # both checks
+uv run validate-screen --what score --horizon 30
+```
+
+- **Screen score validation** — mean forward alpha by score quintile plus a
+  Spearman information coefficient for every sub-component, computed from
+  the scores already stored per run. A flat quintile curve means the
+  composite isn't separating winners from losers; a negative IC means that
+  component is pointing the wrong way. Measure before re-tuning weights.
+- **Ranker calibration** — EV error (realized − EV) at the 270-day horizon,
+  mean realized alpha bucketed by the stated conviction score, and stated
+  vs observed frequency for bull/base/bear. Conviction, EV, entry price and
+  all three scenario probabilities are persisted per pick, and the
+  calibration block is fed back into the ranker prompt so Opus sees its own
+  scorecard on the next run.
+
+Both read point-in-time values stored at decision time, so neither can leak
+the outcome into the feature. Prices are the only thing fetched
+retroactively (a historical close is the same number today as it was then).
 
 ## Tests
 
@@ -186,6 +221,12 @@ yfinance price) are dropped from output entirely.
 uv run pytest -q
 ```
 
-66 tests covering the high-stakes math (tax-lot computation,
-verdict auto-repair, direction-aware track-record alpha, parsers,
+265 tests covering the high-stakes math (tax-lot computation, verdict
+auto-repair, direction-aware and horizon-separated track-record alpha,
+beta adjustment, score validation, forecast calibration, parsers,
 section-dispatch parity HTML/PDF). The full suite runs in ~3s.
+
+`tests/conftest.py` points `Settings` at no env file and blocks outbound
+sockets for the whole suite, so a test can never read your real `.env` or
+spend real API quota. A test that genuinely needs the network must be
+marked `@pytest.mark.allow_network`.

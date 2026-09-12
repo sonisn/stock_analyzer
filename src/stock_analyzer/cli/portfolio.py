@@ -1,4 +1,5 @@
 """Portfolio analysis pipeline: SnapTrade holdings → analysis → email."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -41,13 +42,9 @@ def run_analysis(settings: Settings) -> tuple[str, list[str]]:
     """Return (report_text, tickers). Tickers are exposed so callers can fetch
     per-ticker chart images for the email."""
     holdings = fetch_portfolio_holdings()
-    tickers = sorted(
-        {h["ticker"] for items in holdings.values() for h in items if h.get("ticker")}
-    )
+    tickers = sorted({h["ticker"] for items in holdings.values() for h in items if h.get("ticker")})
     if not tickers:
-        raise RuntimeError(
-            "No tickers returned from SnapTrade — check connected accounts."
-        )
+        raise RuntimeError("No tickers returned from SnapTrade — check connected accounts.")
     logger.info("Analyzing %d tickers: %s", len(tickers), ", ".join(tickers))
 
     agent = _build_agent(settings)

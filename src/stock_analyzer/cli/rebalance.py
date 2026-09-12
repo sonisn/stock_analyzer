@@ -16,6 +16,7 @@ User-configured behavior (locked in via conversation):
 Output: email with HTML body (charts for new picks inline) + PDF attachment.
 Run history shares the discover.db SQLite file.
 """
+
 from __future__ import annotations
 
 import os
@@ -77,6 +78,7 @@ logger = get_logger(__name__)
 
 _build_rebalance_sections = build_rebalance_sections
 
+
 def _build_history_block(db_path: str, *, n_runs: int = 3) -> str:
     """Reach into the discover DB and produce a compact `Previous decisions`
     block for the rebalancer prompt. Per-holding format:
@@ -108,7 +110,6 @@ def _build_history_block(db_path: str, *, n_runs: int = 3) -> str:
         parts.append("today")
         lines.append(f"{ticker}: {' -> '.join(parts)}")
     return "\n".join(lines)
-
 
 
 def _aggregate_positions(
@@ -184,13 +185,15 @@ def _build_position_splits(
             avg = h.get("average_purchase_price") or 0
             if not ticker or not units:
                 continue
-            raw.setdefault(ticker, []).append({
-                "account": account_name,
-                "tax_status": tax_status,
-                "units": float(units),
-                "avg_buy_price": float(avg),
-                "cost_basis": float(units) * float(avg),
-            })
+            raw.setdefault(ticker, []).append(
+                {
+                    "account": account_name,
+                    "tax_status": tax_status,
+                    "units": float(units),
+                    "avg_buy_price": float(avg),
+                    "cost_basis": float(units) * float(avg),
+                }
+            )
 
     out: dict[str, dict[str, Any]] = {}
     for ticker, splits in raw.items():
@@ -239,9 +242,7 @@ class RebalancePipeline(DiscoverPipeline):
         self.state["position_splits"] = position_splits
         self.state["cash_balance"] = cash
         self.state["holdings_tickers"] = list(positions.keys())
-        ta_count = sum(
-            1 for v in position_splits.values() if v.get("has_tax_advantaged")
-        )
+        ta_count = sum(1 for v in position_splits.values() if v.get("has_tax_advantaged"))
         cash_str = f"${cash:,.0f}" if cash is not None else "unknown"
         return StepOutput(
             content=(
@@ -293,6 +294,7 @@ class RebalancePipeline(DiscoverPipeline):
     def step_news(self, step_input: StepInput) -> StepOutput:
         """Override: include holdings tickers so reviewer sees recent catalysts."""
         from .discover import _batch_news
+
         tickers = set(self.state.get("survivor_tickers") or [])
         if self.state.get("holdings_tickers"):
             tickers |= set(self.state["holdings_tickers"])
@@ -311,9 +313,7 @@ class RebalancePipeline(DiscoverPipeline):
             self.state["insider_selling"] = {}
             return StepOutput(content="insider_selling: no tickers; skipping")
         self.state["insider_selling"] = insider_selling_mentions(tickers, days=14)
-        return StepOutput(
-            content=f"Insider selling: {len(self.state['insider_selling'])} flagged"
-        )
+        return StepOutput(content=f"Insider selling: {len(self.state['insider_selling'])} flagged")
 
     def step_share_trades(self, step_input: StepInput) -> StepOutput:
         """Override: fetch insider/institutional data for both survivors AND holdings."""
@@ -339,9 +339,7 @@ class RebalancePipeline(DiscoverPipeline):
             return StepOutput(content="finnhub_signals: no tickers; skipping")
         self.state["finnhub_signals"] = batch_finnhub_signals(list(tickers))
         n = sum(1 for v in self.state["finnhub_signals"].values() if v)
-        return StepOutput(
-            content=f"Finnhub signals: {n}/{len(tickers)} tickers covered"
-        )
+        return StepOutput(content=f"Finnhub signals: {n}/{len(tickers)} tickers covered")
 
     def step_review_holdings(self, step_input: StepInput) -> StepOutput:
         payloads = build_holding_review_payloads(
@@ -366,9 +364,7 @@ class RebalancePipeline(DiscoverPipeline):
         )
         reviewer = Reviewer("claude", self.settings.discover_sonnet_model)
         self.state["holdings_reviews"] = review_batch(reviewer, payloads)
-        return StepOutput(
-            content=f"Reviewed {len(self.state['holdings_reviews'])} holdings"
-        )
+        return StepOutput(content=f"Reviewed {len(self.state['holdings_reviews'])} holdings")
 
     def step_cc_data(self, step_input: StepInput) -> StepOutput:
         """Build the COVERED-CALL CONTEXT block consumed by the rebalancer."""
@@ -390,7 +386,8 @@ class RebalancePipeline(DiscoverPipeline):
             logger.error(
                 "step_cc_data crashed (%s) — rebalance will run WITHOUT "
                 "CC context. Investigate the traceback below.",
-                e, exc_info=True,
+                e,
+                exc_info=True,
             )
             return StepOutput(
                 content=f"cc_data: failed ({type(e).__name__}); CC disabled for this run"
@@ -422,7 +419,9 @@ class RebalancePipeline(DiscoverPipeline):
             cc_stub_optimization=self.settings.cc_stub_optimization,
         )
         log_rebalancer_input_estimate(
-            self.state, ranker_text=ranker_text, history_block=history_block,
+            self.state,
+            ranker_text=ranker_text,
+            history_block=history_block,
         )
         plan = rebalancer.decide(
             self.state.get("holdings_reviews", {}),
@@ -447,7 +446,8 @@ class RebalancePipeline(DiscoverPipeline):
             logger.error(
                 "CC validation crashed (%s) — using unvalidated plan. "
                 "WRITE_CALL orphans / oversized contracts may slip through.",
-                e, exc_info=True,
+                e,
+                exc_info=True,
             )
             self.state["cc_warnings"] = [f"validation crashed: {e}"]
         self.state["rebalance_plan"] = plan
@@ -472,9 +472,9 @@ class RebalancePipeline(DiscoverPipeline):
             return StepOutput(content="premortem: skipped (NO_ACTION plan)")
         # Format the holdings_reviews into a single text blob for the agent.
         from ..models.llm import HoldingReview
+
         reviews_text = "\n\n".join(
-            f"=== {ticker} ===\n"
-            f"{r.full_text if isinstance(r, HoldingReview) else r}"
+            f"=== {ticker} ===\n{r.full_text if isinstance(r, HoldingReview) else r}"
             for ticker, r in self.state.get("holdings_reviews", {}).items()
         )
         agent = PreMortemAgent("claude", self.settings.discover_opus_model)
@@ -552,11 +552,13 @@ class RebalancePipeline(DiscoverPipeline):
                 "CC summary at email time: %d WRITE_CALL(s), $%s gross premium "
                 "across %d total action(s)",
                 sum(1 for a in plan.actions if a.action == "WRITE_CALL"),
-                f"{gross_premium:,.0f}", action_count,
+                f"{gross_premium:,.0f}",
+                action_count,
             )
 
         subject = build_email_subject(
-            action_count=action_count, gross_premium_usd=gross_premium,
+            action_count=action_count,
+            gross_premium_usd=gross_premium,
         )
         pdf_filename = f"rebalance-{today.isoformat()}.pdf"
         delivered, delivery_error, local_pdf_path = deliver_rebalance_email(
@@ -607,12 +609,9 @@ class RebalancePipeline(DiscoverPipeline):
         return Workflow(
             name="Portfolio Rebalance",
             description=(
-                "Discover new picks + review current holdings + emit "
-                "aggressive rebalance plan"
+                "Discover new picks + review current holdings + emit aggressive rebalance plan"
             ),
-            db=SqliteDb(
-                db_file=str(db_path), session_table="workflow_session"
-            ),
+            db=SqliteDb(db_file=str(db_path), session_table="workflow_session"),
             steps=[
                 Step(name="universe", executor=self.step_universe),
                 Parallel(
@@ -682,9 +681,7 @@ def run() -> None:
     logger.info("=== Portfolio rebalance pipeline starting ===")
     workflow.print_response(input="rebalance", stream=True)
     if pipeline.state.get("run_id"):
-        print(
-            f"\nRun #{pipeline.state['run_id']} stored in {settings.discover_db_path}"
-        )
+        print(f"\nRun #{pipeline.state['run_id']} stored in {settings.discover_db_path}")
 
 
 def main() -> None:

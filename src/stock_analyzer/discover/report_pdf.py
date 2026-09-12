@@ -9,6 +9,7 @@ Stays in sync with `report_html.py` because both pull palettes from
 pre-mortem verdict banner. If you want the two renderers to render
 "the same thing", they read from the same shared constants.
 """
+
 from __future__ import annotations
 
 import html
@@ -62,24 +63,28 @@ def _pdf_styles():
     styles["Code"].borderColor = colors.HexColor("#e5e7eb")
     styles["Code"].borderWidth = 0.5
     styles["Code"].borderPadding = 6
-    styles.add(ParagraphStyle(
-        name="Quote",
-        parent=styles["BodyText"],
-        backColor=colors.HexColor("#eff6ff"),
-        borderColor=colors.HexColor("#3b82f6"),
-        borderWidth=1,
-        borderPadding=8,
-        leftIndent=10,
-    ))
-    styles.add(ParagraphStyle(
-        name="Banner",
-        parent=styles["BodyText"],
-        fontSize=14,
-        fontName="Helvetica-Bold",
-        borderPadding=12,
-        borderWidth=1.5,
-        leftIndent=8,
-    ))
+    styles.add(
+        ParagraphStyle(
+            name="Quote",
+            parent=styles["BodyText"],
+            backColor=colors.HexColor("#eff6ff"),
+            borderColor=colors.HexColor("#3b82f6"),
+            borderWidth=1,
+            borderPadding=8,
+            leftIndent=10,
+        )
+    )
+    styles.add(
+        ParagraphStyle(
+            name="Banner",
+            parent=styles["BodyText"],
+            fontSize=14,
+            fontName="Helvetica-Bold",
+            borderPadding=12,
+            borderWidth=1.5,
+            leftIndent=8,
+        )
+    )
     return styles
 
 
@@ -88,15 +93,19 @@ def _pdf_status_banner(status: str, text: str, styles):
     cs = _STATUS_COLORS.get(status, _STATUS_COLORS["UNKNOWN"])
     para = Paragraph(html.escape(text), styles["Banner"])
     t = Table([[para]], colWidths=[6.7 * inch])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(cs["bg"])),
-        ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor(cs["fg"])),
-        ("LINEBEFORE", (0, 0), (0, -1), 4, colors.HexColor(cs["border"])),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-        ("TOPPADDING", (0, 0), (-1, -1), 10),
-        ("LEFTPADDING", (0, 0), (-1, -1), 16),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 12),
-    ]))
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(cs["bg"])),
+                ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor(cs["fg"])),
+                ("LINEBEFORE", (0, 0), (0, -1), 4, colors.HexColor(cs["border"])),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 10),
+                ("LEFTPADDING", (0, 0), (-1, -1), 16),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+            ]
+        )
+    )
     return t
 
 
@@ -113,15 +122,19 @@ def _pdf_metric_strip(metrics: list[tuple[str, str]], styles):
         )
         cell_paras.append(para)
     t = Table([cell_paras], colWidths=[6.7 / len(metrics) * inch] * len(metrics))
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.white),
-        ("BOX", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
-        ("TOPPADDING", (0, 0), (-1, -1), 10),
-    ]))
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+                ("BOX", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
+                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+                ("TOPPADDING", (0, 0), (-1, -1), 10),
+            ]
+        )
+    )
     return t
 
 
@@ -135,15 +148,21 @@ def _pdf_holdings_dashboard(holdings: list[dict[str, Any]]):
         pnl = h.get("pnl_pct")
         pnl_str = f"{pnl:+.1f}%" if isinstance(pnl, (int, float)) else "—"
         conf_str = f"{conf}/10" if conf is not None else "—"
-        rows.append([
-            h.get("ticker", ""),
-            verdict,
-            conf_str,
-            pnl_str,
-            h.get("sector") or "—",
-        ])
-    table = Table(rows, repeatRows=1, hAlign="LEFT",
-                  colWidths=[1.0 * inch, 0.9 * inch, 0.7 * inch, 0.9 * inch, 1.8 * inch])
+        rows.append(
+            [
+                h.get("ticker", ""),
+                verdict,
+                conf_str,
+                pnl_str,
+                h.get("sector") or "—",
+            ]
+        )
+    table = Table(
+        rows,
+        repeatRows=1,
+        hAlign="LEFT",
+        colWidths=[1.0 * inch, 0.9 * inch, 0.7 * inch, 0.9 * inch, 1.8 * inch],
+    )
     style_cmds = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f4f6")),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
@@ -222,7 +241,8 @@ def _pdf_pill(text: str, fg: str, bg: str, styles) -> Paragraph:
             backColor=colors.HexColor(bg),
             borderPadding=(2, 6, 2, 6),
             alignment=1,  # center
-            spaceBefore=0, spaceAfter=0,
+            spaceBefore=0,
+            spaceAfter=0,
         ),
     )
 
@@ -242,30 +262,51 @@ def _pdf_pick_card(d: dict[str, Any], styles) -> list[Any]:
 
     # Header row: ticker + pill badges as a single 5-column Table.
     pill_cells: list[Paragraph] = []
-    pill_cells.append(Paragraph(
-        f"<font size='14'><b>{html.escape(ticker)}</b></font>",
-        styles["BodyText"],
-    ))
+    pill_cells.append(
+        Paragraph(
+            f"<font size='14'><b>{html.escape(ticker)}</b></font>",
+            styles["BodyText"],
+        )
+    )
     if rank is not None:
         pill_cells.append(_pdf_pill(f"#{rank}", "#fff", "#1f2937", styles))
     if conviction is not None:
-        pill_cells.append(_pdf_pill(
-            f"Conviction {conviction}/10", "#fff",
-            _conviction_swatch(conviction), styles,
-        ))
+        pill_cells.append(
+            _pdf_pill(
+                f"Conviction {conviction}/10",
+                "#fff",
+                _conviction_swatch(conviction),
+                styles,
+            )
+        )
     if fragility in _FRAGILITY_COLORS:
         c = _FRAGILITY_COLORS[fragility]
-        pill_cells.append(_pdf_pill(
-            f"Fragility {fragility}/5", c["fg"], c["bg"], styles,
-        ))
+        pill_cells.append(
+            _pdf_pill(
+                f"Fragility {fragility}/5",
+                c["fg"],
+                c["bg"],
+                styles,
+            )
+        )
     if alloc_pct is not None:
-        pill_cells.append(_pdf_pill(
-            f"Allocation {alloc_pct:.1f}%", "#4c1d95", "#ece8fb", styles,
-        ))
+        pill_cells.append(
+            _pdf_pill(
+                f"Allocation {alloc_pct:.1f}%",
+                "#4c1d95",
+                "#ece8fb",
+                styles,
+            )
+        )
     elif alloc_usd is not None:
-        pill_cells.append(_pdf_pill(
-            f"Allocation ${alloc_usd:,.0f}", "#4c1d95", "#ece8fb", styles,
-        ))
+        pill_cells.append(
+            _pdf_pill(
+                f"Allocation ${alloc_usd:,.0f}",
+                "#4c1d95",
+                "#ece8fb",
+                styles,
+            )
+        )
 
     # Pad to 5 cells so all rows column-align.
     while len(pill_cells) < 5:
@@ -275,10 +316,14 @@ def _pdf_pick_card(d: dict[str, Any], styles) -> list[Any]:
         colWidths=[2.1 * inch] + [1.1 * inch] * 4,
         hAlign="LEFT",
     )
-    header.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-    ]))
+    header.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
     flow.append(header)
 
     one_liner = str(d.get("one_liner") or "").strip()
@@ -289,56 +334,69 @@ def _pdf_pick_card(d: dict[str, Any], styles) -> list[Any]:
     def _section(label: str, body: str | None, color: str = "#374151") -> None:
         if not body:
             return
-        flow.append(Paragraph(
-            f"<font color='{color}' size='8'><b>{label.upper()}</b></font>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<font color='{color}' size='8'><b>{label.upper()}</b></font>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Paragraph(html.escape(str(body)), styles["BodyText"]))
         flow.append(Spacer(1, 4))
 
     _section("Bull thesis", d.get("bull_thesis"))
     if d.get("what_youre_betting_on"):
-        flow.append(Paragraph(
-            f"<i>You're betting on: {html.escape(str(d.get('what_youre_betting_on')))}</i>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<i>You're betting on: {html.escape(str(d.get('what_youre_betting_on')))}</i>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 4))
     _section("Bear case", d.get("bear_case"), color="#9c1010")
     if d.get("most_fragile_assumption"):
-        flow.append(Paragraph(
-            f"<b>Most fragile assumption:</b> "
-            f"{html.escape(str(d.get('most_fragile_assumption')))}",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<b>Most fragile assumption:</b> "
+                f"{html.escape(str(d.get('most_fragile_assumption')))}",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 2))
     if d.get("watch_metric"):
-        flow.append(Paragraph(
-            f"<b>Watch:</b> {html.escape(str(d.get('watch_metric')))}",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<b>Watch:</b> {html.escape(str(d.get('watch_metric')))}",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 4))
     _section("Why this over alternatives", d.get("why_over_alternatives"))
     if d.get("sector_concentration_check"):
-        flow.append(Paragraph(
-            f"<font size='9' color='#6b7280'>Sector concentration: "
-            f"{html.escape(str(d.get('sector_concentration_check')))}</font>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<font size='9' color='#6b7280'>Sector concentration: "
+                f"{html.escape(str(d.get('sector_concentration_check')))}</font>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 4))
     if d.get("allocation_rationale"):
         rationale_para = Paragraph(
-            f"<b>Sizing rationale:</b> "
-            f"{html.escape(str(d.get('allocation_rationale')))}",
+            f"<b>Sizing rationale:</b> {html.escape(str(d.get('allocation_rationale')))}",
             styles["BodyText"],
         )
         wrap = Table([[rationale_para]], colWidths=[6.7 * inch])
-        wrap.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f3f4f6")),
-            ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#7c3aed")),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 10),
-        ]))
+        wrap.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f3f4f6")),
+                    ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#7c3aed")),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
         flow.append(wrap)
         flow.append(Spacer(1, 8))
     return flow
@@ -361,46 +419,53 @@ def _pdf_allocation_table(d: dict[str, Any], styles) -> list[Any]:
         pct = a.get("pct")
         usd = a.get("usd")
         size_str = (
-            f"{pct:.1f}%" if pct is not None
-            else (f"${usd:,.0f}" if usd is not None else "—")
+            f"{pct:.1f}%" if pct is not None else (f"${usd:,.0f}" if usd is not None else "—")
         )
-        rows.append([
-            Paragraph(f"<b>{html.escape(str(a.get('ticker', '')))}</b>", styles["BodyText"]),
-            Paragraph(
-                f"<font color='#4c1d95'><b>{html.escape(size_str)}</b></font>",
-                styles["BodyText"],
-            ),
-            Paragraph(html.escape(str(a.get("rationale") or "")), styles["BodyText"]),
-        ])
+        rows.append(
+            [
+                Paragraph(f"<b>{html.escape(str(a.get('ticker', '')))}</b>", styles["BodyText"]),
+                Paragraph(
+                    f"<font color='#4c1d95'><b>{html.escape(size_str)}</b></font>",
+                    styles["BodyText"],
+                ),
+                Paragraph(html.escape(str(a.get("rationale") or "")), styles["BodyText"]),
+            ]
+        )
     t = Table(
         rows,
         repeatRows=1,
         hAlign="LEFT",
         colWidths=[0.9 * inch, 1.0 * inch, 4.8 * inch],
     )
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
-        ("FONTSIZE", (0, 0), (-1, -1), 9),
-        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
     flow: list[Any] = [t, Spacer(1, 6)]
     if warnings:
-        body = "<b>Concentration warnings:</b> " + " · ".join(
-            html.escape(str(w)) for w in warnings
-        )
+        body = "<b>Concentration warnings:</b> " + " · ".join(html.escape(str(w)) for w in warnings)
         wpara = Paragraph(body, styles["BodyText"])
         wrap = Table([[wpara]], colWidths=[6.7 * inch])
-        wrap.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff4e0")),
-            ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#e89c00")),
-            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#8a4a00")),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 10),
-        ]))
+        wrap.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff4e0")),
+                    ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#e89c00")),
+                    ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#8a4a00")),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
         flow.append(wrap)
         flow.append(Spacer(1, 6))
     return flow
@@ -420,9 +485,7 @@ def _pdf_market_themes_panel(d: dict[str, Any], styles) -> list[Any]:
         trending = str(theme.get("trending") or "flat")
         members = theme.get("member_tickers") or []
         glyph, glyph_color = _TREND_GLYPHS.get(trending, _TREND_GLYPHS["flat"])
-        strength_color = _theme_strength_color(
-            strength if isinstance(strength, int) else None
-        )
+        strength_color = _theme_strength_color(strength if isinstance(strength, int) else None)
         strength_text = f"{strength}/10" if strength is not None else ""
 
         header_cells: list[Paragraph] = [
@@ -443,22 +506,30 @@ def _pdf_market_themes_panel(d: dict[str, Any], styles) -> list[Any]:
             colWidths=[3.5 * inch, 1.0 * inch, 0.5 * inch],
             hAlign="LEFT",
         )
-        header.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ]))
+        header.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        )
         flow.append(header)
-        flow.append(Paragraph(
-            f"<font size='9' color='#374151'>{html.escape(description)}</font>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<font size='9' color='#374151'>{html.escape(description)}</font>",
+                styles["BodyText"],
+            )
+        )
         member_strip = ", ".join(str(t) for t in members[:18])
-        suffix = f" +{len(members)-18} more" if len(members) > 18 else ""
-        flow.append(Paragraph(
-            f"<font size='8' color='#6b7280'><b>Members:</b> "
-            f"{html.escape(member_strip + suffix)}</font>",
-            styles["BodyText"],
-        ))
+        suffix = f" +{len(members) - 18} more" if len(members) > 18 else ""
+        flow.append(
+            Paragraph(
+                f"<font size='8' color='#6b7280'><b>Members:</b> "
+                f"{html.escape(member_strip + suffix)}</font>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 8))
     return flow
 
@@ -474,34 +545,44 @@ def _pdf_premortem_panel(d: dict[str, Any], styles) -> list[Any]:
     flow: list[Any] = []
     vp = _VERDICT_PALETTE_PREMORTEM.get(verdict, _VERDICT_PALETTE_PREMORTEM["proceed_with_caveat"])
     verdict_label = {
-        "proceed_as_planned":  "PROCEED AS PLANNED",
+        "proceed_as_planned": "PROCEED AS PLANNED",
         "proceed_with_caveat": "PROCEED WITH CAVEAT",
-        "reconsider":          "RECONSIDER",
+        "reconsider": "RECONSIDER",
     }.get(verdict, verdict.upper())
 
     banner = Table(
-        [[Paragraph(
-            f"<font color='{vp['fg']}' size='11'><b>Verdict: "
-            f"{html.escape(verdict_label)}</b></font>",
-            styles["BodyText"],
-        )]],
+        [
+            [
+                Paragraph(
+                    f"<font color='{vp['fg']}' size='11'><b>Verdict: "
+                    f"{html.escape(verdict_label)}</b></font>",
+                    styles["BodyText"],
+                )
+            ]
+        ],
         colWidths=[6.5 * inch],
         hAlign="LEFT",
     )
-    banner.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(vp["bg"])),
-        ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(vp["border"])),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("LEFTPADDING", (0, 0), (-1, -1), 12),
-    ]))
+    banner.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor(vp["bg"])),
+                ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor(vp["border"])),
+                ("TOPPADDING", (0, 0), (-1, -1), 8),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+                ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ]
+        )
+    )
     flow.append(banner)
     flow.append(Spacer(1, 4))
     if summary:
-        flow.append(Paragraph(
-            f"<font size='9' color='#374151'>{html.escape(summary)}</font>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<font size='9' color='#374151'>{html.escape(summary)}</font>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 6))
 
     for f in failures:
@@ -514,49 +595,69 @@ def _pdf_premortem_panel(d: dict[str, Any], styles) -> list[Any]:
         sev_color = _SEVERITY_COLOR.get(severity, "#6b7280")
 
         pill_row = Table(
-            [[
-                _pdf_pill(f"Likelihood: {likelihood}", "#fff", like_color, styles),
-                _pdf_pill(f"Severity: {severity}", "#fff", sev_color, styles),
-                Paragraph("", styles["BodyText"]),
-            ]],
+            [
+                [
+                    _pdf_pill(f"Likelihood: {likelihood}", "#fff", like_color, styles),
+                    _pdf_pill(f"Severity: {severity}", "#fff", sev_color, styles),
+                    Paragraph("", styles["BodyText"]),
+                ]
+            ],
             colWidths=[1.5 * inch, 1.5 * inch, 3.5 * inch],
             hAlign="LEFT",
         )
-        pill_row.setStyle(TableStyle([
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-        ]))
+        pill_row.setStyle(
+            TableStyle(
+                [
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
         flow.append(pill_row)
-        flow.append(Paragraph(
-            "<font size='8' color='#6b7280'><b>TRIGGERING ACTION</b></font>",
-            styles["BodyText"],
-        ))
-        flow.append(Paragraph(
-            f"<font size='9' color='#1f2937'><i>{html.escape(trig)}</i></font>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                "<font size='8' color='#6b7280'><b>TRIGGERING ACTION</b></font>",
+                styles["BodyText"],
+            )
+        )
+        flow.append(
+            Paragraph(
+                f"<font size='9' color='#1f2937'><i>{html.escape(trig)}</i></font>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 3))
-        flow.append(Paragraph(
-            f"<font size='9' color='#1f2937'>{html.escape(narrative)}</font>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<font size='9' color='#1f2937'>{html.escape(narrative)}</font>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 3))
         warn_table = Table(
-            [[Paragraph(
-                f"<font size='8' color='#8a4a00'><b>Early warning:</b> "
-                f"{html.escape(warning)}</font>",
-                styles["BodyText"],
-            )]],
+            [
+                [
+                    Paragraph(
+                        f"<font size='8' color='#8a4a00'><b>Early warning:</b> "
+                        f"{html.escape(warning)}</font>",
+                        styles["BodyText"],
+                    )
+                ]
+            ],
             colWidths=[6.5 * inch],
             hAlign="LEFT",
         )
-        warn_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff4e0")),
-            ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#e89c00")),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ("LEFTPADDING", (0, 0), (-1, -1), 8),
-        ]))
+        warn_table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff4e0")),
+                    ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#e89c00")),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ]
+            )
+        )
         flow.append(warn_table)
         flow.append(Spacer(1, 8))
     return flow
@@ -599,27 +700,34 @@ def _pdf_holding_review_card(d: dict[str, Any], styles) -> list[Any]:
         colWidths=[1.8 * inch, 1.0 * inch, 1.5 * inch, 1.5 * inch],
         hAlign="LEFT",
     )
-    header.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-    ]))
+    header.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
     flow.append(header)
 
     if position_context:
-        flow.append(Paragraph(
-            f"<font color='#6b7280' size='9'>"
-            f"{html.escape(position_context)}</font>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<font color='#6b7280' size='9'>{html.escape(position_context)}</font>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 6))
 
     def _section(label: str, body: str, *, color: str = "#374151") -> None:
         if not body:
             return
-        flow.append(Paragraph(
-            f"<font color='{color}' size='8'><b>{html.escape(label.upper())}</b></font>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<font color='{color}' size='8'><b>{html.escape(label.upper())}</b></font>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Paragraph(html.escape(body), styles["BodyText"]))
         flow.append(Spacer(1, 6))
 
@@ -627,14 +735,19 @@ def _pdf_holding_review_card(d: dict[str, Any], styles) -> list[Any]:
     _section("Reasoning", reasoning)
 
     if tax_lot_plan:
-        flow.append(Paragraph(
-            "<font color='#4c1d95' size='8'><b>TAX LOT PLAN</b></font>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                "<font color='#4c1d95' size='8'><b>TAX LOT PLAN</b></font>",
+                styles["BodyText"],
+            )
+        )
         for line in tax_lot_plan:
-            flow.append(Paragraph(
-                f"• {html.escape(str(line))}", styles["BodyText"],
-            ))
+            flow.append(
+                Paragraph(
+                    f"• {html.escape(str(line))}",
+                    styles["BodyText"],
+                )
+            )
         flow.append(Spacer(1, 6))
 
     if wash_sale_notice:
@@ -643,31 +756,37 @@ def _pdf_holding_review_card(d: dict[str, Any], styles) -> list[Any]:
             styles["BodyText"],
         )
         wrap = Table([[notice_para]], colWidths=[6.7 * inch])
-        wrap.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fde4e4")),
-            ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#d73030")),
-            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#9c1010")),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 10),
-        ]))
+        wrap.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fde4e4")),
+                    ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#d73030")),
+                    ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#9c1010")),
+                    ("TOPPADDING", (0, 0), (-1, -1), 6),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 10),
+                ]
+            )
+        )
         flow.append(wrap)
         flow.append(Spacer(1, 6))
 
     if what_change:
-        flow.append(Paragraph(
-            f"<i><font color='#6b7280' size='9'>"
-            f"<b>What would change my mind:</b> "
-            f"{html.escape(what_change)}</font></i>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<i><font color='#6b7280' size='9'>"
+                f"<b>What would change my mind:</b> "
+                f"{html.escape(what_change)}</font></i>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 10))
 
     return flow
 
 
 _CC_HEADER_BG = colors.HexColor("#0d9488")  # teal for Premium Income
-_CC_RLC_BG = colors.HexColor("#a16207")     # amber for Round-Lot Coverage
+_CC_RLC_BG = colors.HexColor("#a16207")  # amber for Round-Lot Coverage
 _CC_GRID = colors.HexColor("#d1d5db")
 
 
@@ -678,27 +797,39 @@ def _pdf_premium_income(data: dict, styles) -> list:
     header = ["Ticker", "Account", "Strike", "Expiry", "Qty", "Premium", "Δ", "Assign %"]
     rows = [header]
     for r in data.get("rows") or []:
-        rows.append([
-            r["ticker"], r.get("account", "—"),
-            f"${r['strike']:,.2f}", r["expiry"],
-            str(r["contracts"]), f"${r['premium_usd']:,.0f}",
-            f"{r['delta']:.2f}", f"{r['assignment_pct']}%",
-        ])
+        rows.append(
+            [
+                r["ticker"],
+                r.get("account", "—"),
+                f"${r['strike']:,.2f}",
+                r["expiry"],
+                str(r["contracts"]),
+                f"${r['premium_usd']:,.0f}",
+                f"{r['delta']:.2f}",
+                f"{r['assignment_pct']}%",
+            ]
+        )
     t = Table(rows, hAlign="LEFT")
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), _CC_HEADER_BG),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.25, _CC_GRID),
-        ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
-    ]))
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), _CC_HEADER_BG),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.25, _CC_GRID),
+                ("ALIGN", (2, 1), (-1, -1), "RIGHT"),
+            ]
+        )
+    )
     flow.append(t)
     flow.append(Spacer(1, 6))
-    flow.append(Paragraph(
-        f"Gross premium: <b>${data.get('gross_premium_usd', 0):,.0f}</b> &nbsp;"
-        f"Buffer (10%): -${data.get('slippage_buffer_usd', 0):,.0f} &nbsp;"
-        f"Deployable: <b>${data.get('deployable_premium_usd', 0):,.0f}</b>",
-        styles["BodyText"],
-    ))
+    flow.append(
+        Paragraph(
+            f"Gross premium: <b>${data.get('gross_premium_usd', 0):,.0f}</b> &nbsp;"
+            f"Buffer (10%): -${data.get('slippage_buffer_usd', 0):,.0f} &nbsp;"
+            f"Deployable: <b>${data.get('deployable_premium_usd', 0):,.0f}</b>",
+            styles["BodyText"],
+        )
+    )
     flow.append(Spacer(1, 12))
     return flow
 
@@ -711,24 +842,33 @@ def _pdf_round_lot_coverage(data: dict, styles) -> list:
     flow: list = [Paragraph("<b>Round-Lot Coverage</b>", styles["Heading3"])]
     table_rows = [["Position", "Shares", "Round Lots", "Stub", "Stub $", "To-next-lot"]]
     for r in rows:
-        table_rows.append([
-            r["ticker"], str(r["shares"]),
-            f"{r['round_lots']} ({r['round_lot_shares']})",
-            str(r["stub_shares"]),
-            f"${r['stub_dollar_value']:,.0f}",
-            f"${r['to_next_lot_cost']:,.0f}",
-        ])
+        table_rows.append(
+            [
+                r["ticker"],
+                str(r["shares"]),
+                f"{r['round_lots']} ({r['round_lot_shares']})",
+                str(r["stub_shares"]),
+                f"${r['stub_dollar_value']:,.0f}",
+                f"${r['to_next_lot_cost']:,.0f}",
+            ]
+        )
     t = Table(table_rows, hAlign="LEFT")
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), _CC_RLC_BG),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.25, _CC_GRID),
-    ]))
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), _CC_RLC_BG),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("GRID", (0, 0), (-1, -1), 0.25, _CC_GRID),
+            ]
+        )
+    )
     flow.append(t)
-    flow.append(Paragraph(
-        f"Stub pool total: <b>${data.get('stub_pool_total_usd', 0):,.0f}</b>",
-        styles["BodyText"],
-    ))
+    flow.append(
+        Paragraph(
+            f"Stub pool total: <b>${data.get('stub_pool_total_usd', 0):,.0f}</b>",
+            styles["BodyText"],
+        )
+    )
     flow.append(Spacer(1, 12))
     return flow
 
@@ -741,18 +881,13 @@ def _pdf_premium_deployment(data: dict, styles) -> list:
         f"Existing cash: ${data.get('existing_cash_usd', 0):,.0f}",
     ]
     if data.get("stub_consolidation_usd"):
-        lines.append(
-            f"Stub consolidation: ${data['stub_consolidation_usd']:,.0f}"
-        )
-    lines.append(
-        f"<b>Total dry powder: ${data.get('total_dry_powder_usd', 0):,.0f}</b>"
-    )
+        lines.append(f"Stub consolidation: ${data['stub_consolidation_usd']:,.0f}")
+    lines.append(f"<b>Total dry powder: ${data.get('total_dry_powder_usd', 0):,.0f}</b>")
     flow.append(Paragraph("<br/>".join(lines), styles["BodyText"]))
     deps = data.get("deployments") or []
     if deps:
         body = "<br/>".join(
-            f"&rarr; {d['action']} <b>{d['ticker']}</b> {d['sizing']}"
-            for d in deps
+            f"&rarr; {d['action']} <b>{d['ticker']}</b> {d['sizing']}" for d in deps
         )
         flow.append(Paragraph(body, styles["BodyText"]))
     flow.append(Spacer(1, 12))
@@ -768,10 +903,12 @@ def _pdf_rebalance_action_table(d: dict[str, Any], styles) -> list[Any]:
         return []
     flow: list[Any] = []
     if summary:
-        flow.append(Paragraph(
-            f"<i><font color='#6b7280'>{html.escape(str(summary))}</font></i>",
-            styles["BodyText"],
-        ))
+        flow.append(
+            Paragraph(
+                f"<i><font color='#6b7280'>{html.escape(str(summary))}</font></i>",
+                styles["BodyText"],
+            )
+        )
         flow.append(Spacer(1, 4))
     rows: list[list[Any]] = [
         [
@@ -793,19 +930,19 @@ def _pdf_rebalance_action_table(d: dict[str, Any], styles) -> list[Any]:
         ticker = str(a.get("ticker") or "")
         sizing = str(a.get("sizing") or "")
         c = _VERDICT_COLORS.get(action_type) or _VERDICT_COLORS["HOLD"]
-        rows.append([
-            Paragraph(
-                f"<font color='{c['fg']}'><b>{html.escape(action_type)}</b></font>",
-                styles["BodyText"],
-            ),
-            Paragraph(f"<b>{html.escape(ticker)}</b>", styles["BodyText"]),
-            Paragraph(html.escape(sizing), styles["BodyText"]),
-        ])
+        rows.append(
+            [
+                Paragraph(
+                    f"<font color='{c['fg']}'><b>{html.escape(action_type)}</b></font>",
+                    styles["BodyText"],
+                ),
+                Paragraph(f"<b>{html.escape(ticker)}</b>", styles["BodyText"]),
+                Paragraph(html.escape(sizing), styles["BodyText"]),
+            ]
+        )
         # Tint the Action column with the badge background so the row reads
         # at a glance the same way the HTML pill does.
-        style_cmds.append(
-            ("BACKGROUND", (0, i), (0, i), colors.HexColor(c["bg"]))
-        )
+        style_cmds.append(("BACKGROUND", (0, i), (0, i), colors.HexColor(c["bg"])))
     t = Table(
         rows,
         repeatRows=1,
@@ -858,13 +995,17 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
         elif s.kind == "table" and s.table_header and s.table_rows:
             tdata = [s.table_header] + s.table_rows
             t = Table(tdata, repeatRows=1, hAlign="LEFT")
-            t.setStyle(TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
-                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ]))
+            t.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 9),
+                        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ]
+                )
+            )
             flow.append(t)
             flow.append(Spacer(1, 4))
         elif s.kind == "status_banner":

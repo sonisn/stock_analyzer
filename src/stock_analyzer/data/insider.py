@@ -1,4 +1,5 @@
 """Recent insider trading coverage via Tavily."""
+
 from __future__ import annotations
 
 import os

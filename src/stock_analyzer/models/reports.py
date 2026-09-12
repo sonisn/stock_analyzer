@@ -6,6 +6,7 @@ per-ticker email block (``TickerSection``), and the plan-level
 pre-mortem models (``PreMortem`` + ``PreMortemFailure``) that drive
 the pre-mortem panel section.
 """
+
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -13,15 +14,29 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 SectionKind = Literal[
-    "heading", "para", "preformatted", "image", "blockquote", "table",
-    "page_break", "status_banner", "metric_strip", "holdings_dashboard",
+    "heading",
+    "para",
+    "preformatted",
+    "image",
+    "blockquote",
+    "table",
+    "page_break",
+    "status_banner",
+    "metric_strip",
+    "holdings_dashboard",
     "sector_pie",
     # New structured-output kinds (Phase 4f) — renderer pulls fields from
     # `data` and produces a styled card / table instead of dumping prose.
-    "pick_card", "allocation_table", "rebalance_action_table",
-    "holding_review_card", "market_themes_panel", "premortem_panel",
+    "pick_card",
+    "allocation_table",
+    "rebalance_action_table",
+    "holding_review_card",
+    "market_themes_panel",
+    "premortem_panel",
     # Covered-call sections (cli/rebalance.py CC extension).
-    "premium_income", "round_lot_coverage", "premium_deployment",
+    "premium_income",
+    "round_lot_coverage",
+    "premium_deployment",
 ]
 
 

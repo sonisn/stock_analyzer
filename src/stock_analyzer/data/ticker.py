@@ -1,4 +1,5 @@
 """Ticker fundamentals + news from yfinance. Pure deterministic — no LLM."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -59,16 +60,8 @@ def _fetch_news(symbol: str, *, max_results: int = 20) -> list[dict]:
             or (content.get("canonicalUrl") or {}).get("url")
             or (content.get("clickThroughUrl") or {}).get("url")
         )
-        publisher = (
-            n.get("publisher")
-            or (content.get("provider") or {}).get("displayName")
-        )
-        snippet = (
-            n.get("summary")
-            or content.get("summary")
-            or content.get("description")
-            or ""
-        )
+        publisher = n.get("publisher") or (content.get("provider") or {}).get("displayName")
+        snippet = n.get("summary") or content.get("summary") or content.get("description") or ""
         if not (title and link):
             continue
         norm = title.split(" - ")[0].strip().lower()
@@ -95,7 +88,7 @@ def _latest_recommendations(rec) -> dict[str, int] | None:
     for k in keys:
         try:
             out[k] = int(row[k])
-        except (KeyError, ValueError, TypeError):
+        except KeyError, ValueError, TypeError:
             continue
     return out or None
 
@@ -105,10 +98,7 @@ def _earnings_summary(t: yf.Ticker) -> dict[str, Any]:
 
     def _clean(rows: list[dict]) -> list[dict]:
         return [
-            {
-                k: (None if isinstance(v, float) and math.isnan(v) else v)
-                for k, v in row.items()
-            }
+            {k: (None if isinstance(v, float) and math.isnan(v) else v) for k, v in row.items()}
             for row in rows
         ]
 
@@ -123,9 +113,7 @@ def _earnings_summary(t: yf.Ticker) -> dict[str, Any]:
     try:
         est = t.earnings_estimate
         if est is not None and not est.empty:
-            summary["estimates"] = _clean(
-                est.reset_index().head(2).to_dict(orient="records")
-            )
+            summary["estimates"] = _clean(est.reset_index().head(2).to_dict(orient="records"))
     except Exception as e:
         logger.debug("earnings_estimate failed: %s", e)
     return summary
@@ -140,9 +128,7 @@ def fetch_ticker_data(symbol: str) -> dict[str, Any]:
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     prev_close = info.get("previousClose")
     pct_today = (
-        (price - prev_close) / prev_close * 100
-        if price is not None and prev_close
-        else None
+        (price - prev_close) / prev_close * 100 if price is not None and prev_close else None
     )
 
     try:
@@ -153,9 +139,7 @@ def fetch_ticker_data(symbol: str) -> dict[str, Any]:
 
     low_52 = info.get("fiftyTwoWeekLow")
     high_52 = info.get("fiftyTwoWeekHigh")
-    range_52w = (
-        f"{_fmt_money(low_52)} - {_fmt_money(high_52)}" if low_52 and high_52 else None
-    )
+    range_52w = f"{_fmt_money(low_52)} - {_fmt_money(high_52)}" if low_52 and high_52 else None
 
     div_yield = info.get("dividendYield")
     div_yield_str = _fmt_pct(div_yield, signed=False) if div_yield else None

@@ -8,6 +8,7 @@ space.
 This is a synchronous wrapper around yfinance — one network call per
 ticker. Batched callers should expect ~1 sec per ticker.
 """
+
 from __future__ import annotations
 
 import math
@@ -91,17 +92,19 @@ def fetch_realized_volatility(
         if len(closes) < 30:
             logger.info("HV: too few closes for %s (%d) — skipping", t, len(closes))
             continue
-        hv = _annualized_vol_from_closes(closes[-lookback_days - 1:])
+        hv = _annualized_vol_from_closes(closes[-lookback_days - 1 :])
         if hv is None or hv <= 0:
             continue
         out[t] = RealizedVolatility(
-            ticker=t, hv_annualized=hv, sample_size=len(closes),
+            ticker=t,
+            hv_annualized=hv,
+            sample_size=len(closes),
         )
 
     logger.info(
-        "HV fetch: %d/%d ticker(s) with valid realized-vol estimate. "
-        "Values: %s",
-        len(out), len(tickers),
+        "HV fetch: %d/%d ticker(s) with valid realized-vol estimate. Values: %s",
+        len(out),
+        len(tickers),
         {t: round(r.hv_annualized * 100, 1) for t, r in out.items()},
     )
     return out

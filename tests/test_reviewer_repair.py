@@ -7,6 +7,7 @@ detects and rewrites these so the rebalancer doesn't act on the LLM's
 wrong-enum mistake. If this layer breaks silently, every rebalance is
 subtly wrong — these tests pin the three repair rules.
 """
+
 from __future__ import annotations
 
 from stock_analyzer.discover.reviewer import _repair_verdict_inconsistencies

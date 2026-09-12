@@ -22,6 +22,7 @@ summary + macro regime). Sonnet relies on its training-cutoff +
 in-context information to enumerate themes — it's the same kind of
 synthesis it does in the per-candidate analyst stage.
 """
+
 from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider
@@ -88,9 +89,7 @@ calls (ranker, rebalancer) read as context — keep it concise.\
 """
 
 
-def _format_top_performers(
-    technicals: dict, fundamentals: dict, *, top_n: int = 20
-) -> str:
+def _format_top_performers(technicals: dict, fundamentals: dict, *, top_n: int = 20) -> str:
     """List top-N tickers by rs_6mo with actual relative-return numbers.
 
     Format:
@@ -104,7 +103,7 @@ def _format_top_performers(
         rs6 = t.get("rs_6mo")
         if rs6 is None:
             continue
-        f = (fundamentals.get(ticker) or {})
+        f = fundamentals.get(ticker) or {}
         sector = str(f.get("sector") or "—")
         industry = str(f.get("industry") or "—")
         rows.append((ticker, float(rs6), sector, industry))
@@ -113,20 +112,18 @@ def _format_top_performers(
         return "TOP_PERFORMERS: (no relative-strength data available)\n"
     out = "TOP_PERFORMERS (sorted by 6-month return vs SPY):\n"
     for ticker, rs6, sector, industry in rows[:top_n]:
-        out += f"  {ticker:6s}  {rs6*100:+6.1f}%  {sector} / {industry}\n"
+        out += f"  {ticker:6s}  {rs6 * 100:+6.1f}%  {sector} / {industry}\n"
     return out
 
 
-def _format_bottom_performers(
-    technicals: dict, fundamentals: dict, *, bottom_n: int = 15
-) -> str:
+def _format_bottom_performers(technicals: dict, fundamentals: dict, *, bottom_n: int = 15) -> str:
     """List bottom-N tickers by rs_6mo. Used to flag rolling-over themes."""
     rows: list[tuple[str, float, str, str]] = []
     for ticker, t in technicals.items():
         rs6 = t.get("rs_6mo")
         if rs6 is None:
             continue
-        f = (fundamentals.get(ticker) or {})
+        f = fundamentals.get(ticker) or {}
         sector = str(f.get("sector") or "—")
         industry = str(f.get("industry") or "—")
         rows.append((ticker, float(rs6), sector, industry))
@@ -135,7 +132,7 @@ def _format_bottom_performers(
         return "BOTTOM_PERFORMERS: (no relative-strength data available)\n"
     out = "BOTTOM_PERFORMERS (sorted by 6-month return vs SPY, worst first):\n"
     for ticker, rs6, sector, industry in rows[:bottom_n]:
-        out += f"  {ticker:6s}  {rs6*100:+6.1f}%  {sector} / {industry}\n"
+        out += f"  {ticker:6s}  {rs6 * 100:+6.1f}%  {sector} / {industry}\n"
     return out
 
 
@@ -157,9 +154,7 @@ def _format_revisions_summary(eps_revisions: dict) -> str:
 
 
 class MarketThemesAgent:
-    def __init__(
-        self, provider: Provider, model: str
-    ):
+    def __init__(self, provider: Provider, model: str):
         self.agent = AgnoAgent(
             "MarketThemes",
             provider,
@@ -206,10 +201,7 @@ class MarketThemesAgent:
                 f"  Leaders: {leaders or '(none)'}\n"
                 f"  Laggards: {laggards or '(none)'}\n\n"
             )
-        macro_block = (
-            f"MACRO REGIME:\n{macro_summary}\n\n"
-            if macro_summary else ""
-        )
+        macro_block = f"MACRO REGIME:\n{macro_summary}\n\n" if macro_summary else ""
         prompt = (
             f"{macro_block}"
             f"{sector_block}"
@@ -221,8 +213,11 @@ class MarketThemesAgent:
             f"numbers above. Do not include themes that have no "
             f"supporting evidence in this data."
         )
-        logger.info("Detecting market themes (grounded in %d performers, %d revisions)",
-                    len(technicals or {}), len(eps_revisions or {}))
+        logger.info(
+            "Detecting market themes (grounded in %d performers, %d revisions)",
+            len(technicals or {}),
+            len(eps_revisions or {}),
+        )
         result = self.agent.run(prompt).content
         if result is None:
             logger.warning("MarketThemes returned no content")
@@ -234,12 +229,13 @@ class MarketThemesAgent:
                 return MarketThemes.model_validate_json(result)
             except Exception as e:
                 logger.warning(
-                    "MarketThemes returned a string that wasn't valid "
-                    "MarketThemes JSON: %s", e,
+                    "MarketThemes returned a string that wasn't valid MarketThemes JSON: %s",
+                    e,
                 )
                 return None
         logger.warning(
-            "MarketThemes returned unexpected type %s", type(result).__name__,
+            "MarketThemes returned unexpected type %s",
+            type(result).__name__,
         )
         return None
 
@@ -255,11 +251,13 @@ def themes_by_ticker(themes: MarketThemes | None) -> dict[str, list[dict]]:
         return out
     for theme in themes.themes:
         for ticker in theme.member_tickers:
-            out.setdefault(ticker.upper(), []).append({
-                "name": theme.name,
-                "strength": theme.strength,
-                "trending": theme.trending,
-            })
+            out.setdefault(ticker.upper(), []).append(
+                {
+                    "name": theme.name,
+                    "strength": theme.strength,
+                    "trending": theme.trending,
+                }
+            )
     return out
 
 

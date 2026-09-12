@@ -9,6 +9,7 @@ after step 10 of an LLM-heavy run.
 required service and raises `PreflightError` with a bundled list of
 problems if anything is broken.
 """
+
 from __future__ import annotations
 
 import finnhub
@@ -34,9 +35,7 @@ def _check_anthropic(settings: Settings) -> str | None:
     if not settings.anthropic_api_key:
         return "ANTHROPIC_API_KEY is empty"
     try:
-        client = Anthropic(
-            api_key=settings.anthropic_api_key, timeout=_PING_TIMEOUT
-        )
+        client = Anthropic(api_key=settings.anthropic_api_key, timeout=_PING_TIMEOUT)
         # /v1/models is auth-validated, doesn't consume tokens, fast.
         client.models.list(limit=1)
     except Exception as e:

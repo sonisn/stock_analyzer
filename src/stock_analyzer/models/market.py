@@ -7,6 +7,7 @@ consumed across the discover + rebalance pipelines. Each model is
 frozen so they're safe to share across threads and to use as dict keys
 or set members downstream.
 """
+
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -67,8 +68,8 @@ class RealizedVolatility(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     ticker: str
-    hv_annualized: float           # e.g. 0.27 = 27%
-    sample_size: int               # number of daily returns used
+    hv_annualized: float  # e.g. 0.27 = 27%
+    sample_size: int  # number of daily returns used
 
 
 __all__ = [

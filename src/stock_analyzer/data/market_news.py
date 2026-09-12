@@ -1,4 +1,5 @@
 """Macro / market-wide news fetch (Tavily) for sentiment synthesis."""
+
 from __future__ import annotations
 
 import os

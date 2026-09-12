@@ -9,8 +9,11 @@ Indicator choice is deliberate for 6-12 month holds:
   - Weekly RSI: momentum without exhaustion
 Day-trading indicators (MACD, Bollinger, intraday RSI) are intentionally omitted.
 """
+
 from __future__ import annotations
 
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -21,20 +24,33 @@ from ..logging import get_logger
 
 logger = get_logger(__name__)
 
-_MAX_WORKERS = 5
+# See fundamentals._MAX_WORKERS: sized for a ~500-name sampling frame.
+_MAX_WORKERS = 10
 _TRADING_DAYS_PER_MONTH = 21
+# SPY history is the denominator for every RS calculation, so it is cached
+# once per batch rather than refetched per ticker. The TTL keeps a
+# long-lived process (a service, a loop) from comparing today's tickers
+# against a days-old SPY series; the lock keeps the parallel fetches in
+# batch_technicals from stampeding the same refresh.
+_SPY_CACHE_TTL_SECONDS = 3600.0
 _SPY_HISTORY: pd.DataFrame | None = None
+_SPY_FETCHED_AT: float = 0.0
+_SPY_LOCK = threading.Lock()
 
 
 def _spy_history() -> pd.DataFrame | None:
-    global _SPY_HISTORY
-    if _SPY_HISTORY is None:
-        try:
-            _SPY_HISTORY = yf.Ticker("SPY").history(period="2y", auto_adjust=True)
-        except Exception as e:
-            logger.warning("Failed to fetch SPY history: %s", e)
-            _SPY_HISTORY = pd.DataFrame()
-    return _SPY_HISTORY if _SPY_HISTORY is not None and not _SPY_HISTORY.empty else None
+    global _SPY_HISTORY, _SPY_FETCHED_AT
+    with _SPY_LOCK:
+        age = time.monotonic() - _SPY_FETCHED_AT
+        if _SPY_HISTORY is None or age >= _SPY_CACHE_TTL_SECONDS:
+            try:
+                _SPY_HISTORY = yf.Ticker("SPY").history(period="2y", auto_adjust=True)
+            except Exception as e:
+                logger.warning("Failed to fetch SPY history: %s", e)
+                _SPY_HISTORY = pd.DataFrame()
+            _SPY_FETCHED_AT = time.monotonic()
+        cached = _SPY_HISTORY
+    return cached if cached is not None and not cached.empty else None
 
 
 def _sma(series: pd.Series, window: int) -> float | None:
@@ -51,38 +67,76 @@ def _rsi_weekly(history: pd.DataFrame, period: int = 14) -> float | None:
     if len(weekly) < period + 1:
         return None
     delta = weekly.diff().dropna()
-    gains = delta.where(delta > 0, 0.0).rolling(period).mean()
-    losses = (-delta.where(delta < 0, 0.0)).rolling(period).mean()
-    last_gain = gains.iloc[-1]
-    last_loss = losses.iloc[-1]
-    if pd.isna(last_gain) or pd.isna(last_loss):
+    if len(delta) < period:
         return None
-    if last_loss == 0:
-        return 100.0
-    rs = last_gain / last_loss
+    gains = delta.clip(lower=0.0)
+    losses = (-delta).clip(lower=0.0)
+
+    # Wilder's smoothing, not a simple rolling mean: seed with the simple
+    # average of the first `period` deltas, then carry it forward with
+    # avg = (avg * (period - 1) + new) / period. This is what "RSI" means
+    # by convention, and the screen scores hard bands at 40 / 65 / 80 —
+    # a simple mean puts enough of a shift on those edges to flip points.
+    avg_gain = float(gains.iloc[:period].mean())
+    avg_loss = float(losses.iloc[:period].mean())
+    if pd.isna(avg_gain) or pd.isna(avg_loss):
+        return None
+    for gain, loss in zip(gains.iloc[period:], losses.iloc[period:], strict=True):
+        avg_gain = (avg_gain * (period - 1) + float(gain)) / period
+        avg_loss = (avg_loss * (period - 1) + float(loss)) / period
+
+    if avg_loss == 0:
+        return 100.0 if avg_gain > 0 else 50.0
+    rs = avg_gain / avg_loss
     return float(100 - (100 / (1 + rs)))
 
 
 def _rs_vs_spy(history: pd.DataFrame, months: int) -> float | None:
+    """Ticker return minus SPY return over `months`, aligned by DATE.
+
+    Positional alignment (`iloc[-days]` on two independently fetched
+    frames) assumes the ticker and SPY have identical bar counts. That
+    holds for a liquid US name on the NYSE calendar and breaks silently
+    otherwise — a trading halt, an ADR on a different holiday calendar, or
+    a stale final bar shifts one series relative to the other and the
+    comparison spans two different windows. Since `rs_6mo > 0` is a hard
+    filter, that arithmetic decides whether a name is screened out at all,
+    so we intersect the two calendars first and take both endpoints off
+    the joined frame.
+    """
     spy = _spy_history()
     if spy is None or history.empty:
         return None
+    joined = pd.DataFrame({"ticker": history["Close"], "spy": spy["Close"]}).dropna()
     days = months * _TRADING_DAYS_PER_MONTH
-    if len(history) < days or len(spy) < days:
+    if len(joined) <= days:
         return None
-    t_now = float(history["Close"].iloc[-1])
-    t_then = float(history["Close"].iloc[-days])
-    s_now = float(spy["Close"].iloc[-1])
-    s_then = float(spy["Close"].iloc[-days])
+    t_now = float(joined["ticker"].iloc[-1])
+    t_then = float(joined["ticker"].iloc[-1 - days])
+    s_now = float(joined["spy"].iloc[-1])
+    s_then = float(joined["spy"].iloc[-1 - days])
     if t_then == 0 or s_then == 0:
         return None
     return (t_now / t_then - 1) - (s_now / s_then - 1)
 
 
 def _distance_from_52w_high(history: pd.DataFrame) -> float | None:
+    """Current close vs the true 52-week high (intraday highs, not closes).
+
+    The highest close understates the real high, so every name reads as
+    less extended than it is — and this number drives both a hard
+    rejection at -30% and the triangular entry-zone score peaked at -10%,
+    where small shifts change points. Falls back to closes only if the
+    High column is missing/empty.
+    """
     if history.empty:
         return None
-    high = float(history["Close"].tail(252).max())
+    window = history.tail(252)
+    highs = window["High"] if "High" in window.columns else None
+    if highs is not None and highs.notna().any():
+        high = float(highs.max())
+    else:
+        high = float(window["Close"].max())
     current = float(history["Close"].iloc[-1])
     if high == 0:
         return None
@@ -119,9 +173,7 @@ def fetch_technicals(ticker: str) -> dict[str, Any] | None:
         "sma_50": sma50,
         "sma_200": sma200,
         "above_200dma": sma200 is not None and price > sma200,
-        "ma_alignment_50_200": (
-            sma50 is not None and sma200 is not None and sma50 > sma200
-        ),
+        "ma_alignment_50_200": (sma50 is not None and sma200 is not None and sma50 > sma200),
         "rs_3mo": _rs_vs_spy(hist, 3),
         "rs_6mo": _rs_vs_spy(hist, 6),
         "dist_from_52w_high": _distance_from_52w_high(hist),

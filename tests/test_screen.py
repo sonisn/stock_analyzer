@@ -3,7 +3,10 @@
 Only the pure functions are tested here; I/O paths (yfinance, SEC EDGAR,
 Tavily) are exercised in the smoke test, not unit tests.
 """
+
 from __future__ import annotations
+
+import pytest
 
 from stock_analyzer.discover.screen import (
     MAX_DEBT_TO_EQUITY,
@@ -105,16 +108,12 @@ def test_fails_high_debt_to_equity():
 
 def test_passes_with_unknown_debt_to_equity():
     """Missing D/E shouldn't auto-fail — many tickers genuinely lack the field."""
-    passes, _ = passes_hard_filter(
-        _good_fundamentals(debt_to_equity=None), _good_technicals()
-    )
+    passes, _ = passes_hard_filter(_good_fundamentals(debt_to_equity=None), _good_technicals())
     assert passes is True
 
 
 def test_fails_below_200_dma():
-    passes, reasons = passes_hard_filter(
-        _good_fundamentals(), _good_technicals(above_200dma=False)
-    )
+    passes, reasons = passes_hard_filter(_good_fundamentals(), _good_technicals(above_200dma=False))
     assert passes is False
     assert any("200DMA" in r for r in reasons)
 
@@ -128,9 +127,7 @@ def test_fails_when_50_dma_below_200_dma():
 
 
 def test_fails_negative_rs_6mo():
-    passes, reasons = passes_hard_filter(
-        _good_fundamentals(), _good_technicals(rs_6mo=-0.02)
-    )
+    passes, reasons = passes_hard_filter(_good_fundamentals(), _good_technicals(rs_6mo=-0.02))
     assert passes is False
     assert any("rs_6mo" in r for r in reasons)
 
@@ -161,9 +158,7 @@ def test_score_bounds_total_le_100():
         volume_trend_20_60=0.50,
         weekly_rsi=55,
     )
-    perfect_u = _universe_entry(
-        sources=["insider", "billionaire", "watchlist"], conviction=100
-    )
+    perfect_u = _universe_entry(sources=["insider", "billionaire", "watchlist"], conviction=100)
     scored = score_candidate(perfect_f, perfect_t, perfect_u)
     assert 0 <= scored["score"] <= 100
 
@@ -194,9 +189,7 @@ def test_score_components_sum_to_total():
     scored = score_candidate(_good_fundamentals(), _good_technicals(), _universe_entry())
     comp = scored["components"]
     # Rounding may introduce ±0.1 drift; allow a small tolerance.
-    assert abs(
-        scored["score"] - (comp["fundamentals"] + comp["trend"] + comp["conviction"])
-    ) < 0.3
+    assert abs(scored["score"] - (comp["fundamentals"] + comp["trend"] + comp["conviction"])) < 0.3
 
 
 def test_higher_growth_scores_higher_fundamentals():
@@ -243,8 +236,108 @@ def test_more_sources_means_higher_conviction_score():
     three = score_candidate(
         _good_fundamentals(),
         _good_technicals(),
-        _universe_entry(
-            sources=["insider", "billionaire", "watchlist"], conviction=2
-        ),
+        _universe_entry(sources=["insider", "billionaire", "watchlist"], conviction=2),
     )
     assert three["components"]["conviction"] > one["components"]["conviction"]
+
+
+def test_watchlist_membership_does_not_change_the_score():
+    """Being on the user's watchlist grants ELIGIBILITY, not points.
+
+    It used to add +5 conviction, which scored ~10.5 of ~105 points — every
+    user-supplied name started ahead of an otherwise identical one, so the
+    ranking partly confirmed the user's prior instead of testing it.
+    Eligibility now lives in discover/universe.py.
+    """
+    plain = score_candidate(
+        _good_fundamentals(),
+        _good_technicals(),
+        _universe_entry(sources=["insider"], conviction=3),
+    )
+    watchlisted = score_candidate(
+        _good_fundamentals(),
+        _good_technicals(),
+        _universe_entry(sources=["insider", "watchlist"], conviction=3),
+    )
+    assert watchlisted["score"] == plain["score"]
+    assert watchlisted["components"]["conviction"] == plain["components"]["conviction"]
+
+
+def test_index_and_holding_membership_do_not_change_the_score():
+    """Same rule for the other two eligibility-only sources."""
+    plain = score_candidate(
+        _good_fundamentals(),
+        _good_technicals(),
+        _universe_entry(sources=["billionaire"], conviction=2),
+    )
+    framed = score_candidate(
+        _good_fundamentals(),
+        _good_technicals(),
+        _universe_entry(sources=["billionaire", "index", "holding"], conviction=2),
+    )
+    assert framed["score"] == plain["score"]
+
+
+def test_conviction_is_capped_at_ten_points():
+    """Media attention is capped hard: an enormous mention count cannot buy
+    more than 10 of the 100 points."""
+    scored = score_candidate(
+        _good_fundamentals(),
+        _good_technicals(),
+        _universe_entry(sources=["insider", "billionaire"], conviction=10_000),
+    )
+    assert scored["components"]["conviction"] <= 10.0
+
+
+def test_media_attention_cannot_outrank_fundamentals():
+    """A heavily-covered weak company must not outscore a quiet strong one.
+
+    This is the crowding failure the old 25-point conviction weight made
+    possible: press attention is not evidence of forward return.
+    """
+    hyped_but_weak = score_candidate(
+        _good_fundamentals(
+            revenue_growth_yoy=0.09,  # barely clears the filter
+            fcf_yield=0.005,
+            operating_margin=0.03,
+            debt_to_equity=1.9,
+        ),
+        _good_technicals(),
+        _universe_entry(sources=["insider", "billionaire"], conviction=50),
+    )
+    quiet_but_strong = score_candidate(
+        _good_fundamentals(
+            revenue_growth_yoy=0.30,
+            fcf_yield=0.08,
+            operating_margin=0.35,
+            debt_to_equity=0.2,
+        ),
+        _good_technicals(),
+        _universe_entry(sources=["index"], conviction=0),
+    )
+    assert quiet_but_strong["score"] > hyped_but_weak["score"]
+
+
+def test_score_budget_is_45_45_10():
+    """The documented budget and the code must not drift apart again."""
+    maxed = score_candidate(
+        _good_fundamentals(
+            revenue_growth_yoy=0.40,
+            fcf_yield=0.20,
+            operating_margin=0.50,
+            debt_to_equity=0.1,
+        ),
+        _good_technicals(
+            rs_6mo=0.50,
+            dist_from_52w_high=-0.10,
+            volume_trend_20_60=0.3,
+            weekly_rsi=55,
+        ),
+        _universe_entry(sources=["insider", "billionaire"], conviction=100),
+        revisions={"direction_30d": "raising"},
+    )
+    comp = maxed["components"]
+    assert comp["fundamentals"] == pytest.approx(45.0)
+    assert comp["trend"] == pytest.approx(45.0)
+    assert comp["conviction"] == pytest.approx(10.0)
+    assert maxed["score"] == pytest.approx(100.0)

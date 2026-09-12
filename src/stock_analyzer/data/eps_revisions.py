@@ -22,6 +22,7 @@ Net direction is the signal the LLM should weight: 'raising across both
 windows' is a strong forward-thesis confirmation; 'lowering' is a yellow
 flag the system shouldn't ignore behind a HOLD verdict.
 """
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -59,7 +60,7 @@ def _get_cell(df: pd.DataFrame, period: str, col: str) -> int:
             val = df.loc[period, actual]
             try:
                 return int(val) if pd.notna(val) else 0
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return 0
     return 0
 

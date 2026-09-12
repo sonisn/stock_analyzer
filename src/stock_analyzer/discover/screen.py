@@ -1,15 +1,40 @@
-"""Screen module — hard filters + 0-100 quant score.
+"""Screen module — hard filters + quant score.
 
 Pure functions over fundamentals + technicals + universe entries. No I/O,
-easy to unit-test. Tune the thresholds here based on what the pipeline
-surfaces over a few months.
+easy to unit-test.
 
-Hard filters reject anything not in a Stage-2 uptrend with healthy
-fundamentals. Score weights mid-long term priorities:
-  40 pts fundamentals  (growth, FCF yield, margins, debt)
-  35 pts trend         (RS, entry zone, volume, weekly RSI)
-  25 pts conviction    (insider/billionaire mention count, source diversity)
+THE FILTER IS A STYLE BET, AND IT IS DELIBERATE. Four of the eight hard
+rejections are trend rules (above 200DMA, 50DMA above 200DMA, positive
+6-month RS, within 30% of the 52-week high), so the screen only ever
+considers momentum/quality names in a Stage-2 uptrend. That excludes every
+mean-reversion and deep-value setup by construction. Momentum is a
+defensible factor, so this is a choice rather than a bug — but it is a
+choice, it skews the book high-beta (which is why the track record reports
+beta-adjusted alpha), and survivor counts are logged per run so a collapsed
+funnel is visible instead of silently producing "the top 5 of 6".
+
+Score budget — max 100 points, plus whatever the caller adds as a theme
+bonus:
+  45 pts fundamentals  (growth, FCF yield, margins, debt)
+  45 pts trend         (RS, entry zone, volume, weekly RSI, EPS revisions)
+  10 pts conviction    (media mention count, source diversity)
+
+CONVICTION IS WEIGHTED LIGHTLY ON PURPOSE. It is a count of how many news
+articles mentioned the ticker, i.e. a media-attention measure, and attention
+is associated with crowding rather than with forward excess return — the
+empirical prior is that its information coefficient is near zero or
+negative. It used to carry 25 of ~105 points (a quarter of the score) and
+watchlist membership added a flat +5 conviction, which handed every
+user-supplied name a ~10-point structural head start and turned the
+ranking into partial confirmation of the user's prior. Watchlist membership
+is now an INCLUSION rule in `discover/universe.py` (the name always gets
+analyzed) and carries no score.
+
+Before re-tuning any weight here, measure it: `uv run validate-screen`
+reports the information coefficient of every sub-component below against
+realized forward alpha, using the scores already stored per run.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -75,27 +100,31 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 
 def _score_fundamentals(f: dict[str, Any]) -> tuple[float, dict[str, float]]:
-    """0-40 pts. Growth + cash generation + margins + debt health."""
+    """0-45 pts. Growth + cash generation + margins + debt health.
+
+    Picked up the points that came off `conviction`: these are measured
+    company properties rather than a proxy for press attention.
+    """
     parts: dict[str, float] = {}
 
     rg = f.get("revenue_growth_yoy") or 0
-    parts["revenue_growth"] = _clamp((rg - 0.08) / (0.25 - 0.08) * 15, 0, 15)
+    parts["revenue_growth"] = _clamp((rg - 0.08) / (0.25 - 0.08) * 17, 0, 17)
 
     fcfy = f.get("fcf_yield") or 0
-    parts["fcf_yield"] = _clamp(fcfy / 0.06 * 10, 0, 10)
+    parts["fcf_yield"] = _clamp(fcfy / 0.06 * 11, 0, 11)
 
     om = f.get("operating_margin") or 0
-    parts["operating_margin"] = _clamp(om / 0.30 * 10, 0, 10)
+    parts["operating_margin"] = _clamp(om / 0.30 * 11, 0, 11)
 
     de = f.get("debt_to_equity")
     if de is None:
-        parts["debt_health"] = 2.5
+        parts["debt_health"] = 3.0
     elif de >= 2.0:
         parts["debt_health"] = 0
     elif de <= 0.5:
-        parts["debt_health"] = 5
+        parts["debt_health"] = 6
     else:
-        parts["debt_health"] = 5 * (2.0 - de) / 1.5
+        parts["debt_health"] = 6 * (2.0 - de) / 1.5
 
     return (sum(parts.values()), parts)
 
@@ -104,12 +133,12 @@ def _score_trend(
     t: dict[str, Any],
     revisions: dict[str, Any] | None = None,
 ) -> tuple[float, dict[str, float]]:
-    """0-40 pts. RS leadership + entry zone + volume + non-stretched
-    momentum + EPS revision flow."""
+    """0-45 pts (can dip to -3 on a lowering revision). RS leadership +
+    entry zone + volume + non-stretched momentum + EPS revision flow."""
     parts: dict[str, float] = {}
 
     rs6 = t.get("rs_6mo") or 0
-    parts["rs_6mo"] = _clamp(8 + rs6 * 70, 8, 15) if rs6 > 0 else 0
+    parts["rs_6mo"] = _clamp(9 + rs6 * 78, 9, 17) if rs6 > 0 else 0
 
     dist = t.get("dist_from_52w_high")
     if dist is None:
@@ -139,7 +168,7 @@ def _score_trend(
     # Missing (no analyst coverage / fetch failed) → neutral 0.
     direction = (revisions or {}).get("direction_30d")
     if direction == "raising":
-        parts["eps_revisions"] = 5.0
+        parts["eps_revisions"] = 8.0
     elif direction == "lowering":
         parts["eps_revisions"] = -3.0
     else:
@@ -148,12 +177,28 @@ def _score_trend(
     return (sum(parts.values()), parts)
 
 
+# Source labels that describe WHERE a name came from rather than evidence
+# about it. Index membership, the user's own watchlist and an existing
+# holding are eligibility facts, so they must not inflate source diversity —
+# otherwise every watchlist name scores higher than an identical non-watchlist
+# one and the ranking confirms the user's prior instead of testing it.
+_NON_EVIDENCE_SOURCES = frozenset({"index", "watchlist", "holding"})
+
+
 def _score_conviction(u: dict[str, Any]) -> tuple[float, dict[str, float]]:
-    """0-25 pts. Universe mention count + how many distinct sources flagged it."""
+    """0-10 pts. Media attention, weighted lightly and on purpose.
+
+    Down from 25 of ~105 points. `conviction` counts news-article mentions,
+    which measures attention and crowding rather than forward return, and
+    only the two genuinely external feeds (insider coverage, hedge-fund
+    coverage) count toward source diversity. Run `validate-screen` to see
+    this component's measured information coefficient before giving it any
+    more weight back.
+    """
     parts: dict[str, float] = {}
-    parts["mentions"] = _clamp(u.get("conviction", 0) * 1.5, 0, 15)
-    n_sources = len(set(u.get("sources", [])))
-    parts["source_diversity"] = {0: 0.0, 1: 3.0, 2: 7.0}.get(n_sources, 10.0)
+    parts["mentions"] = _clamp(u.get("conviction", 0) * 0.8, 0, 6)
+    evidence_sources = {s for s in u.get("sources", []) if s not in _NON_EVIDENCE_SOURCES}
+    parts["source_diversity"] = {0: 0.0, 1: 2.0}.get(len(evidence_sources), 4.0)
     return (sum(parts.values()), parts)
 
 
@@ -163,12 +208,14 @@ def score_candidate(
     universe_entry: dict[str, Any],
     revisions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Combine the three scoring dimensions into a 0-105 total + breakdown.
+    """Combine the three scoring dimensions into a 0-100 total + breakdown.
 
     `revisions` is the per-ticker EPS-revisions summary (the LLM-stage
-    payload's `eps_revisions` field). When present, the trend score
-    picks up a +/-5 bonus based on direction_30d. Optional so unit tests
-    + legacy callers can still pass three args."""
+    payload's `eps_revisions` field). When present, the trend score picks
+    up +8 / -3 based on direction_30d — analyst revision flow is one of the
+    few forward-looking signals here, so it carries more weight than the
+    media-mention count does. Optional so unit tests + legacy callers can
+    still pass three args."""
     fund_total, fund_parts = _score_fundamentals(fundamentals)
     trend_total, trend_parts = _score_trend(technicals, revisions=revisions)
     conv_total, conv_parts = _score_conviction(universe_entry)

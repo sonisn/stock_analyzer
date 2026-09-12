@@ -12,6 +12,7 @@ mutate counters as it walks activity rows; it does so through the
 ``TickerTaxSummaryMut`` subclass (``frozen=False``) and freezes back
 into ``TickerTaxSummary`` once the per-ticker aggregate is complete.
 """
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -38,9 +39,9 @@ class Lot(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    date: str          # ISO date of purchase
-    units: float       # shares acquired
-    price: float       # per-share purchase price
+    date: str  # ISO date of purchase
+    units: float  # shares acquired
+    price: float  # per-share purchase price
     total_cost: float  # units * price + fee
     fee: float
     days_held: int
@@ -58,9 +59,7 @@ class Lot(BaseModel):
         logger: _LoggerLike,
     ) -> Lot | None:
         try:
-            d = coerce_date(
-                activity.get("trade_date") or activity.get("settlement_date")
-            )
+            d = coerce_date(activity.get("trade_date") or activity.get("settlement_date"))
             if d is None:
                 return None
             units = float(activity.get("units") or 0)
@@ -107,11 +106,7 @@ class TickerTaxSummary(BaseModel):
 
     @property
     def avg_cost(self) -> float:
-        return (
-            self.total_cost_basis / self.total_units_bought
-            if self.total_units_bought
-            else 0
-        )
+        return self.total_cost_basis / self.total_units_bought if self.total_units_bought else 0
 
     def to_payload(self) -> dict[str, Any]:
         """Dict suitable for inclusion in the reviewer JSON payload."""
@@ -178,8 +173,8 @@ class EligibleHolding(BaseModel):
     tax_status: Literal["taxable", "tax_advantaged"] = "taxable"
     shares_held: int
     open_short_call_contracts: int
-    available_shares: int   # shares_held - 100 × open_short_call_contracts
-    max_contracts: int      # available_shares // 100
+    available_shares: int  # shares_held - 100 × open_short_call_contracts
+    max_contracts: int  # available_shares // 100
 
 
 class RoundLotCoverage(BaseModel):
@@ -194,10 +189,10 @@ class RoundLotCoverage(BaseModel):
     ticker: str
     shares: int
     round_lots: int
-    stub_shares: int             # shares - round_lots × 100
-    stub_dollar_value: float     # stub_shares × spot (0 when spot unknown)
-    to_next_lot_shares: int      # (100 - stub_shares) if stub_shares else 0
-    to_next_lot_cost: float      # to_next_lot_shares × spot
+    stub_shares: int  # shares - round_lots × 100
+    stub_dollar_value: float  # stub_shares × spot (0 when spot unknown)
+    to_next_lot_shares: int  # (100 - stub_shares) if stub_shares else 0
+    to_next_lot_cost: float  # to_next_lot_shares × spot
 
 
 class IvHvRegime(BaseModel):
@@ -206,10 +201,10 @@ class IvHvRegime(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     ticker: str
-    current_iv: float         # representative chain IV, e.g. 0.32
-    hv_annualized: float      # 252-day realized vol, e.g. 0.27
-    iv_hv_ratio: float        # current_iv / hv
-    label: str                # "elevated" | "average" | "depressed"
+    current_iv: float  # representative chain IV, e.g. 0.32
+    hv_annualized: float  # 252-day realized vol, e.g. 0.27
+    iv_hv_ratio: float  # current_iv / hv
+    label: str  # "elevated" | "average" | "depressed"
 
 
 __all__ = [

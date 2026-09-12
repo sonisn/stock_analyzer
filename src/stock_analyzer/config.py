@@ -8,6 +8,7 @@ Built on `pydantic-settings.BaseSettings` so every field is:
 
 Override behavior with env vars or a `.env` file at the project root.
 """
+
 from __future__ import annotations
 
 from typing import Annotated, Literal
@@ -81,10 +82,19 @@ class Settings(BaseSettings):
     discover_watchlist: Annotated[tuple[str, ...], NoDecode] = ()
     discover_cash_budget: float | None = None
     discover_db_path: str = "~/.stock_analyzer/discover.db"
-    # Run the ranker N times and consensus-vote on picks (N >= 2). With
-    # temperature=0 set in all stages, runs should agree near-perfectly,
-    # but this catches any residual variance from data freshness.
-    discover_consensus_runs: int = 3
+    # Run the ranker N times and consensus-vote on picks (N >= 2).
+    #
+    # This only buys information when the runs can actually disagree, so
+    # the ranker couples temperature to this value: N=1 runs at
+    # temperature 0 (deterministic, reproducible), N>1 runs at
+    # `discover_consensus_temperature` so the agreement rate across
+    # samples is a real confidence signal rather than a restatement of
+    # determinism. Default is 1 — a single high-effort Opus call — because
+    # N=3 triples the cost of the most expensive stage in the pipeline;
+    # raise it when you want the variance check and are happy to pay for it.
+    discover_consensus_runs: int = 1
+    # Sampling temperature used ONLY when discover_consensus_runs > 1.
+    discover_consensus_temperature: float = 0.7
     # Rebalance aggressiveness:
     #   conservative — strict tax-after-EV bar (10%), forward deterioration
     #                  required for any SELL/TRIM

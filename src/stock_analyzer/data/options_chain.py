@@ -8,16 +8,17 @@ Failure of either provider for a given ticker is non-fatal — the
 returned `OptionChain.source` is set to `"missing"` and the rebalancer
 context just reads `Option chain: UNAVAILABLE` for that ticker.
 """
+
 from __future__ import annotations
 
 import math
 from datetime import date, datetime, timedelta
 from typing import Protocol
 
-import requests
 import yfinance as yf
 
 from ..config import Settings
+from ..http_client import HttpClient, RetryPolicy
 from ..logging import get_logger
 from ..models.market import OptionChain, OptionQuote
 
@@ -27,8 +28,12 @@ logger = get_logger(__name__)
 # working during Phase 1. Group C strips this shim once every callsite
 # has been migrated.
 __all__ = [
-    "OptionChain", "OptionQuote", "OptionChainProvider",
-    "YFinanceChain", "TradierChain", "fetch_chains",
+    "OptionChain",
+    "OptionQuote",
+    "OptionChainProvider",
+    "YFinanceChain",
+    "TradierChain",
+    "fetch_chains",
 ]
 
 
@@ -40,7 +45,7 @@ def _safe_float(v: object) -> float | None:
         return None
     try:
         f = float(v)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return None
     if math.isnan(f) or math.isinf(f):
         return None
@@ -61,10 +66,8 @@ class OptionChainProvider(Protocol):
       - filter to expiries within [today+dte_min, today+dte_max]
       - return None on any error (graceful degradation)
     """
-    def fetch(
-        self, ticker: str, dte_min: int, dte_max: int
-    ) -> OptionChain | None:
-        ...
+
+    def fetch(self, ticker: str, dte_min: int, dte_max: int) -> OptionChain | None: ...
 
 
 class YFinanceChain:
@@ -75,9 +78,7 @@ class YFinanceChain:
     strike vs spot when delta is missing.
     """
 
-    def fetch(
-        self, ticker: str, dte_min: int, dte_max: int
-    ) -> OptionChain | None:
+    def fetch(self, ticker: str, dte_min: int, dte_max: int) -> OptionChain | None:
         try:
             t = yf.Ticker(ticker)
             spot = _safe_float(t.fast_info.last_price)
@@ -86,8 +87,8 @@ class YFinanceChain:
             return None
         if spot is None or spot <= 0:
             logger.info(
-                "yfinance returned invalid spot for %s (NaN / 0 / negative); "
-                "skipping ticker", ticker,
+                "yfinance returned invalid spot for %s (NaN / 0 / negative); skipping ticker",
+                ticker,
             )
             return None
 
@@ -100,8 +101,11 @@ class YFinanceChain:
         except Exception as e:
             logger.info("yfinance no expiries for %s (%s)", ticker, e)
             return OptionChain(
-                ticker=ticker, spot=spot, asof=datetime.now(),
-                calls=[], source="yfinance",
+                ticker=ticker,
+                spot=spot,
+                asof=datetime.now(),
+                calls=[],
+                source="yfinance",
             )
 
         for e_str in expiries:
@@ -123,20 +127,25 @@ class YFinanceChain:
                     continue
                 if strike <= spot:  # OTM calls only
                     continue
-                calls.append(OptionQuote(
-                    strike=strike,
-                    expiry=expiry,
-                    bid=_safe_float(row.get("bid")) or 0.0,
-                    ask=_safe_float(row.get("ask")) or 0.0,
-                    iv=_safe_float(row.get("impliedVolatility")),
-                    delta=None,  # yfinance does not provide Greeks
-                    open_interest=_safe_int(row.get("openInterest")),
-                    volume=_safe_int(row.get("volume")),
-                ))
+                calls.append(
+                    OptionQuote(
+                        strike=strike,
+                        expiry=expiry,
+                        bid=_safe_float(row.get("bid")) or 0.0,
+                        ask=_safe_float(row.get("ask")) or 0.0,
+                        iv=_safe_float(row.get("impliedVolatility")),
+                        delta=None,  # yfinance does not provide Greeks
+                        open_interest=_safe_int(row.get("openInterest")),
+                        volume=_safe_int(row.get("volume")),
+                    )
+                )
 
         return OptionChain(
-            ticker=ticker, spot=spot, asof=datetime.now(),
-            calls=calls, source="yfinance",
+            ticker=ticker,
+            spot=spot,
+            asof=datetime.now(),
+            calls=calls,
+            source="yfinance",
         )
 
 
@@ -152,15 +161,39 @@ class TradierChain:
     """
 
     _TIMEOUT_SECONDS = 10
+    # Tradier's documented sandbox/production limit is 120 req/min; stay
+    # under it so a wide eligible-ticker set doesn't trip a 429 mid-run.
+    _RATE_LIMIT_PER_MIN = 100
 
     def __init__(self) -> None:
         # Cache "is provider configured" once per instance so we don't
         # spam logs across multiple ticker fetches.
         self._configured: bool | None = None
 
-    def fetch(
-        self, ticker: str, dte_min: int, dte_max: int
-    ) -> OptionChain | None:
+    def _client(self, base_url: str, api_key: str) -> HttpClient:
+        """A shared-client instance for this provider.
+
+        Tradier used to call `requests.get` directly, which (a) depended on
+        a package this project never declared — it only resolved
+        transitively via yfinance — and (b) skipped the retry/backoff and
+        rate limiting every other HTTP integration here gets. A transient
+        429 therefore degraded silently to delayed yfinance data with no
+        Greeks, which is exactly the case the delta-band strike rule needs
+        real data for.
+        """
+        return HttpClient(
+            base_url=base_url.rstrip("/"),
+            default_headers={
+                "Authorization": f"Bearer {api_key}",
+                "Accept": "application/json",
+            },
+            timeout=self._TIMEOUT_SECONDS,
+            rate_limit_per_min=self._RATE_LIMIT_PER_MIN,
+            retry_policy=RetryPolicy(max_attempts=3),
+            name="tradier",
+        )
+
+    def fetch(self, ticker: str, dte_min: int, dte_max: int) -> OptionChain | None:
         s = Settings()  # type: ignore[call-arg]
         if not s.tradier_api_key:
             if self._configured is None:
@@ -172,81 +205,85 @@ class TradierChain:
             return None
         self._configured = True
 
-        headers = {
-            "Authorization": f"Bearer {s.tradier_api_key}",
-            "Accept": "application/json",
-        }
-
-        # Step 1: expirations
-        try:
-            resp = requests.get(
-                f"{s.tradier_base_url}/markets/options/expirations",
-                params={"symbol": ticker, "includeAllRoots": "true"},
-                headers=headers,
-                timeout=self._TIMEOUT_SECONDS,
-            )
-            resp.raise_for_status()
-            payload = resp.json() or {}
-        except Exception as e:
-            logger.warning("Tradier expirations fetch failed for %s: %s", ticker, e)
-            return None
-
-        expirations = self._extract_expirations(payload)
-        if not expirations:
-            logger.info("Tradier returned no expirations for %s", ticker)
-            return OptionChain(
-                ticker=ticker, spot=0.0, asof=datetime.now(),
-                calls=[], source="tradier",
-            )
-
-        today = date.today()
-        lo = today + timedelta(days=dte_min)
-        hi = today + timedelta(days=dte_max)
-        in_band: list[date] = []
-        for d_str in expirations:
+        with self._client(s.tradier_base_url, s.tradier_api_key) as client:
+            # Step 1: expirations
             try:
-                d = date.fromisoformat(d_str)
-            except (ValueError, TypeError):
-                continue
-            if lo <= d <= hi:
-                in_band.append(d)
+                payload = (
+                    client.get_json(
+                        "/markets/options/expirations",
+                        params={"symbol": ticker, "includeAllRoots": "true"},
+                    )
+                    or {}
+                )
+            except Exception as e:
+                logger.warning("Tradier expirations fetch failed for %s: %s", ticker, e)
+                return None
 
-        if not in_band:
-            return OptionChain(
-                ticker=ticker, spot=0.0, asof=datetime.now(),
-                calls=[], source="tradier",
-            )
+            expirations = self._extract_expirations(payload)
+            if not expirations:
+                logger.info("Tradier returned no expirations for %s", ticker)
+                return OptionChain(
+                    ticker=ticker,
+                    spot=0.0,
+                    asof=datetime.now(),
+                    calls=[],
+                    source="tradier",
+                )
 
-        # Step 2: fetch spot for filtering ITM calls
-        spot = self._fetch_spot(ticker, headers, s.tradier_base_url) or 0.0
-
-        calls: list[OptionQuote] = []
-        for expiry in in_band:
-            chain_rows = self._fetch_chain_for_expiry(
-                ticker, expiry, headers, s.tradier_base_url,
-            )
-            for row in chain_rows:
-                if row.get("option_type") != "call":
+            today = date.today()
+            lo = today + timedelta(days=dte_min)
+            hi = today + timedelta(days=dte_max)
+            in_band: list[date] = []
+            for d_str in expirations:
+                try:
+                    d = date.fromisoformat(d_str)
+                except ValueError, TypeError:
                     continue
-                strike = _safe_float(row.get("strike")) or 0.0
-                if strike <= 0 or (spot > 0 and strike <= spot):
-                    continue  # OTM calls only when spot known; else keep all
-                greeks = row.get("greeks") or {}
-                calls.append(OptionQuote(
-                    strike=strike,
-                    expiry=expiry,
-                    bid=_safe_float(row.get("bid")) or 0.0,
-                    ask=_safe_float(row.get("ask")) or 0.0,
-                    iv=_safe_float(greeks.get("mid_iv")),
-                    delta=_safe_float(greeks.get("delta")),
-                    open_interest=_safe_int(row.get("open_interest")),
-                    volume=_safe_int(row.get("volume")),
-                ))
+                if lo <= d <= hi:
+                    in_band.append(d)
 
-        return OptionChain(
-            ticker=ticker, spot=spot, asof=datetime.now(),
-            calls=calls, source="tradier",
-        )
+            if not in_band:
+                return OptionChain(
+                    ticker=ticker,
+                    spot=0.0,
+                    asof=datetime.now(),
+                    calls=[],
+                    source="tradier",
+                )
+
+            # Step 2: fetch spot for filtering ITM calls
+            spot = self._fetch_spot(ticker, client) or 0.0
+
+            calls: list[OptionQuote] = []
+            for expiry in in_band:
+                chain_rows = self._fetch_chain_for_expiry(ticker, expiry, client)
+                for row in chain_rows:
+                    if row.get("option_type") != "call":
+                        continue
+                    strike = _safe_float(row.get("strike")) or 0.0
+                    if strike <= 0 or (spot > 0 and strike <= spot):
+                        continue  # OTM calls only when spot known; else keep all
+                    greeks = row.get("greeks") or {}
+                    calls.append(
+                        OptionQuote(
+                            strike=strike,
+                            expiry=expiry,
+                            bid=_safe_float(row.get("bid")) or 0.0,
+                            ask=_safe_float(row.get("ask")) or 0.0,
+                            iv=_safe_float(greeks.get("mid_iv")),
+                            delta=_safe_float(greeks.get("delta")),
+                            open_interest=_safe_int(row.get("open_interest")),
+                            volume=_safe_int(row.get("volume")),
+                        )
+                    )
+
+            return OptionChain(
+                ticker=ticker,
+                spot=spot,
+                asof=datetime.now(),
+                calls=calls,
+                source="tradier",
+            )
 
     @staticmethod
     def _extract_expirations(payload: dict) -> list[str]:
@@ -273,43 +310,43 @@ class TradierChain:
         return []
 
     def _fetch_chain_for_expiry(
-        self, ticker: str, expiry: date,
-        headers: dict[str, str], base_url: str,
+        self,
+        ticker: str,
+        expiry: date,
+        client: HttpClient,
     ) -> list[dict]:
         try:
-            resp = requests.get(
-                f"{base_url}/markets/options/chains",
-                params={
-                    "symbol": ticker,
-                    "expiration": expiry.isoformat(),
-                    "greeks": "true",
-                },
-                headers=headers,
-                timeout=self._TIMEOUT_SECONDS,
+            payload = (
+                client.get_json(
+                    "/markets/options/chains",
+                    params={
+                        "symbol": ticker,
+                        "expiration": expiry.isoformat(),
+                        "greeks": "true",
+                    },
+                )
+                or {}
             )
-            resp.raise_for_status()
-            payload = resp.json() or {}
         except Exception as e:
             logger.warning(
                 "Tradier chain fetch failed for %s @ %s: %s",
-                ticker, expiry, e,
+                ticker,
+                expiry,
+                e,
             )
             return []
         return self._normalize_chain_options(payload)
 
     @staticmethod
-    def _fetch_spot(
-        ticker: str, headers: dict[str, str], base_url: str,
-    ) -> float | None:
+    def _fetch_spot(ticker: str, client: HttpClient) -> float | None:
         try:
-            resp = requests.get(
-                f"{base_url}/markets/quotes",
-                params={"symbols": ticker, "greeks": "false"},
-                headers=headers,
-                timeout=TradierChain._TIMEOUT_SECONDS,
+            payload = (
+                client.get_json(
+                    "/markets/quotes",
+                    params={"symbols": ticker, "greeks": "false"},
+                )
+                or {}
             )
-            resp.raise_for_status()
-            payload = resp.json() or {}
             quotes = (payload.get("quotes") or {}).get("quote")
             if isinstance(quotes, list):
                 quotes = quotes[0] if quotes else None
@@ -318,7 +355,6 @@ class TradierChain:
         except Exception as e:
             logger.info("Tradier spot fetch failed for %s: %s", ticker, e)
         return None
-
 
 
 def fetch_chains(
@@ -343,8 +379,11 @@ def fetch_chains(
             chain = yfin.fetch(t, dte_min, dte_max)
         if chain is None:
             chain = OptionChain(
-                ticker=t, spot=0.0, asof=datetime.now(),
-                calls=[], source="missing",
+                ticker=t,
+                spot=0.0,
+                asof=datetime.now(),
+                calls=[],
+                source="missing",
             )
             logger.warning("chain unavailable for %s (all providers failed)", t)
         out[t] = chain

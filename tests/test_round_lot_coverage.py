@@ -1,4 +1,5 @@
 """Tests for round-lot coverage math (stub consolidation context)."""
+
 from __future__ import annotations
 
 from stock_analyzer.discover.cc_eligibility import round_lot_coverage
@@ -10,7 +11,7 @@ def test_basic_split_and_stub():
         "TSLA": {"units": 335, "avg_buy_price": 250},
         "AAPL": {"units": 215, "avg_buy_price": 150},
         "NVDA": {"units": 100, "avg_buy_price": 235},  # exactly a round lot, no stub
-        "GOOG": {"units": 50,  "avg_buy_price": 170},  # all stub
+        "GOOG": {"units": 50, "avg_buy_price": 170},  # all stub
     }
     spots = {"TSLA": 300.0, "AAPL": 215.0, "NVDA": 235.0, "GOOG": 175.0}
     out = round_lot_coverage(positions, spots=spots)

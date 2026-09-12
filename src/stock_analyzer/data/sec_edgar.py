@@ -10,6 +10,7 @@ Endpoints used (all free, no API key):
   - submissions/CIK*.json  list of filings per CIK
   - Archives/edgar/data/   the filing document HTML
 """
+
 from __future__ import annotations
 
 import html
@@ -22,7 +23,7 @@ from ..logging import get_logger
 
 logger = get_logger(__name__)
 
-_MAX_WORKERS = 3   # SEC limits 10 req/sec; stay polite
+_MAX_WORKERS = 3  # SEC limits 10 req/sec; stay polite
 _USER_AGENT = "stock-analyzer research-bot (snehal.soni@farohealth.com)"
 _HEADERS = {"User-Agent": _USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
@@ -51,9 +52,7 @@ def _load_ticker_map() -> dict[str, int]:
         return _TICKER_TO_CIK
     try:
         data = _HTTP.get_json(_TICKERS_URL)
-        _TICKER_TO_CIK = {
-            row["ticker"].upper(): int(row["cik_str"]) for row in data.values()
-        }
+        _TICKER_TO_CIK = {row["ticker"].upper(): int(row["cik_str"]) for row in data.values()}
     except HttpClientError as e:
         logger.warning("SEC ticker map fetch failed: %s", e)
         _TICKER_TO_CIK = {}
@@ -159,9 +158,7 @@ def batch_risk_factors(tickers: list[str]) -> dict[str, dict[str, Any]]:
 # current than the annual 10-K. We extract Item 2 between the next item
 # header (typically "Item 3. Quantitative and Qualitative Disclosures").
 
-_ITEM_2_MDA_RE = re.compile(
-    r"item\s*2[.\s]+management.{0,40}discussion", re.IGNORECASE
-)
+_ITEM_2_MDA_RE = re.compile(r"item\s*2[.\s]+management.{0,40}discussion", re.IGNORECASE)
 _ITEM_3_RE = re.compile(r"item\s*3\.?\s+quantitative", re.IGNORECASE)
 _ITEM_4_RE = re.compile(r"item\s*4\.?\s+controls", re.IGNORECASE)
 
@@ -171,9 +168,7 @@ def _extract_item_2_mda(text: str, max_chars: int = 6000) -> str | None:
     if not matches:
         return None
     start = matches[-1].end()
-    end_match = (
-        _ITEM_3_RE.search(text, start) or _ITEM_4_RE.search(text, start)
-    )
+    end_match = _ITEM_3_RE.search(text, start) or _ITEM_4_RE.search(text, start)
     end = end_match.start() if end_match else start + max_chars
     section = text[start:end].strip()
     if len(section) < 300:

@@ -5,6 +5,7 @@ in practice. We pull six load-bearing series and synthesize a one-paragraph
 regime summary that gets prepended to the Opus ranker's prompt so it can
 reason about cyclicals vs defensives, rate regime, etc.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -28,9 +29,7 @@ SERIES: dict[str, str] = {
 }
 
 
-def _fetch_series(
-    series_id: str, api_key: str, limit: int = 24
-) -> list[dict[str, Any]]:
+def _fetch_series(series_id: str, api_key: str, limit: int = 24) -> list[dict[str, Any]]:
     try:
         data = _HTTP.get_json(
             _BASE,
@@ -54,7 +53,7 @@ def _latest_value(observations: list[dict[str, Any]]) -> float | None:
         if v not in (".", "", None):
             try:
                 return float(v)
-            except (ValueError, TypeError):
+            except ValueError, TypeError:
                 continue
     return None
 
@@ -104,13 +103,11 @@ def regime_summary_text(data: dict[str, Any]) -> str:
             )
         elif yc < 0.50:
             parts.append(
-                f"yield curve flat at {yc:+.2f}% — late-cycle conditions, "
-                "cyclicals at risk"
+                f"yield curve flat at {yc:+.2f}% — late-cycle conditions, cyclicals at risk"
             )
         else:
             parts.append(
-                f"yield curve positive at {yc:+.2f}% — expansion-typical, "
-                "cyclicals viable"
+                f"yield curve positive at {yc:+.2f}% — expansion-typical, cyclicals viable"
             )
 
     vix = data.get("vix")

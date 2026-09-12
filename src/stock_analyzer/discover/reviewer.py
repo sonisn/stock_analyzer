@@ -4,6 +4,7 @@ For each current position, decide HOLD / TRIM / SELL with reasoning grounded
 in current fundamentals, technicals, insider-selling signal, P/L vs cost
 basis, and risk factors. Output is consumed by the Rebalancer.
 """
+
 from __future__ import annotations
 
 import re
@@ -270,9 +271,7 @@ _VERDICT_IN_PROSE = re.compile(r"\bthe (HOLD|TRIM|SELL) verdict\b", re.IGNORECAS
 _TOWARD_VERDICT = re.compile(r"\btoward (HOLD|TRIM|SELL)\b", re.IGNORECASE)
 
 
-def _repair_verdict_inconsistencies(
-    review: HoldingReview, ticker: str
-) -> HoldingReview:
+def _repair_verdict_inconsistencies(review: HoldingReview, ticker: str) -> HoldingReview:
     """Catch and rewrite the LLM's internal inconsistencies between the
     structured verdict and the prose it produced in the same response.
 
@@ -303,7 +302,9 @@ def _repair_verdict_inconsistencies(
             "Reviewer %s: verdict=%s with confidence=%d (<7) violates "
             "the calibration rule (TRIM/SELL require conf >= 7). "
             "Repairing to HOLD.",
-            ticker, review.verdict, review.confidence,
+            ticker,
+            review.verdict,
+            review.confidence,
         )
         updates["verdict"] = "HOLD"
 
@@ -318,7 +319,10 @@ def _repair_verdict_inconsistencies(
             "Reviewer %s: structured verdict=%s but `reasoning` "
             "references 'the %s verdict' — prose is authoritative; "
             "repairing structured field to %s.",
-            ticker, review.verdict, prose_verdict, prose_verdict,
+            ticker,
+            review.verdict,
+            prose_verdict,
+            prose_verdict,
         )
         updates["verdict"] = prose_verdict
         # If we're upgrading to TRIM/SELL via prose, drop confidence
@@ -334,9 +338,7 @@ def _repair_verdict_inconsistencies(
     if "verdict" not in updates:
         wcm = review.what_would_change_mind or ""
         toward_match = _TOWARD_VERDICT.search(wcm)
-        toward_verdict = (
-            toward_match.group(1).upper() if toward_match else None
-        )
+        toward_verdict = toward_match.group(1).upper() if toward_match else None
         if toward_verdict and toward_verdict == review.verdict:  # noqa: SIM102
             # We can't move toward our current state. Best guess: prose
             # was written from a HOLD perspective and structured field
@@ -347,7 +349,9 @@ def _repair_verdict_inconsistencies(
                     "Reviewer %s: verdict=%s with `what_would_change_mind` "
                     "saying 'toward %s' is self-contradictory; "
                     "repairing to HOLD.",
-                    ticker, review.verdict, toward_verdict,
+                    ticker,
+                    review.verdict,
+                    toward_verdict,
                 )
                 updates["verdict"] = "HOLD"
 
@@ -376,15 +380,13 @@ class Reviewer:
         )
 
     def review(self, ticker: str, payload: dict[str, Any]) -> HoldingReview | None:
-        prompt = (
-            f"Holding: {ticker}\n\n"
-            f"```json\n{dumps_pretty(payload)}\n```"
-        )
+        prompt = f"Holding: {ticker}\n\n```json\n{dumps_pretty(payload)}\n```"
         logger.info("Reviewing holding %s", ticker)
         result = self.agent.run(prompt).content
         if result is None:
             logger.warning(
-                "Reviewer returned no content for %s — skipping", ticker,
+                "Reviewer returned no content for %s — skipping",
+                ticker,
             )
             return None
         if isinstance(result, HoldingReview):
@@ -394,14 +396,16 @@ class Reviewer:
                 parsed = HoldingReview.model_validate_json(result)
             except Exception as e:
                 logger.warning(
-                    "Reviewer for %s returned a string that wasn't valid "
-                    "HoldingReview JSON: %s", ticker, e,
+                    "Reviewer for %s returned a string that wasn't valid HoldingReview JSON: %s",
+                    ticker,
+                    e,
                 )
                 return None
             return _repair_verdict_inconsistencies(parsed, ticker)
         logger.warning(
             "Reviewer for %s returned unexpected type %s; skipping",
-            ticker, type(result).__name__,
+            ticker,
+            type(result).__name__,
         )
         return None
 

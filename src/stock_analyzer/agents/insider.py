@@ -1,4 +1,5 @@
 """Insider + political + hedge fund trade synthesis agent."""
+
 from __future__ import annotations
 
 from datetime import date
@@ -23,7 +24,7 @@ from the snippets when stated.
 
 Output format (plain text only, no markdown headings, no bold):
 
-=== INSIDER, POLITICAL & BILLIONAIRE TRADING — {date.today().strftime('%b %d, %Y')} ===
+=== INSIDER, POLITICAL & BILLIONAIRE TRADING — {date.today().strftime("%b %d, %Y")} ===
 
 Notable Congressional Trades:
 List up to 5 most material trades. Each as one line:

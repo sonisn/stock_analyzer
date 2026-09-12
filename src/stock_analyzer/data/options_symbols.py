@@ -10,6 +10,7 @@ Example:
 This module deliberately does NOT depend on third-party libs — the
 format is fixed-width and small enough to handle by slicing.
 """
+
 from __future__ import annotations
 
 import re
@@ -20,12 +21,9 @@ from datetime import date
 # delete this shim block once every callsite has migrated.
 from ..models.market import OCCParseError, ParsedOCC
 
-__all__ = ["OCCParseError", "ParsedOCC",
-           "is_option_symbol", "parse_occ"]
+__all__ = ["OCCParseError", "ParsedOCC", "is_option_symbol", "parse_occ"]
 
-_OCC_RE = re.compile(
-    r"^([A-Z][A-Z0-9.\-]{0,5})\s+(\d{2})(\d{2})(\d{2})([CP])(\d{8})$"
-)
+_OCC_RE = re.compile(r"^([A-Z][A-Z0-9.\-]{0,5})\s+(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
 
 
 def is_option_symbol(s: str) -> bool:
@@ -65,5 +63,8 @@ def parse_occ(symbol: str) -> ParsedOCC:
     # Regex guarantees otype ∈ {"C","P"} but the type checker can only
     # see `str`; the ignore is for the Literal["C","P"] assignment.
     return ParsedOCC(
-        ticker=root, expiry=expiry, option_type=otype, strike=strike,  # type: ignore[arg-type]
+        ticker=root,
+        expiry=expiry,
+        option_type=otype,
+        strike=strike,  # type: ignore[arg-type]
     )

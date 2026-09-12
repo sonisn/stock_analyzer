@@ -4,6 +4,7 @@ Don't auto-reject "earnings tomorrow" candidates; just surface the date so
 the analyst payload and the markdown report can warn that buying now means
 betting on the print.
 """
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -74,10 +75,9 @@ def earnings_within_days(ticker: str, days: int = 5) -> dict[str, Any] | None:
     return None
 
 
-def batch_earnings_flags(
-    tickers: list[str], within_days: int = 5
-) -> dict[str, dict[str, Any]]:
+def batch_earnings_flags(tickers: list[str], within_days: int = 5) -> dict[str, dict[str, Any]]:
     """Return only tickers with earnings in the next N days. Others are omitted."""
+
     def _check(t: str) -> tuple[str, dict[str, Any] | None]:
         return (t, earnings_within_days(t, within_days))
 

@@ -8,6 +8,7 @@ constants / helper functions shared between HTML and PDF.
 The `report.py` public surface re-exports from this module so existing
 callers (`cli/discover.py`, `cli/rebalance.py`, tests) keep working.
 """
+
 from __future__ import annotations
 
 import re
@@ -21,9 +22,7 @@ from ..models.reports import Section
 
 # --- pick / ticker block parsing --------------------------------------------
 
-_PICK_RE = re.compile(
-    r"^PICK\s+(\d+):\s+([A-Z][A-Z.\-]{0,5})\s+[—–-]\s+(.+)$", re.MULTILINE
-)
+_PICK_RE = re.compile(r"^PICK\s+(\d+):\s+([A-Z][A-Z.\-]{0,5})\s+[—–-]\s+(.+)$", re.MULTILINE)
 _TICKER_BLOCK_RE = re.compile(r"^TICKER:\s*([A-Z][A-Z.\-]{0,5})\s*$", re.MULTILINE)
 
 
@@ -34,6 +33,7 @@ def parse_picks(ranker_text_or_output: object) -> list[tuple[int, str, str]]:
     free-text ranker output (legacy / discover-pipeline-output that
     hasn't been migrated yet)."""
     from ..models.llm import RankerOutput
+
     if isinstance(ranker_text_or_output, RankerOutput):
         return [
             (p.rank, p.ticker, p.one_liner)
@@ -72,12 +72,8 @@ def _split_by_pick_blocks(text: str) -> dict[str, str]:
 # --- structured-output parsers (verdict/conf/action/status) ------------------
 
 _VERDICT_RE = re.compile(r"^Verdict:\s*(HOLD|TRIM|SELL)\b", re.MULTILINE)
-_CONFIDENCE_RE = re.compile(
-    r"^Confidence\s*\(1-10\):\s*(\d+)", re.MULTILINE | re.IGNORECASE
-)
-_STATUS_RE = re.compile(
-    r"^Status:\s*(NO ACTION RECOMMENDED|ACTION RECOMMENDED)", re.MULTILINE
-)
+_CONFIDENCE_RE = re.compile(r"^Confidence\s*\(1-10\):\s*(\d+)", re.MULTILINE | re.IGNORECASE)
+_STATUS_RE = re.compile(r"^Status:\s*(NO ACTION RECOMMENDED|ACTION RECOMMENDED)", re.MULTILINE)
 _ACTION_RE = re.compile(
     r"^Action\s+\d+:\s+(SELL|TRIM|ADD|BUY)\s+([A-Z][A-Z.\-]{0,5})",
     re.MULTILINE,
@@ -91,6 +87,7 @@ def parse_verdict(review: object) -> str:
     no regex) OR a free-text review (legacy DB rows / partial runs).
     """
     from ..models.llm import HoldingReview
+
     if isinstance(review, HoldingReview):
         return review.verdict
     if not review or not isinstance(review, str):
@@ -104,6 +101,7 @@ def parse_confidence(review: object) -> int | None:
 
     Accepts a `HoldingReview` (preferred) OR a free-text review."""
     from ..models.llm import HoldingReview
+
     if isinstance(review, HoldingReview):
         return review.confidence
     if not review or not isinstance(review, str):
@@ -121,6 +119,7 @@ def parse_rebalance_status(rebalance_text_or_plan: object) -> str:
     fragility that previously crashed the persist step on `None`."""
     # Lazy import to avoid a circular module load.
     from ..models.rebalance import RebalancePlan
+
     if isinstance(rebalance_text_or_plan, RebalancePlan):
         return rebalance_text_or_plan.status
     if not rebalance_text_or_plan:
@@ -139,14 +138,12 @@ def parse_actions(rebalance_text_or_plan: object) -> list[tuple[str, str]]:
     Reads from the structured RebalancePlan when given one (no regex);
     falls back to regex on free text for legacy/discover runs."""
     from ..models.rebalance import RebalancePlan
+
     if isinstance(rebalance_text_or_plan, RebalancePlan):
         return [(a.action, a.ticker) for a in rebalance_text_or_plan.actions]
     if not rebalance_text_or_plan or not isinstance(rebalance_text_or_plan, str):
         return []
-    return [
-        (m.group(1), m.group(2))
-        for m in _ACTION_RE.finditer(rebalance_text_or_plan)
-    ]
+    return [(m.group(1), m.group(2)) for m in _ACTION_RE.finditer(rebalance_text_or_plan)]
 
 
 # --- visual constants -------------------------------------------------------
@@ -157,19 +154,28 @@ _VERDICT_COLORS = {
     "HOLD": {"bg": "#e8f4f8", "fg": "#0c5e7c", "border": "#3b8fde"},
     "TRIM": {"bg": "#fff4e0", "fg": "#a36500", "border": "#e89c00"},
     "SELL": {"bg": "#fde4e4", "fg": "#9c1010", "border": "#d73030"},
-    "ADD":  {"bg": "#ece8fb", "fg": "#4c1d95", "border": "#7c3aed"},
-    "BUY":  {"bg": "#e6f4ea", "fg": "#0e6432", "border": "#1f9d55"},
+    "ADD": {"bg": "#ece8fb", "fg": "#4c1d95", "border": "#7c3aed"},
+    "BUY": {"bg": "#e6f4ea", "fg": "#0e6432", "border": "#1f9d55"},
 }
 _STATUS_COLORS = {
     "NO_ACTION": {"bg": "#e6f4ea", "fg": "#0e6432", "border": "#1f9d55"},
-    "ACTION":    {"bg": "#fff4e0", "fg": "#8a4a00", "border": "#e89c00"},
-    "UNKNOWN":   {"bg": "#f0f0f0", "fg": "#444", "border": "#888"},
+    "ACTION": {"bg": "#fff4e0", "fg": "#8a4a00", "border": "#e89c00"},
+    "UNKNOWN": {"bg": "#f0f0f0", "fg": "#444", "border": "#888"},
 }
 # Categorical palette for sector pie slices.
 _PIE_PALETTE = [
-    "#3b8fde", "#1f9d55", "#e89c00", "#d73030", "#7c3aed",
-    "#0891b2", "#65a30d", "#dc2626", "#ea580c", "#0284c7",
-    "#16a34a", "#a16207",
+    "#3b8fde",
+    "#1f9d55",
+    "#e89c00",
+    "#d73030",
+    "#7c3aed",
+    "#0891b2",
+    "#65a30d",
+    "#dc2626",
+    "#ea580c",
+    "#0284c7",
+    "#16a34a",
+    "#a16207",
 ]
 # Fragility-rank visual palette — 1 = most fragile (red), 5 = most resilient (green).
 _FRAGILITY_COLORS: dict[int, dict[str, str]] = {
@@ -181,15 +187,15 @@ _FRAGILITY_COLORS: dict[int, dict[str, str]] = {
 }
 # Trend arrows for the market-themes panel (HTML + PDF).
 _TREND_GLYPHS: dict[str, tuple[str, str]] = {
-    "up":   ("▲", "#0e6432"),
+    "up": ("▲", "#0e6432"),
     "flat": ("●", "#6b7280"),
     "down": ("▼", "#9c1010"),
 }
 # Pre-mortem palettes — verdict banner + per-failure pills.
 _VERDICT_PALETTE_PREMORTEM = {
-    "proceed_as_planned":  {"bg": "#e6f4ea", "fg": "#0e6432", "border": "#1f9d55"},
+    "proceed_as_planned": {"bg": "#e6f4ea", "fg": "#0e6432", "border": "#1f9d55"},
     "proceed_with_caveat": {"bg": "#fff4e0", "fg": "#8a4a00", "border": "#e89c00"},
-    "reconsider":          {"bg": "#fde4e4", "fg": "#9c1010", "border": "#d73030"},
+    "reconsider": {"bg": "#fde4e4", "fg": "#9c1010", "border": "#d73030"},
 }
 _LIKELIHOOD_COLOR = {"high": "#9c1010", "medium": "#a3550b", "low": "#0e6432"}
 _SEVERITY_COLOR = {"severe": "#9c1010", "moderate": "#a3550b", "mild": "#0e6432"}
@@ -244,6 +250,7 @@ def build_sections(
     # parsing the free-text variants so legacy callers / partial runs
     # still render something.
     from ..models.llm import RankerOutput, RedTeamOutput, SizerOutput
+
     structured_ranker = ranker_output if isinstance(ranker_output, RankerOutput) else None
     structured_redteam = redteam_output if isinstance(redteam_output, RedTeamOutput) else None
     structured_sizer = sizer_output if isinstance(sizer_output, SizerOutput) else None
@@ -252,22 +259,22 @@ def build_sections(
     pick_blocks = _split_by_pick_blocks(ranker_text)
     bear_blocks = _split_by_ticker_blocks(redteam_text)
     alloc_blocks = _split_by_ticker_blocks(sizer_text)
-    pick_order = [
-        t for _, t, _ in parse_picks(structured_ranker or ranker_text)
-    ]
+    pick_order = [t for _, t, _ in parse_picks(structured_ranker or ranker_text)]
     survivors = [c for c in candidates if c["passed_filter"]]
     rejected = [c for c in candidates if not c["passed_filter"]]
 
     s: list[Section] = []
 
     s.append(Section(kind="heading", text=f"Stock discovery picks — {today}", level=1))
-    s.append(Section(
-        kind="para",
-        text=(
-            f"{universe_size} candidates considered, {len(survivors)} survived "
-            f"hard filters, {len(pick_order)} picks."
-        ),
-    ))
+    s.append(
+        Section(
+            kind="para",
+            text=(
+                f"{universe_size} candidates considered, {len(survivors)} survived "
+                f"hard filters, {len(pick_order)} picks."
+            ),
+        )
+    )
 
     if track_record_block:
         s.append(Section(kind="heading", text="Track record", level=2))
@@ -275,23 +282,26 @@ def build_sections(
 
     # Market themes panel — what's hot right now (drives ranker bias).
     from ..models.llm import MarketThemes
+
     if isinstance(market_themes, MarketThemes) and market_themes.themes:
         s.append(Section(kind="heading", text="Current market themes", level=2))
-        s.append(Section(
-            kind="market_themes_panel",
-            data={
-                "themes": [
-                    {
-                        "name": t.name,
-                        "description": t.description,
-                        "strength": t.strength,
-                        "trending": t.trending,
-                        "member_tickers": list(t.member_tickers),
-                    }
-                    for t in market_themes.themes
-                ],
-            },
-        ))
+        s.append(
+            Section(
+                kind="market_themes_panel",
+                data={
+                    "themes": [
+                        {
+                            "name": t.name,
+                            "description": t.description,
+                            "strength": t.strength,
+                            "trending": t.trending,
+                            "member_tickers": list(t.member_tickers),
+                        }
+                        for t in market_themes.themes
+                    ],
+                },
+            )
+        )
 
     if macro_summary:
         s.append(Section(kind="heading", text="Macro regime", level=2))
@@ -327,33 +337,29 @@ def build_sections(
             pick = pick_by_ticker[ticker]
             bear = bear_by_ticker.get(ticker)
             alloc = alloc_by_ticker.get(ticker)
-            s.append(Section(
-                kind="pick_card",
-                data={
-                    "ticker": ticker,
-                    "rank": pick.rank,
-                    "one_liner": pick.one_liner,
-                    "conviction": pick.conviction,
-                    "time_horizon": pick.time_horizon,
-                    "bull_thesis": pick.bull_thesis,
-                    "what_youre_betting_on": pick.what_youre_betting_on,
-                    "why_over_alternatives": pick.why_over_alternatives,
-                    "sector_concentration_check": pick.sector_concentration_check,
-                    "bear_case": bear.bear_case if bear else None,
-                    "most_fragile_assumption": (
-                        bear.most_fragile_assumption if bear else None
-                    ),
-                    "watch_metric": bear.watch_metric if bear else None,
-                    "fragility_rank": bear.fragility_rank if bear else None,
-                    "allocation_pct": (
-                        alloc.allocation_pct if alloc else None
-                    ),
-                    "allocation_usd": (
-                        alloc.allocation_usd if alloc else None
-                    ),
-                    "allocation_rationale": alloc.rationale if alloc else None,
-                },
-            ))
+            s.append(
+                Section(
+                    kind="pick_card",
+                    data={
+                        "ticker": ticker,
+                        "rank": pick.rank,
+                        "one_liner": pick.one_liner,
+                        "conviction": pick.conviction,
+                        "time_horizon": pick.time_horizon,
+                        "bull_thesis": pick.bull_thesis,
+                        "what_youre_betting_on": pick.what_youre_betting_on,
+                        "why_over_alternatives": pick.why_over_alternatives,
+                        "sector_concentration_check": pick.sector_concentration_check,
+                        "bear_case": bear.bear_case if bear else None,
+                        "most_fragile_assumption": (bear.most_fragile_assumption if bear else None),
+                        "watch_metric": bear.watch_metric if bear else None,
+                        "fragility_rank": bear.fragility_rank if bear else None,
+                        "allocation_pct": (alloc.allocation_pct if alloc else None),
+                        "allocation_usd": (alloc.allocation_usd if alloc else None),
+                        "allocation_rationale": alloc.rationale if alloc else None,
+                    },
+                )
+            )
             s.append(Section(kind="image", image_ticker=ticker))
         else:
             s.append(Section(kind="heading", text=ticker, level=2))
@@ -370,44 +376,49 @@ def build_sections(
     if structured_sizer and structured_sizer.allocations:
         s.append(Section(kind="page_break"))
         s.append(Section(kind="heading", text="Allocation summary", level=2))
-        s.append(Section(
-            kind="allocation_table",
-            data={
-                "allocations": [
-                    {
-                        "ticker": a.ticker,
-                        "pct": a.allocation_pct,
-                        "usd": a.allocation_usd,
-                        "rationale": a.rationale,
-                    }
-                    for a in structured_sizer.allocations
-                ],
-                "warnings": list(structured_sizer.concentration_warnings),
-            },
-        ))
+        s.append(
+            Section(
+                kind="allocation_table",
+                data={
+                    "allocations": [
+                        {
+                            "ticker": a.ticker,
+                            "pct": a.allocation_pct,
+                            "usd": a.allocation_usd,
+                            "rationale": a.rationale,
+                        }
+                        for a in structured_sizer.allocations
+                    ],
+                    "warnings": list(structured_sizer.concentration_warnings),
+                },
+            )
+        )
 
     s.append(Section(kind="heading", text="Ranker correlation notes", level=2))
     if structured_ranker and structured_ranker.pairs_not_to_hold_together:
         for pair in structured_ranker.pairs_not_to_hold_together:
-            s.append(Section(
-                kind="para",
-                text=(
-                    f"{pair.ticker_a} + {pair.ticker_b}: "
-                    f"{pair.shared_driver}"
-                ),
-            ))
+            s.append(
+                Section(
+                    kind="para",
+                    text=(f"{pair.ticker_a} + {pair.ticker_b}: {pair.shared_driver}"),
+                )
+            )
     else:
         trailing = re.split(_PICK_RE, ranker_text)[-1].strip()
         s.append(Section(kind="preformatted", text=trailing or "(none)"))
 
     s.append(Section(kind="heading", text="Red-team summary", level=2))
     if structured_redteam:
-        s.append(Section(
-            kind="para",
-            text=f"Single most fragile pick: {structured_redteam.single_most_fragile_pick}",
-        ))
+        s.append(
+            Section(
+                kind="para",
+                text=f"Single most fragile pick: {structured_redteam.single_most_fragile_pick}",
+            )
+        )
     else:
-        s.append(Section(kind="preformatted", text=redteam_text.split("---")[-1].strip() or "(none)"))
+        s.append(
+            Section(kind="preformatted", text=redteam_text.split("---")[-1].strip() or "(none)")
+        )
 
     s.append(Section(kind="heading", text="Sizer concentration warnings", level=2))
     if structured_sizer:
@@ -425,19 +436,23 @@ def build_sections(
         rows: list[list[str]] = []
         for c in sorted(survivors, key=lambda x: x.get("score") or 0, reverse=True):
             comp = c.get("score_components") or {}
-            rows.append([
-                c["ticker"],
-                f"{c.get('score') or '—'}",
-                f"{comp.get('fundamentals', '—')}",
-                f"{comp.get('trend', '—')}",
-                f"{comp.get('conviction', '—')}",
-                c.get("sector") or "—",
-            ])
-        s.append(Section(
-            kind="table",
-            table_header=["Ticker", "Score", "Fund.", "Trend", "Conv.", "Sector"],
-            table_rows=rows,
-        ))
+            rows.append(
+                [
+                    c["ticker"],
+                    f"{c.get('score') or '—'}",
+                    f"{comp.get('fundamentals', '—')}",
+                    f"{comp.get('trend', '—')}",
+                    f"{comp.get('conviction', '—')}",
+                    c.get("sector") or "—",
+                ]
+            )
+        s.append(
+            Section(
+                kind="table",
+                table_header=["Ticker", "Score", "Fund.", "Trend", "Conv.", "Sector"],
+                table_rows=rows,
+            )
+        )
 
     if rejected:
         s.append(Section(kind="heading", text="Rejected candidates", level=2))

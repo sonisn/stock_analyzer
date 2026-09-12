@@ -21,6 +21,7 @@ State is shared across steps via a DiscoverPipeline instance — each step is a
 bound method that reads/writes self.state. Cleaner than threading dicts
 through StepOutput.content.
 """
+
 from __future__ import annotations
 
 import os
@@ -58,6 +59,10 @@ from ..db.repository import (
 )
 from ..db.session import get_session
 from ..discover.analyst import Analyst, analyze_batch
+from ..discover.calibration import (
+    format_calibration_block,
+    measure_calibration,
+)
 from ..discover.market_themes import (
     MarketThemesAgent,
     theme_score_bonus,
@@ -91,13 +96,41 @@ logger = get_logger(__name__)
 def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
     """Persist the PDF to ~/.stock_analyzer/reports/ so a missed email
     never costs the user the report. Override via REPORTS_DIR env."""
-    reports_dir = Path(
-        os.path.expanduser(os.getenv("REPORTS_DIR", "~/.stock_analyzer/reports"))
-    )
+    reports_dir = Path(os.path.expanduser(os.getenv("REPORTS_DIR", "~/.stock_analyzer/reports")))
     reports_dir.mkdir(parents=True, exist_ok=True)
     path = reports_dir / filename
     path.write_bytes(pdf_bytes)
     return path
+
+
+def _pick_forecasts(ranker_output: object) -> dict[str, dict[str, Any]]:
+    """Per-ticker forecast extracted from the structured ranker output.
+
+    Returns {ticker: {conviction, ev_pct, time_horizon, scenarios}} where
+    `scenarios` is a list of plain dicts ready for the repository layer.
+    EV is computed by the same deterministic helper the report and Sizer
+    use, so the stored number is exactly the one the pipeline acted on.
+    """
+    from ..models.llm import RankerOutput, expected_return_pct
+
+    if not isinstance(ranker_output, RankerOutput):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for pick in ranker_output.picks:
+        out[pick.ticker] = {
+            "conviction": pick.conviction,
+            "ev_pct": expected_return_pct(pick),
+            "time_horizon": pick.time_horizon,
+            "scenarios": [
+                {
+                    "label": s.label,
+                    "probability": s.probability,
+                    "target_return_pct": s.target_return_pct,
+                }
+                for s in pick.scenarios
+            ],
+        }
+    return out
 
 
 def _format_ev_table(ranker_output: object) -> str:
@@ -107,6 +140,7 @@ def _format_ev_table(ranker_output: object) -> str:
     Bear probabilities surfaced explicitly so the Sizer can see when a
     high-EV pick has high dispersion."""
     from ..models.llm import RankerOutput, expected_return_pct
+
     if not isinstance(ranker_output, RankerOutput):
         return ""
     rows: list[str] = []
@@ -156,6 +190,7 @@ def _validate_and_correct_themes(
     if themes is None:
         return None
     from ..models.llm import MarketTheme, MarketThemes
+
     if not isinstance(themes, MarketThemes):
         return themes
 
@@ -168,16 +203,14 @@ def _validate_and_correct_themes(
 
     corrected: list[MarketTheme] = []
     for theme in themes.themes:
-        valid_members = [
-            t for t in theme.member_tickers if t.upper() in upper_universe
-        ]
-        dropped = [
-            t for t in theme.member_tickers if t.upper() not in upper_universe
-        ]
+        valid_members = [t for t in theme.member_tickers if t.upper() in upper_universe]
+        dropped = [t for t in theme.member_tickers if t.upper() not in upper_universe]
         if dropped:
             logger.info(
                 "Theme '%s': dropped %d/%d tickers not in universe: %s",
-                theme.name, len(dropped), len(theme.member_tickers),
+                theme.name,
+                len(dropped),
+                len(theme.member_tickers),
                 ", ".join(dropped[:10]),
             )
 
@@ -185,22 +218,18 @@ def _validate_and_correct_themes(
             logger.warning(
                 "Theme '%s': only %d valid member(s) survive — dropping "
                 "theme entirely (likely hallucinated).",
-                theme.name, len(valid_members),
+                theme.name,
+                len(valid_members),
             )
             continue
 
         # Data-derived strength: avg rs_6mo across surviving members,
         # mapped 0..10 via a sigmoid-ish curve. SPY-neutral → ~5, +15% → ~8,
         # +25% → ~9, -10% → ~3, -20% → ~1.
-        rs6_values = [
-            rs6_by_ticker[m.upper()] for m in valid_members
-            if m.upper() in rs6_by_ticker
-        ]
+        rs6_values = [rs6_by_ticker[m.upper()] for m in valid_members if m.upper() in rs6_by_ticker]
         if rs6_values:
             avg_rs = sum(rs6_values) / len(rs6_values)
-            data_strength = max(
-                1, min(10, round(5 + avg_rs * 25))
-            )
+            data_strength = max(1, min(10, round(5 + avg_rs * 25)))
         else:
             data_strength = theme.strength
 
@@ -208,13 +237,13 @@ def _validate_and_correct_themes(
         # warning and blend (60% data, 40% LLM).
         delta = abs(theme.strength - data_strength)
         if delta > 3:
-            corrected_strength = round(
-                0.6 * data_strength + 0.4 * theme.strength
-            )
+            corrected_strength = round(0.6 * data_strength + 0.4 * theme.strength)
             logger.warning(
                 "Theme '%s': LLM claimed strength=%d, data says %d "
                 "(avg rs_6mo of members = %.1f%%). Adjusting to %d.",
-                theme.name, theme.strength, data_strength,
+                theme.name,
+                theme.strength,
+                data_strength,
                 (sum(rs6_values) / len(rs6_values) * 100) if rs6_values else 0,
                 corrected_strength,
             )
@@ -230,14 +259,16 @@ def _validate_and_correct_themes(
                 logger.warning(
                     "Theme '%s': LLM said trending=up but avg rs_6mo "
                     "of members is %.1f%% — flipping to 'down'.",
-                    theme.name, avg_rs * 100,
+                    theme.name,
+                    avg_rs * 100,
                 )
                 new_trending = "down"
             elif avg_rs > 0.10 and theme.trending == "down":
                 logger.warning(
                     "Theme '%s': LLM said trending=down but avg rs_6mo "
                     "of members is %.1f%% — flipping to 'up'.",
-                    theme.name, avg_rs * 100,
+                    theme.name,
+                    avg_rs * 100,
                 )
                 new_trending = "up"
             else:
@@ -245,13 +276,15 @@ def _validate_and_correct_themes(
         else:
             new_trending = theme.trending
 
-        corrected.append(MarketTheme(
-            name=theme.name,
-            description=theme.description,
-            strength=new_strength,
-            trending=new_trending,
-            member_tickers=valid_members,
-        ))
+        corrected.append(
+            MarketTheme(
+                name=theme.name,
+                description=theme.description,
+                strength=new_strength,
+                trending=new_trending,
+                member_tickers=valid_members,
+            )
+        )
 
     if not corrected:
         logger.warning("All themes were invalidated; returning None.")
@@ -268,13 +301,12 @@ def _validate_and_correct_themes(
     return MarketThemes(themes=corrected, full_text="\n\n".join(parts))
 
 
-def _top_fail_reasons(
-    candidates: list[dict[str, Any]], *, k: int = 3
-) -> str:
+def _top_fail_reasons(candidates: list[dict[str, Any]], *, k: int = 3) -> str:
     """Aggregate the top-K fail-reason strings across all candidates, so
     a 'no survivors' log line is actionable (e.g. tells you debt/equity
     or market-cap was the dominant filter)."""
     from collections import Counter
+
     counter: Counter[str] = Counter()
     for c in candidates:
         for r in c.get("fail_reasons") or []:
@@ -298,8 +330,7 @@ def _log_discover_analysis(
     bar = "=" * 70
     if not delivered:
         logger.error(
-            "%s\nEMAIL NOT DELIVERED — full analysis follows in this log.\n"
-            "Reason: %s\nPDF: %s\n%s",
+            "%s\nEMAIL NOT DELIVERED — full analysis follows in this log.\nReason: %s\nPDF: %s\n%s",
             bar,
             delivery_error or "EMAIL_TO not configured",
             local_pdf_path,
@@ -337,9 +368,7 @@ def _fetch_news(ticker: str, limit: int = 3) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for it in items[:limit]:
         title = it.get("title") or (it.get("content") or {}).get("title")
-        link = it.get("link") or (
-            (it.get("content") or {}).get("canonicalUrl") or {}
-        ).get("url")
+        link = it.get("link") or ((it.get("content") or {}).get("canonicalUrl") or {}).get("url")
         if title:
             out.append({"title": title, "link": link})
     return out
@@ -393,37 +422,67 @@ class DiscoverPipeline:
     # --- step executors ------------------------------------------------
 
     def step_universe(self, step_input: StepInput) -> StepOutput:
-        universe = build_universe(watchlist=self.settings.discover_watchlist)
+        # Holdings belong in the sampling frame: a name you already own is
+        # always worth re-evaluating. Fetched here (not in step_holdings,
+        # which runs later) and cached in state so the brokerage is only
+        # called once per run.
+        holdings_tickers: tuple[str, ...] = ()
+        try:
+            holdings = fetch_portfolio_holdings()
+            self.state["holdings_raw"] = holdings
+            holdings_tickers = tuple(
+                sorted(
+                    {
+                        str(item.get("symbol") or "").upper()
+                        for items in holdings.values()
+                        for item in items
+                        if item.get("symbol")
+                    }
+                )
+            )
+        except Exception as e:
+            logger.info(
+                "Holdings unavailable for the universe frame (%s) — "
+                "continuing with index + watchlist only",
+                e,
+            )
+
+        universe = build_universe(
+            watchlist=self.settings.discover_watchlist,
+            holdings=holdings_tickers,
+        )
         if not universe:
             raise RuntimeError(
-                "Universe empty — no candidates from insider/billionaire/watchlist. "
-                "Set DISCOVER_WATCHLIST or check TAVILY_API_KEY."
+                "Universe empty — the base universe file, watchlist, holdings "
+                "and news feeds all came back empty. Check the bundled "
+                "S&P 500 snapshot (or DISCOVER_UNIVERSE_FILE), "
+                "DISCOVER_WATCHLIST, and TAVILY_API_KEY."
             )
         self.state["universe"] = universe
         self.state["tickers"] = list(universe.keys())
-        return StepOutput(content=f"Universe: {len(universe)} candidates")
+        frame_size = sum(1 for d in universe.values() if d.get("in_base_universe"))
+        return StepOutput(
+            content=(
+                f"Universe: {len(universe)} candidates "
+                f"({frame_size} in frame, {len(universe) - frame_size} news-only)"
+            )
+        )
 
     def step_fundamentals(self, step_input: StepInput) -> StepOutput:
         tickers = self.state["tickers"]
         self.state["fundamentals"] = batch_fundamentals(tickers)
-        return StepOutput(
-            content=f"Fundamentals: {len(self.state['fundamentals'])}/{len(tickers)}"
-        )
+        return StepOutput(content=f"Fundamentals: {len(self.state['fundamentals'])}/{len(tickers)}")
 
     def step_technicals(self, step_input: StepInput) -> StepOutput:
         tickers = self.state["tickers"]
         self.state["technicals"] = batch_technicals(tickers)
-        return StepOutput(
-            content=f"Technicals: {len(self.state['technicals'])}/{len(tickers)}"
-        )
+        return StepOutput(content=f"Technicals: {len(self.state['technicals'])}/{len(tickers)}")
 
     def step_sector_rotation(self, step_input: StepInput) -> StepOutput:
         self.state["sector_rotation"] = sector_rotation_summary(months=6)
         leaders = self.state["sector_rotation"].get("leaders", [])
         laggards = self.state["sector_rotation"].get("laggards", [])
-        return StepOutput(
-            content=f"Sector leaders (6mo): {leaders}; laggards: {laggards}"
-        )
+        return StepOutput(content=f"Sector leaders (6mo): {leaders}; laggards: {laggards}")
 
     def step_macro_regime(self, step_input: StepInput) -> StepOutput:
         data = fetch_regime_data(self.settings.fred_api_key)
@@ -437,6 +496,19 @@ class DiscoverPipeline:
         self.state["track_record"] = record
         self.state["track_record_summary"] = format_track_record_summary(record)
         self.state["track_record_block"] = format_track_record_block(record)
+
+        # Calibration is a separate read over the same DB: the track record
+        # says whether the picks worked, calibration says whether the
+        # ranker's own stated confidence and EV meant anything. Both go into
+        # the ranker prompt; a failure here must not abort a run.
+        try:
+            calibration = measure_calibration(self.settings.discover_db_path)
+            self.state["calibration"] = calibration
+            self.state["calibration_block"] = format_calibration_block(calibration)
+        except Exception as e:
+            logger.warning("calibration pass failed (%s) — continuing without", e)
+            self.state["calibration"] = None
+            self.state["calibration_block"] = ""
         return StepOutput(content=self.state["track_record_summary"])
 
     def step_market_themes(self, step_input: StepInput) -> StepOutput:
@@ -499,7 +571,10 @@ class DiscoverPipeline:
             }
             if passes and f and t:
                 scored = score_candidate(
-                    f, t, u, revisions=revisions_by_t.get(ticker),
+                    f,
+                    t,
+                    u,
+                    revisions=revisions_by_t.get(ticker),
                 )
                 bonus, theme_meta = theme_score_bonus(ticker, themes_by_t)
                 cand["score"] = round(scored["score"] + bonus, 1)
@@ -511,9 +586,7 @@ class DiscoverPipeline:
                     **scored["breakdown"],
                     "theme": theme_meta,
                 }
-            cand["sector_bias"] = sector_bias(
-                cand["sector"], self.state.get("sector_rotation", {})
-            )
+            cand["sector_bias"] = sector_bias(cand["sector"], self.state.get("sector_rotation", {}))
             candidates.append(cand)
 
         survivors = sorted(
@@ -522,6 +595,30 @@ class DiscoverPipeline:
             reverse=True,
         )[:MAX_CANDIDATES_FOR_LLM]
         passed = sum(1 for c in candidates if c["passed_filter"])
+        # Funnel visibility: the hard filter is a momentum style bet, so a
+        # thin tape can collapse the survivor set to a handful. Logged
+        # explicitly because "top 5 of 6" is not a comparison, and the
+        # ranker's prompt ("pick the top N from M candidates") reads the
+        # same either way.
+        frame_n = sum(
+            1 for t in self.state["tickers"] if universe.get(t, {}).get("in_base_universe")
+        )
+        logger.info(
+            "Screen funnel: %d universe (%d in frame) -> %d passed hard "
+            "filters -> %d sent to the LLM stages (cap %d)",
+            len(candidates),
+            frame_n,
+            passed,
+            len(survivors),
+            MAX_CANDIDATES_FOR_LLM,
+        )
+        if 0 < passed < 10:
+            logger.warning(
+                "Only %d candidate(s) passed the hard filter. The 'top picks' "
+                "are nearly the whole surviving set, so treat the ranking as "
+                "weak discrimination rather than selection.",
+                passed,
+            )
         self.state["candidates"] = candidates
         self.state["survivors"] = survivors
         self.state["survivor_tickers"] = [c["ticker"] for c in survivors]
@@ -540,9 +637,7 @@ class DiscoverPipeline:
                 len(candidates),
                 _top_fail_reasons(candidates),
             )
-            return StepOutput(
-                content=f"Screen: 0/{len(candidates)} passed — no survivors"
-            )
+            return StepOutput(content=f"Screen: 0/{len(candidates)} passed — no survivors")
         return StepOutput(
             content=f"Screen: {passed}/{len(candidates)} passed; top {len(survivors)} → LLM"
         )
@@ -553,9 +648,7 @@ class DiscoverPipeline:
             self.state["risk_factors"] = {}
             return StepOutput(content="risk_factors: no survivors; skipping")
         self.state["risk_factors"] = batch_risk_factors(tickers)
-        return StepOutput(
-            content=f"SEC 10-K: {len(self.state['risk_factors'])}/{len(tickers)}"
-        )
+        return StepOutput(content=f"SEC 10-K: {len(self.state['risk_factors'])}/{len(tickers)}")
 
     def step_news(self, step_input: StepInput) -> StepOutput:
         tickers = self.state.get("survivor_tickers") or []
@@ -573,8 +666,7 @@ class DiscoverPipeline:
         self.state["earnings_alerts"] = batch_earnings_flags(tickers, within_days=5)
         return StepOutput(
             content=(
-                f"Earnings within 5d: {len(self.state['earnings_alerts'])}/"
-                f"{len(tickers)} flagged"
+                f"Earnings within 5d: {len(self.state['earnings_alerts'])}/{len(tickers)} flagged"
             )
         )
 
@@ -598,9 +690,7 @@ class DiscoverPipeline:
             return StepOutput(content="finnhub_signals: no survivors; skipping")
         self.state["finnhub_signals"] = batch_finnhub_signals(tickers)
         n = sum(1 for v in self.state["finnhub_signals"].values() if v)
-        return StepOutput(
-            content=f"Finnhub signals: {n}/{len(tickers)} tickers covered"
-        )
+        return StepOutput(content=f"Finnhub signals: {n}/{len(tickers)} tickers covered")
 
     def step_eps_revisions(self, step_input: StepInput) -> StepOutput:
         """Analyst EPS-estimate revisions over the last 7 and 30 days.
@@ -615,12 +705,10 @@ class DiscoverPipeline:
             return StepOutput(content="eps_revisions: empty universe; skipping")
         self.state["eps_revisions"] = batch_eps_revisions(tickers)
         raising = sum(
-            1 for v in self.state["eps_revisions"].values()
-            if v.get("direction_30d") == "raising"
+            1 for v in self.state["eps_revisions"].values() if v.get("direction_30d") == "raising"
         )
         lowering = sum(
-            1 for v in self.state["eps_revisions"].values()
-            if v.get("direction_30d") == "lowering"
+            1 for v in self.state["eps_revisions"].values() if v.get("direction_30d") == "lowering"
         )
         return StepOutput(
             content=(
@@ -636,9 +724,7 @@ class DiscoverPipeline:
             self.state["quarterly_mda"] = {}
             return StepOutput(content="quarterly_mda: no survivors; skipping")
         self.state["quarterly_mda"] = batch_quarterly_mda(tickers)
-        return StepOutput(
-            content=f"10-Q MD&A: {len(self.state['quarterly_mda'])}/{len(tickers)}"
-        )
+        return StepOutput(content=f"10-Q MD&A: {len(self.state['quarterly_mda'])}/{len(tickers)}")
 
     def step_peer_comparison(self, step_input: StepInput) -> StepOutput:
         tickers = self.state.get("survivor_tickers") or []
@@ -749,27 +835,23 @@ class DiscoverPipeline:
         analyst = Analyst("claude", self.settings.discover_sonnet_model)
         self.state["analyses"] = analyze_batch(analyst, payloads)
         if not self.state["analyses"]:
-            logger.error(
-                "Analyst: all calls failed; downstream LLM stages will skip"
-            )
+            logger.error("Analyst: all calls failed; downstream LLM stages will skip")
             return StepOutput(content="Analyst: all calls failed; downstream will skip")
         return StepOutput(content=f"Analyst: {len(self.state['analyses'])} scorecards")
 
     def step_holdings(self, step_input: StepInput) -> StepOutput:
         try:
-            holdings = fetch_portfolio_holdings()
+            # step_universe already fetched these to build the sampling
+            # frame; reuse so the brokerage is hit once per run.
+            holdings = self.state.get("holdings_raw")
+            if holdings is None:
+                holdings = fetch_portfolio_holdings()
             self.state["holdings_summary"] = _holdings_summary(holdings)
         except Exception as e:
             logger.warning("Could not fetch holdings (%s) — proceeding without", e)
             self.state["holdings_summary"] = ""
-        n = (
-            self.state["holdings_summary"].count("\n") + 1
-            if self.state["holdings_summary"]
-            else 0
-        )
-        return StepOutput(
-            content=f"Holdings: {n} positions" if n else "Holdings: none"
-        )
+        n = self.state["holdings_summary"].count("\n") + 1 if self.state["holdings_summary"] else 0
+        return StepOutput(content=f"Holdings: {n} positions" if n else "Holdings: none")
 
     def step_ranker(self, step_input: StepInput) -> StepOutput:
         analyses = self.state.get("analyses") or {}
@@ -782,6 +864,7 @@ class DiscoverPipeline:
             "claude",
             self.settings.discover_opus_model,
             consensus_runs=self.settings.discover_consensus_runs,
+            consensus_temperature=self.settings.discover_consensus_temperature,
         )
         output = ranker.rank(
             analyses,
@@ -789,6 +872,7 @@ class DiscoverPipeline:
             macro_context=self.state.get("macro_summary", ""),
             track_record_block=self.state.get("track_record_block", ""),
             market_themes_block=self.state.get("market_themes_block", ""),
+            calibration_block=self.state.get("calibration_block", ""),
         )
         self.state["ranker_output"] = output
         self.state["ranker_text"] = output.full_text
@@ -862,7 +946,13 @@ class DiscoverPipeline:
                     report if isinstance(report, str) else ""
                 )
                 insert_scorecard(session, run_id, ticker, analyst_text)
+            # Forecast fields travel with the pick so calibration can grade
+            # them later; `entry_price` is the screen-time price, never a
+            # refetch, so a historical pick is never repriced with new data.
+            forecasts = _pick_forecasts(self.state.get("ranker_output"))
+            prices = {c["ticker"]: c.get("price") for c in self.state["candidates"]}
             for rank, ticker, _ in self.state["picks"]:
+                forecast = forecasts.get(ticker, {})
                 insert_pick(
                     session,
                     run_id,
@@ -871,6 +961,11 @@ class DiscoverPipeline:
                     ranker_text=self.state["ranker_text"],
                     bear_case_text=self.state["redteam_text"],
                     allocation_text=self.state["sizer_text"],
+                    conviction=forecast.get("conviction"),
+                    ev_pct=forecast.get("ev_pct"),
+                    entry_price=prices.get(ticker),
+                    time_horizon=forecast.get("time_horizon"),
+                    scenarios=forecast.get("scenarios"),
                 )
             insert_run_outputs(
                 session,
@@ -933,9 +1028,7 @@ class DiscoverPipeline:
                     subject,
                     html_body,
                     content_type="html",
-                    inline_images={
-                        chart_cids[t]: data for t, data in charts.items()
-                    } or None,
+                    inline_images={chart_cids[t]: data for t, data in charts.items()} or None,
                     attachments=[(pdf_filename, pdf_bytes, "pdf")],
                 )
                 delivered = True
@@ -973,8 +1066,7 @@ class DiscoverPipeline:
         status = "emailed" if delivered else "persisted (no email)"
         return StepOutput(
             content=(
-                f"Run #{run_id} {status}; PDF {len(pdf_bytes)} bytes "
-                f"(saved to {local_pdf_path})"
+                f"Run #{run_id} {status}; PDF {len(pdf_bytes)} bytes (saved to {local_pdf_path})"
             )
         )
 
@@ -1026,9 +1118,7 @@ class DiscoverPipeline:
                 Step(name="ranker", executor=self.step_ranker),
                 Step(name="redteam", executor=self.step_redteam),
                 Step(name="sizer", executor=self.step_sizer),
-                Step(
-                    name="persist_and_report", executor=self.step_persist_and_report
-                ),
+                Step(name="persist_and_report", executor=self.step_persist_and_report),
             ],
         )
 

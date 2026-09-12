@@ -1,4 +1,5 @@
 """Tests for realized-volatility computation."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ def test_annualized_vol_from_closes_matches_handcalc():
     from stock_analyzer.data.historical_volatility import (
         _annualized_vol_from_closes,
     )
+
     # 60 days of closes with a deliberate 1%-stdev log return.
     closes = [100.0]
     for i in range(60):
@@ -25,6 +27,7 @@ def test_annualized_vol_from_closes_returns_none_for_short_input():
     from stock_analyzer.data.historical_volatility import (
         _annualized_vol_from_closes,
     )
+
     assert _annualized_vol_from_closes([100.0] * 5) is None
 
 
@@ -32,6 +35,7 @@ def test_annualized_vol_from_closes_returns_none_for_constant():
     from stock_analyzer.data.historical_volatility import (
         _annualized_vol_from_closes,
     )
+
     assert _annualized_vol_from_closes([100.0] * 40) is None
 
 
@@ -39,6 +43,7 @@ def test_fetch_realized_volatility_empty_input():
     from stock_analyzer.data.historical_volatility import (
         fetch_realized_volatility,
     )
+
     assert fetch_realized_volatility([]) == {}
 
 
@@ -49,9 +54,11 @@ def test_fetch_realized_volatility_happy_path():
     from stock_analyzer.data.historical_volatility import (
         fetch_realized_volatility,
     )
+
     # 252 days of 1%-stdev returns.
     closes = [100.0]
     import random
+
     random.seed(42)
     for _ in range(260):
         closes.append(closes[-1] * (1 + random.gauss(0.0005, 0.01)))
@@ -72,6 +79,7 @@ def test_fetch_realized_volatility_empty_df_returns_empty():
     from stock_analyzer.data.historical_volatility import (
         fetch_realized_volatility,
     )
+
     fake_ticker = MagicMock()
     fake_ticker.history.return_value = pd.DataFrame()
     fake_yf = MagicMock()
@@ -85,6 +93,7 @@ def test_fetch_realized_volatility_swallows_yf_errors():
     from stock_analyzer.data.historical_volatility import (
         fetch_realized_volatility,
     )
+
     fake_yf = MagicMock()
     fake_yf.Ticker.side_effect = RuntimeError("network down")
     with patch.dict("sys.modules", {"yfinance": fake_yf}):

@@ -5,6 +5,7 @@ to skim the bull thesis and ignore disconfirming evidence. The red-team
 output is placed inline with each pick in the final report — not at the
 end — so it's impossible to skip past.
 """
+
 from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider
@@ -68,9 +69,7 @@ must match the prose.\
 
 
 class RedTeam:
-    def __init__(
-        self, provider: Provider, model: str, *, effort: str = "high"
-    ):
+    def __init__(self, provider: Provider, model: str, *, effort: str = "high"):
         # Opus 4.7+ adaptive thinking — Claude self-allocates thinking budget,
         # gated by output_config.effort. high = deep adversarial reasoning.
         self.agent = AgnoAgent(
@@ -97,6 +96,4 @@ class RedTeam:
             return result
         if isinstance(result, str):
             return RedTeamOutput.model_validate_json(result)
-        raise RuntimeError(
-            f"RedTeam returned unexpected type {type(result).__name__}."
-        )
+        raise RuntimeError(f"RedTeam returned unexpected type {type(result).__name__}.")
