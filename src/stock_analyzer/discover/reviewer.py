@@ -11,7 +11,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from ..llm import AgnoAgent, Provider
+from ..llm import AgnoAgent, Provider, deterministic_model_kwargs
 from ..logging import get_logger
 from ..models.llm import HoldingReview
 from ..serialization import dumps_pretty
@@ -363,7 +363,7 @@ def _repair_verdict_inconsistencies(review: HoldingReview, ticker: str) -> Holdi
 class Reviewer:
     def __init__(self, provider: Provider, model: str):
         model_kwargs: dict[str, Any] = {
-            "temperature": 0,
+            **deterministic_model_kwargs(provider),
             "retries": 3,
             "exponential_backoff": True,
             "delay_between_retries": 10,

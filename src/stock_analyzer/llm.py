@@ -132,6 +132,25 @@ def reasoning_model_kwargs(
     raise ValueError(f"Unsupported provider {provider!r}.")
 
 
+def deterministic_model_kwargs(provider: Provider) -> dict[str, Any]:
+    """Kwargs for a plain (non-thinking) low-temperature call.
+
+    Claude 5-generation models (confirmed on claude-sonnet-5) reject an
+    explicit `temperature` outside of adaptive-thinking mode — a 400
+    "`temperature` is deprecated for this model" — so it's omitted
+    entirely for claude and the model runs at its own default instead.
+    (claude-haiku-4-5 still accepts temperature=0 fine as of this writing,
+    but the safer default going forward is to not pass it for any claude
+    model, since Anthropic is clearly phasing this out model-by-model and
+    there's no cheap way to know in advance which model id will reject it
+    next.) Gemini/OpenAI still accept and want an explicit temperature=0
+    for deterministic, non-reasoning calls.
+    """
+    if provider == "claude":
+        return {}
+    return {"temperature": 0}
+
+
 def run_with_fallback(
     primary: AgnoAgent,
     build_fallback: Callable[[], AgnoAgent] | None,

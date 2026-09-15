@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..llm import AgnoAgent, Provider, run_with_fallback
+from ..llm import AgnoAgent, Provider, deterministic_model_kwargs, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import MarketThemes
 
@@ -161,7 +161,7 @@ def _build_agent(provider: Provider, model: str) -> AgnoAgent:
         provider,
         model,
         model_kwargs={
-            "temperature": 0,
+            **deterministic_model_kwargs(provider),
             "retries": 3,
             "exponential_backoff": True,
             "delay_between_retries": 10,

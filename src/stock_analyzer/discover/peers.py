@@ -19,7 +19,7 @@ from typing import Any
 
 from ..data.fundamentals import fetch_fundamentals
 from ..data.sec_edgar import load_ticker_cik_map
-from ..llm import AgnoAgent, Provider
+from ..llm import AgnoAgent, Provider, deterministic_model_kwargs
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -67,7 +67,7 @@ class PeerFinder:
             "PeerFinder",
             provider,
             model,
-            model_kwargs={"temperature": 0},
+            model_kwargs=deterministic_model_kwargs(provider),
             instructions=PEER_FINDER_INSTRUCTIONS,
         )
 
