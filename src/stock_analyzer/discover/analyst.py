@@ -9,7 +9,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from ..llm import AgnoAgent, Provider
+from ..llm import AgnoAgent, Provider, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import AnalystReport
 from ..serialization import dumps_pretty
@@ -141,29 +141,46 @@ COMMON FAILURE MODES TO AVOID:
 """
 
 
+def _build_agent(provider: Provider, model: str) -> AgnoAgent:
+    model_kwargs: dict[str, Any] = {
+        "temperature": 0,
+        "retries": 3,
+        "exponential_backoff": True,
+        "delay_between_retries": 10,
+    }
+    if provider == "claude":
+        model_kwargs["cache_system_prompt"] = True
+    return AgnoAgent(
+        "Analyst",
+        provider,
+        model,
+        model_kwargs=model_kwargs,
+        instructions=ANALYST_INSTRUCTIONS,
+        output_schema=AnalystReport,
+    )
+
+
 class Analyst:
-    def __init__(self, provider: Provider, model: str):
-        model_kwargs: dict[str, Any] = {
-            "temperature": 0,
-            "retries": 3,
-            "exponential_backoff": True,
-            "delay_between_retries": 10,
-        }
-        if provider == "claude":
-            model_kwargs["cache_system_prompt"] = True
-        self.agent = AgnoAgent(
-            "Analyst",
-            provider,
-            model,
-            model_kwargs=model_kwargs,
-            instructions=ANALYST_INSTRUCTIONS,
-            output_schema=AnalystReport,
-        )
+    def __init__(
+        self,
+        provider: Provider,
+        model: str,
+        *,
+        fallback: tuple[Provider, str] | None = None,
+    ):
+        self.provider = provider
+        self.fallback = fallback
+        self.agent = _build_agent(provider, model)
 
     def analyze(self, ticker: str, payload: dict[str, Any]) -> AnalystReport | None:
         prompt = f"Candidate ticker: {ticker}\n\n```json\n{dumps_pretty(payload)}\n```"
         logger.info("Analyzing %s", ticker)
-        result = self.agent.run(prompt).content
+        build_fallback = (
+            (lambda: _build_agent(self.fallback[0], self.fallback[1]))
+            if self.fallback and self.fallback[0] != self.provider
+            else None
+        )
+        result = run_with_fallback(self.agent, build_fallback, prompt).content
         if result is None:
             logger.warning("Analyst returned no content for %s — skipping", ticker)
             return None

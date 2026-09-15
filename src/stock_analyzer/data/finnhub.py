@@ -18,6 +18,7 @@ than failing.
 from __future__ import annotations
 
 import os
+import random
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -30,16 +31,55 @@ from ..logging import get_logger
 
 logger = get_logger(__name__)
 
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if not raw:
+        return default
+    try:
+        value = int(float(raw))
+    except ValueError:
+        logger.warning("%s=%r is not a number; using %d", name, raw, default)
+        return default
+    return value if value > 0 else default
+
+
 # Stay under the 60/min free-tier ceiling. 55/min ≈ 1.09s between calls.
-_RATE_LIMIT_PER_MIN = 55
-_MIN_INTERVAL = 60.0 / _RATE_LIMIT_PER_MIN
+# Overridable because paid tiers raise the ceiling substantially.
+_RATE_LIMIT_PER_MIN = _env_int("FINNHUB_RATE_LIMIT_PER_MIN", 55)
+_MIN_INTERVAL = 60.0 / max(1, _RATE_LIMIT_PER_MIN)
 
 # Three workers gives a small pipelining win (one waits while others run)
 # without blowing the rate budget.
 _MAX_WORKERS = 3
 
+# A 429 means the pacing above was still too fast for this key right now
+# (other processes share the quota, and bursts at a minute boundary can
+# trip it even at 55/min). Retry with backoff and park every worker for
+# the cooldown, rather than dropping the ticker's data on the floor —
+# silently returning None here is how a run ends up with half its
+# Finnhub signals missing.
+_MAX_ATTEMPTS = _env_int("FINNHUB_MAX_ATTEMPTS", 3)
+_BASE_COOLDOWN = float(_env_int("FINNHUB_COOLDOWN_SECONDS", 10))
+_MAX_COOLDOWN = 90.0
+
 _rate_lock = threading.Lock()
 _last_call_time = 0.0
+_cooldown_until = 0.0
+
+
+def reload_from_env() -> None:
+    """Re-read the pacing knobs after the CLI has loaded `.env`.
+
+    Module import beats `load_dotenv()`, so without this the values in
+    `.env` would never be seen. Entry points call this at startup.
+    """
+    global _RATE_LIMIT_PER_MIN, _MIN_INTERVAL, _MAX_ATTEMPTS, _BASE_COOLDOWN
+
+    _RATE_LIMIT_PER_MIN = _env_int("FINNHUB_RATE_LIMIT_PER_MIN", 55)
+    _MIN_INTERVAL = 60.0 / max(1, _RATE_LIMIT_PER_MIN)
+    _MAX_ATTEMPTS = _env_int("FINNHUB_MAX_ATTEMPTS", 3)
+    _BASE_COOLDOWN = float(_env_int("FINNHUB_COOLDOWN_SECONDS", 10))
 
 
 def _client() -> finnhub.Client | None:
@@ -50,22 +90,67 @@ def _client() -> finnhub.Client | None:
 
 
 def _throttle() -> None:
-    """Block just long enough that calls leave at most every _MIN_INTERVAL."""
+    """Reserve the next send slot, waiting out the interval and any cooldown.
+
+    The slot is reserved under the lock and slept for outside it, so N
+    workers space themselves out instead of all sleeping the same
+    interval and then firing together.
+    """
     global _last_call_time
     with _rate_lock:
-        delta = time.monotonic() - _last_call_time
-        if delta < _MIN_INTERVAL:
-            time.sleep(_MIN_INTERVAL - delta)
-        _last_call_time = time.monotonic()
+        now = time.monotonic()
+        start = max(now, _last_call_time + _MIN_INTERVAL, _cooldown_until)
+        _last_call_time = start
+        wait = start - now
+    if wait > 0:
+        time.sleep(wait)
+
+
+def _is_rate_limited(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None)
+    if status == 429:
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "too many requests" in msg or "api limit" in msg
+
+
+def _cool_down(attempt: int) -> float:
+    """Pause every worker after a 429. Returns the cooldown in seconds."""
+    global _cooldown_until
+    cooldown = min(_BASE_COOLDOWN * (2 ** (attempt - 1)), _MAX_COOLDOWN)
+    cooldown *= 1.0 + random.random() * 0.25  # de-synchronize the workers
+    with _rate_lock:
+        _cooldown_until = max(_cooldown_until, time.monotonic() + cooldown)
+    return cooldown
 
 
 def _safe_call(label: str, ticker: str, fn, *args, **kwargs) -> Any:
-    _throttle()
-    try:
-        return fn(*args, **kwargs)
-    except Exception as e:
-        logger.debug("Finnhub %s failed for %s: %s", label, ticker, e)
-        return None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        _throttle()
+        try:
+            return fn(*args, **kwargs)
+        except Exception as e:
+            if not _is_rate_limited(e):
+                logger.debug("Finnhub %s failed for %s: %s", label, ticker, e)
+                return None
+            if attempt >= _MAX_ATTEMPTS:
+                logger.warning(
+                    "Finnhub %s for %s: rate limited after %d attempts; giving up",
+                    label,
+                    ticker,
+                    attempt,
+                )
+                return None
+            cooldown = _cool_down(attempt)
+            logger.info(
+                "Finnhub rate limited on %s (%s) — pausing all calls %.0fs (attempt %d/%d)",
+                label,
+                ticker,
+                cooldown,
+                attempt,
+                _MAX_ATTEMPTS,
+            )
+    return None
 
 
 def fetch_earnings_surprise(client: finnhub.Client, ticker: str) -> list[dict[str, Any]]:

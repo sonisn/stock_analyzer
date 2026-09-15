@@ -7,6 +7,7 @@ from typing import Any
 import yfinance as yf
 
 from ..logging import get_logger
+from . import yf_gateway
 
 logger = get_logger(__name__)
 
@@ -45,11 +46,7 @@ def _trend_label(history, lookback_days: int) -> str | None:
 
 
 def _fetch_news(symbol: str, *, max_results: int = 20) -> list[dict]:
-    try:
-        items = yf.Ticker(symbol).news or []
-    except Exception as e:
-        logger.warning("yfinance news fetch failed for %s: %s", symbol, e)
-        return []
+    items = yf_gateway.ticker_call(symbol, "news", lambda t: t.news or [], default=[]) or []
     out: list[dict] = []
     seen_titles: set[str] = set()
     for n in items[:max_results]:
@@ -102,28 +99,23 @@ def _earnings_summary(t: yf.Ticker) -> dict[str, Any]:
             for row in rows
         ]
 
+    symbol = getattr(t, "ticker", "") or ""
     summary: dict[str, Any] = {}
-    try:
-        df = t.get_earnings_dates(limit=4)
-        if df is not None and not df.empty:
-            df = df.reset_index()
-            summary["history"] = _clean(df.head(4).to_dict(orient="records"))
-    except Exception as e:
-        logger.debug("earnings_dates failed: %s", e)
-    try:
-        est = t.earnings_estimate
-        if est is not None and not est.empty:
-            summary["estimates"] = _clean(est.reset_index().head(2).to_dict(orient="records"))
-    except Exception as e:
-        logger.debug("earnings_estimate failed: %s", e)
+    df = yf_gateway.call(t.get_earnings_dates, limit=4, symbol=symbol, what="earnings_dates")
+    if df is not None and not df.empty:
+        df = df.reset_index()
+        summary["history"] = _clean(df.head(4).to_dict(orient="records"))
+    est = yf_gateway.call(lambda: t.earnings_estimate, symbol=symbol, what="earnings_estimate")
+    if est is not None and not est.empty:
+        summary["estimates"] = _clean(est.reset_index().head(2).to_dict(orient="records"))
     return summary
 
 
 def fetch_ticker_data(symbol: str) -> dict[str, Any]:
     """Fetch all ticker data for a single symbol — fundamentals, trends, news, earnings."""
     logger.info("Fetching ticker data: %s", symbol)
-    t = yf.Ticker(symbol)
-    info = t.info or {}
+    t = yf_gateway.get_ticker(symbol)
+    info = yf_gateway.ticker_call(symbol, "ticker.info", lambda tk: tk.info or {}, default={}) or {}
 
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     prev_close = info.get("previousClose")
@@ -131,11 +123,7 @@ def fetch_ticker_data(symbol: str) -> dict[str, Any]:
         (price - prev_close) / prev_close * 100 if price is not None and prev_close else None
     )
 
-    try:
-        hist = t.history(period="1y")
-    except Exception as e:
-        logger.warning("history fetch failed for %s: %s", symbol, e)
-        hist = None
+    hist = yf_gateway.history(symbol, what="ticker.history", period="1y")
 
     low_52 = info.get("fiftyTwoWeekLow")
     high_52 = info.get("fiftyTwoWeekHigh")
@@ -147,10 +135,7 @@ def fetch_ticker_data(symbol: str) -> dict[str, Any]:
     name = info.get("longName") or info.get("shortName")
     news = _fetch_news(symbol)
 
-    try:
-        rec = t.recommendations
-    except Exception:
-        rec = None
+    rec = yf_gateway.ticker_call(symbol, "recommendations", lambda tk: tk.recommendations)
 
     return {
         "symbol": symbol,

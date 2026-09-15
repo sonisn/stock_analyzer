@@ -406,3 +406,71 @@ def format_calibration_block(record: CalibrationRecord) -> str:
             )
 
     return "\n".join(lines)
+
+
+# --- similar past setups (factor-similarity few-shot retrieval) -----------
+
+
+def similar_past_setups(
+    score_breakdown: dict[str, float],
+    db_path: str,
+    *,
+    k: int = 3,
+    lookback_days: int = 540,
+    horizon_days: int = 90,
+) -> list[tuple[str, str, float | None]]:
+    """The k past candidates whose `score_breakdown` most resembles this one.
+
+    Reuses `score_validation._load_candidates`'s point-in-time-safe query
+    (stored scores, not recomputed from today's data) as the candidate
+    pool, and `score_validation._forward_return` for the outcome — same
+    module that already does this kind of retrospective, no-leakage
+    lookup for the score-quintile/IC report.
+
+    Nearest-neighbor is normalized Euclidean distance over factor names
+    shared between the two `score_breakdown` dicts; candidates sharing
+    fewer than 3 factors with `score_breakdown` are skipped as too little
+    overlap to compare meaningfully. Returns
+    [(ticker, run_date, forward_return_pct)], nearest-first.
+    `forward_return_pct` is None when price history wasn't available
+    (delisted/bad symbol) — reported as "no data", not dropped, same
+    point-in-time discipline as `score_validation.py`. The distance
+    itself isn't returned — it has no meaningful absolute scale, only an
+    ordering one.
+    """
+    import math
+
+    from .score_validation import _forward_return, _load_candidates
+
+    if not score_breakdown:
+        return []
+    past = _load_candidates(db_path, lookback_days, horizon_days)
+    if not past:
+        return []
+
+    scored: list[tuple[float, str, str]] = []
+    for ticker, run_date, _score, breakdown in past:
+        shared = set(score_breakdown) & set(breakdown)
+        if len(shared) < 3:
+            continue
+        dist = math.sqrt(
+            sum((score_breakdown[name] - breakdown[name]) ** 2 for name in shared) / len(shared)
+        )
+        scored.append((dist, ticker, run_date))
+    scored.sort(key=lambda row: row[0])
+
+    out: list[tuple[str, str, float | None]] = []
+    for _dist, ticker, run_date in scored[:k]:
+        out.append((ticker, run_date, _forward_return(ticker, run_date, horizon_days)))
+    return out
+
+
+def format_similar_setups_block(ticker: str, setups: list[tuple[str, str, float | None]]) -> str:
+    """One line: what similar past setups did, for the calibration block."""
+    if not setups:
+        return ""
+    parts = []
+    for past_ticker, run_date, forward_return in setups:
+        outcome = f"{forward_return:+.1f}%" if forward_return is not None else "no price data"
+        parts.append(f"{past_ticker} ({run_date}): {outcome}")
+    return f"{ticker} resembles — " + "; ".join(parts)

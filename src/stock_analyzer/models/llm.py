@@ -166,6 +166,22 @@ class RankerPick(BaseModel):
             "probability (don't under-weight it)."
         ),
     )
+    agreement_ratio: float | None = Field(
+        default=None,
+        description=(
+            "Fraction of Ranker consensus rounds that picked this ticker "
+            "(e.g. 2/3 rounds = 0.667). None when the Ranker ran a single "
+            "round. Not LLM-populated — filled in by Ranker.rank() after "
+            "the consensus vote."
+        ),
+    )
+    voting_providers: list[str] | None = Field(
+        default=None,
+        description=(
+            "Which provider(s) (e.g. ['claude', 'openai']) picked this "
+            "ticker across consensus rounds. Not LLM-populated."
+        ),
+    )
 
 
 class CorrelatedPair(BaseModel):

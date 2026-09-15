@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from ..agents.insider import InsiderAgent
 from ..config import Settings
+from ..data import finnhub, yf_gateway
 from ..data.hedge_funds import fetch_hedge_fund_trades
 from ..data.insider import fetch_insider_trades
 from ..data.political import fetch_political_trades
@@ -38,6 +39,10 @@ def run_analysis(settings: Settings) -> str:
 
 def main() -> None:
     load_dotenv()
+    # Pacing knobs live in the environment, and these modules are
+    # imported before `.env` is loaded — re-read them now.
+    yf_gateway.reload_from_env()
+    finnhub.reload_from_env()
     settings = Settings.from_env()
 
     result = run_analysis(settings)

@@ -30,6 +30,7 @@ from agno.workflow.types import StepInput, StepOutput
 from dotenv import load_dotenv
 
 from ..config import Settings
+from ..data import finnhub, yf_gateway
 from ..data.brokerage import fetch_account_meta, fetch_portfolio_holdings, fetch_total_cash
 from ..data.finnhub import batch_finnhub_signals
 from ..data.fundamentals import batch_fundamentals
@@ -664,6 +665,10 @@ class RebalancePipeline(DiscoverPipeline):
 
 def run() -> None:
     load_dotenv()
+    # Pacing knobs live in the environment, and these modules are
+    # imported before `.env` is loaded — re-read them now.
+    yf_gateway.reload_from_env()
+    finnhub.reload_from_env()
     settings = Settings.from_env()
     try:
         preflight(

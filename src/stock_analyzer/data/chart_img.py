@@ -74,12 +74,10 @@ def _resolve_symbol(ticker: str, cache: dict[str, str]) -> str | None:
     if ticker in cache:
         return cache[ticker] or None
 
-    try:
-        import yfinance as yf
+    from . import yf_gateway
 
-        info = yf.Ticker(ticker).info
-    except Exception as e:
-        logger.warning("yfinance lookup failed for %s: %s", ticker, e)
+    info = yf_gateway.ticker_call(ticker, "chart_img.exchange", lambda t: t.info)
+    if not info:
         return None
 
     quote_type = (info.get("quoteType") or "").upper()

@@ -173,6 +173,8 @@ def _pick_card_html(d: dict[str, Any]) -> str:
     fragility = d.get("fragility_rank")
     alloc_pct = d.get("allocation_pct")
     alloc_usd = d.get("allocation_usd")
+    agreement_ratio = d.get("agreement_ratio")
+    voting_providers = d.get("voting_providers")
     one_liner = html.escape(str(d.get("one_liner") or ""))
     bull = html.escape(str(d.get("bull_thesis") or ""))
     bear = html.escape(str(d.get("bear_case") or "")) if d.get("bear_case") else ""
@@ -217,6 +219,21 @@ def _pick_card_html(d: dict[str, Any]) -> str:
             f"<span style='background:#ece8fb;color:#4c1d95;border:1px solid #7c3aed;"
             f"padding:3px 10px;border-radius:12px;font-size:12px;font-weight:600'>"
             f"Allocation ${alloc_usd:,.0f}</span>"
+        )
+
+    agreement_html = ""
+    if agreement_ratio is not None:
+        n = len(voting_providers) if voting_providers else 0
+        total = round(n / agreement_ratio) if agreement_ratio else n
+        is_unanimous = agreement_ratio >= 0.999
+        bg, fg, border = (
+            ("#e6f4ea", "#1a7f37", "#1a7f37") if is_unanimous else ("#fff4e5", "#9a5b00", "#9a5b00")
+        )
+        providers = ", ".join(voting_providers or [])
+        agreement_html = (
+            f"<span title='{html.escape(providers)}' style='background:{bg};color:{fg};"
+            f"border:1px solid {border};padding:3px 10px;border-radius:12px;"
+            f"font-size:12px;font-weight:600'>Consensus {n}/{total}</span>"
         )
 
     sections_html: list[str] = []
@@ -270,7 +287,7 @@ def _pick_card_html(d: dict[str, Any]) -> str:
         f"<div style='display:flex;flex-wrap:wrap;align-items:center;gap:10px;"
         f"margin-bottom:10px'>"
         f"<h2 style='margin:0;border:none;padding:0'>{ticker}</h2>"
-        f"{rank_html}{conv_html}{frag_html}{alloc_html}"
+        f"{rank_html}{conv_html}{frag_html}{alloc_html}{agreement_html}"
         f"</div>"
         f"<div style='color:#374151;margin-bottom:6px'>{one_liner}</div>"
         + "".join(sections_html)

@@ -102,6 +102,26 @@ class ModelStats(BaseModel):
     sharpe: float | None
 
 
+class ProviderStats(BaseModel):
+    """Per-provider (claude/gemini/openai) performance for BUY decisions.
+
+    A pick can count toward more than one provider's bucket when multiple
+    ranker consensus rounds (different providers) agreed on it — see
+    `Pick.voting_providers` and `discover/track_record.py::
+    _compute_provider_breakdown`. Only populated for picks made after
+    multi-provider consensus rounds existed; legacy single-provider picks
+    have no `voting_providers` and are excluded, not bucketed as
+    'unknown' the way `ModelStats` handles a missing opus_model.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    provider: str
+    n_mature: int
+    mean_alpha_pct: float | None
+    sharpe: float | None
+
+
 class UnmeasurableDecision(BaseModel):
     """A decision that could not be scored, and why.
 
@@ -137,6 +157,7 @@ class HorizonStats(BaseModel):
     trim_stats: DirectionStats
     sell_stats: DirectionStats
     model_breakdown: list[ModelStats]
+    provider_breakdown: list[ProviderStats] = []
     decisions: list[PickReturn]
 
 
@@ -176,6 +197,7 @@ class TrackRecord(BaseModel):
     sell_stats: DirectionStats  # SELL-only (was SELL+TRIM bundled).
 
     model_breakdown: list[ModelStats]
+    provider_breakdown: list[ProviderStats] = []
 
     picks: list[PickReturn]
     pending: list[PickReturn]
@@ -187,6 +209,7 @@ __all__ = [
     "PickReturn",
     "DirectionStats",
     "ModelStats",
+    "ProviderStats",
     "UnmeasurableDecision",
     "HorizonStats",
     "TrackRecord",

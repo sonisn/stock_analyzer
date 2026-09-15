@@ -25,13 +25,12 @@ flag the system shouldn't ignore behind a HOLD verdict.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pandas as pd
-import yfinance as yf
 
 from ..logging import get_logger
+from . import yf_gateway
 
 logger = get_logger(__name__)
 
@@ -67,11 +66,7 @@ def _get_cell(df: pd.DataFrame, period: str, col: str) -> int:
 
 def fetch_eps_revisions(ticker: str) -> dict[str, Any] | None:
     """Return the per-ticker EPS revision summary, or None on any error."""
-    try:
-        revs = yf.Ticker(ticker).eps_revisions
-    except Exception as e:
-        logger.debug("eps_revisions failed for %s: %s", ticker, e)
-        return None
+    revs = yf_gateway.ticker_call(ticker, "eps_revisions", lambda t: t.eps_revisions)
     if revs is None or revs.empty:
         return None
 
@@ -118,10 +113,9 @@ def fetch_eps_revisions(ticker: str) -> dict[str, Any] | None:
 def batch_eps_revisions(tickers: list[str]) -> dict[str, dict[str, Any]]:
     """Fetch revisions for many tickers in parallel."""
     results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, r in zip(tickers, ex.map(fetch_eps_revisions, tickers), strict=False):
-            if r:
-                results[ticker] = r
+    for ticker, r in yf_gateway.map_symbols(fetch_eps_revisions, tickers, workers=_MAX_WORKERS):
+        if r:
+            results[ticker] = r
     return results
 
 

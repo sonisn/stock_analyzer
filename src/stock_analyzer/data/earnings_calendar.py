@@ -7,13 +7,11 @@ betting on the print.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from typing import Any
 
-import yfinance as yf
-
 from ..logging import get_logger
+from . import yf_gateway
 
 logger = get_logger(__name__)
 
@@ -37,11 +35,7 @@ def _coerce_date(value: Any) -> date | None:
 
 
 def next_earnings_date(ticker: str) -> date | None:
-    try:
-        cal = yf.Ticker(ticker).calendar
-    except Exception as e:
-        logger.debug("calendar fetch failed for %s: %s", ticker, e)
-        return None
+    cal = yf_gateway.ticker_call(ticker, "earnings_calendar", lambda t: t.calendar)
     if cal is None or (hasattr(cal, "empty") and cal.empty):
         return None
 
@@ -78,12 +72,11 @@ def earnings_within_days(ticker: str, days: int = 5) -> dict[str, Any] | None:
 def batch_earnings_flags(tickers: list[str], within_days: int = 5) -> dict[str, dict[str, Any]]:
     """Return only tickers with earnings in the next N days. Others are omitted."""
 
-    def _check(t: str) -> tuple[str, dict[str, Any] | None]:
-        return (t, earnings_within_days(t, within_days))
+    def _check(t: str) -> dict[str, Any] | None:
+        return earnings_within_days(t, within_days)
 
     results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, r in ex.map(_check, tickers):
-            if r:
-                results[ticker] = r
+    for ticker, r in yf_gateway.map_symbols(_check, tickers, workers=_MAX_WORKERS):
+        if r:
+            results[ticker] = r
     return results

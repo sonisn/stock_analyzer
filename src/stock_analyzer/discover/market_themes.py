@@ -25,7 +25,9 @@ synthesis it does in the per-candidate analyst stage.
 
 from __future__ import annotations
 
-from ..llm import AgnoAgent, Provider
+from typing import Any
+
+from ..llm import AgnoAgent, Provider, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import MarketThemes
 
@@ -153,21 +155,48 @@ def _format_revisions_summary(eps_revisions: dict) -> str:
     return out
 
 
+def _build_agent(provider: Provider, model: str) -> AgnoAgent:
+    return AgnoAgent(
+        "MarketThemes",
+        provider,
+        model,
+        model_kwargs={
+            "temperature": 0,
+            "retries": 3,
+            "exponential_backoff": True,
+            "delay_between_retries": 10,
+            # 8 themes x (description + 10-25 members) plus the rendered
+            # full_text block runs well past the provider default, and a
+            # truncated response is not recoverable: the JSON ends
+            # mid-string and the whole themes object is dropped
+            # ("Unterminated string ... Failed to convert response to
+            # output_schema"). Budget for the full object.
+            "max_tokens": 8000,
+        },
+        instructions=MARKET_THEMES_INSTRUCTIONS,
+        output_schema=MarketThemes,
+    )
+
+
 class MarketThemesAgent:
-    def __init__(self, provider: Provider, model: str):
-        self.agent = AgnoAgent(
-            "MarketThemes",
-            provider,
-            model,
-            model_kwargs={
-                "temperature": 0,
-                "retries": 3,
-                "exponential_backoff": True,
-                "delay_between_retries": 10,
-            },
-            instructions=MARKET_THEMES_INSTRUCTIONS,
-            output_schema=MarketThemes,
+    def __init__(
+        self,
+        provider: Provider,
+        model: str,
+        *,
+        fallback: tuple[Provider, str] | None = None,
+    ):
+        self.provider = provider
+        self.fallback = fallback
+        self.agent = _build_agent(provider, model)
+
+    def _run(self, prompt: str) -> Any:
+        build_fallback = (
+            (lambda: _build_agent(self.fallback[0], self.fallback[1]))
+            if self.fallback and self.fallback[0] != self.provider
+            else None
         )
+        return run_with_fallback(self.agent, build_fallback, prompt)
 
     def detect(
         self,
@@ -218,7 +247,7 @@ class MarketThemesAgent:
             len(technicals or {}),
             len(eps_revisions or {}),
         )
-        result = self.agent.run(prompt).content
+        result = self._run(prompt).content
         if result is None:
             logger.warning("MarketThemes returned no content")
             return None
@@ -229,14 +258,43 @@ class MarketThemesAgent:
                 return MarketThemes.model_validate_json(result)
             except Exception as e:
                 logger.warning(
-                    "MarketThemes returned a string that wasn't valid MarketThemes JSON: %s",
+                    "MarketThemes returned a string that wasn't valid MarketThemes JSON "
+                    "(%s) — retrying once with a tighter output budget",
                     e,
                 )
-                return None
+                return self._retry_compact(prompt)
         logger.warning(
             "MarketThemes returned unexpected type %s",
             type(result).__name__,
         )
+        return None
+
+    def _retry_compact(self, prompt: str) -> MarketThemes | None:
+        """One retry asking for a smaller object.
+
+        An unterminated-string parse failure means the response ran out of
+        room, and the same prompt will run out of room again. Ask for the
+        short form instead of losing the themes block for the whole run —
+        a thin set of themes still feeds the score bonus and the ranker
+        prompt; None feeds neither.
+        """
+        compact = (
+            prompt + "\n\nIMPORTANT: keep the response SHORT — at most 4 themes, "
+            "at most 10 member tickers each, one-sentence descriptions, and "
+            "a full_text block under 1500 characters."
+        )
+        try:
+            result = self._run(compact).content
+        except Exception as e:
+            logger.warning("MarketThemes compact retry failed: %s", e)
+            return None
+        if isinstance(result, MarketThemes):
+            return result
+        if isinstance(result, str):
+            try:
+                return MarketThemes.model_validate_json(result)
+            except Exception as e:
+                logger.warning("MarketThemes compact retry still unparseable: %s", e)
         return None
 
 

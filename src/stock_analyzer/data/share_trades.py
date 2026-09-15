@@ -13,13 +13,12 @@ the raw aggregate every time.
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pandas as pd
-import yfinance as yf
 
 from ..logging import get_logger
+from . import yf_gateway
 
 logger = get_logger(__name__)
 
@@ -70,16 +69,22 @@ def _classify_insider_signal(summary: dict[str, Any]) -> str:
     return "neutral"
 
 
+def _fetch_holder_tables(t: Any) -> tuple[Any, Any, Any, Any]:
+    """All four holder tables come off the same Yahoo holders payload, which
+    yfinance caches on the Ticker — so this is one paced request, not four."""
+    return (
+        t.insider_purchases,
+        t.insider_transactions,
+        t.institutional_holders,
+        t.major_holders,
+    )
+
+
 def fetch_share_trade_data(ticker: str) -> dict[str, Any] | None:
-    try:
-        t = yf.Ticker(ticker)
-        ip = t.insider_purchases
-        it = t.insider_transactions
-        ih = t.institutional_holders
-        mh = t.major_holders
-    except Exception as e:
-        logger.warning("share trade fetch failed for %s: %s", ticker, e)
+    tables = yf_gateway.ticker_call(ticker, "share_trades", _fetch_holder_tables)
+    if tables is None:
         return None
+    ip, it, ih, mh = tables
 
     out: dict[str, Any] = {"ticker": ticker}
 
@@ -168,8 +173,9 @@ def fetch_share_trade_data(ticker: str) -> dict[str, Any] | None:
 
 def batch_share_trade_data(tickers: list[str]) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, data in zip(tickers, ex.map(fetch_share_trade_data, tickers), strict=False):
-            if data:
-                results[ticker] = data
+    for ticker, data in yf_gateway.map_symbols(
+        fetch_share_trade_data, tickers, workers=_MAX_WORKERS
+    ):
+        if data:
+            results[ticker] = data
     return results

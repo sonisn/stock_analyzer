@@ -1,9 +1,13 @@
 """Realized volatility computation from yfinance close prices.
 
-Used as a free proxy for IV-rank when no paid IV-rank provider (ORATS,
-tastytrade, IBKR) is wired up. The IV/HV ratio captures the same
-"is implied vol elevated?" signal that IVR does, just in a different
-space.
+Two consumers:
+  1. Covered-call writing — a free proxy for IV-rank when no paid
+     IV-rank provider (ORATS, tastytrade, IBKR) is wired up. The IV/HV
+     ratio captures the same "is implied vol elevated?" signal that IVR
+     does, just in a different space.
+  2. `discover/output_validation.py` — sanity-checks a Ranker pick's
+     stated bull-scenario return against the ticker's own realized
+     volatility, scaled to the pick's horizon.
 
 This is a synchronous wrapper around yfinance — one network call per
 ticker. Batched callers should expect ~1 sec per ticker.
@@ -65,22 +69,16 @@ def fetch_realized_volatility(
     if not tickers:
         return {}
 
-    try:
-        import yfinance as yf
-    except ImportError:
-        logger.warning("yfinance not installed — realized-vol proxy disabled")
-        return {}
+    from . import yf_gateway
 
     out: dict[str, RealizedVolatility] = {}
     for t in tickers:
-        try:
-            df = yf.Ticker(t).history(
-                period=f"{max(lookback_days + 30, 300)}d",
-                auto_adjust=True,
-            )
-        except Exception as e:
-            logger.info("HV fetch failed for %s: %s", t, e)
-            continue
+        df = yf_gateway.history(
+            t,
+            what="historical_volatility",
+            period=f"{max(lookback_days + 30, 300)}d",
+            auto_adjust=True,
+        )
         if df is None or df.empty:
             logger.info("HV fetch returned no data for %s", t)
             continue

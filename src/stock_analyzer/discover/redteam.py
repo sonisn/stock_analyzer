@@ -1,14 +1,18 @@
-"""Adversarial red-team (Opus, single call).
+"""Adversarial red-team — one high-effort reasoning call.
 
 Forces an explicit bear case for each pick. Without this stage, users tend
 to skim the bull thesis and ignore disconfirming evidence. The red-team
 output is placed inline with each pick in the final report — not at the
 end — so it's impossible to skip past.
+
+Runs on `DISCOVER_REDTEAM_PROVIDER` (default gemini — deliberately not
+whatever provider generated the pick, so the critique isn't checking a
+model's own blind spots).
 """
 
 from __future__ import annotations
 
-from ..llm import AgnoAgent, Provider
+from ..llm import AgnoAgent, Provider, reasoning_model_kwargs, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import RedTeamOutput
 
@@ -68,28 +72,44 @@ must match the prose.\
 """
 
 
+def _build_agent(provider: Provider, model: str, effort: str) -> AgnoAgent:
+    return AgnoAgent(
+        "RedTeam",
+        provider,
+        model,
+        # 6000 max_tokens truncated the JSON mid-string on every run at
+        # "high" effort thinking; same fix as the ranker's 8000->16000 bump.
+        model_kwargs=reasoning_model_kwargs(provider, effort, max_tokens=16000),
+        instructions=REDTEAM_INSTRUCTIONS,
+        output_schema=RedTeamOutput,
+    )
+
+
 class RedTeam:
-    def __init__(self, provider: Provider, model: str, *, effort: str = "high"):
-        # Opus 4.7+ adaptive thinking — Claude self-allocates thinking budget,
-        # gated by output_config.effort. high = deep adversarial reasoning.
-        self.agent = AgnoAgent(
-            "RedTeam",
-            provider,
-            model,
-            model_kwargs={
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": effort},
-                "max_tokens": 6000,
-                "temperature": 0,
-            },
-            instructions=REDTEAM_INSTRUCTIONS,
-            output_schema=RedTeamOutput,
-        )
+    def __init__(
+        self,
+        provider: Provider,
+        model: str,
+        *,
+        effort: str = "high",
+        fallback: tuple[Provider, str] | None = None,
+    ):
+        # Runs on whatever provider critiques the ranker's picks from
+        # outside that provider's own blind spots.
+        self.provider = provider
+        self.effort = effort
+        self.fallback = fallback
+        self.agent = _build_agent(provider, model, effort)
 
     def critique(self, picks_text: str) -> RedTeamOutput:
         prompt = f"Picks to critique:\n\n{picks_text}"
-        logger.info("Red-team critique of picks")
-        result = self.agent.run(prompt).content
+        logger.info("Red-team critique of picks (%s)", self.provider)
+        build_fallback = (
+            (lambda: _build_agent(self.fallback[0], self.fallback[1], self.effort))
+            if self.fallback and self.fallback[0] != self.provider
+            else None
+        )
+        result = run_with_fallback(self.agent, build_fallback, prompt).content
         if result is None:
             raise RuntimeError("RedTeam returned no content.")
         if isinstance(result, RedTeamOutput):

@@ -245,6 +245,7 @@ def build_sections(
     redteam_output: object = None,
     sizer_output: object = None,
     market_themes: object = None,
+    data_warnings: list[str] | None = None,
 ) -> list[Section]:
     # Prefer the structured Phase 4 objects when present; fall back to
     # parsing the free-text variants so legacy callers / partial runs
@@ -307,6 +308,15 @@ def build_sections(
         s.append(Section(kind="heading", text="Macro regime", level=2))
         s.append(Section(kind="blockquote", text=macro_summary))
 
+    if data_warnings:
+        s.append(Section(kind="heading", text="Data warnings", level=2))
+        s.append(
+            Section(
+                kind="preformatted",
+                text="\n".join(f"- {w}" for w in data_warnings),
+            )
+        )
+
     if sector_rotation and sector_rotation.get("leaders"):
         leaders = ", ".join(sector_rotation.get("leaders", []))
         laggards = ", ".join(sector_rotation.get("laggards", []))
@@ -357,6 +367,8 @@ def build_sections(
                         "allocation_pct": (alloc.allocation_pct if alloc else None),
                         "allocation_usd": (alloc.allocation_usd if alloc else None),
                         "allocation_rationale": alloc.rationale if alloc else None,
+                        "agreement_ratio": pick.agreement_ratio,
+                        "voting_providers": pick.voting_providers,
                     },
                 )
             )

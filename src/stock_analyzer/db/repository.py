@@ -116,6 +116,8 @@ def insert_pick(
     entry_price: float | None = None,
     time_horizon: str | None = None,
     scenarios: list[dict[str, Any]] | None = None,
+    agreement_ratio: float | None = None,
+    voting_providers: list[str] | None = None,
 ) -> None:
     """Persist one pick plus the forecast behind it.
 
@@ -125,6 +127,10 @@ def insert_pick(
     whether the stated bear probabilities were too low. They default to
     None so older callers keep working, but the discover pipeline always
     passes them.
+
+    `agreement_ratio`/`voting_providers` are the multi-provider Ranker
+    consensus vote for this pick (None for single-round runs) — see
+    `discover/track_record.py::_compute_provider_breakdown`.
 
     Each scenario dict is {"label", "probability", "target_return_pct"}.
     """
@@ -140,6 +146,8 @@ def insert_pick(
             ev_pct=ev_pct,
             entry_price=entry_price,
             time_horizon=time_horizon,
+            agreement_ratio=agreement_ratio,
+            voting_providers=",".join(voting_providers) if voting_providers else None,
         )
     )
     for scenario in scenarios or []:

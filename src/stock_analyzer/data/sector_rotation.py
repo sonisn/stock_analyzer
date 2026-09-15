@@ -8,9 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-import yfinance as yf
-
 from ..logging import get_logger
+from . import yf_gateway
 
 logger = get_logger(__name__)
 
@@ -39,16 +38,12 @@ SECTOR_ETFS: dict[str, str] = {
 def fetch_sector_returns(months: int = 6) -> dict[str, float]:
     """Return {canonical_sector_name: pct_return_over_N_months}."""
     unique_etfs = sorted(set(SECTOR_ETFS.values()))
-    try:
-        data = yf.download(
-            unique_etfs,
-            period=f"{months}mo",
-            auto_adjust=True,
-            progress=False,
-        )
-    except Exception as e:
-        logger.warning("sector returns batch fetch failed: %s", e)
-        return {}
+    data = yf_gateway.download(
+        unique_etfs,
+        what="sector_rotation",
+        period=f"{months}mo",
+        auto_adjust=True,
+    )
     if data is None or data.empty:
         return {}
 

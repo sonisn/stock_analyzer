@@ -6,6 +6,7 @@ import os
 from typing import Any, Literal
 
 from snaptrade_client import SnapTrade
+from snaptrade_client.auth import SnapTradeAuth
 
 from ..logging import get_logger
 from ..models.market import OCCParseError
@@ -116,7 +117,11 @@ def _client() -> SnapTrade:
     consumer_key = os.getenv("SNAPTRADE_CONSUMER_KEY")
     if not (client_id and consumer_key):
         raise RuntimeError("SNAPTRADE_CLIENT_ID and SNAPTRADE_CONSUMER_KEY must be set")
-    return SnapTrade(client_id=client_id, consumer_key=consumer_key)
+    # SDK v13 moved credentials off the constructor onto an `auth=` object —
+    # passing client_id=/consumer_key= directly now raises TypeError.
+    return SnapTrade(
+        auth=SnapTradeAuth.commercial_api_key(client_id=client_id, consumer_key=consumer_key)
+    )
 
 
 def _credentials() -> tuple[str, str]:
@@ -131,8 +136,42 @@ def _unwrap(resp: Any) -> Any:
     return resp.body if hasattr(resp, "body") else resp
 
 
+def _to_float(v: Any) -> float | None:
+    """SDK v13 returns position units/price/cost_basis as strings."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except TypeError, ValueError:
+        return None
+
+
+def _positions_from_response(resp: Any) -> list[dict]:
+    """SDK v13's `get_all_account_positions` wraps positions in
+    `{"results": [...], "data_freshness": {...}}` rather than returning the
+    list directly (the shape `get_user_account_positions` used to return,
+    pre-v13). Handle both so this survives another SDK reshuffle the same
+    way `transactions.py`'s activities pagination already does."""
+    body = _unwrap(resp)
+    if isinstance(body, dict):
+        return body.get("results") or []
+    if isinstance(body, list):
+        return body
+    return []
+
+
 def _extract_ticker(position: dict) -> str | None:
-    """Walk the SnapTrade position payload to find the underlying ticker symbol."""
+    """Find the underlying ticker symbol in a SnapTrade position payload.
+
+    SDK v13's `AccountPosition` nests the symbol under `instrument.symbol`
+    (every instrument kind — stock, option, crypto, etc. — carries its own
+    `symbol` field directly, no further nesting). Older shapes (pre-v13,
+    or `get_user_holdings`'s still-legacy response) put `symbol` directly
+    on the position, sometimes as a nested dict — walked for compatibility.
+    """
+    instrument = position.get("instrument")
+    if isinstance(instrument, dict) and isinstance(instrument.get("symbol"), str):
+        return instrument["symbol"]
     sym = position.get("symbol")
     while isinstance(sym, dict):
         if isinstance(sym.get("symbol"), str):
@@ -170,9 +209,14 @@ def fetch_account_meta() -> dict[str, dict[str, Any]]:
         )
         if not account_id:
             continue
+        # SDK v13 dropped `type`/`account_type` from the Account model in
+        # favor of `raw_type` (closest equivalent); `type`/`account_type`
+        # are kept first for backward compatibility with any cached/legacy
+        # response shape, `raw_type` is the field real v13 responses use.
         account_type = (
             account.get("type")
             or account.get("account_type")
+            or account.get("raw_type")
             or (account.get("meta") or {}).get("type")
         )
         out[account_name] = {
@@ -214,15 +258,12 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
         if not account_id:
             continue
 
-        positions = (
-            _unwrap(
-                client.account_information.get_user_account_positions(
-                    user_id=user_id,
-                    user_secret=user_secret,
-                    account_id=account_id,
-                )
+        positions = _positions_from_response(
+            client.account_information.get_all_account_positions(
+                user_id=user_id,
+                user_secret=user_secret,
+                account_id=account_id,
             )
-            or []
         )
 
         holdings: list[dict] = []
@@ -234,12 +275,18 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
             if is_option_symbol(ticker):
                 option_skip_count += 1
                 continue
+            # SDK v13 renamed average_purchase_price -> cost_basis and
+            # returns units/price/cost_basis as strings, not numbers; cast
+            # here so every downstream consumer keeps getting floats like
+            # it always has, instead of hunting down every call site.
             holdings.append(
                 {
                     "ticker": ticker,
-                    "units": p.get("units"),
-                    "price": p.get("price"),
-                    "average_purchase_price": p.get("average_purchase_price"),
+                    "units": _to_float(p.get("units")),
+                    "price": _to_float(p.get("price")),
+                    "average_purchase_price": _to_float(
+                        p.get("cost_basis", p.get("average_purchase_price"))
+                    ),
                 }
             )
         logger.info("Account %r: %d positions", account_name, len(holdings))
@@ -297,15 +344,12 @@ def fetch_open_option_positions() -> dict[str, dict[str, int]]:
         if not account_id:
             continue
         try:
-            positions = (
-                _unwrap(
-                    client.account_information.get_user_account_positions(
-                        user_id=user_id,
-                        user_secret=user_secret,
-                        account_id=account_id,
-                    )
+            positions = _positions_from_response(
+                client.account_information.get_all_account_positions(
+                    user_id=user_id,
+                    user_secret=user_secret,
+                    account_id=account_id,
                 )
-                or []
             )
         except Exception as e:
             logger.info("SnapTrade positions fetch failed for %s: %s", account_id, e)

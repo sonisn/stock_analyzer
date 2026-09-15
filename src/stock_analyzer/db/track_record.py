@@ -18,18 +18,20 @@ from .tables import HoldingReviewRow, Pick, Run
 
 def fetch_recent_pick_runs_with_model(
     session: Session, *, lookback_days: int
-) -> list[tuple[str, str, str | None]]:
-    """Every (run_at, ticker, opus_model) for BUY picks in the last
-    `lookback_days`, oldest-first. opus_model may be None for legacy
-    runs that did not record it. Dedup happens in the caller."""
+) -> list[tuple[str, str, str | None, str | None]]:
+    """Every (run_at, ticker, opus_model, voting_providers) for BUY picks
+    in the last `lookback_days`, oldest-first. opus_model/voting_providers
+    may be None for legacy runs/single-round picks that didn't record
+    them. `voting_providers` is the comma-joined string as stored; the
+    caller splits it. Dedup happens in the caller."""
     cutoff = (datetime.now() - timedelta(days=lookback_days)).isoformat()
     rows = session.exec(
-        select(Run.run_at, Pick.ticker, Run.opus_model)
+        select(Run.run_at, Pick.ticker, Run.opus_model, Pick.voting_providers)
         .join(Pick, Pick.run_id == Run.id)
         .where(Run.run_at >= cutoff)
         .order_by(Run.run_at.asc())
     )
-    return [(row.run_at, row.ticker, row.opus_model) for row in rows]
+    return [(row.run_at, row.ticker, row.opus_model, row.voting_providers) for row in rows]
 
 
 def fetch_recent_verdict_runs(

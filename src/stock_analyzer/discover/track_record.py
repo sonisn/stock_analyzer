@@ -64,6 +64,7 @@ from ..models.track_record import (
     HorizonStats,
     ModelStats,
     PickReturn,
+    ProviderStats,
     TrackRecord,
     UnmeasurableDecision,
 )
@@ -140,9 +141,11 @@ def _fetch_history(ticker: str, start: date, end: date) -> pd.DataFrame | None:
     "too young" or "delisted / bad symbol".
     """
     try:
-        import yfinance as yf
+        from ..data import yf_gateway
 
-        df = yf.Ticker(ticker).history(
+        df = yf_gateway.history(
+            ticker,
+            what="track_record.history",
             start=start.isoformat(),
             end=(end + timedelta(days=1)).isoformat(),
             auto_adjust=True,
@@ -342,7 +345,7 @@ def _sharpe(alphas: list[float]) -> float | None:
 
 def _collect_decisions(
     db_path: str, lookback_days: int
-) -> tuple[list[_Decision], dict[str, str | None]] | None:
+) -> tuple[list[_Decision], dict[str, str | None], dict[str, list[str] | None]] | None:
     """Read + dedup every decision. None signals a failed DB read."""
     try:
         with get_session(db_path) as session:
@@ -356,11 +359,15 @@ def _collect_decisions(
         return None
 
     ticker_model: dict[str, str | None] = {}
-    for _run_at, ticker, model in pick_rows:
+    ticker_providers: dict[str, list[str] | None] = {}
+    for _run_at, ticker, model, voting_providers in pick_rows:
         ticker_model.setdefault(ticker, model)
+        ticker_providers.setdefault(
+            ticker, voting_providers.split(",") if voting_providers else None
+        )
 
     decisions: list[_Decision] = []
-    buy_pairs = [(run_at, ticker) for run_at, ticker, _m in pick_rows]
+    buy_pairs = [(run_at, ticker) for run_at, ticker, _m, _vp in pick_rows]
     for source, direction in (
         (buy_pairs, "buy"),
         (verdict_rows["HOLD"], "hold"),
@@ -376,7 +383,7 @@ def _collect_decisions(
                     direction=direction,  # type: ignore[arg-type]
                 )
             )
-    return decisions, ticker_model
+    return decisions, ticker_model, ticker_providers
 
 
 def measure_track_record(db_path: str, *, lookback_days: int = 180) -> TrackRecord:
@@ -392,7 +399,7 @@ def measure_track_record(db_path: str, *, lookback_days: int = 180) -> TrackReco
     collected = _collect_decisions(db_path, lookback_days)
     if collected is None:
         return _empty_record()
-    decisions, ticker_model = collected
+    decisions, ticker_model, ticker_providers = collected
     if not decisions:
         return _empty_record()
 
@@ -481,6 +488,10 @@ def measure_track_record(db_path: str, *, lookback_days: int = 180) -> TrackReco
                     [r for r in scored if r.direction == "buy"],
                     ticker_model,
                 ),
+                provider_breakdown=_compute_provider_breakdown(
+                    [r for r in scored if r.direction == "buy"],
+                    ticker_providers,
+                ),
                 decisions=rows,
             )
         )
@@ -534,6 +545,7 @@ def measure_track_record(db_path: str, *, lookback_days: int = 180) -> TrackReco
             trim_stats=reported.trim_stats,
             sell_stats=reported.sell_stats,
             model_breakdown=reported.model_breakdown,
+            provider_breakdown=reported.provider_breakdown,
             picks=reported.decisions,
             pending=pending,
         )
@@ -617,6 +629,49 @@ def _compute_model_breakdown(
         )
     # mean_alpha_pct is always non-None for surviving rows (we just computed it
     # from a non-empty alphas list); the `or 0.0` is a typing-narrowing fallback.
+    return sorted(
+        out,
+        key=lambda m: m.mean_alpha_pct if m.mean_alpha_pct is not None else 0.0,
+        reverse=True,
+    )
+
+
+def _compute_provider_breakdown(
+    buy_mature: list[PickReturn],
+    ticker_providers: Mapping[str, list[str] | None],
+) -> list[ProviderStats]:
+    """Group mature BUY decisions by which provider(s) voted for them in
+    the Ranker's multi-provider consensus. A pick with voting_providers =
+    ['claude', 'openai'] counts toward BOTH buckets — this measures "when
+    provider X was one of the ones that agreed, how did the pick do",
+    not a disjoint partition the way `_compute_model_breakdown` groups by
+    a single opus_model.
+
+    Picks with no recorded voting_providers (single-round runs, or picks
+    made before multi-provider consensus existed) are excluded entirely
+    rather than bucketed as 'unknown' — there's no provider attribution
+    to report for them, unlike `_compute_model_breakdown`'s 'unknown'
+    opus_model bucket which is a real (if incomplete) data point.
+
+    Same n_mature/threshold rules as `_compute_model_breakdown`: providers
+    with fewer than 3 alpha-bearing picks are dropped as too noisy."""
+    by_provider: dict[str, list[PickReturn]] = defaultdict(list)
+    for p in buy_mature:
+        for provider in ticker_providers.get(p.ticker) or []:
+            by_provider[provider].append(p)
+    out: list[ProviderStats] = []
+    for provider, picks in by_provider.items():
+        alphas = [p.alpha_pct for p in picks if p.alpha_pct is not None]
+        if len(alphas) < 3:
+            continue
+        out.append(
+            ProviderStats(
+                provider=provider,
+                n_mature=len(alphas),
+                mean_alpha_pct=sum(alphas) / len(alphas),
+                sharpe=_sharpe(alphas),
+            )
+        )
     return sorted(
         out,
         key=lambda m: m.mean_alpha_pct if m.mean_alpha_pct is not None else 0.0,
@@ -923,6 +978,12 @@ def format_track_record_block(record: TrackRecord) -> str:
                 for m in horizon.model_breakdown
             ]
             lines.append("Model breakdown: " + " | ".join(model_parts))
+        if horizon.provider_breakdown:
+            provider_parts = [
+                f"{p.provider} ({p.n_mature} picks, {p.mean_alpha_pct:+.1f}%)"
+                for p in horizon.provider_breakdown
+            ]
+            lines.append("Provider breakdown: " + " | ".join(provider_parts))
     head = "\n".join(lines) if lines else format_track_record_summary(record)
     body = format_track_record_lines(record, limit=10)
     return head + "\n" + "\n".join(body) if body else head
@@ -939,11 +1000,13 @@ def _spot_at(ticker: str, on: str) -> float | None:
     crash the track-record block.
     """
     try:
-        import yfinance as yf
+        from ..data import yf_gateway
 
         end = date.fromisoformat(on)
         start = end - timedelta(days=7)
-        df = yf.Ticker(ticker).history(
+        df = yf_gateway.history(
+            ticker,
+            what="track_record.spot",
             start=start.isoformat(),
             end=end.isoformat(),
             auto_adjust=False,

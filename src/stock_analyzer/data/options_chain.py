@@ -15,12 +15,11 @@ import math
 from datetime import date, datetime, timedelta
 from typing import Protocol
 
-import yfinance as yf
-
 from ..config import Settings
 from ..http_client import HttpClient, RetryPolicy
 from ..logging import get_logger
 from ..models.market import OptionChain, OptionQuote
+from . import yf_gateway
 
 logger = get_logger(__name__)
 
@@ -79,12 +78,11 @@ class YFinanceChain:
     """
 
     def fetch(self, ticker: str, dte_min: int, dte_max: int) -> OptionChain | None:
-        try:
-            t = yf.Ticker(ticker)
-            spot = _safe_float(t.fast_info.last_price)
-        except Exception as e:
-            logger.info("yfinance chain miss for %s (%s)", ticker, e)
-            return None
+        # Every Yahoo touch below goes through the gateway, which builds
+        # (and caches) the Ticker inside its own retry/pacing envelope.
+        spot = _safe_float(
+            yf_gateway.ticker_call(ticker, "chain.spot", lambda tk: tk.fast_info.last_price)
+        )
         if spot is None or spot <= 0:
             logger.info(
                 "yfinance returned invalid spot for %s (NaN / 0 / negative); skipping ticker",
@@ -96,10 +94,11 @@ class YFinanceChain:
         lo = today + timedelta(days=dte_min)
         hi = today + timedelta(days=dte_max)
         calls: list[OptionQuote] = []
-        try:
-            expiries = tuple(t.options)
-        except Exception as e:
-            logger.info("yfinance no expiries for %s (%s)", ticker, e)
+        expiries = yf_gateway.ticker_call(
+            ticker, "chain.expiries", lambda tk: tuple(tk.options), default=()
+        )
+        if not expiries:
+            logger.info("yfinance has no expiries for %s", ticker)
             return OptionChain(
                 ticker=ticker,
                 spot=spot,
@@ -115,10 +114,12 @@ class YFinanceChain:
                 continue
             if expiry < lo or expiry > hi:
                 continue
-            try:
-                df = t.option_chain(e_str).calls
-            except Exception as ex:
-                logger.info("yfinance chain row miss %s@%s (%s)", ticker, e_str, ex)
+            df = yf_gateway.ticker_call(
+                ticker,
+                f"chain.{e_str}",
+                lambda tk, expiry_str=e_str: tk.option_chain(expiry_str).calls,
+            )
+            if df is None:
                 continue
             for _, row in df.iterrows():
                 strike = _safe_float(row.get("strike"))

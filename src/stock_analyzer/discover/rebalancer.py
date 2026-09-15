@@ -626,7 +626,9 @@ class Rebalancer:
                 # on plans with WRITE_CALLs. 16000 gives comfortable
                 # headroom; Opus 4.7 supports significantly more.
                 "max_tokens": 16000,
-                "temperature": 0,
+                # Adaptive thinking requires temperature=1; the API rejects
+                # anything else with a 400.
+                "temperature": 1,
             },
             instructions=instructions,
             output_schema=RebalancePlan,

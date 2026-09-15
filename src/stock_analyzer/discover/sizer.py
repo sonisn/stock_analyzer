@@ -1,12 +1,14 @@
 """Portfolio sizing (Opus, single call).
 
 Allocate new capital across picks given conviction scores, fragility ranks
-from the red-team, and the user's current holdings (for sector concentration).
+from the red-team, the ranker's consensus agreement ratio (when the ranker
+ran more than one round), and the user's current holdings (for sector
+concentration).
 """
 
 from __future__ import annotations
 
-from ..llm import AgnoAgent, Provider
+from ..llm import AgnoAgent, Provider, reasoning_model_kwargs, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import SizerOutput
 
@@ -41,6 +43,14 @@ Allocation principles to follow:
   up to ~30% of new capital
 - Higher fragility (bear-case rank 1-2) → smaller position, even if
   EV is high (high EV with high dispersion = risky bet)
+- If a "Consensus agreement" block is provided, it's the fraction of
+  independent ranker rounds (different providers/models) that
+  independently picked this ticker. Unanimous agreement (e.g. 3/3) is a
+  real conviction signal on top of the stated conviction score — size
+  toward the top of what conviction/fragility already justify. Bare-
+  majority agreement (e.g. 2/3) means at least one independent model
+  disagreed with including this pick at all — size toward the bottom of
+  the justified range, even if conviction/EV look strong.
 - Highly correlated picks (same sector/theme) → underweight one or split
 - Never recommend more than 35% in any single pick
 
@@ -65,23 +75,32 @@ prose plan in `full_text`. Structured fields must match the prose.\
 """
 
 
+def _build_agent(provider: Provider, model: str, effort: str) -> AgnoAgent:
+    # Adaptive thinking is sufficient for sizing (constraint optimization,
+    # not open-ended reasoning). Medium effort.
+    return AgnoAgent(
+        "Sizer",
+        provider,
+        model,
+        model_kwargs=reasoning_model_kwargs(provider, effort, max_tokens=4000),
+        instructions=SIZER_INSTRUCTIONS,
+        output_schema=SizerOutput,
+    )
+
+
 class Sizer:
-    def __init__(self, provider: Provider, model: str, *, effort: str = "medium"):
-        # Adaptive thinking is sufficient for sizing (constraint optimization,
-        # not open-ended reasoning). Medium effort.
-        self.agent = AgnoAgent(
-            "Sizer",
-            provider,
-            model,
-            model_kwargs={
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": effort},
-                "max_tokens": 4000,
-                "temperature": 0,
-            },
-            instructions=SIZER_INSTRUCTIONS,
-            output_schema=SizerOutput,
-        )
+    def __init__(
+        self,
+        provider: Provider,
+        model: str,
+        *,
+        effort: str = "medium",
+        fallback: tuple[Provider, str] | None = None,
+    ):
+        self.provider = provider
+        self.effort = effort
+        self.fallback = fallback
+        self.agent = _build_agent(provider, model, effort)
 
     def allocate(
         self,
@@ -90,6 +109,7 @@ class Sizer:
         holdings_summary: str,
         cash_budget: float | None,
         ev_table: str = "",
+        agreement_block: str = "",
     ) -> SizerOutput:
         budget_line = (
             f"Cash budget: ${cash_budget:,.0f}"
@@ -102,15 +122,27 @@ class Sizer:
             if ev_table
             else ""
         )
+        agreement_block_text = (
+            f"Consensus agreement (fraction of independent ranker rounds "
+            f"that picked each ticker):\n{agreement_block}\n\n"
+            if agreement_block
+            else ""
+        )
         prompt = (
             f"{budget_line}\n\n"
             f"{ev_block}"
+            f"{agreement_block_text}"
             f"Current holdings:\n{holdings_summary or '(none)'}\n\n"
             f"Picks (with bull theses):\n{picks_text}\n\n"
             f"Bear cases:\n{bear_case_text}"
         )
-        logger.info("Sizing picks with Opus")
-        result = self.agent.run(prompt).content
+        logger.info("Sizing picks (%s)", self.provider)
+        build_fallback = (
+            (lambda: _build_agent(self.fallback[0], self.fallback[1], self.effort))
+            if self.fallback and self.fallback[0] != self.provider
+            else None
+        )
+        result = run_with_fallback(self.agent, build_fallback, prompt).content
         if result is None:
             raise RuntimeError("Sizer returned no content.")
         if isinstance(result, SizerOutput):

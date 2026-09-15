@@ -91,6 +91,13 @@ class Pick(SQLModel, table=True):
     ev_pct: float | None = None  # Σ(probability × target_return_pct)
     entry_price: float | None = None
     time_horizon: str | None = None
+    # --- ranker consensus provenance, for track-record-by-provider ---
+    # Fraction of consensus rounds that picked this ticker (e.g. 2/3 ->
+    # 0.667). NULL for single-round runs, which have no agreement signal.
+    agreement_ratio: float | None = None
+    # Comma-joined provider names (e.g. "claude,openai") whose consensus
+    # round picked this ticker. NULL for single-round runs.
+    voting_providers: str | None = None
 
 
 class PickScenario(SQLModel, table=True):

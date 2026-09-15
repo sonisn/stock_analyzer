@@ -1,13 +1,20 @@
 # stock-analyzer
 
 A personal portfolio analyzer that runs two pipelines on top of Claude
-(Opus + Sonnet), market data, and brokerage holdings:
+(Opus + Sonnet for most stages, with Gemini and OpenAI in the mix for
+ranker consensus and red-team), market data, and brokerage holdings:
 
 - **`discover-stocks`** — surface 5 medium-term picks from a screened
   universe (S&P 500 snapshot + watchlist + holdings, with news coverage as
-  a conviction overlay rather than the candidate pool). Sonnet writes per-ticker analyst reports, Opus ranks them
-  with probability-weighted scenarios, a red-team Opus pass writes
-  bear cases, and an Opus sizer allocates the new capital.
+  a conviction overlay rather than the candidate pool). Sonnet writes
+  per-ticker analyst reports; the ranker runs one high-effort consensus
+  round per provider in `DISCOVER_RANKER_PROVIDERS` (default claude,
+  gemini, openai) and majority-votes the top-N picks with
+  probability-weighted scenarios; a red-team pass (default Gemini, so it
+  isn't checking the ranker's own blind spots) writes bear cases; an Opus
+  sizer allocates the new capital, weighting by the ranker's consensus
+  agreement ratio as well as conviction; a deterministic macro-veto pass
+  suppresses high-momentum picks when the FRED regime reads risk-off.
 - **`rebalance-portfolio`** — review every brokerage holding with
   Sonnet, then have Opus produce a structured action plan (SELL /
   TRIM / ADD / BUY) with tax-lot guidance. A second Opus pass writes
@@ -28,9 +35,10 @@ full analysis to the log so you never lose a run to an email failure.
 | Screen | — | Hard filters + 0-100 composite score (45 fundamentals / 45 trend / 10 attention) |
 | Enrichment (parallel) | — | News, earnings, insider selling, share trades, peers, 10-Q MD&A, transcripts |
 | Analyst | Sonnet | Per-ticker analyst report with structured output |
-| Ranker | Opus | Top-N picks with 3 scenarios (bull/base/bear) + EV |
-| Red-team | Opus | Bear case per pick with fragility rank + watch metric |
-| Sizer | Opus | Allocate new capital; flag concentration / correlation |
+| Ranker | Claude + Gemini + OpenAI (one consensus round each) | Top-N picks with 3 scenarios (bull/base/bear) + EV + agreement ratio |
+| Macro veto | — (deterministic) | Suppress high-momentum picks in a risk-off FRED regime |
+| Red-team | Gemini (default) | Bear case per pick with fragility rank + watch metric |
+| Sizer | Opus | Allocate new capital; flag concentration / correlation; weights by consensus agreement |
 | Holdings review | Sonnet | HOLD / TRIM / SELL per position with tax-lot plan |
 | Rebalance | Opus | Structured action plan with aggressiveness knob |
 | Pre-mortem | Opus | Adversarial hindsight on the rebalance plan |
@@ -93,9 +101,18 @@ uv run analyze-insiders           # insider + political trade signals
 
 Minimum to run a discover pipeline:
 
-- `ANTHROPIC_API_KEY` — Claude (or `GOOGLE_API_KEY` if you swap provider)
+- `ANTHROPIC_API_KEY` — Claude (used for most stages regardless of ranker config)
 - `DISCOVER_OPUS_MODEL` / `DISCOVER_SONNET_MODEL` — model IDs
 - `FINNHUB_API_KEY`, `FRED_API_KEY`, `TAVILY_API_KEY` — data providers
+
+The Ranker's consensus vote runs one round per provider in
+`DISCOVER_RANKER_PROVIDERS` (default `claude,gemini,openai`) — so by
+default you also need `GOOGLE_API_KEY` and `OPENAI_API_KEY`. To go back to
+a single-provider ranker (no Gemini/OpenAI keys needed), set
+`DISCOVER_RANKER_PROVIDERS=claude` (or `claude,claude,claude` for the old
+N-resample-one-model behavior). `DISCOVER_REDTEAM_PROVIDER` (default
+`gemini`) and `DISCOVER_FALLBACK_PROVIDER` (default `claude`) may also
+need their own keys — see `.env.example`.
 
 For rebalance, additionally:
 
@@ -116,6 +133,24 @@ For email delivery:
 
 A full annotated list lives in `.env.example`.
 
+### Request pacing (optional)
+
+Yahoo throttles aggressively and everything yfinance-related goes through
+`data/yf_gateway.py`, which caps concurrency process-wide, paces requests,
+and halves its own rate whenever Yahoo answers `Too Many Requests`
+(recovering as calls succeed). The defaults are tuned for a full discover
+run; raise or lower them only after reading the `yfinance [discover run]:`
+summary logged at the end of a run.
+
+- `YF_MAX_CONCURRENCY` (4) — max in-flight Yahoo requests for the process
+- `YF_RATE_LIMIT_PER_MIN` (150) — starting/ceiling request rate
+- `YF_MIN_RATE_PER_MIN` (20) — floor the backoff stops at
+- `YF_MAX_ATTEMPTS` (4) — tries per call before giving up
+- `YF_COOLDOWN_SECONDS` (15) — base global pause after a rate limit
+- `FINNHUB_RATE_LIMIT_PER_MIN` (55) — under the 60/min free-tier ceiling
+- `DISCOVER_MAX_SCREEN_CANDIDATES` (250) — cap on names that reach the
+  per-ticker fundamentals + EPS fetches, after the trend gate
+
 ## Architecture
 
 ```
@@ -129,8 +164,12 @@ src/stock_analyzer/
 │   ├── analyst.py / ranker.py / redteam.py / sizer.py
 │   ├── reviewer.py / rebalancer.py / premortem.py
 │   ├── market_themes.py / track_record.py / tax_lot_helper.py
-│   ├── calibration.py                       # grade the ranker's own EV + conviction
+│   ├── calibration.py                       # grade the ranker's own EV + conviction,
+│   │                                          # plus factor-similar past setups
 │   ├── score_validation.py                   # grade the screen score vs forward returns
+│   ├── output_validation.py                  # sanity-check ranker targets vs price/HV
+│   ├── data_reconciliation.py                 # flag disagreeing data sources pre-LLM
+│   ├── macro_filter.py                       # deterministic macro-regime veto on picks
 │   ├── report.py                            # public re-exports (shim)
 │   ├── report_sections.py                   # Section IR + parsers + palettes
 │   ├── report_html.py                       # HTML email renderer
@@ -139,7 +178,7 @@ src/stock_analyzer/
 │                    #                    SnapTrade, Tavily, chart-img)
 ├── agents/          # Standalone agents (insider, news reranker, portfolio)
 ├── reporting/       # SMTP + analyst-report HTML renderer
-├── llm.py           # AgnoAgent factory (Claude + Gemini)
+├── llm.py           # AgnoAgent factory (Claude + Gemini + OpenAI) + provider fallback
 ├── http_client.py   # Shared retry / rate-limit HTTP client
 └── preflight.py     # Fail-fast startup checks
 ```
@@ -177,7 +216,8 @@ SELL alpha = spy_ret - stock_ret  (stock lagged SPY → wise sell)
 ```
 
 Three things the measurement is careful about, because this number is fed
-back into the Opus ranker prompt as the system's own accuracy:
+back into the ranker prompt (every consensus round, every provider) as the
+system's own accuracy:
 
 - **One horizon per number.** Each decision is measured over *completed*
   fixed windows (30d and 90d) and only aggregated with decisions measured
@@ -205,10 +245,12 @@ uv run validate-screen --what score --horizon 30
   composite isn't separating winners from losers; a negative IC means that
   component is pointing the wrong way. Measure before re-tuning weights.
 - **Ranker calibration** — EV error (realized − EV) at the 270-day horizon,
-  mean realized alpha bucketed by the stated conviction score, and stated
-  vs observed frequency for bull/base/bear. Conviction, EV, entry price and
-  all three scenario probabilities are persisted per pick, and the
-  calibration block is fed back into the ranker prompt so Opus sees its own
+  mean realized alpha bucketed by the stated conviction score, stated vs
+  observed frequency for bull/base/bear, and the nearest past setups by
+  factor similarity (from the screen's own `score_breakdown`). Conviction,
+  EV, entry price, all three scenario probabilities, and which provider(s)
+  voted for each pick are persisted per pick, and the calibration block is
+  fed back into the ranker prompt so every round sees the system's own
   scorecard on the next run.
 
 Both read point-in-time values stored at decision time, so neither can leak
@@ -221,10 +263,12 @@ retroactively (a historical close is the same number today as it was then).
 uv run pytest -q
 ```
 
-265 tests covering the high-stakes math (tax-lot computation, verdict
+323 tests covering the high-stakes math (tax-lot computation, verdict
 auto-repair, direction-aware and horizon-separated track-record alpha,
 beta adjustment, score validation, forecast calibration, parsers,
-section-dispatch parity HTML/PDF). The full suite runs in ~3s.
+section-dispatch parity HTML/PDF, multi-provider ranker consensus math,
+cross-source data reconciliation, macro-veto rules). The full suite runs
+in ~9s.
 
 `tests/conftest.py` points `Settings` at no env file and blocks outbound
 sockets for the whole suite, so a test can never read your real `.env` or

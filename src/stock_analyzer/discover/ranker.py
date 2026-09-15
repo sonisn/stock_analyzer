@@ -1,15 +1,20 @@
-"""Comparative ranker (Opus + extended thinking, single call).
+"""Comparative ranker — one high-effort reasoning call per consensus round.
 
 Takes all candidate analyses + user holdings, picks top N with comparative
-theses. The single LLM call that does most of the work in this pipeline —
-Opus's reasoning depth pays off here vs N isolated per-ticker calls.
+theses. This is the highest-leverage stage in the pipeline — reasoning
+depth pays off here vs N isolated per-ticker calls. By default it runs
+one round per provider in `DISCOVER_RANKER_PROVIDERS` (claude, gemini,
+openai) and majority-votes ticker membership across the rounds, so
+disagreement reflects genuinely different models rather than one model's
+own sampling stochasticity. A single-round config (one provider) still
+works — `rank()` short-circuits to a plain single call.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from ..llm import AgnoAgent, Provider
+from ..llm import AgnoAgent, Provider, reasoning_model_kwargs, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import RankerOutput
 
@@ -118,51 +123,60 @@ conviction numbers.\
 """
 
 
+def _build_agent(provider: Provider, model: str, effort: str) -> AgnoAgent:
+    # Opus 4.7+ adaptive thinking spends part of `max_tokens` on the
+    # thinking trace, so the JSON output competes with it. Our response is
+    # rich (5 picks × 3 scenarios × bull/bear prose + pairs_not_to_hold_
+    # together + full_text) and we hit truncation mid-string at ~4500
+    # visible tokens when capped at 8000. Bumped to 16000 so thinking AND
+    # output both fit comfortably — kept the same across providers even
+    # though only Claude's adaptive thinking actually spends into it.
+    return AgnoAgent(
+        "Ranker",
+        provider,
+        model,
+        model_kwargs=reasoning_model_kwargs(provider, effort, max_tokens=16000),
+        instructions=RANKER_INSTRUCTIONS,
+        output_schema=RankerOutput,
+    )
+
+
 class Ranker:
     def __init__(
         self,
-        provider: Provider,
-        model: str,
+        rounds: list[tuple[Provider, str]],
         *,
         effort: str = "high",
-        consensus_runs: int = 1,
-        consensus_temperature: float = 0.7,
+        fallback: tuple[Provider, str] | None = None,
     ):
-        # Opus 4.7+ moved from `thinking.type=enabled` + budget_tokens to the
-        # adaptive thinking API: Claude decides how much thinking to spend,
-        # gated by `output_config.effort` (low | medium | high).
-        self.consensus_runs = max(1, consensus_runs)
-        # Temperature is coupled to the vote, because the two settings only
-        # make sense together. Self-consistency voting extracts information
-        # from DISAGREEMENT between samples; at temperature 0 the decoder is
-        # near-deterministic, so N runs return the same answer N times and
-        # the majority vote is a tautology that costs N x Opus. So: a single
-        # run stays deterministic (temperature 0, reproducible), and a
-        # consensus run samples (temperature > 0) so the agreement rate is a
-        # real confidence signal.
-        self.temperature = consensus_temperature if self.consensus_runs > 1 else 0.0
-        # Opus 4.7 adaptive thinking spends part of `max_tokens` on
-        # the thinking trace, so the JSON output competes with it. Our
-        # response is rich (5 picks × 3 scenarios × bull/bear prose +
-        # pairs_not_to_hold_together + full_text) and we hit truncation
-        # mid-string at ~4500 visible tokens when capped at 8000. Bumped
-        # to 16000 so thinking AND output both fit comfortably.
-        self.agent = AgnoAgent(
-            "Ranker",
-            provider,
-            model,
-            model_kwargs={
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": effort},
-                "max_tokens": 16000,
-                "temperature": self.temperature,
-            },
-            instructions=RANKER_INSTRUCTIONS,
-            output_schema=RankerOutput,
+        """`rounds` is one (provider, model) pair per consensus round.
+
+        A single-entry list behaves exactly like the old single-provider,
+        single-call Ranker. Multiple entries — typically one per provider
+        (claude/gemini/openai) — each run a full independent ranking pass;
+        `rank()` then majority-votes across them. `fallback`, if given, is
+        the (provider, model) each round retries on if its primary call
+        fails with an auth/rate-limit/provider error.
+        """
+        if not rounds:
+            raise ValueError("Ranker needs at least one (provider, model) round.")
+        self.rounds = rounds
+        self.consensus_runs = len(rounds)
+        self.effort = effort
+        self.fallback = fallback
+        self._agents = [_build_agent(provider, model, effort) for provider, model in rounds]
+
+    def _run_round(self, agent: AgnoAgent, *args: Any, **kwargs: Any) -> Any:
+        build_fallback = (
+            (lambda: _build_agent(self.fallback[0], self.fallback[1], self.effort))
+            if self.fallback and self.fallback[0] != agent.provider
+            else None
         )
+        return run_with_fallback(agent, build_fallback, *args, **kwargs)
 
     def _rank_once(
         self,
+        agent: AgnoAgent,
         analyses: dict[str, Any],
         holdings_summary: str,
         top_n: int,
@@ -211,7 +225,7 @@ class Ranker:
             f"Current holdings summary:\n{holdings_summary or '(none)'}\n\n"
             f"Candidate analyses:\n\n{candidates_block}"
         )
-        result = self.agent.run(prompt).content
+        result = self._run_round(agent, prompt).content
         if result is None:
             raise RuntimeError("Ranker returned no content.")
         if isinstance(result, RankerOutput):
@@ -230,18 +244,19 @@ class Ranker:
         market_themes_block: str = "",
         calibration_block: str = "",
     ) -> RankerOutput:
-        """Single call when consensus_runs=1; otherwise run N times and
-        return the run whose picks best overlap the majority-consensus set."""
+        """Single call when consensus_runs=1; otherwise run one pass per
+        round (each on its own provider/model) and return the run whose
+        picks best overlap the majority-consensus set, with agreement_ratio
+        and voting_providers attached to each of its picks."""
         logger.info(
-            "Ranking %d candidates with Opus (adaptive thinking, macro=%s, "
-            "consensus_runs=%d, temperature=%.2f)",
+            "Ranking %d candidates (rounds=%s, macro=%s)",
             len(analyses),
+            [f"{p}/{m}" for p, m in self.rounds],
             bool(macro_context),
-            self.consensus_runs,
-            self.temperature,
         )
         if self.consensus_runs <= 1:
             return self._rank_once(
+                self._agents[0],
                 analyses,
                 holdings_summary,
                 top_n,
@@ -253,8 +268,9 @@ class Ranker:
 
         outputs: list[RankerOutput] = []
         pick_sets: list[set[str]] = []
-        for i in range(self.consensus_runs):
+        for i, agent in enumerate(self._agents):
             output = self._rank_once(
+                agent,
                 analyses,
                 holdings_summary,
                 top_n,
@@ -267,9 +283,11 @@ class Ranker:
             picks = {p.ticker for p in output.picks}
             pick_sets.append(picks)
             logger.info(
-                "Ranker run %d/%d picked %s",
+                "Ranker round %d/%d (%s/%s) picked %s",
                 i + 1,
                 self.consensus_runs,
+                self.rounds[i][0],
+                self.rounds[i][1],
                 sorted(picks),
             )
 
@@ -287,12 +305,12 @@ class Ranker:
 
         if not consensus:
             logger.warning(
-                "No consensus reached across %d ranker runs at temperature "
-                "%.2f — the candidate set does not separate cleanly. Returning "
-                "the first run's output verbatim; treat these picks as "
+                "No consensus reached across %d ranker rounds (%s) — the "
+                "candidate set does not separate cleanly. Returning the "
+                "first round's output verbatim; treat these picks as "
                 "low-confidence.",
                 self.consensus_runs,
-                self.temperature,
+                [p for p, _ in self.rounds],
             )
             return outputs[0]
 
@@ -301,8 +319,20 @@ class Ranker:
             key=lambda i: len(pick_sets[i] & consensus),
         )
         logger.info(
-            "Using run %d's output (overlaps consensus by %d picks)",
+            "Using round %d's output (overlaps consensus by %d picks)",
             best_idx + 1,
             len(pick_sets[best_idx] & consensus),
         )
-        return outputs[best_idx]
+        winner = outputs[best_idx]
+        annotated_picks = []
+        for pick in winner.picks:
+            agreeing_rounds = [i for i, s in enumerate(pick_sets) if pick.ticker in s]
+            annotated_picks.append(
+                pick.model_copy(
+                    update={
+                        "agreement_ratio": len(agreeing_rounds) / self.consensus_runs,
+                        "voting_providers": [self.rounds[i][0] for i in agreeing_rounds],
+                    }
+                )
+            )
+        return winner.model_copy(update={"picks": annotated_picks})

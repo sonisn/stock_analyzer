@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 
 from ..agents.portfolio import PortfolioAgent
 from ..config import Settings
+from ..data import finnhub, yf_gateway
 from ..data.brokerage import fetch_portfolio_holdings
 from ..data.chart_img import fetch_charts
 from ..logging import get_logger
@@ -58,6 +59,10 @@ def _chart_cid(ticker: str) -> str:
 
 def main() -> None:
     load_dotenv()
+    # Pacing knobs live in the environment, and these modules are
+    # imported before `.env` is loaded — re-read them now.
+    yf_gateway.reload_from_env()
+    finnhub.reload_from_env()
     settings = Settings.from_env()
 
     result, tickers = run_analysis(settings)

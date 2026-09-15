@@ -14,18 +14,18 @@ from __future__ import annotations
 
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pandas as pd
-import yfinance as yf
 
 from ..logging import get_logger
+from . import yf_gateway
 
 logger = get_logger(__name__)
 
-# See fundamentals._MAX_WORKERS: sized for a ~500-name sampling frame.
-_MAX_WORKERS = 10
+# See fundamentals._MAX_WORKERS: fan-out width only — yf_gateway caps the
+# actual concurrent-request count for the whole process.
+_MAX_WORKERS = 8
 _TRADING_DAYS_PER_MONTH = 21
 # SPY history is the denominator for every RS calculation, so it is cached
 # once per batch rather than refetched per ticker. The TTL keeps a
@@ -43,11 +43,12 @@ def _spy_history() -> pd.DataFrame | None:
     with _SPY_LOCK:
         age = time.monotonic() - _SPY_FETCHED_AT
         if _SPY_HISTORY is None or age >= _SPY_CACHE_TTL_SECONDS:
-            try:
-                _SPY_HISTORY = yf.Ticker("SPY").history(period="2y", auto_adjust=True)
-            except Exception as e:
-                logger.warning("Failed to fetch SPY history: %s", e)
-                _SPY_HISTORY = pd.DataFrame()
+            fetched = yf_gateway.history(
+                "SPY", what="technicals.spy", period="2y", auto_adjust=True
+            )
+            if fetched is None:
+                logger.warning("Failed to fetch SPY history — relative strength unavailable")
+            _SPY_HISTORY = fetched if fetched is not None else pd.DataFrame()
             _SPY_FETCHED_AT = time.monotonic()
         cached = _SPY_HISTORY
     return cached if cached is not None and not cached.empty else None
@@ -154,11 +155,7 @@ def _volume_trend(history: pd.DataFrame) -> float | None:
 
 
 def fetch_technicals(ticker: str) -> dict[str, Any] | None:
-    try:
-        hist = yf.Ticker(ticker).history(period="2y", auto_adjust=True)
-    except Exception as e:
-        logger.warning("technicals fetch failed for %s: %s", ticker, e)
-        return None
+    hist = yf_gateway.history(ticker, what="technicals", period="2y", auto_adjust=True)
     if hist is None or hist.empty:
         return None
 
@@ -186,8 +183,7 @@ def batch_technicals(tickers: list[str]) -> dict[str, dict[str, Any]]:
     """Fetch technicals for many tickers in parallel. Warms SPY cache once."""
     _spy_history()
     results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, r in zip(tickers, ex.map(fetch_technicals, tickers), strict=False):
-            if r:
-                results[ticker] = r
+    for ticker, r in yf_gateway.map_symbols(fetch_technicals, tickers, workers=_MAX_WORKERS):
+        if r:
+            results[ticker] = r
     return results

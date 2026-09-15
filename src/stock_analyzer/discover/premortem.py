@@ -96,7 +96,9 @@ class PreMortemAgent:
                 "thinking": {"type": "adaptive"},
                 "output_config": {"effort": effort},
                 "max_tokens": 4000,
-                "temperature": 0,
+                # Adaptive thinking requires temperature=1; the API rejects
+                # anything else with a 400.
+                "temperature": 1,
             },
             instructions=PREMORTEM_INSTRUCTIONS,
             output_schema=PreMortem,

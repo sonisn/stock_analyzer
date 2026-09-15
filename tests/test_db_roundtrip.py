@@ -68,6 +68,8 @@ def test_roundtrip_through_repository(tmp_path: Path) -> None:
             ranker_text="pick one prose",
             bear_case_text="bear prose",
             allocation_text="35%",
+            agreement_ratio=0.6667,
+            voting_providers=["claude", "openai"],
         )
         insert_holdings_review(
             s,
@@ -114,6 +116,8 @@ def test_roundtrip_through_repository(tmp_path: Path) -> None:
         pk = s.exec(select(Pick).where(Pick.run_id == run_id, Pick.rank == 1)).one()
         assert pk.ticker == "NVDA"
         assert pk.allocation_text == "35%"
+        assert pk.agreement_ratio == 0.6667
+        assert pk.voting_providers == "claude,openai"
 
         hr = s.exec(select(HoldingReviewRow).where(HoldingReviewRow.run_id == run_id)).one()
         assert hr.verdict == "HOLD"

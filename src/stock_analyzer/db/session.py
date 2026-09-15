@@ -51,6 +51,10 @@ _LEGACY_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("picks", "ALTER TABLE picks ADD COLUMN ev_pct REAL"),
     ("picks", "ALTER TABLE picks ADD COLUMN entry_price REAL"),
     ("picks", "ALTER TABLE picks ADD COLUMN time_horizon TEXT"),
+    # Ranker consensus provenance (multi-provider consensus rounds). NULL
+    # on picks from single-round runs, which have no agreement signal.
+    ("picks", "ALTER TABLE picks ADD COLUMN agreement_ratio REAL"),
+    ("picks", "ALTER TABLE picks ADD COLUMN voting_providers TEXT"),
 )
 
 

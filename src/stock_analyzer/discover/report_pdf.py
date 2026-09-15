@@ -257,6 +257,8 @@ def _pdf_pick_card(d: dict[str, Any], styles) -> list[Any]:
     fragility = d.get("fragility_rank") if isinstance(d.get("fragility_rank"), int) else None
     alloc_pct = d.get("allocation_pct")
     alloc_usd = d.get("allocation_usd")
+    agreement_ratio = d.get("agreement_ratio")
+    voting_providers = d.get("voting_providers")
 
     flow: list[Any] = []
 
@@ -307,13 +309,19 @@ def _pdf_pick_card(d: dict[str, Any], styles) -> list[Any]:
                 styles,
             )
         )
+    if agreement_ratio is not None:
+        n = len(voting_providers) if voting_providers else 0
+        total = round(n / agreement_ratio) if agreement_ratio else n
+        is_unanimous = agreement_ratio >= 0.999
+        fg, bg = ("#1a7f37", "#e6f4ea") if is_unanimous else ("#9a5b00", "#fff4e5")
+        pill_cells.append(_pdf_pill(f"Consensus {n}/{total}", fg, bg, styles))
 
-    # Pad to 5 cells so all rows column-align.
-    while len(pill_cells) < 5:
+    # Pad to 6 cells so all rows column-align.
+    while len(pill_cells) < 6:
         pill_cells.append(Paragraph("", styles["BodyText"]))
     header = Table(
         [pill_cells],
-        colWidths=[2.1 * inch] + [1.1 * inch] * 4,
+        colWidths=[1.9 * inch] + [0.94 * inch] * 5,
         hAlign="LEFT",
     )
     header.setStyle(

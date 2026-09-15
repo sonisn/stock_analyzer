@@ -67,7 +67,7 @@ def test_fetch_realized_volatility_happy_path():
     fake_ticker.history.return_value = df
     fake_yf = MagicMock()
     fake_yf.Ticker.return_value = fake_ticker
-    with patch.dict("sys.modules", {"yfinance": fake_yf}):
+    with patch("stock_analyzer.data.yf_gateway.yf", fake_yf):
         out = fetch_realized_volatility(["NVDA"])
     assert "NVDA" in out
     assert 0.10 < out["NVDA"].hv_annualized < 0.30  # ~15-20% with 1% daily
@@ -84,7 +84,7 @@ def test_fetch_realized_volatility_empty_df_returns_empty():
     fake_ticker.history.return_value = pd.DataFrame()
     fake_yf = MagicMock()
     fake_yf.Ticker.return_value = fake_ticker
-    with patch.dict("sys.modules", {"yfinance": fake_yf}):
+    with patch("stock_analyzer.data.yf_gateway.yf", fake_yf):
         out = fetch_realized_volatility(["NVDA"])
     assert out == {}
 
@@ -96,6 +96,6 @@ def test_fetch_realized_volatility_swallows_yf_errors():
 
     fake_yf = MagicMock()
     fake_yf.Ticker.side_effect = RuntimeError("network down")
-    with patch.dict("sys.modules", {"yfinance": fake_yf}):
+    with patch("stock_analyzer.data.yf_gateway.yf", fake_yf):
         out = fetch_realized_volatility(["NVDA"])
     assert out == {}

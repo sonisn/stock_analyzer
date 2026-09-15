@@ -9,8 +9,9 @@ Declarative shape:
   ├ Parallel(risk_factors, news)
   analyst (Sonnet, parallel fan-out inside step)
   holdings
-  ranker (Opus + extended thinking)
-  redteam (Opus)
+  ranker (multi-provider consensus — one round per DISCOVER_RANKER_PROVIDERS entry)
+  macro_veto (deterministic, suppresses high-momentum picks in a risk-off regime)
+  redteam (DISCOVER_REDTEAM_PROVIDER, default a different provider than the ranker's)
   sizer (Opus)
   persist_and_report
 
@@ -25,18 +26,17 @@ through StepOutput.content.
 from __future__ import annotations
 
 import os
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from typing import Any
 
-import yfinance as yf
 from agno.db.sqlite import SqliteDb
 from agno.workflow import Parallel, Step, Workflow
 from agno.workflow.types import StepInput, StepOutput
 from dotenv import load_dotenv
 
 from ..config import Settings
+from ..data import finnhub, yf_gateway
 from ..data.brokerage import fetch_portfolio_holdings
 from ..data.chart_img import fetch_charts
 from ..data.earnings_calendar import batch_earnings_flags
@@ -44,6 +44,7 @@ from ..data.eps_revisions import batch_eps_revisions
 from ..data.finnhub import batch_finnhub_signals
 from ..data.fred_macro import fetch_regime_data, regime_summary_text
 from ..data.fundamentals import batch_fundamentals
+from ..data.historical_volatility import fetch_realized_volatility
 from ..data.insider_selling import insider_selling_mentions
 from ..data.sec_edgar import batch_quarterly_mda, batch_risk_factors
 from ..data.sector_rotation import sector_bias, sector_rotation_summary
@@ -61,13 +62,18 @@ from ..db.session import get_session
 from ..discover.analyst import Analyst, analyze_batch
 from ..discover.calibration import (
     format_calibration_block,
+    format_similar_setups_block,
     measure_calibration,
+    similar_past_setups,
 )
+from ..discover.data_reconciliation import reconcile_price_targets
+from ..discover.macro_filter import apply_macro_veto
 from ..discover.market_themes import (
     MarketThemesAgent,
     theme_score_bonus,
     themes_by_ticker,
 )
+from ..discover.output_validation import validate_pick_scenarios
 from ..discover.peers import batch_peer_comparison
 from ..discover.ranker import Ranker
 from ..discover.redteam import RedTeam
@@ -78,7 +84,7 @@ from ..discover.report import (
     render_html_email,
     render_pdf,
 )
-from ..discover.screen import passes_hard_filter, score_candidate
+from ..discover.screen import passes_hard_filter, passes_trend_gate, score_candidate
 from ..discover.sizer import Sizer
 from ..discover.track_record import (
     format_track_record_block,
@@ -106,10 +112,13 @@ def _save_local_pdf(pdf_bytes: bytes, filename: str) -> Path:
 def _pick_forecasts(ranker_output: object) -> dict[str, dict[str, Any]]:
     """Per-ticker forecast extracted from the structured ranker output.
 
-    Returns {ticker: {conviction, ev_pct, time_horizon, scenarios}} where
-    `scenarios` is a list of plain dicts ready for the repository layer.
-    EV is computed by the same deterministic helper the report and Sizer
-    use, so the stored number is exactly the one the pipeline acted on.
+    Returns {ticker: {conviction, ev_pct, time_horizon, scenarios,
+    agreement_ratio, voting_providers}} where `scenarios` is a list of
+    plain dicts ready for the repository layer. EV is computed by the same
+    deterministic helper the report and Sizer use, so the stored number is
+    exactly the one the pipeline acted on. `agreement_ratio`/
+    `voting_providers` are the Ranker's multi-provider consensus vote for
+    this pick (None on single-round runs).
     """
     from ..models.llm import RankerOutput, expected_return_pct
 
@@ -129,6 +138,8 @@ def _pick_forecasts(ranker_output: object) -> dict[str, dict[str, Any]]:
                 }
                 for s in pick.scenarios
             ],
+            "agreement_ratio": pick.agreement_ratio,
+            "voting_providers": pick.voting_providers,
         }
     return out
 
@@ -165,6 +176,26 @@ def _format_ev_table(ranker_output: object) -> str:
         return ""
     header = "  Ticker  E[return]    Bull P/Ret    Base P/Ret    Bear P/Ret"
     return header + "\n" + "\n".join(rows)
+
+
+def _format_agreement_block(ranker_output: object) -> str:
+    """Per-ticker consensus agreement ratio, for the Sizer's prompt.
+
+    Empty when the ranker ran a single round (agreement_ratio is None on
+    every pick in that case) — single-round runs have no agreement signal."""
+    from ..models.llm import RankerOutput
+
+    if not isinstance(ranker_output, RankerOutput):
+        return ""
+    rows: list[str] = []
+    for pick in sorted(ranker_output.picks, key=lambda p: p.rank):
+        if pick.agreement_ratio is None:
+            continue
+        n = len(pick.voting_providers) if pick.voting_providers else 0
+        total = round(n / pick.agreement_ratio) if pick.agreement_ratio else n
+        providers = ", ".join(pick.voting_providers or [])
+        rows.append(f"  {pick.ticker:6s}  {n}/{total} rounds agreed ({providers})")
+    return "\n".join(rows)
 
 
 def _validate_and_correct_themes(
@@ -361,10 +392,9 @@ def _trim(text: str | None, max_chars: int) -> str | None:
 
 
 def _fetch_news(ticker: str, limit: int = 3) -> list[dict[str, Any]]:
-    try:
-        items = yf.Ticker(ticker).news or []
-    except Exception:
-        return []
+    items = (
+        yf_gateway.ticker_call(ticker, "discover.news", lambda t: t.news or [], default=[]) or []
+    )
     out: list[dict[str, Any]] = []
     for it in items[:limit]:
         title = it.get("title") or (it.get("content") or {}).get("title")
@@ -376,9 +406,8 @@ def _fetch_news(ticker: str, limit: int = 3) -> list[dict[str, Any]]:
 
 def _batch_news(tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
     results: dict[str, list[dict[str, Any]]] = {}
-    with ThreadPoolExecutor(max_workers=5) as ex:
-        for ticker, news in zip(tickers, ex.map(_fetch_news, tickers), strict=False):
-            results[ticker] = news
+    for ticker, news in yf_gateway.map_symbols(_fetch_news, tickers, workers=5):
+        results[ticker] = news
     return results
 
 
@@ -468,15 +497,87 @@ class DiscoverPipeline:
             )
         )
 
-    def step_fundamentals(self, step_input: StepInput) -> StepOutput:
-        tickers = self.state["tickers"]
-        self.state["fundamentals"] = batch_fundamentals(tickers)
-        return StepOutput(content=f"Fundamentals: {len(self.state['fundamentals'])}/{len(tickers)}")
-
     def step_technicals(self, step_input: StepInput) -> StepOutput:
         tickers = self.state["tickers"]
         self.state["technicals"] = batch_technicals(tickers)
         return StepOutput(content=f"Technicals: {len(self.state['technicals'])}/{len(tickers)}")
+
+    def step_prescreen(self, step_input: StepInput) -> StepOutput:
+        """Narrow the frame to names that can still pass the hard filter.
+
+        Technicals cost one request per ticker; fundamentals and EPS
+        revisions cost three more. The hard filter's trend rules are
+        decidable from the technicals alone, so anything that fails them
+        is eliminated before the expensive fetches — which is both the
+        "stricter criteria" the funnel needed and the bulk of the
+        rate-limit pressure removed.
+        """
+        tickers: list[str] = self.state["tickers"]
+        technicals = self.state.get("technicals") or {}
+        universe = self.state.get("universe") or {}
+
+        # The user's own names are analyzed regardless of trend: a holding
+        # that broke down is exactly the one worth a sell/trim opinion.
+        always: set[str] = {
+            t
+            for t in tickers
+            if {"holding", "watchlist"} & set(universe.get(t, {}).get("sources") or [])
+        }
+
+        reasons: dict[str, list[str]] = {}
+        passed: list[str] = []
+        for ticker in tickers:
+            ok, why = passes_trend_gate(technicals.get(ticker))
+            if ok or ticker in always:
+                passed.append(ticker)
+            else:
+                reasons[ticker] = why
+
+        # Cap the survivors by 6-month relative strength, keeping the
+        # user's names outside the cap.
+        cap = self.settings.discover_max_screen_candidates
+        capped_out: list[str] = []
+        if len(passed) > cap:
+            ranked = sorted(
+                (t for t in passed if t not in always),
+                key=lambda t: (technicals.get(t) or {}).get("rs_6mo") or 0.0,
+                reverse=True,
+            )
+            keep = set(ranked[: max(0, cap - len(always))]) | always
+            capped_out = [t for t in passed if t not in keep]
+            for ticker in capped_out:
+                reasons[ticker] = ["below the relative-strength cap for deep analysis"]
+            passed = [t for t in passed if t in keep]
+
+        self.state["screen_tickers"] = passed
+        self.state["prescreen_reasons"] = reasons
+        logger.info(
+            "Prescreen: %d/%d names pass the trend gate%s — %d go on to "
+            "fundamentals + EPS revisions (~%d requests saved)",
+            len(passed),
+            len(tickers),
+            f" (capped at {cap})" if capped_out else "",
+            len(passed),
+            3 * (len(tickers) - len(passed)),
+        )
+        return StepOutput(
+            content=f"Prescreen: {len(passed)}/{len(tickers)} names cleared the trend gate"
+        )
+
+    def step_fundamentals(self, step_input: StepInput) -> StepOutput:
+        tickers = self.state.get("screen_tickers") or self.state["tickers"]
+        self.state["fundamentals"] = batch_fundamentals(tickers)
+        return StepOutput(content=f"Fundamentals: {len(self.state['fundamentals'])}/{len(tickers)}")
+
+    def step_historical_volatility(self, step_input: StepInput) -> StepOutput:
+        # Used post-ranker to sanity-check stated scenario returns against
+        # each ticker's own realized volatility (output_validation.py) —
+        # not part of the score or any LLM prompt.
+        tickers = self.state.get("screen_tickers") or self.state["tickers"]
+        self.state["historical_volatility"] = fetch_realized_volatility(tickers)
+        return StepOutput(
+            content=f"Historical volatility: {len(self.state['historical_volatility'])}/{len(tickers)}"
+        )
 
     def step_sector_rotation(self, step_input: StepInput) -> StepOutput:
         self.state["sector_rotation"] = sector_rotation_summary(months=6)
@@ -516,7 +617,14 @@ class DiscoverPipeline:
         universe's actual price action + EPS revisions. Grounded in
         real data (top/bottom performers, revision direction) rather
         than the LLM's training memory."""
-        agent = MarketThemesAgent("claude", self.settings.discover_sonnet_model)
+        agent = MarketThemesAgent(
+            "claude",
+            self.settings.discover_sonnet_model,
+            fallback=(
+                self.settings.discover_fallback_provider,
+                self.settings.resolve_fallback_model(),
+            ),
+        )
         themes = agent.detect(
             macro_summary=self.state.get("macro_summary", ""),
             sector_rotation=self.state.get("sector_rotation"),
@@ -550,12 +658,19 @@ class DiscoverPipeline:
         themes_by_t = self.state.get("themes_by_ticker") or {}
         revisions_by_t = self.state.get("eps_revisions") or {}
 
+        prescreen_reasons = self.state.get("prescreen_reasons") or {}
+
         candidates: list[dict[str, Any]] = []
         for ticker in self.state["tickers"]:
             f = fundamentals.get(ticker)
             t = technicals.get(ticker)
             u = universe[ticker]
-            passes, reasons = passes_hard_filter(f, t)
+            if ticker in prescreen_reasons:
+                # Eliminated before the fundamentals fetch — report why it
+                # actually failed rather than "no fundamentals data".
+                passes, reasons = False, list(prescreen_reasons[ticker])
+            else:
+                passes, reasons = passes_hard_filter(f, t)
             cand: dict[str, Any] = {
                 "ticker": ticker,
                 "passed_filter": passes,
@@ -604,10 +719,12 @@ class DiscoverPipeline:
             1 for t in self.state["tickers"] if universe.get(t, {}).get("in_base_universe")
         )
         logger.info(
-            "Screen funnel: %d universe (%d in frame) -> %d passed hard "
-            "filters -> %d sent to the LLM stages (cap %d)",
+            "Screen funnel: %d universe (%d in frame) -> %d cleared the trend "
+            "gate and were fully fetched -> %d passed hard filters -> %d sent "
+            "to the LLM stages (cap %d)",
             len(candidates),
             frame_n,
+            len(self.state.get("screen_tickers") or self.state["tickers"]),
             passed,
             len(survivors),
             MAX_CANDIDATES_FOR_LLM,
@@ -622,6 +739,39 @@ class DiscoverPipeline:
         self.state["candidates"] = candidates
         self.state["survivors"] = survivors
         self.state["survivor_tickers"] = [c["ticker"] for c in survivors]
+
+        # Factor-similarity few-shot retrieval: for the handful of
+        # top-scored survivors, find past candidates with a similar
+        # score_breakdown and what they actually did. Appended onto the
+        # aggregate calibration_block computed earlier (step_track_record)
+        # so the ranker sees both "how has my calibration been overall"
+        # and "here's a concrete precedent for this specific setup".
+        # Capped at 5 survivors — each lookup does a yfinance forward-
+        # return fetch per neighbor, so this isn't free.
+        try:
+            top_for_similarity = sorted(survivors, key=lambda c: c["score"], reverse=True)[:5]
+            similar_lines = [
+                line
+                for c in top_for_similarity
+                if (
+                    line := format_similar_setups_block(
+                        c["ticker"],
+                        similar_past_setups(c["score_breakdown"], self.settings.discover_db_path),
+                    )
+                )
+            ]
+            if similar_lines:
+                existing = self.state.get("calibration_block", "")
+                similar_block = (
+                    "Similar past setups (factor-nearest, with what happened):\n"
+                    + "\n".join(similar_lines)
+                )
+                self.state["calibration_block"] = (
+                    f"{existing}\n\n{similar_block}" if existing else similar_block
+                )
+        except Exception as e:
+            logger.warning("similar-past-setups lookup failed (%s) — continuing without", e)
+
         if not survivors:
             # Don't raise — agno doesn't propagate state from a step that
             # raises, which leaves every enrichment step in the next
@@ -696,10 +846,11 @@ class DiscoverPipeline:
         """Analyst EPS-estimate revisions over the last 7 and 30 days.
         One of the strongest forward-thesis signals available.
 
-        Runs in the market_data block (before screen) so the screen
-        score can pick up a +/-5 bonus from direction_30d. Fetches for
-        the full universe, not just survivors."""
-        tickers = list(self.state.get("tickers") or [])
+        Runs before the screen so the score can pick up a +/-5 bonus
+        from direction_30d. Fetched for the prescreened set — names the
+        trend gate already eliminated cannot pass the hard filter, so
+        their revisions would never be read."""
+        tickers = list(self.state.get("screen_tickers") or self.state.get("tickers") or [])
         if not tickers:
             self.state["eps_revisions"] = {}
             return StepOutput(content="eps_revisions: empty universe; skipping")
@@ -798,8 +949,16 @@ class DiscoverPipeline:
             insider_activity: Any = fh.get("insider_activity") or {
                 "mention_count": insider_selling.get(ticker, 0)
             }
+            reconciliation_flags = [
+                flag
+                for flag in [
+                    reconcile_price_targets(fundamentals.get(ticker), fh.get("price_targets")),
+                ]
+                if flag
+            ]
             payloads[ticker] = {
                 "fundamentals": fundamentals.get(ticker) or {},
+                "data_reconciliation_flags": reconciliation_flags,
                 "technicals": technicals.get(ticker) or {},
                 "universe_signals": {
                     "sources": c["sources"],
@@ -831,8 +990,17 @@ class DiscoverPipeline:
                 ),
                 "news": news.get(ticker, []),
             }
+            for flag in reconciliation_flags:
+                logger.warning("Data reconciliation (%s): %s", ticker, flag)
 
-        analyst = Analyst("claude", self.settings.discover_sonnet_model)
+        analyst = Analyst(
+            "claude",
+            self.settings.discover_sonnet_model,
+            fallback=(
+                self.settings.discover_fallback_provider,
+                self.settings.resolve_fallback_model(),
+            ),
+        )
         self.state["analyses"] = analyze_batch(analyst, payloads)
         if not self.state["analyses"]:
             logger.error("Analyst: all calls failed; downstream LLM stages will skip")
@@ -861,10 +1029,11 @@ class DiscoverPipeline:
             self.state["picks"] = []
             return StepOutput(content="ranker: no analyses; skipping")
         ranker = Ranker(
-            "claude",
-            self.settings.discover_opus_model,
-            consensus_runs=self.settings.discover_consensus_runs,
-            consensus_temperature=self.settings.discover_consensus_temperature,
+            self.settings.resolve_ranker_rounds(),
+            fallback=(
+                self.settings.discover_fallback_provider,
+                self.settings.resolve_fallback_model(),
+            ),
         )
         output = ranker.rank(
             analyses,
@@ -878,7 +1047,43 @@ class DiscoverPipeline:
         self.state["ranker_text"] = output.full_text
         self.state["picks"] = parse_picks(output)
         picked = [t for _, t, _ in self.state["picks"]]
+
+        # Pure-arithmetic sanity check — no LLM call — against data the
+        # pipeline already fetched. Never blocks the run; only surfaced in
+        # the report/log so a human can weigh in on an outlier target.
+        technicals = self.state.get("technicals") or {}
+        hv_data = self.state.get("historical_volatility") or {}
+        warnings: list[str] = []
+        for pick in output.picks:
+            warnings.extend(
+                validate_pick_scenarios(
+                    pick,
+                    (technicals.get(pick.ticker) or {}).get("price"),
+                    hv_data.get(pick.ticker),
+                )
+            )
+        self.state["output_validation_warnings"] = warnings
+        for w in warnings:
+            logger.warning("Output sanity check: %s", w)
+
         return StepOutput(content=f"Ranker picked {len(picked)}: {picked}")
+
+    def step_macro_veto(self, step_input: StepInput) -> StepOutput:
+        output = self.state.get("ranker_output")
+        if output is None:
+            return StepOutput(content="macro_veto: no ranker output; skipping")
+        trimmed, reasons = apply_macro_veto(
+            output,
+            self.state.get("macro_data"),
+            self.state.get("technicals") or {},
+        )
+        self.state["ranker_output"] = trimmed
+        self.state["ranker_text"] = trimmed.full_text
+        self.state["picks"] = parse_picks(trimmed)
+        self.state["macro_veto_reasons"] = reasons
+        if not reasons:
+            return StepOutput(content="macro_veto: no suppressions")
+        return StepOutput(content=f"macro_veto: suppressed {len(reasons)} pick(s)")
 
     def step_redteam(self, step_input: StepInput) -> StepOutput:
         ranker_text = self.state.get("ranker_text") or ""
@@ -886,8 +1091,24 @@ class DiscoverPipeline:
             self.state["redteam_output"] = None
             self.state["redteam_text"] = ""
             return StepOutput(content="redteam: no picks; skipping")
-        redteam = RedTeam("claude", self.settings.discover_opus_model)
-        redteam_output = redteam.critique(ranker_text)
+        redteam = RedTeam(
+            self.settings.discover_redteam_provider,
+            self.settings.resolve_redteam_model(),
+            fallback=(
+                self.settings.discover_fallback_provider,
+                self.settings.resolve_fallback_model(),
+            ),
+        )
+        try:
+            redteam_output = redteam.critique(ranker_text)
+        except Exception as e:
+            # Never let a critique failure cost the run its ranker/sizer
+            # output — those already-paid-for Opus calls still get
+            # persisted and emailed, just without a bear-case section.
+            logger.warning("Red-team critique failed (%s) — report will omit bear cases", e)
+            self.state["redteam_output"] = None
+            self.state["redteam_text"] = ""
+            return StepOutput(content="redteam: failed; continuing without bear cases")
         self.state["redteam_output"] = redteam_output
         self.state["redteam_text"] = redteam_output.full_text
         return StepOutput(content="Red-team critique complete")
@@ -901,14 +1122,31 @@ class DiscoverPipeline:
         # Build deterministic EV table from the ranker's probability-weighted
         # scenarios — feeds Sizer as primary ranking signal.
         ev_table = _format_ev_table(self.state.get("ranker_output"))
-        sizer = Sizer("claude", self.settings.discover_opus_model)
-        sizer_output = sizer.allocate(
-            ranker_text,
-            self.state.get("redteam_text", ""),
-            self.state.get("holdings_summary", ""),
-            self.settings.discover_cash_budget,
-            ev_table=ev_table,
+        agreement_block = _format_agreement_block(self.state.get("ranker_output"))
+        sizer = Sizer(
+            "claude",
+            self.settings.discover_opus_model,
+            fallback=(
+                self.settings.discover_fallback_provider,
+                self.settings.resolve_fallback_model(),
+            ),
         )
+        try:
+            sizer_output = sizer.allocate(
+                ranker_text,
+                self.state.get("redteam_text", ""),
+                self.state.get("holdings_summary", ""),
+                self.settings.discover_cash_budget,
+                ev_table=ev_table,
+                agreement_block=agreement_block,
+            )
+        except Exception as e:
+            # Same rationale as step_redteam: a sizing failure shouldn't
+            # discard the ranker's (already-paid-for) picks.
+            logger.warning("Sizer failed (%s) — report will omit position sizing", e)
+            self.state["sizer_output"] = None
+            self.state["sizer_text"] = ""
+            return StepOutput(content="sizer: failed; continuing without sizing")
         self.state["sizer_output"] = sizer_output
         self.state["sizer_text"] = sizer_output.full_text
         return StepOutput(content="Position sizing complete")
@@ -966,6 +1204,8 @@ class DiscoverPipeline:
                     entry_price=prices.get(ticker),
                     time_horizon=forecast.get("time_horizon"),
                     scenarios=forecast.get("scenarios"),
+                    agreement_ratio=forecast.get("agreement_ratio"),
+                    voting_providers=forecast.get("voting_providers"),
                 )
             insert_run_outputs(
                 session,
@@ -1000,6 +1240,10 @@ class DiscoverPipeline:
             redteam_output=self.state.get("redteam_output"),
             sizer_output=self.state.get("sizer_output"),
             market_themes=self.state.get("market_themes"),
+            data_warnings=(
+                (self.state.get("output_validation_warnings") or [])
+                + (self.state.get("macro_veto_reasons") or [])
+            ),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -1085,17 +1329,27 @@ class DiscoverPipeline:
             ),
             steps=[
                 Step(name="universe", executor=self.step_universe),
+                # Technicals first, alone among the Yahoo-backed steps: one
+                # request per name buys the trend gate, which decides who is
+                # worth the three-requests-per-name fetches below.
                 Parallel(
-                    Step(name="fundamentals", executor=self.step_fundamentals),
                     Step(name="technicals", executor=self.step_technicals),
                     Step(name="sector_rotation", executor=self.step_sector_rotation),
                     Step(name="macro_regime", executor=self.step_macro_regime),
                     Step(name="track_record", executor=self.step_track_record),
-                    # EPS revisions runs alongside fundamentals/technicals so
-                    # the score function can pick up the +/-5 trend bonus
-                    # from direction_30d.
-                    Step(name="eps_revisions", executor=self.step_eps_revisions),
                     name="market_data",
+                ),
+                Step(name="prescreen", executor=self.step_prescreen),
+                Parallel(
+                    Step(name="fundamentals", executor=self.step_fundamentals),
+                    # EPS revisions run here so the score function can pick
+                    # up the +/-5 trend bonus from direction_30d.
+                    Step(name="eps_revisions", executor=self.step_eps_revisions),
+                    Step(
+                        name="historical_volatility",
+                        executor=self.step_historical_volatility,
+                    ),
+                    name="candidate_data",
                 ),
                 # Market themes need sector_rotation + macro_regime as input,
                 # so it runs sequentially after the market_data block.
@@ -1116,6 +1370,7 @@ class DiscoverPipeline:
                 Step(name="analyst", executor=self.step_analyst),
                 Step(name="holdings", executor=self.step_holdings),
                 Step(name="ranker", executor=self.step_ranker),
+                Step(name="macro_veto", executor=self.step_macro_veto),
                 Step(name="redteam", executor=self.step_redteam),
                 Step(name="sizer", executor=self.step_sizer),
                 Step(name="persist_and_report", executor=self.step_persist_and_report),
@@ -1125,6 +1380,10 @@ class DiscoverPipeline:
 
 def run() -> None:
     load_dotenv()
+    # Pacing knobs live in the environment, and these modules are
+    # imported before `.env` is loaded — re-read them now.
+    yf_gateway.reload_from_env()
+    finnhub.reload_from_env()
     settings = Settings.from_env()
     try:
         preflight(
@@ -1133,6 +1392,7 @@ def run() -> None:
             needs_brokerage=True,
             needs_finnhub=bool(settings.finnhub_api_key),
             needs_email=bool(settings.email_to),
+            needs_discover_providers=True,
         )
     except PreflightError as e:
         logger.error("%s", e)
@@ -1140,7 +1400,19 @@ def run() -> None:
     pipeline = DiscoverPipeline(settings)
     workflow = pipeline.build_workflow()
     logger.info("=== Stock discovery pipeline starting ===")
-    workflow.print_response(input="discover", stream=True)
+    try:
+        workflow.print_response(input="discover", stream=True)
+    finally:
+        # Request budget for the run: how much Yahoo traffic it took, how
+        # often it was throttled, and what the pacer settled on. Read this
+        # before touching YF_RATE_LIMIT_PER_MIN.
+        yf_gateway.log_stats("discover run")
+        unavailable = yf_gateway.unavailable_symbols()
+        if unavailable:
+            logger.info(
+                "Symbols Yahoo had no data for this run (skipped after the first miss): %s",
+                ", ".join(sorted(unavailable)),
+            )
     if pipeline.state.get("run_id"):
         print(f"\nRun #{pipeline.state['run_id']} stored in {settings.discover_db_path}")
 

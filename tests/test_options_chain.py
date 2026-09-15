@@ -75,7 +75,7 @@ def test_yfinance_filters_to_dte_band_and_otm():
         e_too_far: _calls_df([(260.0, 5.50, 5.60, 0.28, 100, 10)]),
     }
     fake = _fake_ticker(spot=235.0, expiries_to_calls=chains)
-    with patch("stock_analyzer.data.options_chain.yf.Ticker", return_value=fake):
+    with patch("stock_analyzer.data.yf_gateway.yf.Ticker", return_value=fake):
         chain = YFinanceChain().fetch("NVDA", dte_min=30, dte_max=45)
     assert chain is not None
     assert chain.source == "yfinance"
@@ -86,7 +86,7 @@ def test_yfinance_filters_to_dte_band_and_otm():
 
 def test_yfinance_returns_none_on_error():
     with patch(
-        "stock_analyzer.data.options_chain.yf.Ticker",
+        "stock_analyzer.data.yf_gateway.yf.Ticker",
         side_effect=RuntimeError("network blew up"),
     ):
         chain = YFinanceChain().fetch("NVDA", dte_min=30, dte_max=45)
@@ -95,7 +95,7 @@ def test_yfinance_returns_none_on_error():
 
 def test_yfinance_no_expiries_returns_empty_chain_with_source_set():
     fake = _fake_ticker(spot=235.0, expiries_to_calls={})
-    with patch("stock_analyzer.data.options_chain.yf.Ticker", return_value=fake):
+    with patch("stock_analyzer.data.yf_gateway.yf.Ticker", return_value=fake):
         chain = YFinanceChain().fetch("NVDA", dte_min=30, dte_max=45)
     assert chain is not None
     assert chain.calls == []
@@ -296,7 +296,7 @@ def test_yfinance_handles_nan_volume_and_open_interest():
         columns=["strike", "bid", "ask", "impliedVolatility", "openInterest", "volume"],
     )
     fake = _fake_ticker(spot=235.0, expiries_to_calls={e_in_band: df})
-    with patch("stock_analyzer.data.options_chain.yf.Ticker", return_value=fake):
+    with patch("stock_analyzer.data.yf_gateway.yf.Ticker", return_value=fake):
         chain = YFinanceChain().fetch("NVDA", dte_min=30, dte_max=45)
     assert chain is not None
     assert len(chain.calls) == 1
@@ -315,7 +315,7 @@ def test_yfinance_handles_nan_bid_ask_iv():
         columns=["strike", "bid", "ask", "impliedVolatility", "openInterest", "volume"],
     )
     fake = _fake_ticker(spot=235.0, expiries_to_calls={e_in_band: df})
-    with patch("stock_analyzer.data.options_chain.yf.Ticker", return_value=fake):
+    with patch("stock_analyzer.data.yf_gateway.yf.Ticker", return_value=fake):
         chain = YFinanceChain().fetch("NVDA", dte_min=30, dte_max=45)
     assert chain is not None
     assert len(chain.calls) == 1

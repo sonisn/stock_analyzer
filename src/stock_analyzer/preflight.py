@@ -1,9 +1,11 @@
 """Startup health checks — fail loud and fast before burning API tokens.
 
 Each pipeline depends on a small set of external services (Anthropic for
-all LLM calls, SnapTrade for brokerage data, SMTP for delivery). When
-any of these is mis-configured or down, we want to know in seconds, not
-after step 10 of an LLM-heavy run.
+most LLM calls — plus Gemini/OpenAI too, when the discover pipeline's
+ranker/red-team/fallback settings reference them — SnapTrade for
+brokerage data, SMTP for delivery). When any of these is mis-configured
+or down, we want to know in seconds, not after step 10 of an LLM-heavy
+run.
 
 `preflight(settings, ...)` issues one cheap, auth-validating call per
 required service and raises `PreflightError` with a bundled list of
@@ -15,9 +17,15 @@ from __future__ import annotations
 import finnhub
 from anthropic import Anthropic
 from snaptrade_client import SnapTrade
+from snaptrade_client.auth import SnapTradeAuth
 
 from .config import Settings
 from .logging import get_logger
+
+# `google-genai` and `openai` are only imported lazily inside the checks
+# below — most CLI entry points never touch Gemini/OpenAI, and importing
+# either unconditionally would add startup cost (and a hard dependency on
+# credentials being configured) to runs that don't need them.
 
 logger = get_logger(__name__)
 
@@ -47,6 +55,43 @@ def _check_anthropic(settings: Settings) -> str | None:
     return None
 
 
+def _check_gemini(settings: Settings) -> str | None:
+    if not settings.google_api_key:
+        return "GOOGLE_API_KEY is empty"
+    try:
+        from google import genai
+
+        client = genai.Client(api_key=settings.google_api_key)
+        # Listing models is auth-validated, doesn't consume generation
+        # tokens, and is fast.
+        next(iter(client.models.list(config={"page_size": 1})), None)
+    except Exception as e:
+        msg = str(e)
+        lower = msg.lower()
+        if "401" in msg or "403" in msg or "api key" in lower or "permission" in lower:
+            return "GOOGLE_API_KEY rejected by Gemini API (401/403)"
+        return f"could not reach Gemini API: {msg}"
+    return None
+
+
+def _check_openai(settings: Settings) -> str | None:
+    if not settings.openai_api_key:
+        return "OPENAI_API_KEY is empty"
+    try:
+        from openai import OpenAI
+
+        client = OpenAI(api_key=settings.openai_api_key, timeout=_PING_TIMEOUT)
+        # /v1/models is auth-validated, doesn't consume tokens, fast.
+        client.models.list()
+    except Exception as e:
+        msg = str(e)
+        lower = msg.lower()
+        if "401" in msg or "auth" in lower or "invalid api key" in lower:
+            return "OPENAI_API_KEY rejected by api.openai.com (401)"
+        return f"could not reach api.openai.com: {msg}"
+    return None
+
+
 def _check_snaptrade(settings: Settings) -> str | None:
     missing = [
         name
@@ -62,8 +107,10 @@ def _check_snaptrade(settings: Settings) -> str | None:
         return f"SnapTrade env vars missing: {', '.join(missing)}"
     try:
         client = SnapTrade(
-            client_id=settings.snaptrade_client_id,
-            consumer_key=settings.snaptrade_consumer_key,
+            auth=SnapTradeAuth.commercial_api_key(
+                client_id=settings.snaptrade_client_id,
+                consumer_key=settings.snaptrade_consumer_key,
+            )
         )
         # list_user_accounts is the cheapest auth-validating call.
         resp = client.account_information.list_user_accounts(
@@ -110,15 +157,29 @@ def preflight(
     needs_brokerage: bool = False,
     needs_finnhub: bool = False,
     needs_email: bool = False,
+    needs_discover_providers: bool = False,
 ) -> None:
     """Verify required external services are reachable and creds work.
 
     Raises `PreflightError` if anything is broken; all failures are
     collected so one run surfaces every problem (not one-at-a-time).
+
+    `needs_discover_providers` additionally checks whichever of
+    Gemini/OpenAI the discover pipeline's ranker/red-team/fallback settings
+    actually reference — set it from `cli/discover.py` only, since other
+    entry points (rebalance, portfolio, insider) are still Claude-only.
     """
     errors: list[str] = []
     if needs_llm and (err := _check_anthropic(settings)):
         errors.append(err)
+    if needs_discover_providers:
+        providers = {p for p, _ in settings.resolve_ranker_rounds()}
+        providers.add(settings.discover_redteam_provider)
+        providers.add(settings.discover_fallback_provider)
+        if "gemini" in providers and (err := _check_gemini(settings)):
+            errors.append(err)
+        if "openai" in providers and (err := _check_openai(settings)):
+            errors.append(err)
     if needs_brokerage and (err := _check_snaptrade(settings)):
         errors.append(err)
     if needs_finnhub and (err := _check_finnhub(settings)):
@@ -131,8 +192,9 @@ def preflight(
         raise PreflightError(f"Preflight failed:\n  - {bullets}")
 
     logger.info(
-        "Preflight OK (llm=%s, brokerage=%s, finnhub=%s, email=%s)",
+        "Preflight OK (llm=%s, discover_providers=%s, brokerage=%s, finnhub=%s, email=%s)",
         needs_llm,
+        needs_discover_providers,
         needs_brokerage,
         needs_finnhub,
         needs_email,

@@ -26,6 +26,7 @@ needs the network must say so:
 from __future__ import annotations
 
 import socket
+from collections.abc import Iterator
 
 import pytest
 
@@ -47,6 +48,21 @@ def _isolate_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
     from stock_analyzer.config import Settings
 
     monkeypatch.setitem(Settings.model_config, "env_file", None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_yf_gateway() -> Iterator[None]:
+    """Clear the yfinance gateway's caches between tests.
+
+    It memoizes `yf.Ticker` instances and remembers symbols Yahoo had no
+    data for, both of which would otherwise leak a previous test's mock
+    (or its "unavailable" verdict) into the next one.
+    """
+    from stock_analyzer.data import yf_gateway
+
+    yf_gateway.reset()
+    yield
+    yf_gateway.reset()
 
 
 @pytest.fixture(autouse=True)

@@ -6,24 +6,22 @@ left as None; downstream filters treat None as 'failed' (conservative).
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pandas as pd
-import yfinance as yf
 
 from ..logging import get_logger
+from . import yf_gateway
 
 logger = get_logger(__name__)
 
-# yfinance concurrency. The discover pipeline now screens a real sampling
-# frame (S&P 500 + watchlist + holdings, ~500 names) rather than the ~50
-# tickers the news feeds happened to mention, so this batch is the
-# wall-clock floor for a run. 10 is a deliberate middle: enough to keep a
-# ~500-name fetch in the low minutes, low enough to stay clear of
-# yfinance's throttling. The expensive LLM stages are unaffected —
-# MAX_CANDIDATES_FOR_LLM caps those at 25 regardless of frame size.
-_MAX_WORKERS = 10
+# Fan-out width for the batch. The real ceiling on concurrent requests is
+# yf_gateway's process-wide semaphore + pacer, which every pipeline step
+# shares; this only decides how many of this batch's tickers queue behind
+# it at once. Before the gateway existed, each module owned its own pool
+# and the parallel market-data block put 30+ requests in flight, which is
+# what got the run rate-limited.
+_MAX_WORKERS = 8
 
 _OCF_ROW_NAMES = (
     "Operating Cash Flow",
@@ -44,15 +42,14 @@ def _latest_ocf(quarterly_cashflow: pd.DataFrame | None) -> float | None:
 
 
 def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
-    try:
-        t = yf.Ticker(ticker)
-        info = t.info or {}
-        cashflow = t.quarterly_cashflow
-    except Exception as e:
-        logger.warning("fundamentals fetch failed for %s: %s", ticker, e)
-        return None
+    # Two paced calls rather than one: `info` and `quarterly_cashflow` are
+    # separate Yahoo endpoints, so they each need their own rate-limit slot.
+    info = yf_gateway.ticker_call(ticker, "fundamentals.info", lambda t: t.info or {})
     if not info:
         return None
+    cashflow = yf_gateway.ticker_call(
+        ticker, "fundamentals.cashflow", lambda t: t.quarterly_cashflow
+    )
 
     market_cap = info.get("marketCap")
     debt = info.get("totalDebt") or 0
@@ -114,8 +111,7 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
 
 def batch_fundamentals(tickers: list[str]) -> dict[str, dict[str, Any]]:
     results: dict[str, dict[str, Any]] = {}
-    with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        for ticker, r in zip(tickers, ex.map(fetch_fundamentals, tickers), strict=False):
-            if r:
-                results[ticker] = r
+    for ticker, r in yf_gateway.map_symbols(fetch_fundamentals, tickers, workers=_MAX_WORKERS):
+        if r:
+            results[ticker] = r
     return results

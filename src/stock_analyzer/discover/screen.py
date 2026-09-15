@@ -47,6 +47,39 @@ MAX_DEBT_TO_EQUITY = 2.0
 MAX_DRAWDOWN_FROM_52W_HIGH = -0.30
 
 
+def passes_trend_gate(technicals: dict[str, Any] | None) -> tuple[bool, list[str]]:
+    """The four trend rules of the hard filter, from price history alone.
+
+    Split out so the pipeline can apply it BEFORE the expensive fetches.
+    Fundamentals cost two Yahoo requests per name and EPS revisions a
+    third, but a name that isn't in a Stage-2 uptrend can never pass
+    `passes_hard_filter` no matter what those return — so screening a
+    500-name frame used to spend roughly 1,500 requests establishing
+    facts about names already eliminated by their charts. Gate first,
+    then fetch: same survivors, a third of the traffic, far less exposure
+    to Yahoo's throttling.
+    """
+    if not technicals:
+        return False, ["no technicals data"]
+    t = technicals
+    reasons: list[str] = []
+
+    if not t.get("above_200dma"):
+        reasons.append("price not above 200DMA")
+    if not t.get("ma_alignment_50_200"):
+        reasons.append("50DMA not above 200DMA")
+
+    rs6 = t.get("rs_6mo")
+    if rs6 is None or rs6 <= 0:
+        reasons.append(f"rs_6mo={rs6} not positive")
+
+    dist = t.get("dist_from_52w_high")
+    if dist is None or dist < MAX_DRAWDOWN_FROM_52W_HIGH:
+        reasons.append(f"52w drawdown {dist} > {abs(MAX_DRAWDOWN_FROM_52W_HIGH):.0%}")
+
+    return (len(reasons) == 0, reasons)
+
+
 def passes_hard_filter(
     fundamentals: dict[str, Any] | None,
     technicals: dict[str, Any] | None,
@@ -79,18 +112,10 @@ def passes_hard_filter(
     if de is not None and de > MAX_DEBT_TO_EQUITY:
         reasons.append(f"debt_to_equity={de:.2f} > {MAX_DEBT_TO_EQUITY}")
 
-    if not t.get("above_200dma"):
-        reasons.append("price not above 200DMA")
-    if not t.get("ma_alignment_50_200"):
-        reasons.append("50DMA not above 200DMA")
-
-    rs6 = t.get("rs_6mo")
-    if rs6 is None or rs6 <= 0:
-        reasons.append(f"rs_6mo={rs6} not positive")
-
-    dist = t.get("dist_from_52w_high")
-    if dist is None or dist < MAX_DRAWDOWN_FROM_52W_HIGH:
-        reasons.append(f"52w drawdown {dist} > {abs(MAX_DRAWDOWN_FROM_52W_HIGH):.0%}")
+    # Trend rules live in passes_trend_gate so the pre-fetch gate and the
+    # real filter can never drift apart.
+    _, trend_reasons = passes_trend_gate(t)
+    reasons.extend(trend_reasons)
 
     return (len(reasons) == 0, reasons)
 

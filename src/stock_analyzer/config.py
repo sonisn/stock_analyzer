@@ -38,6 +38,7 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     )
+    openai_api_key: str | None = None
 
     # ---- LLM selection ----------------------------------------------------
     # `llm_provider` + `llm_model` are the defaults used by every agent.
@@ -82,19 +83,35 @@ class Settings(BaseSettings):
     discover_watchlist: Annotated[tuple[str, ...], NoDecode] = ()
     discover_cash_budget: float | None = None
     discover_db_path: str = "~/.stock_analyzer/discover.db"
-    # Run the ranker N times and consensus-vote on picks (N >= 2).
-    #
-    # This only buys information when the runs can actually disagree, so
-    # the ranker couples temperature to this value: N=1 runs at
-    # temperature 0 (deterministic, reproducible), N>1 runs at
-    # `discover_consensus_temperature` so the agreement rate across
-    # samples is a real confidence signal rather than a restatement of
-    # determinism. Default is 1 — a single high-effort Opus call — because
-    # N=3 triples the cost of the most expensive stage in the pipeline;
-    # raise it when you want the variance check and are happy to pay for it.
-    discover_consensus_runs: int = 1
-    # Sampling temperature used ONLY when discover_consensus_runs > 1.
-    discover_consensus_temperature: float = 0.7
+    # Ceiling on how many names reach the per-ticker fundamentals + EPS
+    # fetches (~3 Yahoo requests each). The screen's trend rules are
+    # applied first, from technicals alone, and usually narrow a ~500-name
+    # frame well below this; the cap is the backstop for a broad tape when
+    # most of the index is in an uptrend. Survivors are kept by 6-month
+    # relative strength, and holdings/watchlist names are never capped out.
+    discover_max_screen_candidates: int = 250
+    # Ranker consensus: one round per (provider, model) pair listed here,
+    # each a full high-effort ranking pass; picks are kept if a majority of
+    # rounds agree. A blank model in `discover_ranker_models` (or too few
+    # entries) falls back to that provider's default model below — see
+    # `resolve_ranker_rounds()`. Cross-provider rounds disagree because the
+    # providers are genuinely different models, not just different samples
+    # of one model's stochasticity the way same-provider N-of-N resampling
+    # used to.
+    discover_ranker_providers: str = "claude,gemini,openai"
+    discover_ranker_models: str = ""
+    discover_gemini_model: str = "gemini-pro-latest"
+    discover_openai_model: str = "gpt-6-astra"
+    # Red-team critiques the ranker's picks from outside whatever blind
+    # spots the ranker's own provider(s) might share — default to a
+    # different provider than the primary Claude pipeline for that reason.
+    discover_redteam_provider: Provider = "gemini"
+    discover_redteam_model: str = ""
+    # If a stage's primary provider call fails with an auth/rate-limit/
+    # provider error, retry once on this provider instead of failing the
+    # whole run.
+    discover_fallback_provider: Provider = "claude"
+    discover_fallback_model: str = ""
     # Rebalance aggressiveness:
     #   conservative — strict tax-after-EV bar (10%), forward deterioration
     #                  required for any SELL/TRIM
@@ -157,3 +174,47 @@ class Settings(BaseSettings):
         # Back-compat shim — `Settings()` already loads from env. Existing
         # callers (`Settings.from_env()`) keep working without churn.
         return cls()
+
+    # ---- Provider/model resolution -----------------------------------------
+
+    def _default_model_for(self, provider: Provider) -> str:
+        if provider == "claude":
+            return self.discover_opus_model
+        if provider == "gemini":
+            return self.discover_gemini_model
+        if provider == "openai":
+            return self.discover_openai_model
+        raise ValueError(f"Unsupported provider {provider!r}.")
+
+    def resolve_ranker_rounds(self) -> list[tuple[Provider, str]]:
+        """One (provider, model) pair per Ranker consensus round.
+
+        `discover_ranker_providers` is a CSV list of providers, one round
+        each; `discover_ranker_models` is the matching CSV of models,
+        positionally paired. A blank or missing model entry falls back to
+        that provider's default model (`discover_opus_model` for claude,
+        `discover_gemini_model`/`discover_openai_model` for the others).
+        """
+        providers = [p.strip() for p in self.discover_ranker_providers.split(",") if p.strip()]
+        models = (
+            [m.strip() for m in self.discover_ranker_models.split(",")]
+            if self.discover_ranker_models
+            else []
+        )
+        rounds: list[tuple[Provider, str]] = []
+        for i, provider in enumerate(providers):
+            if provider not in ("claude", "gemini", "openai"):
+                raise ValueError(f"Unsupported provider {provider!r} in DISCOVER_RANKER_PROVIDERS.")
+            model = models[i].strip() if i < len(models) and models[i].strip() else ""
+            rounds.append((provider, model or self._default_model_for(provider)))  # type: ignore[arg-type]
+        return rounds
+
+    def resolve_redteam_model(self) -> str:
+        return self.discover_redteam_model or self._default_model_for(
+            self.discover_redteam_provider
+        )
+
+    def resolve_fallback_model(self) -> str:
+        return self.discover_fallback_model or self._default_model_for(
+            self.discover_fallback_provider
+        )
