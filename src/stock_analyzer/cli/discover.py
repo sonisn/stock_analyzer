@@ -198,6 +198,35 @@ def _format_agreement_block(ranker_output: object) -> str:
     return "\n".join(rows)
 
 
+def _format_risk_parity_block(ranker_output: object, hv_data: dict[str, Any]) -> str:
+    """Inverse-volatility (risk-parity) weight per pick, as a third sizing
+    input alongside EV/conviction — high-volatility picks should carry
+    less weight than EV alone implies, for equal risk contribution.
+
+    Skips picks with missing/zero HV. Empty string if fewer than 2 picks
+    have usable HV (nothing to normalize against)."""
+    from ..models.llm import RankerOutput
+
+    if not isinstance(ranker_output, RankerOutput):
+        return ""
+    inv_vols: dict[str, float] = {}
+    for pick in ranker_output.picks:
+        hv = hv_data.get(pick.ticker)
+        if hv is None or not hv.hv_annualized:
+            continue
+        inv_vols[pick.ticker] = 1.0 / hv.hv_annualized
+    if len(inv_vols) < 2:
+        return ""
+    total = sum(inv_vols.values())
+    rows = [
+        f"  {ticker:6s}  HV={hv_data[ticker].hv_annualized:.0%}  "
+        f"risk-parity weight={inv_v / total:.0%}"
+        for ticker, inv_v in inv_vols.items()
+    ]
+    header = "  Ticker  HV        Risk-parity weight (equal risk contribution)"
+    return header + "\n" + "\n".join(rows)
+
+
 def _validate_and_correct_themes(
     themes: object,
     *,
@@ -1131,6 +1160,9 @@ class DiscoverPipeline:
             if isinstance(ranker_output, RankerOutput)
             else []
         )
+        risk_parity_block = _format_risk_parity_block(
+            ranker_output, self.state.get("historical_volatility") or {}
+        )
         sizer = Sizer(
             "claude",
             self.settings.discover_opus_model,
@@ -1148,6 +1180,7 @@ class DiscoverPipeline:
                 ev_table=ev_table,
                 agreement_block=agreement_block,
                 correlated_pairs=correlated_pairs,
+                risk_parity_block=risk_parity_block,
             )
         except Exception as e:
             # Same rationale as step_redteam: a sizing failure shouldn't

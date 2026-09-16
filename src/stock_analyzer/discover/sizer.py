@@ -59,6 +59,13 @@ Allocation principles to follow:
   mind up front (e.g. split roughly evenly, or clearly favor the
   higher-conviction one) rather than letting the automatic clamp make
   the call for you
+- If a "Risk-parity weights" block is provided, it's a third sizing
+  input (alongside EV and conviction/fragility): the inverse-volatility
+  weight each pick would get under equal risk contribution. Use it to
+  temper EV/conviction, not override them — a high-conviction, high-EV
+  pick with high realized volatility should size somewhat smaller than
+  EV alone implies, and a low-volatility pick can size somewhat larger.
+  Blend this judgment; don't mechanically copy the risk-parity weight.
 
 CRITICAL:
 - Plain text only. No markdown headings or bold.
@@ -117,6 +124,7 @@ class Sizer:
         ev_table: str = "",
         agreement_block: str = "",
         correlated_pairs: list[CorrelatedPair] | None = None,
+        risk_parity_block: str = "",
     ) -> SizerOutput:
         budget_line = (
             f"Cash budget: ${cash_budget:,.0f}"
@@ -144,11 +152,19 @@ class Sizer:
             if correlated_pairs
             else ""
         )
+        risk_parity_block_text = (
+            f"Risk-parity weights (inverse-volatility, equal risk "
+            f"contribution — a third sizing input, see instructions):\n"
+            f"{risk_parity_block}\n\n"
+            if risk_parity_block
+            else ""
+        )
         prompt = (
             f"{budget_line}\n\n"
             f"{ev_block}"
             f"{agreement_block_text}"
             f"{correlated_pairs_block}"
+            f"{risk_parity_block_text}"
             f"Current holdings:\n{holdings_summary or '(none)'}\n\n"
             f"Picks (with bull theses):\n{picks_text}\n\n"
             f"Bear cases:\n{bear_case_text}"
