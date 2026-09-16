@@ -85,6 +85,12 @@ _FIXTURES: dict[str, dict[str, Any]] = {
     "premium_income": {"data": {"rows": []}},
     "round_lot_coverage": {"data": {"rows": []}},
     "premium_deployment": {"data": {"rows": []}},
+    "factor_tilt_panel": {
+        "data": {
+            "portfolio": {"growth": 60.0, "value": 40.0},
+            "picks": [{"ticker": "X", "tilt": {"growth": 60.0, "value": 40.0}}],
+        }
+    },
 }
 
 

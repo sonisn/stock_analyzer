@@ -246,6 +246,8 @@ def build_sections(
     sizer_output: object = None,
     market_themes: object = None,
     data_warnings: list[str] | None = None,
+    pick_tilts: dict[str, dict[str, float]] | None = None,
+    portfolio_tilt: dict[str, float] | None = None,
 ) -> list[Section]:
     # Prefer the structured Phase 4 objects when present; fall back to
     # parsing the free-text variants so legacy callers / partial runs
@@ -463,6 +465,21 @@ def build_sections(
                 kind="table",
                 table_header=["Ticker", "Score", "Fund.", "Trend", "Conv.", "Sector"],
                 table_rows=rows,
+            )
+        )
+
+    if portfolio_tilt or pick_tilts:
+        s.append(Section(kind="heading", text="Style factor tilt", level=2))
+        s.append(
+            Section(
+                kind="factor_tilt_panel",
+                data={
+                    "portfolio": portfolio_tilt or {},
+                    "picks": [
+                        {"ticker": ticker, "tilt": tilt}
+                        for ticker, tilt in (pick_tilts or {}).items()
+                    ],
+                },
             )
         )
 

@@ -67,6 +67,7 @@ from ..discover.calibration import (
     similar_past_setups,
 )
 from ..discover.data_reconciliation import reconcile_price_targets
+from ..discover.factor_tilt import average_factor_tilts, compute_factor_tilt
 from ..discover.macro_filter import apply_macro_veto
 from ..discover.market_themes import (
     MarketThemesAgent,
@@ -196,6 +197,28 @@ def _format_agreement_block(ranker_output: object) -> str:
         providers = ", ".join(pick.voting_providers or [])
         rows.append(f"  {pick.ticker:6s}  {n}/{total} rounds agreed ({providers})")
     return "\n".join(rows)
+
+
+def _flatten_score_breakdown(
+    components: dict[str, Any] | None, breakdown: dict[str, Any] | None
+) -> dict[str, float]:
+    """Every numeric sub-score as a flat {name: value} map, matching the
+    key convention `score_validation.py::_flatten_components` uses for
+    stored past candidates ("total.<group>" for group totals, "<group>.
+    <leaf>" for individual sub-scores) — so `similar_past_setups()`'s
+    nearest-neighbor distance is comparing like-shaped dicts instead of a
+    flat dict (past) against a nested one (today's candidate)."""
+    out: dict[str, float] = {}
+    for key, value in (components or {}).items():
+        if isinstance(value, int | float) and not isinstance(value, bool):
+            out[f"total.{key}"] = float(value)
+    for group, leaves in (breakdown or {}).items():
+        if not isinstance(leaves, dict):
+            continue
+        for key, value in leaves.items():
+            if isinstance(value, int | float) and not isinstance(value, bool):
+                out[f"{group}.{key}"] = float(value)
+    return out
 
 
 def _format_risk_parity_block(ranker_output: object, hv_data: dict[str, Any]) -> str:
@@ -785,7 +808,12 @@ class DiscoverPipeline:
                 if (
                     line := format_similar_setups_block(
                         c["ticker"],
-                        similar_past_setups(c["score_breakdown"], self.settings.discover_db_path),
+                        similar_past_setups(
+                            _flatten_score_breakdown(
+                                c["score_components"], c["score_breakdown"]
+                            ),
+                            self.settings.discover_db_path,
+                        ),
                     )
                 )
             ]
@@ -1273,6 +1301,21 @@ class DiscoverPipeline:
             logger.warning("Chart fetch failed (%s) — report will omit charts", e)
         chart_cids = {t: f"chart-{t.replace('.', '-')}" for t in charts}
 
+        # 2b. Style factor tilt — remap each pick's existing score_breakdown
+        # leaves into named growth/value/quality/momentum/low_vol buckets
+        # for reporting only (no rescoring).
+        candidates_by_ticker = {c["ticker"]: c for c in self.state["candidates"]}
+        hv_data = self.state.get("historical_volatility") or {}
+        pick_tilts: dict[str, dict[str, float]] = {}
+        for ticker in pick_tickers:
+            cand = candidates_by_ticker.get(ticker)
+            if cand is None:
+                continue
+            tilt = compute_factor_tilt(cand.get("score_breakdown"), hv_data.get(ticker))
+            if tilt:
+                pick_tilts[ticker] = tilt
+        portfolio_tilt = average_factor_tilts(list(pick_tilts.values()))
+
         # 3. Build shared section list, then render both HTML and PDF from it.
         sections = build_sections(
             ranker_text=self.state["ranker_text"],
@@ -1292,6 +1335,8 @@ class DiscoverPipeline:
                 (self.state.get("output_validation_warnings") or [])
                 + (self.state.get("macro_veto_reasons") or [])
             ),
+            pick_tilts=pick_tilts,
+            portfolio_tilt=portfolio_tilt,
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)

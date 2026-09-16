@@ -33,6 +33,7 @@ SectionKind = Literal[
     "holding_review_card",
     "market_themes_panel",
     "premortem_panel",
+    "factor_tilt_panel",
     # Covered-call sections (cli/rebalance.py CC extension).
     "premium_income",
     "round_lot_coverage",

@@ -332,6 +332,75 @@ def _allocation_table_html(d: dict[str, Any]) -> str:
     return table_html + warnings_html
 
 
+_FACTOR_TILT_COLORS: dict[str, str] = {
+    "growth": "#0e7490",
+    "value": "#166534",
+    "quality": "#4c1d95",
+    "momentum": "#b45309",
+    "low_vol": "#374151",
+}
+_FACTOR_TILT_LABELS: dict[str, str] = {
+    "growth": "Growth",
+    "value": "Value",
+    "quality": "Quality",
+    "momentum": "Momentum",
+    "low_vol": "Low-vol",
+}
+_FACTOR_TILT_ORDER = ["growth", "value", "quality", "momentum", "low_vol"]
+
+
+def _factor_tilt_bar_html(bucket: str, value: float) -> str:
+    color = _FACTOR_TILT_COLORS.get(bucket, "#6b7280")
+    label = _FACTOR_TILT_LABELS.get(bucket, bucket)
+    pct = max(0.0, min(100.0, value))
+    return (
+        f"<div style='margin:4px 0'>"
+        f"<div style='display:flex;justify-content:space-between;"
+        f"font-size:12px;color:#374151'>"
+        f"<span>{html.escape(label)}</span><span>{pct:.0f}</span></div>"
+        f"<div style='background:#eef0f3;border-radius:4px;height:8px;"
+        f"overflow:hidden'>"
+        f"<div style='width:{pct:.0f}%;background:{color};height:100%'>"
+        f"</div></div></div>"
+    )
+
+
+def _factor_tilt_panel_html(d: dict[str, Any]) -> str:
+    """Render portfolio-level + per-pick style factor tilt as horizontal
+    meter bars — growth/value/quality/momentum/low_vol, each 0-100."""
+    portfolio = d.get("portfolio") or {}
+    picks = d.get("picks") or []
+    if not portfolio and not picks:
+        return ""
+    parts: list[str] = []
+    if portfolio:
+        parts.append(
+            "<div style='border:1px solid #e5e7eb;border-radius:8px;"
+            "padding:12px 14px;margin-bottom:10px;background:#fafbfc'>"
+            "<b style='font-size:13px;color:#111827'>"
+            "Portfolio (average across picks)</b>"
+        )
+        for bucket in _FACTOR_TILT_ORDER:
+            if bucket in portfolio:
+                parts.append(_factor_tilt_bar_html(bucket, portfolio[bucket]))
+        parts.append("</div>")
+    for pick in picks:
+        tilt = pick.get("tilt") or {}
+        if not tilt:
+            continue
+        ticker = html.escape(str(pick.get("ticker") or ""))
+        parts.append(
+            "<div style='border:1px solid #e5e7eb;border-radius:8px;"
+            "padding:10px 14px;margin:6px 0;background:#fff'>"
+            f"<b style='font-size:13px;color:#111827'>{ticker}</b>"
+        )
+        for bucket in _FACTOR_TILT_ORDER:
+            if bucket in tilt:
+                parts.append(_factor_tilt_bar_html(bucket, tilt[bucket]))
+        parts.append("</div>")
+    return "".join(parts)
+
+
 def _market_themes_panel_html(d: dict[str, Any]) -> str:
     """Render the detected market themes as a side-by-side grid of
     compact cards — one per theme with strength badge + trend arrow +
@@ -780,6 +849,9 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
 
         elif s.kind == "premortem_panel" and s.data:
             parts.append(_premortem_panel_html(s.data))
+
+        elif s.kind == "factor_tilt_panel" and s.data:
+            parts.append(_factor_tilt_panel_html(s.data))
 
         elif s.kind == "premium_income" and s.data:
             parts.append(_render_premium_income(s.data))

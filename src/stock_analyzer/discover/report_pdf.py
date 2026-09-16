@@ -479,6 +479,71 @@ def _pdf_allocation_table(d: dict[str, Any], styles) -> list[Any]:
     return flow
 
 
+_PDF_FACTOR_TILT_COLORS: dict[str, str] = {
+    "growth": "#0e7490",
+    "value": "#166534",
+    "quality": "#4c1d95",
+    "momentum": "#b45309",
+    "low_vol": "#374151",
+}
+_PDF_FACTOR_TILT_LABELS: dict[str, str] = {
+    "growth": "Growth",
+    "value": "Value",
+    "quality": "Quality",
+    "momentum": "Momentum",
+    "low_vol": "Low-vol",
+}
+_PDF_FACTOR_TILT_ORDER = ["growth", "value", "quality", "momentum", "low_vol"]
+
+
+def _pdf_factor_tilt_panel(d: dict[str, Any], styles) -> list[Any]:
+    """PDF counterpart of `_factor_tilt_panel_html` — a compact table,
+    one row per scope (portfolio + each pick), one column per named
+    style-factor bucket (0-100, '—' when unavailable for that pick)."""
+    portfolio = d.get("portfolio") or {}
+    picks = d.get("picks") or []
+    if not portfolio and not picks:
+        return []
+    header = [Paragraph("<b>Scope</b>", styles["BodyText"])] + [
+        Paragraph(
+            f"<font color='{_PDF_FACTOR_TILT_COLORS[b]}'><b>{_PDF_FACTOR_TILT_LABELS[b]}</b></font>",
+            styles["BodyText"],
+        )
+        for b in _PDF_FACTOR_TILT_ORDER
+    ]
+    rows: list[list[Any]] = [header]
+
+    def _row(label: str, tilt: dict[str, Any]) -> list[Any]:
+        cells: list[Any] = [Paragraph(f"<b>{html.escape(label)}</b>", styles["BodyText"])]
+        for b in _PDF_FACTOR_TILT_ORDER:
+            v = tilt.get(b)
+            cells.append(Paragraph(f"{v:.0f}" if v is not None else "—", styles["BodyText"]))
+        return cells
+
+    if portfolio:
+        rows.append(_row("Portfolio", portfolio))
+    for pick in picks:
+        tilt = pick.get("tilt") or {}
+        if not tilt:
+            continue
+        rows.append(_row(str(pick.get("ticker") or ""), tilt))
+
+    t = Table(rows, repeatRows=1, hAlign="LEFT", colWidths=[1.3 * inch] + [1.08 * inch] * 5)
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eef2ff")),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
+    return [t, Spacer(1, 6)]
+
+
 def _pdf_market_themes_panel(d: dict[str, Any], styles) -> list[Any]:
     """PDF: per-theme bordered block with strength pill + trend arrow +
     description + member tickers."""
@@ -1058,6 +1123,10 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
 
         elif s.kind == "premortem_panel" and s.data:
             for el in _pdf_premortem_panel(s.data, styles):
+                flow.append(el)
+
+        elif s.kind == "factor_tilt_panel" and s.data:
+            for el in _pdf_factor_tilt_panel(s.data, styles):
                 flow.append(el)
 
         elif s.kind == "premium_income" and s.data:
