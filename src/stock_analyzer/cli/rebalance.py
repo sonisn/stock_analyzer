@@ -50,7 +50,10 @@ from ..discover.rebalance_cc import (
     log_rebalancer_input_estimate,
     run_cc_data_pipeline,
 )
-from ..discover.rebalance_holdings import build_holding_review_payloads
+from ..discover.rebalance_holdings import (
+    apply_stop_loss_overrides,
+    build_holding_review_payloads,
+)
 from ..discover.rebalance_persist import (
     deliver_rebalance_email,
     fetch_pick_charts,
@@ -364,7 +367,15 @@ class RebalancePipeline(DiscoverPipeline):
             transcript_chars=_TRANSCRIPT_CHARS,
         )
         reviewer = Reviewer("claude", self.settings.discover_sonnet_model)
-        self.state["holdings_reviews"] = review_batch(reviewer, payloads)
+        reviews = review_batch(reviewer, payloads)
+        reviews, stop_loss_warnings = apply_stop_loss_overrides(
+            reviews,
+            self.state["holdings_positions"],
+            self.state["holdings_technicals"],
+        )
+        if stop_loss_warnings:
+            self.state["stop_loss_warnings"] = stop_loss_warnings
+        self.state["holdings_reviews"] = reviews
         return StepOutput(content=f"Reviewed {len(self.state['holdings_reviews'])} holdings")
 
     def step_cc_data(self, step_input: StepInput) -> StepOutput:
@@ -541,6 +552,7 @@ class RebalancePipeline(DiscoverPipeline):
             cc_stub_pool_total_usd=self.state.get("cc_stub_pool_total_usd") or 0.0,
             cc_warnings=self.state.get("cc_warnings") or [],
             cc_slippage_buffer=self.settings.cc_slippage_buffer,
+            stop_loss_warnings=self.state.get("stop_loss_warnings") or [],
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)

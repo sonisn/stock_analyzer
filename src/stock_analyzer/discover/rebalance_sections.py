@@ -171,6 +171,7 @@ def append_rebalance_plan_body(
     cc_round_lot_coverage: dict[str, Any] | None,
     cc_warnings: list[str] | None,
     cc_slippage_buffer: float,
+    stop_loss_warnings: list[str] | None = None,
 ) -> None:
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Rebalance plan (action list)", level=1))
@@ -266,6 +267,14 @@ def append_rebalance_plan_body(
             )
         )
 
+    if stop_loss_warnings:
+        sections.append(
+            Section(
+                kind="para",
+                text="Mechanical stop-loss overrides: " + "; ".join(stop_loss_warnings),
+            )
+        )
+
     sections.append(Section(kind="preformatted", text=rebalance_text))
 
 
@@ -351,6 +360,7 @@ def build_rebalance_sections(
     cc_stub_pool_total_usd: float = 0.0,
     cc_warnings: list[str] | None = None,
     cc_slippage_buffer: float = 0.10,
+    stop_loss_warnings: list[str] | None = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -402,6 +412,7 @@ def build_rebalance_sections(
         cc_round_lot_coverage=cc_round_lot_coverage,
         cc_warnings=cc_warnings,
         cc_slippage_buffer=cc_slippage_buffer,
+        stop_loss_warnings=stop_loss_warnings,
     )
     append_holding_review_sections(sections, holdings_reviews)
     append_discover_appendix(
