@@ -85,7 +85,7 @@ from ..discover.report import (
     render_pdf,
 )
 from ..discover.screen import passes_hard_filter, passes_trend_gate, score_candidate
-from ..discover.sizer import Sizer
+from ..discover.sizer import Sizer, enforce_correlation_caps
 from ..discover.track_record import (
     format_track_record_block,
     format_track_record_summary,
@@ -1121,8 +1121,16 @@ class DiscoverPipeline:
             return StepOutput(content="sizer: no picks; skipping")
         # Build deterministic EV table from the ranker's probability-weighted
         # scenarios — feeds Sizer as primary ranking signal.
+        from ..models.llm import RankerOutput
+
         ev_table = _format_ev_table(self.state.get("ranker_output"))
         agreement_block = _format_agreement_block(self.state.get("ranker_output"))
+        ranker_output = self.state.get("ranker_output")
+        correlated_pairs = (
+            ranker_output.pairs_not_to_hold_together
+            if isinstance(ranker_output, RankerOutput)
+            else []
+        )
         sizer = Sizer(
             "claude",
             self.settings.discover_opus_model,
@@ -1139,6 +1147,7 @@ class DiscoverPipeline:
                 self.settings.discover_cash_budget,
                 ev_table=ev_table,
                 agreement_block=agreement_block,
+                correlated_pairs=correlated_pairs,
             )
         except Exception as e:
             # Same rationale as step_redteam: a sizing failure shouldn't
@@ -1147,6 +1156,12 @@ class DiscoverPipeline:
             self.state["sizer_output"] = None
             self.state["sizer_text"] = ""
             return StepOutput(content="sizer: failed; continuing without sizing")
+        if correlated_pairs:
+            sizer_output = enforce_correlation_caps(
+                sizer_output,
+                correlated_pairs,
+                cash_budget=self.settings.discover_cash_budget,
+            )
         self.state["sizer_output"] = sizer_output
         self.state["sizer_text"] = sizer_output.full_text
         return StepOutput(content="Position sizing complete")

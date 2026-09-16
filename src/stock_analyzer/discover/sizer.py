@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from ..llm import AgnoAgent, Provider, reasoning_model_kwargs, run_with_fallback
 from ..logging import get_logger
-from ..models.llm import SizerOutput
+from ..models.llm import Allocation, CorrelatedPair, SizerOutput
 
 logger = get_logger(__name__)
 
@@ -53,6 +53,12 @@ Allocation principles to follow:
   the justified range, even if conviction/EV look strong.
 - Highly correlated picks (same sector/theme) → underweight one or split
 - Never recommend more than 35% in any single pick
+- If a "Correlated pairs" block is provided, those pairs share a driver
+  closely enough that a deterministic check will cap their COMBINED
+  allocation at 35% after you respond — size each pair with that cap in
+  mind up front (e.g. split roughly evenly, or clearly favor the
+  higher-conviction one) rather than letting the automatic clamp make
+  the call for you
 
 CRITICAL:
 - Plain text only. No markdown headings or bold.
@@ -110,6 +116,7 @@ class Sizer:
         cash_budget: float | None,
         ev_table: str = "",
         agreement_block: str = "",
+        correlated_pairs: list[CorrelatedPair] | None = None,
     ) -> SizerOutput:
         budget_line = (
             f"Cash budget: ${cash_budget:,.0f}"
@@ -128,10 +135,20 @@ class Sizer:
             if agreement_block
             else ""
         )
+        correlated_pairs_block = (
+            "Correlated pairs (combined allocation will be capped at 35%):\n"
+            + "\n".join(
+                f"  {p.ticker_a} + {p.ticker_b}: {p.shared_driver}" for p in correlated_pairs
+            )
+            + "\n\n"
+            if correlated_pairs
+            else ""
+        )
         prompt = (
             f"{budget_line}\n\n"
             f"{ev_block}"
             f"{agreement_block_text}"
+            f"{correlated_pairs_block}"
             f"Current holdings:\n{holdings_summary or '(none)'}\n\n"
             f"Picks (with bull theses):\n{picks_text}\n\n"
             f"Bear cases:\n{bear_case_text}"
@@ -150,3 +167,75 @@ class Sizer:
         if isinstance(result, str):
             return SizerOutput.model_validate_json(result)
         raise RuntimeError(f"Sizer returned unexpected type {type(result).__name__}.")
+
+
+def enforce_correlation_caps(
+    output: SizerOutput,
+    pairs: list[CorrelatedPair],
+    *,
+    cash_budget: float | None = None,
+    max_combined_pct: float = 35.0,
+) -> SizerOutput:
+    """Deterministic post-LLM check: scale down any flagged correlated pair
+    whose combined allocation exceeds `max_combined_pct`, proportionally,
+    so their combined weight lands exactly at the cap.
+
+    Same shape as cc_validation.py::validate_option_writes /
+    reviewer.py::_repair_verdict_inconsistencies — mutates a frozen
+    Pydantic model via model_copy and returns warnings alongside it.
+    Pairs naming a ticker not in `output.allocations` are ignored (e.g.
+    the pick was dropped or renamed downstream).
+    """
+    by_ticker = {a.ticker: a for a in output.allocations}
+    warnings: list[str] = []
+
+    def _effective_pct(a: Allocation) -> float | None:
+        if a.allocation_pct is not None:
+            return a.allocation_pct
+        if a.allocation_usd is not None and cash_budget:
+            return a.allocation_usd / cash_budget * 100
+        return None
+
+    for pair in pairs:
+        a = by_ticker.get(pair.ticker_a)
+        b = by_ticker.get(pair.ticker_b)
+        if a is None or b is None:
+            continue
+        pct_a = _effective_pct(a)
+        pct_b = _effective_pct(b)
+        if pct_a is None or pct_b is None:
+            continue
+        combined = pct_a + pct_b
+        if combined <= max_combined_pct:
+            continue
+        scale = max_combined_pct / combined
+        new_pct_a = pct_a * scale
+        new_pct_b = pct_b * scale
+        update_a: dict[str, float] = {}
+        update_b: dict[str, float] = {}
+        if a.allocation_pct is not None:
+            update_a["allocation_pct"] = new_pct_a
+        else:
+            update_a["allocation_usd"] = new_pct_a / 100 * cash_budget
+        if b.allocation_pct is not None:
+            update_b["allocation_pct"] = new_pct_b
+        else:
+            update_b["allocation_usd"] = new_pct_b / 100 * cash_budget
+        by_ticker[pair.ticker_a] = a.model_copy(update=update_a)
+        by_ticker[pair.ticker_b] = b.model_copy(update=update_b)
+        warnings.append(
+            f"CORRELATION CAP: {pair.ticker_a} + {pair.ticker_b} "
+            f"({pair.shared_driver}) totaled {combined:.1f}% — scaled down to "
+            f"{new_pct_a:.1f}% + {new_pct_b:.1f}% = {max_combined_pct:.0f}% combined"
+        )
+
+    if not warnings:
+        return output
+
+    new_allocations = [by_ticker[a.ticker] for a in output.allocations]
+    return output.model_copy(
+        update={
+            "allocations": new_allocations,
+            "concentration_warnings": [*output.concentration_warnings, *warnings],
+        }
+    )
