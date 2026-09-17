@@ -17,7 +17,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 Verdict = Literal["HOLD", "TRIM", "SELL"]
 ActionType = Literal["SELL", "TRIM", "ADD", "BUY"]
-FragilityRank = Literal[1, 2, 3, 4, 5]
 
 
 # --- Reviewer ---------------------------------------------------------------
@@ -271,8 +270,14 @@ class BearCase(BaseModel):
             "below 15%, thesis is wrong'."
         ),
     )
-    fragility_rank: FragilityRank = Field(
+    # Plain bounded int, not Literal[1, 2, 3, 4, 5] — Gemini's structured-
+    # output schema converter rejects integer enum values ("Input should
+    # be a valid string" on every enum entry), so ge/le (no `enum` in the
+    # emitted JSON schema) is the version that actually works cross-provider.
+    fragility_rank: int = Field(
         ...,
+        ge=1,
+        le=5,
         description=(
             "1 = most fragile (highest probability of disappointment), 5 = most resilient."
         ),
@@ -490,7 +495,6 @@ class AnalystReport(BaseModel):
 __all__ = [
     "Verdict",
     "ActionType",
-    "FragilityRank",
     "HoldingReview",
     "AnalystReport",
     "Scenario",
