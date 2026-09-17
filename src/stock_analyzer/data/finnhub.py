@@ -279,6 +279,25 @@ def fetch_insider_activity(client: finnhub.Client, ticker: str, days: int = 90) 
     }
 
 
+def fetch_company_news(
+    client: finnhub.Client, ticker: str, *, days: int = 30
+) -> list[dict[str, Any]]:
+    """Raw Finnhub company-news items for the last `days` days.
+
+    Each item has headline, summary, source, url and `datetime` (unix
+    seconds). Empty list on error or no coverage."""
+    to = date.today()
+    raw = _safe_call(
+        "company_news",
+        ticker,
+        client.company_news,
+        ticker,
+        _from=(to - timedelta(days=days)).isoformat(),
+        to=to.isoformat(),
+    )
+    return raw if isinstance(raw, list) else []
+
+
 def fetch_signals(client: finnhub.Client, ticker: str, *, insider_days: int = 90) -> dict[str, Any]:
     """Fetch all four signals for one ticker."""
     return {

@@ -116,14 +116,75 @@ def test_quota_error_raises_instead_of_returning_empty():
         fetch_ticker_news("NVDA", client=client)
 
 
+def _use_fakes(monkeypatch, tavily=None, finnhub_news=None):
+    """Wire batch_ticker_news to fakes. finnhub_news: {ticker: raw items}."""
+    if tavily is None:
+        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("TAVILY_API_KEY", "test")
+        monkeypatch.setattr(ticker_news, "TavilyClient", lambda api_key: tavily)
+    monkeypatch.setattr(ticker_news, "_TAVILY_MAX_WORKERS", 1)
+    finnhub_calls: list[str] = []
+    if finnhub_news is None:
+        monkeypatch.setattr(ticker_news.finnhub_data, "_client", lambda: None)
+    else:
+        monkeypatch.setattr(ticker_news.finnhub_data, "_client", lambda: object())
+
+        def _fake_company_news(client, ticker, *, days):
+            finnhub_calls.append(ticker)
+            return finnhub_news.get(ticker, [])
+
+        monkeypatch.setattr(ticker_news.finnhub_data, "fetch_company_news", _fake_company_news)
+    return finnhub_calls
+
+
+def _fh_item(url="https://finnhub.io/api/news?id=1", ts=1789000000, source="Reuters"):
+    return {
+        "url": url,
+        "headline": "Guidance raised",
+        "summary": "s",
+        "datetime": ts,
+        "source": source,
+    }
+
+
 def test_batch_stops_calling_tavily_after_quota_error(monkeypatch):
     client = _FakeTavily([RuntimeError(_QUOTA_MSG)] * 10)
-    monkeypatch.setenv("TAVILY_API_KEY", "test")
-    monkeypatch.setattr(ticker_news, "TavilyClient", lambda api_key: client)
-    monkeypatch.setattr(ticker_news, "_TAVILY_MAX_WORKERS", 1)
+    _use_fakes(monkeypatch, tavily=client)
     out = ticker_news.batch_ticker_news(["A", "B", "C", "D"])
     assert out == {"A": [], "B": [], "C": [], "D": []}
     assert len(client.calls) == 1
+
+
+def test_batch_falls_back_to_finnhub_after_tavily_quota(monkeypatch):
+    client = _FakeTavily([RuntimeError(_QUOTA_MSG)] * 10)
+    finnhub_calls = _use_fakes(
+        monkeypatch, tavily=client, finnhub_news={"A": [_fh_item()], "B": [_fh_item()]}
+    )
+    out = ticker_news.batch_ticker_news(["A", "B"])
+    assert finnhub_calls == ["A", "B"]
+    assert out["A"][0]["source"] == "Reuters"  # outlet name, not finnhub.io
+    assert out["A"][0]["id"] == "N1"
+
+
+def test_batch_uses_finnhub_only_for_tickers_tavily_found_nothing(monkeypatch):
+    client = _FakeTavily([[_result("https://reuters.com/a")], [], []])  # A hit; B empty twice
+    finnhub_calls = _use_fakes(monkeypatch, tavily=client, finnhub_news={"B": [_fh_item()]})
+    out = ticker_news.batch_ticker_news(["A", "B"])
+    assert finnhub_calls == ["B"]
+    assert out["A"][0]["source"] == "reuters.com"
+    assert out["B"][0]["source"] == "Reuters"
+
+
+def test_batch_without_any_keys_returns_empty_lists(monkeypatch):
+    _use_fakes(monkeypatch)
+    assert ticker_news.batch_ticker_news(["A"]) == {"A": []}
+
+
+def test_finnhub_timestamp_becomes_iso_date(monkeypatch):
+    _use_fakes(monkeypatch, finnhub_news={"A": [_fh_item(ts=1789000000)]})
+    items = ticker_news.fetch_finnhub_ticker_news("A")
+    assert items[0]["published_date"] == "2026-09-10"  # 1789000000 = 2026-09-10 00:26 UTC
 
 
 # --- validation ---------------------------------------------------------------
