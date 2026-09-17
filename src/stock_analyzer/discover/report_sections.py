@@ -227,6 +227,38 @@ def _theme_strength_color(strength: int | None) -> str:
     return "#9c1010"
 
 
+# Fixed reason templates emitted by screen.py::passes_hard_filter /
+# passes_trend_gate — matched by prefix since the numeric values differ per
+# ticker. Order matters: first match wins, so a ticker missing both
+# fundamentals and technicals still gets one clear primary reason instead of
+# the two "no ... data" strings colliding with the same prefix.
+_REJECT_REASON_LABELS: list[tuple[str, str]] = [
+    ("no fundamentals data", "No fundamentals data"),
+    ("no technicals data", "No technicals data"),
+    ("market_cap=", "Market cap too small"),
+    ("revenue_growth=", "Revenue growth too slow"),
+    ("operating_cash_flow=", "Negative operating cash flow"),
+    ("debt_to_equity=", "Too much debt"),
+    ("price not above 200DMA", "Below 200-day average"),
+    ("50DMA not above 200DMA", "No moving-average uptrend"),
+    ("rs_6mo=", "Weak 6-month relative strength"),
+    ("52w drawdown", "Too far below 52-week high"),
+]
+
+
+def _primary_reject_reason(reasons: list[str]) -> str:
+    """First (most upstream) hard-filter failure, mapped to a short label
+    for grouping — the raw reason strings embed per-ticker numbers, so they
+    can't be grouped on directly."""
+    if not reasons:
+        return "Unknown"
+    first = reasons[0]
+    for prefix, label in _REJECT_REASON_LABELS:
+        if first.startswith(prefix):
+            return label
+    return first[:40]
+
+
 # --- sections (unified IR for HTML + PDF) -----------------------------------
 
 
@@ -238,6 +270,7 @@ def build_sections(
     candidates: list[dict[str, Any]],
     universe_size: int,
     holdings_summary: str,
+    holdings_rows: list[list[str]] | None = None,
     macro_summary: str = "",
     sector_rotation: dict[str, Any] | None = None,
     track_record_block: str = "",
@@ -327,7 +360,16 @@ def build_sections(
         s.append(Section(kind="para", text=f"Laggards: {laggards}"))
 
     s.append(Section(kind="heading", text="Current holdings (concentration context)", level=2))
-    s.append(Section(kind="preformatted", text=holdings_summary or "(none)"))
+    if holdings_rows:
+        s.append(
+            Section(
+                kind="table",
+                table_header=["Ticker", "Shares", "Avg cost", "Cost basis"],
+                table_rows=holdings_rows,
+            )
+        )
+    else:
+        s.append(Section(kind="preformatted", text=holdings_summary or "(none)"))
 
     # Per-pick cards. When structured outputs are present, emit a single
     # rich pick_card section per ticker (renderer composes rank pill +
@@ -388,7 +430,6 @@ def build_sections(
     s.append(Section(kind="page_break"))
     # Structured allocation table when sizer ran in Phase 4e mode.
     if structured_sizer and structured_sizer.allocations:
-        s.append(Section(kind="page_break"))
         s.append(Section(kind="heading", text="Allocation summary", level=2))
         s.append(
             Section(
@@ -409,14 +450,22 @@ def build_sections(
         )
 
     s.append(Section(kind="heading", text="Ranker correlation notes", level=2))
-    if structured_ranker and structured_ranker.pairs_not_to_hold_together:
-        for pair in structured_ranker.pairs_not_to_hold_together:
-            s.append(
-                Section(
-                    kind="para",
-                    text=(f"{pair.ticker_a} + {pair.ticker_b}: {pair.shared_driver}"),
+    if structured_ranker is not None:
+        # Structured output ran — pairs_not_to_hold_together is the
+        # authoritative source. Never fall back to regex-parsing full_text
+        # here: an empty list means "no flagged pairs", not "look for
+        # trailing prose" — that fallback was picking up unrelated stray
+        # text from the end of the last pick's block.
+        if structured_ranker.pairs_not_to_hold_together:
+            for pair in structured_ranker.pairs_not_to_hold_together:
+                s.append(
+                    Section(
+                        kind="para",
+                        text=(f"{pair.ticker_a} + {pair.ticker_b}: {pair.shared_driver}"),
+                    )
                 )
-            )
+        else:
+            s.append(Section(kind="para", text="(none)"))
     else:
         trailing = re.split(_PICK_RE, ranker_text)[-1].strip()
         s.append(Section(kind="preformatted", text=trailing or "(none)"))
@@ -484,10 +533,38 @@ def build_sections(
         )
 
     if rejected:
+        s.append(Section(kind="page_break"))
         s.append(Section(kind="heading", text="Rejected candidates", level=2))
-        for c in sorted(rejected, key=lambda x: x["ticker"]):
-            reasons = ", ".join(c.get("fail_reasons") or [])
-            s.append(Section(kind="para", text=f"{c['ticker']}: {reasons}"))
+        s.append(
+            Section(
+                kind="para",
+                text=(
+                    f"{len(rejected)} of {len(candidates)} candidates were "
+                    f"eliminated by the hard filter, grouped below by their "
+                    f"primary reason."
+                ),
+            )
+        )
+        by_reason: dict[str, list[str]] = {}
+        for c in rejected:
+            label = _primary_reject_reason(c.get("fail_reasons") or [])
+            by_reason.setdefault(label, []).append(c["ticker"])
+        ordered_reasons = sorted(by_reason.items(), key=lambda kv: len(kv[1]), reverse=True)
+        # Reusing the generic sector_pie renderer (label, value) pairs — it
+        # has no sector-specific logic, just a labeled pie chart.
+        s.append(
+            Section(
+                kind="sector_pie",
+                pie_data=[(label, float(len(tickers))) for label, tickers in ordered_reasons],
+            )
+        )
+        for label, tickers in ordered_reasons:
+            s.append(
+                Section(
+                    kind="para",
+                    text=f"{label} ({len(tickers)}): " + ", ".join(sorted(tickers)),
+                )
+            )
 
     return s
 

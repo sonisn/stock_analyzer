@@ -247,10 +247,17 @@ def _pdf_pill(text: str, fg: str, bg: str, styles) -> Paragraph:
     )
 
 
-def _pdf_pick_card(d: dict[str, Any], styles) -> list[Any]:
+def _pdf_pick_card(d: dict[str, Any], styles, chart_data: bytes | None = None) -> list[Any]:
     """Render a structured pick as a header row of colored pill badges
     + per-section paragraphs. Returns a list of flowables (no Spacer
-    around the page-break boundary)."""
+    around the page-break boundary).
+
+    `chart_data`, when given, is drawn immediately under the header pills
+    at a modest size — this keeps the chart on the SAME page as the pick's
+    header/one-liner instead of spilling onto its own mostly-blank page,
+    which is what happened when the chart was a full-width 3.5in image
+    rendered as a separate flowable after a card that already filled most
+    of a page."""
     ticker = str(d.get("ticker", ""))
     rank = d.get("rank")
     conviction = d.get("conviction") if isinstance(d.get("conviction"), int) else None
@@ -333,6 +340,13 @@ def _pdf_pick_card(d: dict[str, Any], styles) -> list[Any]:
         )
     )
     flow.append(header)
+
+    if chart_data:
+        try:
+            flow.append(Image(BytesIO(chart_data), width=4.0 * inch, height=2.15 * inch))
+            flow.append(Spacer(1, 6))
+        except Exception:
+            pass
 
     one_liner = str(d.get("one_liner") or "").strip()
     if one_liner:
@@ -1043,7 +1057,15 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
     styles = _pdf_styles()
     flow: list[Any] = []
 
-    for s in sections:
+    # A pick_card is immediately followed by its own "image" section
+    # (report_sections.py). Consumed inline by _pdf_pick_card instead of
+    # dispatched separately, so the chart lands on the same page as the
+    # card's header rather than spilling onto its own near-empty page.
+    skip_next_image = False
+    for i, s in enumerate(sections):
+        if skip_next_image and s.kind == "image":
+            skip_next_image = False
+            continue
         if s.kind == "heading":
             flow.append(Paragraph(html.escape(s.text), styles[f"Heading{min(s.level, 3)}"]))
             flow.append(Spacer(1, 4))
@@ -1102,8 +1124,16 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
                 flow.append(Spacer(1, 6))
 
         elif s.kind == "pick_card" and s.data:
-            for el in _pdf_pick_card(s.data, styles):
+            next_ticker = (
+                sections[i + 1].image_ticker
+                if i + 1 < len(sections) and sections[i + 1].kind == "image"
+                else None
+            )
+            chart_data = chart_bytes.get(next_ticker) if next_ticker else None
+            for el in _pdf_pick_card(s.data, styles, chart_data=chart_data):
                 flow.append(el)
+            if chart_data:
+                skip_next_image = True
 
         elif s.kind == "allocation_table" and s.data:
             for el in _pdf_allocation_table(s.data, styles):

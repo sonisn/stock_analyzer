@@ -463,7 +463,7 @@ def _batch_news(tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
     return results
 
 
-def _holdings_summary(holdings: dict[str, list[dict[str, Any]]]) -> str:
+def _aggregate_holdings(holdings: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, float]]:
     agg: dict[str, dict[str, float]] = {}
     for items in holdings.values():
         for h in items:
@@ -475,6 +475,14 @@ def _holdings_summary(holdings: dict[str, list[dict[str, Any]]]) -> str:
             cur = agg.setdefault(ticker, {"units": 0.0, "cost": 0.0})
             cur["units"] += float(units)
             cur["cost"] += float(units) * float(avg)
+    return agg
+
+
+def _holdings_summary(holdings: dict[str, list[dict[str, Any]]]) -> str:
+    """Plain-text rendering — this is what the LLM stages (Sizer, Ranker,
+    etc.) read as prompt input, so its format stays stable independent of
+    how the report renders the same data (see `_holdings_table_rows`)."""
+    agg = _aggregate_holdings(holdings)
     if not agg:
         return ""
     lines: list[str] = []
@@ -482,6 +490,17 @@ def _holdings_summary(holdings: dict[str, list[dict[str, Any]]]) -> str:
         avg = v["cost"] / v["units"] if v["units"] else 0
         lines.append(f"  - {ticker}: {v['units']:.0f} shares @ avg ${avg:,.2f}")
     return "\n".join(lines)
+
+
+def _holdings_table_rows(holdings: dict[str, list[dict[str, Any]]]) -> list[list[str]]:
+    """Same aggregated holdings as `_holdings_summary`, shaped as table
+    rows for the report instead of a monospace bullet list."""
+    agg = _aggregate_holdings(holdings)
+    rows: list[list[str]] = []
+    for ticker, v in sorted(agg.items()):
+        avg = v["cost"] / v["units"] if v["units"] else 0
+        rows.append([ticker, f"{v['units']:.0f}", f"${avg:,.2f}", f"${v['cost']:,.0f}"])
+    return rows
 
 
 # --- pipeline ----------------------------------------------------------------
@@ -1072,9 +1091,11 @@ class DiscoverPipeline:
             if holdings is None:
                 holdings = fetch_portfolio_holdings()
             self.state["holdings_summary"] = _holdings_summary(holdings)
+            self.state["holdings_table_rows"] = _holdings_table_rows(holdings)
         except Exception as e:
             logger.warning("Could not fetch holdings (%s) — proceeding without", e)
             self.state["holdings_summary"] = ""
+            self.state["holdings_table_rows"] = []
         n = self.state["holdings_summary"].count("\n") + 1 if self.state["holdings_summary"] else 0
         return StepOutput(content=f"Holdings: {n} positions" if n else "Holdings: none")
 
@@ -1324,6 +1345,7 @@ class DiscoverPipeline:
             candidates=self.state["candidates"],
             universe_size=len(self.state["candidates"]),
             holdings_summary=self.state["holdings_summary"],
+            holdings_rows=self.state.get("holdings_table_rows"),
             macro_summary=self.state.get("macro_summary", ""),
             sector_rotation=self.state.get("sector_rotation"),
             track_record_block=self.state.get("track_record_block", ""),
