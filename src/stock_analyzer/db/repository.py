@@ -19,6 +19,7 @@ from .tables import (
     Candidate,
     HoldingReviewRow,
     Pick,
+    PickCatalyst,
     PickScenario,
     Run,
     RunOutput,
@@ -171,6 +172,25 @@ def insert_pick(
 
 
 # --- holdings reviews -----------------------------------------------------
+
+
+def insert_pick_catalysts(
+    session: Session, run_id: int, ticker: str, catalysts: list[dict[str, Any]]
+) -> None:
+    """Persist a pick's validated upcoming catalysts (catalysts_to_dicts shape)."""
+    for seq, c in enumerate(catalysts):
+        session.add(
+            PickCatalyst(
+                run_id=run_id,
+                ticker=ticker,
+                seq=seq,
+                event=str(c.get("event") or ""),
+                expected_date=c.get("expected_date"),
+                direction=str(c.get("direction") or "uncertain"),
+                impact=str(c.get("impact") or "low"),
+                source=str(c.get("source") or ""),
+            )
+        )
 
 
 def insert_holdings_review(

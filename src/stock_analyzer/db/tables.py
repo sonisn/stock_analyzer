@@ -122,6 +122,26 @@ class PickScenario(SQLModel, table=True):
     target_return_pct: float
 
 
+class PickCatalyst(SQLModel, table=True):
+    """An upcoming catalyst the Analyst named for a pick, kept so it can be
+    graded once its date passes (discover/catalyst_grading.py)."""
+
+    __tablename__ = "pick_catalysts"
+
+    run_id: int = Field(
+        foreign_key="runs.id",
+        primary_key=True,
+        ondelete="CASCADE",
+    )
+    ticker: str = Field(primary_key=True)
+    seq: int = Field(primary_key=True)
+    event: str
+    expected_date: str | None = None  # YYYY-MM-DD
+    direction: str  # positive | negative | uncertain
+    impact: str  # high | medium | low
+    source: str
+
+
 class HoldingReviewRow(SQLModel, table=True):
     """ORM table for holdings reviews. The `Row` suffix avoids collision
     with `stock_analyzer.models.llm.HoldingReview` (the Pydantic DTO that
@@ -162,6 +182,7 @@ __all__ = [
     "Scorecard",
     "Pick",
     "PickScenario",
+    "PickCatalyst",
     "HoldingReviewRow",
     "RunOutput",
 ]

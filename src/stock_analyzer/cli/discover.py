@@ -55,6 +55,7 @@ from ..data.transcripts import batch_transcript_snippets
 from ..db.repository import (
     insert_candidate,
     insert_pick,
+    insert_pick_catalysts,
     insert_run,
     insert_run_outputs,
     insert_scorecard,
@@ -67,6 +68,7 @@ from ..discover.calibration import (
     measure_calibration,
     similar_past_setups,
 )
+from ..discover.catalyst_grading import format_catalyst_grading_block, grade_catalysts
 from ..discover.catalysts import catalysts_to_dicts, repair_catalysts
 from ..discover.data_reconciliation import reconcile_price_targets
 from ..discover.factor_tilt import average_factor_tilts, compute_factor_tilt
@@ -685,6 +687,15 @@ class DiscoverPipeline:
             logger.warning("calibration pass failed (%s) — continuing without", e)
             self.state["calibration"] = None
             self.state["calibration_block"] = ""
+        try:
+            catalyst_block = format_catalyst_grading_block(
+                grade_catalysts(self.settings.discover_db_path)
+            )
+            self.state["calibration_block"] = "\n\n".join(
+                b for b in (self.state["calibration_block"], catalyst_block) if b
+            )
+        except Exception as e:
+            logger.warning("catalyst grading failed (%s) — continuing without", e)
         return StepOutput(content=self.state["track_record_summary"])
 
     def step_market_themes(self, step_input: StepInput) -> StepOutput:
@@ -1345,6 +1356,14 @@ class DiscoverPipeline:
                     agreement_ratio=forecast.get("agreement_ratio"),
                     voting_providers=forecast.get("voting_providers"),
                 )
+                analysis = self.state["analyses"].get(ticker)
+                if analysis is not None and getattr(analysis, "upcoming_catalysts", None):
+                    insert_pick_catalysts(
+                        session,
+                        run_id,
+                        ticker,
+                        catalysts_to_dicts(analysis.upcoming_catalysts),
+                    )
             insert_run_outputs(
                 session,
                 run_id,

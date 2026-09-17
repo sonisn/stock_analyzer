@@ -14,12 +14,14 @@ from ..db.repository import (
     insert_candidate,
     insert_holdings_review,
     insert_pick,
+    insert_pick_catalysts,
     insert_run,
     insert_run_outputs,
     insert_scorecard,
 )
 from ..logging import current_log_file, get_logger
 from ..reporting.smtp import SmtpServer
+from .catalysts import catalysts_to_dicts
 from .report import (
     parse_confidence,
     parse_verdict,
@@ -96,6 +98,11 @@ def persist_rebalance_run(
             bear_case_text=redteam_text,
             allocation_text=sizer_text,
         )
+        analysis = analyses.get(ticker)
+        if analysis is not None and getattr(analysis, "upcoming_catalysts", None):
+            insert_pick_catalysts(
+                session, run_id, ticker, catalysts_to_dicts(analysis.upcoming_catalysts)
+            )
     plan = state.get("rebalance_plan")
     insert_run_outputs(
         session,
