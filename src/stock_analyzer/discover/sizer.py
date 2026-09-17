@@ -125,6 +125,7 @@ class Sizer:
         agreement_block: str = "",
         correlated_pairs: list[CorrelatedPair] | None = None,
         risk_parity_block: str = "",
+        earnings_block: str = "",
     ) -> SizerOutput:
         budget_line = (
             f"Cash budget: ${cash_budget:,.0f}"
@@ -159,12 +160,20 @@ class Sizer:
             if risk_parity_block
             else ""
         )
+        earnings_block_text = (
+            f"Earnings within the next few days (a deterministic check will cap "
+            f"each of these at a small starter position after you respond — size "
+            f"and explain them that way):\n{earnings_block}\n\n"
+            if earnings_block
+            else ""
+        )
         prompt = (
             f"{budget_line}\n\n"
             f"{ev_block}"
             f"{agreement_block_text}"
             f"{correlated_pairs_block}"
             f"{risk_parity_block_text}"
+            f"{earnings_block_text}"
             f"Current holdings:\n{holdings_summary or '(none)'}\n\n"
             f"Picks (with bull theses):\n{picks_text}\n\n"
             f"Bear cases:\n{bear_case_text}"
@@ -183,6 +192,54 @@ class Sizer:
         if isinstance(result, str):
             return SizerOutput.model_validate_json(result)
         raise RuntimeError(f"Sizer returned unexpected type {type(result).__name__}.")
+
+
+def enforce_earnings_blackout(
+    output: SizerOutput,
+    earnings_alerts: dict[str, dict],
+    *,
+    cash_budget: float | None = None,
+    max_pct: float = 5.0,
+) -> SizerOutput:
+    """Cap any pick that reports earnings within the alert window at a
+    starter position of `max_pct` of new capital. The trimmed amount is
+    deliberately NOT redistributed (that could push other picks past their
+    correlation caps) — it's held as cash to deploy after the print, and a
+    warning says so. `earnings_alerts` is batch_earnings_flags' output."""
+    by_ticker = {a.ticker: a for a in output.allocations}
+    warnings: list[str] = []
+    for ticker, alert in earnings_alerts.items():
+        a = by_ticker.get(ticker)
+        if a is None:
+            continue
+        if a.allocation_pct is not None:
+            pct = a.allocation_pct
+        elif a.allocation_usd is not None and cash_budget:
+            pct = a.allocation_usd / cash_budget * 100
+        else:
+            continue
+        if pct <= max_pct:
+            continue
+        update = (
+            {"allocation_pct": max_pct}
+            if a.allocation_pct is not None
+            else {"allocation_usd": max_pct / 100 * cash_budget}
+        )
+        by_ticker[ticker] = a.model_copy(update=update)
+        warnings.append(
+            f"EARNINGS BLACKOUT: {ticker} reports {alert.get('earnings_date')} "
+            f"(in {alert.get('days_until')}d) — capped at a {max_pct:.0f}% starter "
+            f"position instead of {pct:.1f}%; hold the other {pct - max_pct:.1f}% as "
+            f"cash and add after the print if the thesis holds"
+        )
+    if not warnings:
+        return output
+    return output.model_copy(
+        update={
+            "allocations": [by_ticker[a.ticker] for a in output.allocations],
+            "concentration_warnings": [*output.concentration_warnings, *warnings],
+        }
+    )
 
 
 def enforce_correlation_caps(

@@ -88,7 +88,7 @@ from ..discover.report import (
     render_pdf,
 )
 from ..discover.screen import passes_hard_filter, passes_trend_gate, score_candidate
-from ..discover.sizer import Sizer, enforce_correlation_caps
+from ..discover.sizer import Sizer, enforce_correlation_caps, enforce_earnings_blackout
 from ..discover.track_record import (
     format_track_record_block,
     format_track_record_summary,
@@ -1237,6 +1237,14 @@ class DiscoverPipeline:
         risk_parity_block = _format_risk_parity_block(
             ranker_output, self.state.get("historical_volatility") or {}
         )
+        picked = {t for _, t, _ in self.state.get("picks") or []}
+        earnings_alerts = {
+            t: a for t, a in (self.state.get("earnings_alerts") or {}).items() if t in picked
+        }
+        earnings_block = "\n".join(
+            f"  {t}: reports {a.get('earnings_date')} (in {a.get('days_until')}d)"
+            for t, a in sorted(earnings_alerts.items())
+        )
         sizer = Sizer(
             "claude",
             self.settings.discover_opus_model,
@@ -1255,6 +1263,7 @@ class DiscoverPipeline:
                 agreement_block=agreement_block,
                 correlated_pairs=correlated_pairs,
                 risk_parity_block=risk_parity_block,
+                earnings_block=earnings_block,
             )
         except Exception as e:
             # Same rationale as step_redteam: a sizing failure shouldn't
@@ -1268,6 +1277,13 @@ class DiscoverPipeline:
                 sizer_output,
                 correlated_pairs,
                 cash_budget=self.settings.discover_cash_budget,
+            )
+        if earnings_alerts:
+            sizer_output = enforce_earnings_blackout(
+                sizer_output,
+                earnings_alerts,
+                cash_budget=self.settings.discover_cash_budget,
+                max_pct=self.settings.discover_earnings_blackout_max_pct,
             )
         self.state["sizer_output"] = sizer_output
         self.state["sizer_text"] = sizer_output.full_text

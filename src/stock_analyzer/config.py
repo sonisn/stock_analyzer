@@ -100,6 +100,9 @@ class Settings(BaseSettings):
     # Analyst/Reviewer's upcoming-catalyst extraction (one Tavily search
     # per survivor/holding per run).
     discover_catalyst_news_days: int = 30
+    # A new pick that reports earnings within the alert window (5 days) is
+    # capped at this % of new capital; the rest waits for the print.
+    discover_earnings_blackout_max_pct: float = 5.0
     # Ranker consensus: one round per (provider, model) pair listed here,
     # each a full high-effort ranking pass; picks are kept if a majority of
     # rounds agree. A blank model in `discover_ranker_models` (or too few
