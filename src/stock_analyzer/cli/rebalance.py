@@ -72,6 +72,7 @@ from ..discover.report import (
 from ..discover.reviewer import Reviewer, review_batch
 from ..logging import get_logger
 from ..preflight import PreflightError, preflight
+from ..usage import TRACKER, log_usage_summary
 from .discover import (
     _QUARTERLY_MDA_CHARS,
     _RISK_FACTORS_CHARS,
@@ -559,6 +560,7 @@ class RebalancePipeline(DiscoverPipeline):
             cc_warnings=self.state.get("cc_warnings") or [],
             cc_slippage_buffer=self.settings.cc_slippage_buffer,
             stop_loss_warnings=self.state.get("stop_loss_warnings") or [],
+            usage=TRACKER.report_data(),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -702,7 +704,10 @@ def run() -> None:
     pipeline = RebalancePipeline(settings)
     workflow = pipeline.build_workflow()
     logger.info("=== Portfolio rebalance pipeline starting ===")
-    workflow.print_response(input="rebalance", stream=True)
+    try:
+        workflow.print_response(input="rebalance", stream=True)
+    finally:
+        log_usage_summary()
     if pipeline.state.get("run_id"):
         print(f"\nRun #{pipeline.state['run_id']} stored in {settings.discover_db_path}")
 

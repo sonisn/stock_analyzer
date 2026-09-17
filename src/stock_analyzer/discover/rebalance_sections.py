@@ -8,6 +8,7 @@ from typing import Any
 from ..models.rebalance import RebalancePlan
 from ..models.reports import PreMortem, Section
 from .report_sections import (
+    append_usage_section,
     build_sections,
     parse_confidence,
     parse_rebalance_status,
@@ -363,6 +364,7 @@ def build_rebalance_sections(
     cc_warnings: list[str] | None = None,
     cc_slippage_buffer: float = 0.10,
     stop_loss_warnings: list[str] | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -425,4 +427,5 @@ def build_rebalance_sections(
         candidates=candidates,
         sector_rotation=sector_rotation,
     )
+    append_usage_section(sections, usage)
     return sections

@@ -17,6 +17,7 @@ from agno.models.openai import OpenAIChat
 from agno.run.base import RunStatus
 
 from .logging import get_logger
+from .usage import TRACKER
 
 logger = get_logger(__name__)
 
@@ -66,6 +67,7 @@ class AgnoAgent:
 
     def run(self, *args: Any, **kwargs: Any) -> Any:
         result = self.agent.run(*args, **kwargs)
+        TRACKER.record(self.name, self.model_id, getattr(result, "metrics", None))
         # agno 3.0's Agent.run() no longer raises once it has exhausted its
         # own internal retries (Model.retries, default 0 — so effectively
         # on the very first non-retryable provider error, e.g. an HTTP 404

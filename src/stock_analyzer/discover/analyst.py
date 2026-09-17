@@ -226,6 +226,35 @@ class Analyst:
         return None
 
 
+def analyze_tiered(
+    deep: Analyst,
+    light: Analyst | None,
+    payloads: dict[str, dict[str, Any]],
+    deep_tickers: set[str],
+) -> dict[str, AnalystReport]:
+    """`deep` analyzes `deep_tickers`, `light` (a cheaper model) the rest.
+
+    Any ticker the light model fails on — a provider error, or a response
+    that doesn't validate as AnalystReport — is retried on `deep`, so the
+    cheaper tier can only save cost, never drop a candidate. Result order
+    follows `payloads` (the screen-score order the Ranker reads in).
+    """
+    if light is None:
+        deep_tickers = set(payloads)
+    results = analyze_batch(deep, {t: p for t, p in payloads.items() if t in deep_tickers})
+    light_payloads = {t: p for t, p in payloads.items() if t not in deep_tickers}
+    if light is not None and light_payloads:
+        results.update(analyze_batch(light, light_payloads))
+        missing = {t: p for t, p in light_payloads.items() if t not in results}
+        if missing:
+            logger.warning(
+                "Light-tier analyst failed for %s — retrying on the deep model",
+                sorted(missing),
+            )
+            results.update(analyze_batch(deep, missing))
+    return {t: results[t] for t in payloads if t in results}
+
+
 def analyze_batch(
     analyst: Analyst, payloads: dict[str, dict[str, Any]]
 ) -> dict[str, AnalystReport]:

@@ -259,6 +259,35 @@ def _primary_reject_reason(reasons: list[str]) -> str:
     return first[:40]
 
 
+def append_usage_section(sections: list[Section], usage: dict[str, Any] | None) -> None:
+    """'Model usage this run' table from usage.UsageTracker.report_data()."""
+    if not usage or not usage.get("rows"):
+        return
+    rows = [
+        [
+            r["stage"],
+            r["model"],
+            str(r["calls"]),
+            f"{r['input_tokens']:,}",
+            f"{r['output_tokens']:,}",
+            f"${r['cost_usd']:.2f}" if r["cost_usd"] is not None else "n/a",
+        ]
+        for r in usage["rows"]
+    ]
+    total = f"${usage['total_cost_usd']:.2f}"
+    if not usage.get("cost_complete"):
+        total += " + unpriced non-Claude calls"
+    sections.append(Section(kind="heading", text="Model usage this run", level=2))
+    sections.append(
+        Section(
+            kind="table",
+            table_header=["Stage", "Model", "Calls", "Tokens in", "Tokens out", "Est. cost"],
+            table_rows=rows,
+        )
+    )
+    sections.append(Section(kind="para", text=f"Estimated Claude cost: {total}"))
+
+
 # --- sections (unified IR for HTML + PDF) -----------------------------------
 
 
@@ -282,6 +311,7 @@ def build_sections(
     pick_tilts: dict[str, dict[str, float]] | None = None,
     portfolio_tilt: dict[str, float] | None = None,
     pick_catalysts: dict[str, list[dict[str, Any]]] | None = None,
+    usage: dict[str, Any] | None = None,
 ) -> list[Section]:
     # Prefer the structured Phase 4 objects when present; fall back to
     # parsing the free-text variants so legacy callers / partial runs
@@ -568,6 +598,7 @@ def build_sections(
                 )
             )
 
+    append_usage_section(s, usage)
     return s
 
 

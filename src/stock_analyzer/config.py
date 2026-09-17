@@ -78,6 +78,12 @@ class Settings(BaseSettings):
     # per-candidate analysis, Haiku for any cheap data prep.
     discover_opus_model: str = "claude-opus-4-7"
     discover_sonnet_model: str = "claude-sonnet-4-6"
+    # Two-tier per-candidate analysis: the top `discover_analyst_deep_count`
+    # survivors by screen score go to the Sonnet model, the rest to this
+    # cheaper model (retried on Sonnet if it fails). A count of 0 or a blank
+    # model sends every survivor to Sonnet.
+    discover_haiku_model: str = "claude-haiku-4-5"
+    discover_analyst_deep_count: int = 10
     # `NoDecode` tells pydantic-settings to skip its default JSON parse for
     # complex types so the raw "AAPL,NVDA" string reaches our validator below.
     discover_watchlist: Annotated[tuple[str, ...], NoDecode] = ()

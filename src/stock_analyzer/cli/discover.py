@@ -60,7 +60,7 @@ from ..db.repository import (
     insert_scorecard,
 )
 from ..db.session import get_session
-from ..discover.analyst import Analyst, analyze_batch
+from ..discover.analyst import Analyst, analyze_tiered
 from ..discover.calibration import (
     format_calibration_block,
     format_similar_setups_block,
@@ -98,6 +98,7 @@ from ..discover.universe import build_universe
 from ..logging import current_log_file, get_logger
 from ..preflight import PreflightError, preflight
 from ..reporting.smtp import SmtpServer
+from ..usage import TRACKER, log_usage_summary
 
 logger = get_logger(__name__)
 
@@ -520,6 +521,7 @@ class DiscoverPipeline:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.state: dict[str, Any] = {}
+        TRACKER.reset()
 
     # --- step executors ------------------------------------------------
 
@@ -1083,16 +1085,21 @@ class DiscoverPipeline:
             for flag in reconciliation_flags:
                 logger.warning("Data reconciliation (%s): %s", ticker, flag)
 
-        analyst = Analyst(
-            "claude",
-            self.settings.discover_sonnet_model,
-            fallback=(
-                self.settings.discover_fallback_provider,
-                self.settings.resolve_fallback_model(),
-            ),
+        fallback = (
+            self.settings.discover_fallback_provider,
+            self.settings.resolve_fallback_model(),
         )
+        deep = Analyst("claude", self.settings.discover_sonnet_model, fallback=fallback)
+        deep_count = self.settings.discover_analyst_deep_count
+        light = (
+            Analyst("claude", self.settings.discover_haiku_model, fallback=fallback)
+            if deep_count > 0 and self.settings.discover_haiku_model
+            else None
+        )
+        # `survivors` is already in screen-score order.
+        deep_tickers = {c["ticker"] for c in survivors[:deep_count]}
         analyses, catalyst_warnings = repair_catalysts(
-            analyze_batch(analyst, payloads), recent_news
+            analyze_tiered(deep, light, payloads, deep_tickers), recent_news
         )
         self.state["analyses"] = analyses
         self.state["catalyst_warnings"] = catalyst_warnings
@@ -1385,6 +1392,7 @@ class DiscoverPipeline:
             pick_tilts=pick_tilts,
             portfolio_tilt=portfolio_tilt,
             pick_catalysts=pick_catalysts,
+            usage=TRACKER.report_data(),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -1548,6 +1556,7 @@ def run() -> None:
         # often it was throttled, and what the pacer settled on. Read this
         # before touching YF_RATE_LIMIT_PER_MIN.
         yf_gateway.log_stats("discover run")
+        log_usage_summary()
         unavailable = yf_gateway.unavailable_symbols()
         if unavailable:
             logger.info(
