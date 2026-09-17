@@ -45,7 +45,9 @@ def build_holding_review_payloads(
     risk_factors_chars: int,
     quarterly_mda_chars: int,
     transcript_chars: int,
+    recent_news: dict[str, list[dict[str, Any]]] | None = None,
 ) -> dict[str, dict[str, Any]]:
+    recent_news = recent_news or {}
     payloads: dict[str, dict[str, Any]] = {}
     for ticker, pos in positions.items():
         t = tech.get(ticker) or {}
@@ -94,6 +96,7 @@ def build_holding_review_payloads(
                 (holdings_transcripts.get(ticker) or {}).get("snippet"),
                 transcript_chars,
             ),
+            "recent_news": recent_news.get(ticker, []),
             "news": news.get(ticker, []),
             "tax_lots": enrich_tax_lots_with_impact(
                 tax_lots_raw.get(ticker) or {},
@@ -140,8 +143,7 @@ def apply_stop_loss_overrides(
             updated[ticker] = review
             continue
         note = (
-            f"MECHANICAL STOP-LOSS: down {pnl_pct:.0f}% from cost basis — "
-            f"auto-escalated from HOLD"
+            f"MECHANICAL STOP-LOSS: down {pnl_pct:.0f}% from cost basis — auto-escalated from HOLD"
         )
         warnings.append(f"{ticker}: {note}")
         logger.warning("Stop-loss override %s: %s", ticker, note)

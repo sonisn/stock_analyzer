@@ -247,6 +247,58 @@ def _pdf_pill(text: str, fg: str, bg: str, styles) -> Paragraph:
     )
 
 
+_PDF_CATALYST_DIRECTION_COLORS: dict[str, str] = {
+    "positive": "#166534",
+    "negative": "#9c1010",
+    "uncertain": "#9a5b00",
+}
+
+
+def _pdf_catalysts(catalysts: list[dict[str, Any]], styles) -> list[Any]:
+    """PDF counterpart of report_html._catalysts_html."""
+    if not catalysts:
+        return []
+    rows: list[list[Any]] = []
+    for c in catalysts:
+        direction = str(c.get("direction") or "uncertain")
+        color = _PDF_CATALYST_DIRECTION_COLORS.get(direction, "#9a5b00")
+        rows.append(
+            [
+                Paragraph(
+                    html.escape(str(c.get("expected_date") or "Date TBD")), styles["BodyText"]
+                ),
+                Paragraph(
+                    f"<font color='{color}'><b>{html.escape(direction)}</b></font>",
+                    styles["BodyText"],
+                ),
+                Paragraph(
+                    f"<font color='#6b7280'>{html.escape(str(c.get('impact') or ''))}</font>",
+                    styles["BodyText"],
+                ),
+                Paragraph(html.escape(str(c.get("event") or "")), styles["BodyText"]),
+            ]
+        )
+    t = Table(rows, hAlign="LEFT", colWidths=[0.95 * inch, 0.85 * inch, 0.7 * inch, 4.2 * inch])
+    t.setStyle(
+        TableStyle(
+            [
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LINEBELOW", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
+                ("TOPPADDING", (0, 0), (-1, -1), 2),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ]
+        )
+    )
+    return [
+        Paragraph(
+            "<font color='#0e7490' size='8'><b>UPCOMING CATALYSTS</b></font>", styles["BodyText"]
+        ),
+        t,
+        Spacer(1, 6),
+    ]
+
+
 def _pdf_pick_card(d: dict[str, Any], styles, chart_data: bytes | None = None) -> list[Any]:
     """Render a structured pick as a header row of colored pill badges
     + per-section paragraphs. Returns a list of flowables (no Spacer
@@ -392,6 +444,7 @@ def _pdf_pick_card(d: dict[str, Any], styles, chart_data: bytes | None = None) -
             )
         )
         flow.append(Spacer(1, 4))
+    flow.extend(_pdf_catalysts(d.get("catalysts") or [], styles))
     _section("Why this over alternatives", d.get("why_over_alternatives"))
     if d.get("sector_concentration_check"):
         flow.append(
@@ -836,6 +889,8 @@ def _pdf_holding_review_card(d: dict[str, Any], styles) -> list[Any]:
                 )
             )
         flow.append(Spacer(1, 6))
+
+    flow.extend(_pdf_catalysts(d.get("catalysts") or [], styles))
 
     if wash_sale_notice:
         notice_para = Paragraph(

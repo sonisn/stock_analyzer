@@ -121,7 +121,11 @@ def test_rejected_candidates_grouped_into_pie_and_short_lists():
 
     # Grouped into 2 short paragraphs, NOT 5 one-per-ticker paragraphs.
     para_texts = [s.text for s in tail if s.kind == "para"]
-    grouped = [t for t in para_texts if t.startswith("Below 200-day average") or t.startswith("Revenue growth")]
+    grouped = [
+        t
+        for t in para_texts
+        if t.startswith("Below 200-day average") or t.startswith("Revenue growth")
+    ]
     assert len(grouped) == 2
     assert any(t.startswith("Below 200-day average (3): A, B, C") for t in grouped)
     assert any(t.startswith("Revenue growth too slow (2): D, E") for t in grouped)

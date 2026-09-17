@@ -164,6 +164,43 @@ def _svg_pie(pie_data: list[tuple[str, float]], diameter: int = 180) -> str:
     )
 
 
+_CATALYST_DIRECTION_STYLE: dict[str, tuple[str, str]] = {
+    "positive": ("▲", "#166534"),
+    "negative": ("▼", "#9c1010"),
+    "uncertain": ("◆", "#9a5b00"),
+}
+
+
+def _catalysts_html(catalysts: list[dict[str, Any]]) -> str:
+    """Dated forward-event table shared by pick and holding-review cards."""
+    if not catalysts:
+        return ""
+    rows: list[str] = []
+    for c in catalysts:
+        direction = str(c.get("direction") or "uncertain")
+        glyph, color = _CATALYST_DIRECTION_STYLE.get(
+            direction, _CATALYST_DIRECTION_STYLE["uncertain"]
+        )
+        rows.append(
+            "<tr>"
+            f"<td style='white-space:nowrap;font-variant-numeric:tabular-nums;"
+            f"color:#374151'>{html.escape(str(c.get('expected_date') or 'Date TBD'))}</td>"
+            f"<td style='white-space:nowrap;color:{color};font-weight:700'>"
+            f"{glyph} {html.escape(direction)}</td>"
+            f"<td style='white-space:nowrap;color:#6b7280'>"
+            f"{html.escape(str(c.get('impact') or ''))} impact</td>"
+            f"<td>{html.escape(str(c.get('event') or ''))}</td>"
+            "</tr>"
+        )
+    return (
+        "<div><div style='font-size:11px;color:#0e7490;font-weight:600;"
+        "text-transform:uppercase;letter-spacing:0.5px;margin:10px 0 4px'>"
+        "Upcoming catalysts</div>"
+        "<div style='overflow-x:auto'><table style='font-size:13px;margin:4px 0'>"
+        "<tbody>" + "".join(rows) + "</tbody></table></div></div>"
+    )
+
+
 def _pick_card_html(d: dict[str, Any]) -> str:
     """Render a per-pick structured card. Uses pill badges for rank /
     conviction / fragility / allocation and stacks bull + bear prose."""
@@ -263,6 +300,8 @@ def _pick_card_html(d: dict[str, Any]) -> str:
         sections_html.append(
             f"<div style='margin-top:4px;color:#374151'><b>Watch:</b> {watch_metric}</div>"
         )
+    if d.get("catalysts"):
+        sections_html.append(_catalysts_html(d["catalysts"]))
     if why_over:
         sections_html.append(
             f"<div><div style='font-size:11px;color:#6b7280;font-weight:600;"
@@ -581,6 +620,9 @@ def _holding_review_card_html(d: dict[str, Any]) -> str:
             f"<ul style='margin:4px 0 0 18px;padding:0;color:#1f2937'>"
             f"{items}</ul></div>"
         )
+
+    if d.get("catalysts"):
+        body_parts.append(_catalysts_html(d["catalysts"]))
 
     if wash_sale_notice:
         body_parts.append(

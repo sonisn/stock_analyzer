@@ -19,6 +19,43 @@ Verdict = Literal["HOLD", "TRIM", "SELL"]
 ActionType = Literal["SELL", "TRIM", "ADD", "BUY"]
 
 
+# --- Forward catalysts (shared by Analyst + Reviewer) ------------------------
+
+
+class Catalyst(BaseModel):
+    """One dated, sourced forward event that could move the stock."""
+
+    model_config = ConfigDict(frozen=True)
+
+    event: str = Field(
+        ...,
+        description="One sentence: what is expected to happen, e.g. 'Q3 earnings; guide at risk from China'.",
+    )
+    expected_date: str | None = Field(
+        default=None,
+        description=(
+            "YYYY-MM-DD if a date (or clear month) appears in the source; "
+            "null if the source gives no date. Never guess a date."
+        ),
+    )
+    direction: Literal["positive", "negative", "uncertain"]
+    impact: Literal["high", "medium", "low"]
+    source: str = Field(
+        ...,
+        description=(
+            "Where this came from: a recent_news id like 'news:N2', or one of "
+            "'quarterly_mda', 'earnings_transcript', 'earnings_calendar'."
+        ),
+    )
+
+
+_CATALYSTS_DESCRIPTION = (
+    "Up to 5 UPCOMING events (next ~12 months) that could move the stock, "
+    "each dated only if the source states a date and citing its source. "
+    "Empty list if the inputs name none."
+)
+
+
 # --- Reviewer ---------------------------------------------------------------
 
 
@@ -76,6 +113,9 @@ class HoldingReview(BaseModel):
             "re-buy this security or a substantially identical one within "
             "30 days of the sale."
         ),
+    )
+    upcoming_catalysts: list[Catalyst] = Field(
+        default_factory=list, max_length=5, description=_CATALYSTS_DESCRIPTION
     )
 
     # Always required — the prose rendering for the PDF/email + the
@@ -482,6 +522,9 @@ class AnalystReport(BaseModel):
         ...,
         description="Next earnings date if known + any product / regulatory items from news.",
     )
+    upcoming_catalysts: list[Catalyst] = Field(
+        default_factory=list, max_length=5, description=_CATALYSTS_DESCRIPTION
+    )
     full_text: str = Field(
         ...,
         description=(
@@ -495,6 +538,7 @@ class AnalystReport(BaseModel):
 __all__ = [
     "Verdict",
     "ActionType",
+    "Catalyst",
     "HoldingReview",
     "AnalystReport",
     "Scenario",

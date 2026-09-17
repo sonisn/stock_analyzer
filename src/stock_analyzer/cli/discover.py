@@ -50,6 +50,7 @@ from ..data.sec_edgar import batch_quarterly_mda, batch_risk_factors
 from ..data.sector_rotation import sector_bias, sector_rotation_summary
 from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
+from ..data.ticker_news import batch_ticker_news
 from ..data.transcripts import batch_transcript_snippets
 from ..db.repository import (
     insert_candidate,
@@ -66,6 +67,7 @@ from ..discover.calibration import (
     measure_calibration,
     similar_past_setups,
 )
+from ..discover.catalysts import catalysts_to_dicts, repair_catalysts
 from ..discover.data_reconciliation import reconcile_price_targets
 from ..discover.factor_tilt import average_factor_tilts, compute_factor_tilt
 from ..discover.macro_filter import apply_macro_veto
@@ -828,9 +830,7 @@ class DiscoverPipeline:
                     line := format_similar_setups_block(
                         c["ticker"],
                         similar_past_setups(
-                            _flatten_score_breakdown(
-                                c["score_components"], c["score_breakdown"]
-                            ),
+                            _flatten_score_breakdown(c["score_components"], c["score_breakdown"]),
                             self.settings.discover_db_path,
                         ),
                     )
@@ -880,9 +880,21 @@ class DiscoverPipeline:
         tickers = self.state.get("survivor_tickers") or []
         if not tickers:
             self.state["news"] = {}
+            self.state["recent_news"] = {}
             return StepOutput(content="news: no survivors; skipping")
         self.state["news"] = _batch_news(tickers)
+        self.state["recent_news"] = self._fetch_recent_news(tickers)
         return StepOutput(content=f"News fetched for {len(tickers)}")
+
+    def _fetch_recent_news(self, tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
+        fundamentals = {
+            **(self.state.get("holdings_fundamentals") or {}),
+            **(self.state.get("fundamentals") or {}),
+        }
+        names = {t: (fundamentals.get(t) or {}).get("name") for t in tickers}
+        return batch_ticker_news(
+            list(tickers), names, days=self.settings.discover_catalyst_news_days
+        )
 
     def step_earnings(self, step_input: StepInput) -> StepOutput:
         tickers = self.state.get("survivor_tickers") or []
@@ -1009,6 +1021,7 @@ class DiscoverPipeline:
         technicals = self.state.get("technicals", {})
         risk_factors = self.state.get("risk_factors", {})
         news = self.state.get("news", {})
+        recent_news = self.state.get("recent_news") or {}
 
         earnings_alerts = self.state.get("earnings_alerts", {})
         insider_selling = self.state.get("insider_selling", {})
@@ -1064,6 +1077,7 @@ class DiscoverPipeline:
                     (self.state.get("earnings_transcripts", {}).get(ticker) or {}).get("snippet"),
                     _TRANSCRIPT_CHARS,
                 ),
+                "recent_news": recent_news.get(ticker, []),
                 "news": news.get(ticker, []),
             }
             for flag in reconciliation_flags:
@@ -1077,7 +1091,11 @@ class DiscoverPipeline:
                 self.settings.resolve_fallback_model(),
             ),
         )
-        self.state["analyses"] = analyze_batch(analyst, payloads)
+        analyses, catalyst_warnings = repair_catalysts(
+            analyze_batch(analyst, payloads), recent_news
+        )
+        self.state["analyses"] = analyses
+        self.state["catalyst_warnings"] = catalyst_warnings
         if not self.state["analyses"]:
             logger.error("Analyst: all calls failed; downstream LLM stages will skip")
             return StepOutput(content="Analyst: all calls failed; downstream will skip")
@@ -1336,6 +1354,12 @@ class DiscoverPipeline:
             if tilt:
                 pick_tilts[ticker] = tilt
         portfolio_tilt = average_factor_tilts(list(pick_tilts.values()))
+        analyses = self.state.get("analyses") or {}
+        pick_catalysts = {
+            t: catalysts_to_dicts(analyses[t].upcoming_catalysts)
+            for t in pick_tickers
+            if t in analyses
+        }
 
         # 3. Build shared section list, then render both HTML and PDF from it.
         sections = build_sections(
@@ -1356,9 +1380,11 @@ class DiscoverPipeline:
             data_warnings=(
                 (self.state.get("output_validation_warnings") or [])
                 + (self.state.get("macro_veto_reasons") or [])
+                + (self.state.get("catalyst_warnings") or [])
             ),
             pick_tilts=pick_tilts,
             portfolio_tilt=portfolio_tilt,
+            pick_catalysts=pick_catalysts,
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)

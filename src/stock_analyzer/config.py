@@ -90,6 +90,10 @@ class Settings(BaseSettings):
     # most of the index is in an uptrend. Survivors are kept by 6-month
     # relative strength, and holdings/watchlist names are never capped out.
     discover_max_screen_candidates: int = 250
+    # Lookback window for the per-ticker Tavily news that grounds the
+    # Analyst/Reviewer's upcoming-catalyst extraction (one Tavily search
+    # per survivor/holding per run).
+    discover_catalyst_news_days: int = 30
     # Ranker consensus: one round per (provider, model) pair listed here,
     # each a full high-effort ranking pass; picks are kept if a majority of
     # rounds agree. A blank model in `discover_ranker_models` (or too few

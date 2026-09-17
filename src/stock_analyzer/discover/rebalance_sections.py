@@ -285,6 +285,7 @@ def append_holding_review_sections(
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Per-holding reviews", level=1))
     from ..models.llm import HoldingReview
+    from .catalysts import catalysts_to_dicts
 
     for ticker in sorted(holdings_reviews.keys()):
         review = holdings_reviews[ticker]
@@ -303,6 +304,7 @@ def append_holding_review_sections(
                         "tax_lot_plan": list(review.tax_lot_plan),
                         "what_would_change_mind": review.what_would_change_mind,
                         "wash_sale_notice": review.wash_sale_notice,
+                        "catalysts": catalysts_to_dicts(review.upcoming_catalysts),
                     },
                 )
             )

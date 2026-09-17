@@ -28,7 +28,9 @@ def _review(ticker: str = "AAPL", **overrides) -> HoldingReview:
 
 
 def _positions(avg_buy_price: float) -> dict:
-    return {"AAPL": {"avg_buy_price": avg_buy_price, "units": 100, "cost_basis": avg_buy_price * 100}}
+    return {
+        "AAPL": {"avg_buy_price": avg_buy_price, "units": 100, "cost_basis": avg_buy_price * 100}
+    }
 
 
 def _technicals(price: float) -> dict:

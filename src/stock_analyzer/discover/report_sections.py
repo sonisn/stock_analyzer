@@ -281,6 +281,7 @@ def build_sections(
     data_warnings: list[str] | None = None,
     pick_tilts: dict[str, dict[str, float]] | None = None,
     portfolio_tilt: dict[str, float] | None = None,
+    pick_catalysts: dict[str, list[dict[str, Any]]] | None = None,
 ) -> list[Section]:
     # Prefer the structured Phase 4 objects when present; fall back to
     # parsing the free-text variants so legacy callers / partial runs
@@ -413,6 +414,7 @@ def build_sections(
                         "allocation_rationale": alloc.rationale if alloc else None,
                         "agreement_ratio": pick.agreement_ratio,
                         "voting_providers": pick.voting_providers,
+                        "catalysts": (pick_catalysts or {}).get(ticker, []),
                     },
                 )
             )

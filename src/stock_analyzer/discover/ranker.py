@@ -16,7 +16,8 @@ from typing import Any
 
 from ..llm import AgnoAgent, Provider, reasoning_model_kwargs, run_with_fallback
 from ..logging import get_logger
-from ..models.llm import RankerOutput
+from ..models.llm import AnalystReport, RankerOutput
+from .catalysts import format_catalyst_block
 
 logger = get_logger(__name__)
 
@@ -80,6 +81,20 @@ Probability discipline rules — these catch the common mistakes:
     fully. Don't blend — bull is "if the bull scenario hits". Typical
     ranges over 6-12 months: bull +25% to +60% (rarely higher),
     base 0% to +15%, bear -15% to -35%.
+
+CATALYST ANCHORING:
+Each candidate carries an "Upcoming catalysts" list (validated: every
+item cites real recent news or filings, and none is in the past). Tie
+your scenarios to it:
+  - Name the specific catalyst each bull and bear scenario hinges on
+    in its rationale, when one exists.
+  - A high-impact binary event (direction "uncertain") inside the
+    horizon widens the distribution: raise BOTH bull and bear
+    probability at the expense of base.
+  - A high-impact negative catalyst dated in the next ~90 days should
+    push bear probability up, not be averaged away by trailing momentum.
+  - "none identified" means the thesis rests on trend and valuation
+    alone — say so, and keep conviction at or below 7.
 
 A downstream Sizer + analytics layer computes expected return
 deterministically as Σ(probability × target_return_pct). Calibrate
@@ -190,6 +205,11 @@ class Ranker:
         # the prompt without depending on the type.
         candidates_block = "\n\n".join(
             f"=== {ticker} ===\n{getattr(analysis, 'full_text', analysis)}"
+            + (
+                f"\n{format_catalyst_block(analysis.upcoming_catalysts)}"
+                if isinstance(analysis, AnalystReport)
+                else ""
+            )
             for ticker, analysis in analyses.items()
         )
         macro_block = f"Macro regime:\n{macro_context}\n\n" if macro_context else ""

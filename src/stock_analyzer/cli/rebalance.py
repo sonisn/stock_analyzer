@@ -42,6 +42,7 @@ from ..data.transactions import fetch_transaction_history, to_tax_payloads
 from ..data.transcripts import batch_transcript_snippets
 from ..db.repository import fetch_recent_holdings_history
 from ..db.session import get_session
+from ..discover.catalysts import repair_catalysts
 from ..discover.peers import batch_peer_comparison
 from ..discover.premortem import PreMortemAgent
 from ..discover.rebalance_cc import (
@@ -304,8 +305,10 @@ class RebalancePipeline(DiscoverPipeline):
             tickers |= set(self.state["holdings_tickers"])
         if not tickers:
             self.state["news"] = {}
+            self.state["recent_news"] = {}
             return StepOutput(content="news: no tickers; skipping")
         self.state["news"] = _batch_news(list(tickers))
+        self.state["recent_news"] = self._fetch_recent_news(sorted(tickers))
         return StepOutput(content=f"News fetched for {len(tickers)} tickers")
 
     def step_insider_selling(self, step_input: StepInput) -> StepOutput:
@@ -362,12 +365,15 @@ class RebalancePipeline(DiscoverPipeline):
             holdings_peers=self.state.get("holdings_peers", {}),
             holdings_transcripts=self.state.get("holdings_transcripts", {}),
             news=self.state.get("news") or {},
+            recent_news=self.state.get("recent_news") or {},
             risk_factors_chars=_RISK_FACTORS_CHARS,
             quarterly_mda_chars=_QUARTERLY_MDA_CHARS,
             transcript_chars=_TRANSCRIPT_CHARS,
         )
         reviewer = Reviewer("claude", self.settings.discover_sonnet_model)
-        reviews = review_batch(reviewer, payloads)
+        reviews, _ = repair_catalysts(
+            review_batch(reviewer, payloads), self.state.get("recent_news") or {}
+        )
         reviews, stop_loss_warnings = apply_stop_loss_overrides(
             reviews,
             self.state["holdings_positions"],
