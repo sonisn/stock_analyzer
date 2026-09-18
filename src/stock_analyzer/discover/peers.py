@@ -19,7 +19,7 @@ from typing import Any
 
 from ..data.fundamentals import fetch_fundamentals
 from ..data.sec_edgar import load_ticker_cik_map
-from ..llm import AgnoAgent, Provider, deterministic_model_kwargs
+from ..llm import AgnoAgent, Provider, deterministic_model_kwargs, run_with_fallback
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -61,15 +61,27 @@ _PEER_FIELDS = (
 )
 
 
+def _build_agent(provider: Provider, model: str) -> AgnoAgent:
+    return AgnoAgent(
+        "PeerFinder",
+        provider,
+        model,
+        model_kwargs=deterministic_model_kwargs(provider),
+        instructions=PEER_FINDER_INSTRUCTIONS,
+    )
+
+
 class PeerFinder:
-    def __init__(self, provider: Provider = "claude", model: str = "claude-haiku-4-5"):
-        self.agent = AgnoAgent(
-            "PeerFinder",
-            provider,
-            model,
-            model_kwargs=deterministic_model_kwargs(provider),
-            instructions=PEER_FINDER_INSTRUCTIONS,
-        )
+    def __init__(
+        self,
+        provider: Provider = "claude",
+        model: str = "claude-haiku-4-5",
+        *,
+        fallback: tuple[Provider, str] | None = None,
+    ):
+        self.provider = provider
+        self.fallback = fallback
+        self.agent = _build_agent(provider, model)
 
     def find(self, ticker: str, *, name: str | None = None, sector: str | None = None) -> list[str]:
         prompt = f"Ticker: {ticker}"
@@ -77,8 +89,13 @@ class PeerFinder:
             prompt += f"\nName: {name}"
         if sector:
             prompt += f"\nSector: {sector}"
+        build_fallback = (
+            (lambda: _build_agent(self.fallback[0], self.fallback[1]))
+            if self.fallback and self.fallback[0] != self.provider
+            else None
+        )
         try:
-            raw = self.agent.run(prompt).content
+            raw = run_with_fallback(self.agent, build_fallback, prompt).content
         except Exception as e:
             logger.warning("PeerFinder failed for %s: %s", ticker, e)
             return []
@@ -149,10 +166,13 @@ def fetch_peer_comparison(
 def batch_peer_comparison(
     tickers: list[str],
     target_meta: dict[str, dict[str, Any]] | None = None,
+    *,
+    fallback: tuple[Provider, str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Fetch peer comparisons for a list of tickers. `target_meta` optionally
-    maps ticker → {"name", "sector"} for better Haiku context."""
-    finder = PeerFinder()
+    maps ticker → {"name", "sector"} for better Haiku context. `fallback`
+    is the (provider, model) PeerFinder retries on after a provider error."""
+    finder = PeerFinder(fallback=fallback)
     target_meta = target_meta or {}
 
     def _one(t: str) -> tuple[str, dict[str, Any] | None]:

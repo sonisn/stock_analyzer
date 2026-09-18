@@ -11,7 +11,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from ..llm import AgnoAgent, Provider, deterministic_model_kwargs
+from ..llm import AgnoAgent, Provider, deterministic_model_kwargs, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import HoldingReview
 from ..serialization import dumps_pretty
@@ -373,29 +373,46 @@ def _repair_verdict_inconsistencies(review: HoldingReview, ticker: str) -> Holdi
     return review.model_copy(update=updates)
 
 
+def _build_agent(provider: Provider, model: str) -> AgnoAgent:
+    model_kwargs: dict[str, Any] = {
+        **deterministic_model_kwargs(provider),
+        "retries": 3,
+        "exponential_backoff": True,
+        "delay_between_retries": 10,
+    }
+    if provider == "claude":
+        model_kwargs["cache_system_prompt"] = True
+    return AgnoAgent(
+        "Reviewer",
+        provider,
+        model,
+        model_kwargs=model_kwargs,
+        instructions=REVIEWER_INSTRUCTIONS,
+        output_schema=HoldingReview,
+    )
+
+
 class Reviewer:
-    def __init__(self, provider: Provider, model: str):
-        model_kwargs: dict[str, Any] = {
-            **deterministic_model_kwargs(provider),
-            "retries": 3,
-            "exponential_backoff": True,
-            "delay_between_retries": 10,
-        }
-        if provider == "claude":
-            model_kwargs["cache_system_prompt"] = True
-        self.agent = AgnoAgent(
-            "Reviewer",
-            provider,
-            model,
-            model_kwargs=model_kwargs,
-            instructions=REVIEWER_INSTRUCTIONS,
-            output_schema=HoldingReview,
-        )
+    def __init__(
+        self,
+        provider: Provider,
+        model: str,
+        *,
+        fallback: tuple[Provider, str] | None = None,
+    ):
+        self.provider = provider
+        self.fallback = fallback
+        self.agent = _build_agent(provider, model)
 
     def review(self, ticker: str, payload: dict[str, Any]) -> HoldingReview | None:
         prompt = f"Holding: {ticker}\n\n```json\n{dumps_pretty(payload)}\n```"
         logger.info("Reviewing holding %s", ticker)
-        result = self.agent.run(prompt).content
+        build_fallback = (
+            (lambda: _build_agent(self.fallback[0], self.fallback[1]))
+            if self.fallback and self.fallback[0] != self.provider
+            else None
+        )
+        result = run_with_fallback(self.agent, build_fallback, prompt).content
         if result is None:
             logger.warning(
                 "Reviewer returned no content for %s — skipping",

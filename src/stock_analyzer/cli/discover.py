@@ -999,7 +999,14 @@ class DiscoverPipeline:
             }
             for t in tickers
         }
-        self.state["peer_comparison"] = batch_peer_comparison(tickers, target_meta)
+        self.state["peer_comparison"] = batch_peer_comparison(
+            tickers,
+            target_meta,
+            fallback=(
+                self.settings.discover_fallback_provider,
+                self.settings.resolve_fallback_model(),
+            ),
+        )
         return StepOutput(
             content=f"Peer comparison: {len(self.state['peer_comparison'])}/{len(tickers)}"
         )

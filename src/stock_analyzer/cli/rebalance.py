@@ -273,7 +273,14 @@ class RebalancePipeline(DiscoverPipeline):
             }
             for t in tickers
         }
-        self.state["holdings_peers"] = batch_peer_comparison(tickers, target_meta)
+        self.state["holdings_peers"] = batch_peer_comparison(
+            tickers,
+            target_meta,
+            fallback=(
+                self.settings.discover_fallback_provider,
+                self.settings.resolve_fallback_model(),
+            ),
+        )
         self.state["holdings_transcripts"] = batch_transcript_snippets(tickers)
         return StepOutput(
             content=(
@@ -371,7 +378,14 @@ class RebalancePipeline(DiscoverPipeline):
             quarterly_mda_chars=_QUARTERLY_MDA_CHARS,
             transcript_chars=_TRANSCRIPT_CHARS,
         )
-        reviewer = Reviewer("claude", self.settings.discover_sonnet_model)
+        reviewer = Reviewer(
+            "claude",
+            self.settings.discover_sonnet_model,
+            fallback=(
+                self.settings.discover_fallback_provider,
+                self.settings.resolve_fallback_model(),
+            ),
+        )
         reviews, _ = repair_catalysts(
             review_batch(reviewer, payloads), self.state.get("recent_news") or {}
         )
