@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -30,10 +31,47 @@ PREMIUM_NEWS_DOMAINS: list[str] = [
 
 
 def fetch_market_sentiment_news(*, max_results: int = 10) -> list[dict]:
-    """Fetch recent US macro/market news for sentiment synthesis."""
+    """Recent US macro/market news for sentiment synthesis: Tavily first,
+    Finnhub's general market feed when Tavily returns nothing (quota
+    exhausted, outage, or no key) — so the daily sentiment block doesn't
+    go blank when one news source is down."""
+    items = _tavily_market_news(max_results=max_results)
+    if items:
+        return items
+    items = _finnhub_market_news(max_results=max_results)
+    logger.info("Sentiment news: %d items from the Finnhub fallback", len(items))
+    return items
+
+
+def _finnhub_market_news(*, max_results: int, hours: int = 36) -> list[dict]:
+    from . import finnhub as finnhub_data
+
+    client = finnhub_data._client()
+    if client is None:
+        logger.warning("No Finnhub key either; sentiment news is empty")
+        return []
+    cutoff = time.time() - hours * 3600
+    seen: set[str] = set()
+    out: list[dict] = []
+    for r in sorted(
+        finnhub_data.fetch_general_news(client),
+        key=lambda r: r.get("datetime") or 0,
+        reverse=True,
+    ):
+        title = (r.get("headline") or "").strip()
+        if not title or (r.get("datetime") or 0) < cutoff or title in seen:
+            continue
+        seen.add(title)
+        out.append({"title": title, "snippet": (r.get("summary") or "")[:250]})
+        if len(out) >= max_results:
+            break
+    return out
+
+
+def _tavily_market_news(*, max_results: int) -> list[dict]:
     api_key = os.getenv("TAVILY_API_KEY")
     if not api_key:
-        logger.warning("TAVILY_API_KEY not set; returning empty sentiment news")
+        logger.warning("TAVILY_API_KEY not set; skipping Tavily market news")
         return []
     queries = [
         "US stock market today S&P 500 Nasdaq Dow",

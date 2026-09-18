@@ -298,6 +298,13 @@ def fetch_company_news(
     return raw if isinstance(raw, list) else []
 
 
+def fetch_general_news(client: finnhub.Client, category: str = "general") -> list[dict[str, Any]]:
+    """Finnhub's market-wide news feed (headline, summary, source, url,
+    `datetime` in unix seconds), newest first. Empty list on error."""
+    raw = _safe_call("general_news", category, client.general_news, category, min_id=0)
+    return raw if isinstance(raw, list) else []
+
+
 def fetch_signals(client: finnhub.Client, ticker: str, *, insider_days: int = 90) -> dict[str, Any]:
     """Fetch all four signals for one ticker."""
     return {
