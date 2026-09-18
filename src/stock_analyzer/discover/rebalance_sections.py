@@ -409,7 +409,8 @@ def append_rebalance_plan_body(
         sections.append(
             Section(
                 kind="para",
-                text="Mechanical stop-loss overrides: " + "; ".join(stop_loss_warnings),
+                text="Down 20%+ from cost (long-term thesis re-checked): "
+                + "; ".join(stop_loss_warnings),
             )
         )
 

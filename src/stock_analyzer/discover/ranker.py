@@ -23,8 +23,11 @@ from .catalysts import format_catalyst_block
 logger = get_logger(__name__)
 
 RANKER_INSTRUCTIONS = """\
-You are a portfolio manager picking 5 stocks for a 6-12 month hold from a
-shortlist. The user provides one structured analysis per candidate plus a
+You are a portfolio manager picking 5 stocks for a LONG-TERM (3-5 year)
+hold from a shortlist. The user is a long-term investor: judge each
+candidate on the durability of its business, its growth runway and what
+it is worth over 3-5 years — not on next quarter's price action. Treat
+short-term trend and momentum as timing color, never as the thesis. The user provides one structured analysis per candidate plus a
 summary of their current holdings, and optionally a macro regime block.
 
 DO NOT make tool calls. Use ONLY the provided data. Reason comparatively —
@@ -43,7 +46,7 @@ Why this over alternatives:
 <2-3 sentences citing specific other candidates that lost out and why>
 
 Conviction (1-10): <integer>
-Time horizon: 6-12 months
+Time horizon: 3-5 years
 Sector concentration check: <does this overlap with the user's current holdings? flag if so>
 
 Bull thesis:
@@ -69,8 +72,11 @@ For each pick, you MUST emit exactly 3 scenarios in the `scenarios` list:
   - base: muted case (thesis half-plays-out, multiple roughly stable)
   - bear: thesis breaks (specific failure mode you can name)
 
-Each scenario has a probability (in [0, 1]) and a target_return_pct
-over the 6-12 month horizon. The 3 probabilities MUST sum to 1.0.
+Each scenario has a probability (in [0, 1]) and a target_return_pct,
+stated as an ANNUALIZED total return (% per year, price + dividends) over
+the 3-5 year horizon — e.g. +18 means ~18%/yr compounded. Annualizing
+keeps the numbers comparable across picks and lets them be graded after
+one year. The 3 probabilities MUST sum to 1.0.
 
 Probability discipline rules — these catch the common mistakes:
   - DO NOT default to 33/34/33. A pick at conviction 9 should look
@@ -80,8 +86,8 @@ Probability discipline rules — these catch the common mistakes:
     best ideas can fail. A bear<10% means you've miscalibrated.
   - target_return_pct must be conditional on the scenario playing out
     fully. Don't blend — bull is "if the bull scenario hits". Typical
-    ranges over 6-12 months: bull +25% to +60% (rarely higher),
-    base 0% to +15%, bear -15% to -35%.
+    annualized ranges over 3-5 years: bull +18% to +35%/yr (rarely
+    higher), base +5% to +12%/yr, bear -20% to 0%/yr.
 
 CATALYST ANCHORING:
 Each candidate carries an "Upcoming catalysts" list (validated: every
@@ -89,13 +95,18 @@ item cites real recent news or filings, and none is in the past). Tie
 your scenarios to it:
   - Name the specific catalyst each bull and bear scenario hinges on
     in its rationale, when one exists.
-  - A high-impact binary event (direction "uncertain") inside the
-    horizon widens the distribution: raise BOTH bull and bear
-    probability at the expense of base.
-  - A high-impact negative catalyst dated in the next ~90 days should
-    push bear probability up, not be averaged away by trailing momentum.
-  - "none identified" means the thesis rests on trend and valuation
-    alone — say so, and keep conviction at or below 7.
+  - Weigh a catalyst by what it does to the 3-5 year business, not the
+    next few weeks' price: a product cycle, a structural contract or a
+    regulatory ruling matters; a single quarter's beat or miss mostly
+    doesn't.
+  - A high-impact binary event (direction "uncertain") that could change
+    the long-term business widens the distribution: raise BOTH bull and
+    bear probability at the expense of base.
+  - A high-impact negative catalyst that threatens the long-term thesis
+    should push bear probability up, not be averaged away by trailing
+    momentum.
+  - "none identified" means the thesis rests on the business and
+    valuation alone — that is fine for a long-term hold; say so.
 
 A downstream Sizer + analytics layer computes expected return
 deterministically as Σ(probability × target_return_pct). Calibrate
@@ -103,7 +114,7 @@ your numbers as if you'll be measured on the EV vs realized return.
 
 You ARE measured on it. Every pick's conviction, EV and three scenario
 probabilities are persisted, and a calibration pass grades them once the
-horizon elapses. When a "Your forecast calibration" block appears in the
+first year elapses (annualized EV vs the realized 1-year return). When a "Your forecast calibration" block appears in the
 input, it is your own scorecard, and you must act on it:
   - A negative mean EV error means your past forecasts were too
     optimistic. Lower your target_return_pct values and/or shift

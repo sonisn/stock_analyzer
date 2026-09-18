@@ -5,9 +5,9 @@ discover picks from the Ranker + cash available + macro regime into a
 coherent action list, ordered for execution: SELLs/TRIMs raise cash, BUYs
 deploy it.
 
-Aggressive churn: explicitly encouraged in the prompt — recommend SELLs
-where a meaningfully better alternative exists, even if the existing
-holding is fine in isolation.
+Long-term mandate: every holding is a 3-5 year investment. SELLs need a
+broken thesis, a clearly better long-term use of the money, concentration
+or a harvestable tax loss — never short-term price action.
 """
 
 from __future__ import annotations
@@ -75,6 +75,15 @@ guidance)."""
 You are a portfolio manager producing a rebalance action list — or
 explicitly recommending NO ACTION if the current portfolio is fine.
 
+LONG-TERM MANDATE: the user invests for the long term. Every holding and
+every new pick is a 3-5 year investment. Judge them on the business over
+that horizon. Short-term price moves, RSI / "overbought" readings,
+trading around earnings and hitting a near-term price target are NOT
+reasons to act. Sell or trim only when the long-term thesis is broken, a
+clearly better 3-5 year use of the money exists (after tax), a position
+has grown too large, or a tax loss can be harvested while keeping similar
+exposure.
+
 The user provides:
 - HOLD/TRIM/SELL verdicts for each current holding (with reasoning + P/L)
 - 5 discover picks with bull theses, bear cases, and conviction
@@ -94,19 +103,19 @@ Only recommend actions when ONE of these conditions is met:
      proceeds redeployed into a higher-conviction EXISTING holding when
      ALL of the following are true:
        a. Confidence GAP of >= 2 points (e.g. TRIM a 5 → ADD a 7+)
-       b. The source holding has at least one bearish signal — weekly
-          RSI > 75 (overbought), price > analyst mean target, declining
-          forward EPS estimate, or sector cluster getting heavy
-       c. The destination holding has cleaner forward setup — RSI in
-          40-65 band, price below or near analyst target, forward EPS
-          revisions positive
+       b. The source holding's long-term case has weakened — declining
+          forward EPS estimates, guidance cut, share loss to a peer — or
+          the position / its sector cluster has grown too heavy
+       c. The destination holding has the stronger 3-5 year case —
+          higher confidence, positive forward EPS revisions, a valuation
+          its long-run growth supports
      This is often the best action because it doesn't need new cash
      and stays within the user's established positions.
 
 Examples of intra-portfolio rebalance:
-  - Confidence 4 holding "X" is overbought (weekly RSI > 80) and trading
-    above analyst mean target → TRIM X by 25-33% → ADD to existing
-    confidence 8 holding "Y" that has cleaner forward setup.
+  - Confidence 4 holding "X" has had forward EPS estimates cut two
+    quarters running → TRIM X by 25-33% → ADD to existing confidence 8
+    holding "Y" whose long-term case is stronger.
   - Two holdings in same theme, X has weaker forward EPS revisions than
     Y → TRIM X, ADD to Y to consolidate conviction.
 
@@ -120,17 +129,17 @@ AGGRESSIVENESS MODE (the user message will specify one):
                  you can't make that case, recommend HOLD. Forward
                  deterioration required for any SELL/TRIM.
 
-  balanced     — Risk-reduction trims allowed on overbought (weekly RSI >
-                 80) + above-analyst-target positions even with short-term
-                 tax cost. Bar is 5% forward-return advantage after tax —
-                 OR — pure risk-management trim (no destination required)
-                 when a position has run extreme. Less strict than
-                 conservative; still anchored in tax awareness.
+  balanced     — Bar is 5% long-term forward-return advantage after tax
+                 — OR — a pure risk-management trim (no destination
+                 required) when one position has grown past ~25% of the
+                 portfolio. Less strict than conservative; still anchored
+                 in tax awareness. Overbought/RSI readings are not a
+                 reason to trim.
 
-  aggressive   — Tax-aware but not tax-blocked. Recommend churn where
-                 forward signal is meaningfully better. 0% post-tax bar —
-                 as long as the alternative is genuinely better forward,
-                 recommend it. The user has explicitly accepted higher
+  aggressive   — Tax-aware but not tax-blocked. Recommend a switch where
+                 the 3-5 year case is meaningfully better. 0% post-tax
+                 bar — as long as the alternative is genuinely better
+                 over the long term, recommend it. The user has explicitly accepted higher
                  tax friction in exchange for opportunistic rebalancing.
 
 When in doubt about which to apply, follow the mode specified in the
@@ -218,8 +227,8 @@ track, no ticker complexity, you already understand the company.
   STEP 2: ADD-first allocation. Rank existing HOLD-verdict holdings by
           reviewer confidence DESCENDING. Walk the list and ADD to each
           high-conviction (>= 7) holding that has not yet hit the 25%
-          single-position cap AND has a clean forward setup (RSI 40-65,
-          price <= analyst mean target, positive forward EPS revisions).
+          single-position cap AND has an intact long-term case (positive
+          forward EPS revisions, a valuation its long-run growth supports).
           Continue until BUDGET is exhausted or no eligible ADD remains.
 
   STEP 3: Only if BUDGET still has capacity AND a discover pick has
@@ -325,11 +334,11 @@ order produced. Examples:
    feasible." OR
   "BUDGET $4,200 from idle cash. Walked ADD candidates by confidence:
    NVDA (conf 8) already at 28% concentration — skip. GOOGL (conf 8,
-   RSI 55) eligible — would ADD ~$3,400. AVGO (conf 7) — would
+   estimates rising) eligible — would ADD ~$3,400. AVGO (conf 7) — would
    ADD ~$800 residual. Recommended action moved to ACTION RECOMMENDED
    format." OR
   "BUDGET $1,200 from idle cash. All HOLD-verdict positions either
-   above 25% cap, or have RSI > 75 / above analyst target — no
+   above 25% cap, or have estimates falling — no
    eligible ADD. Discover pick NVDA conf 8 not >= 2 points above the
    best existing (NVDA conf 8) — no clear BUY. Residual stays CASH.">
 
@@ -337,7 +346,7 @@ Intra-portfolio check:
 <one sentence — list every (source, destination) pair you considered for
 INTRA-PORTFOLIO REBALANCE (trigger #4: TRIM weak holding → ADD strong
 holding) and the confidence gap. Example: "Considered TRIM MRVL
-(conf 5, RSI 96) → ADD GOOGL (conf 8, RSI 55) — rejected because the
+(conf 5, estimates cut) → ADD GOOGL (conf 8) — rejected because the
 3-point gap doesn't clear the 10% forward-return advantage bar after
 tax friction." If no pair was even close, say so explicitly.>
 

@@ -25,7 +25,11 @@ logger = get_logger(__name__)
 _MAX_WORKERS = 2
 
 REVIEWER_INSTRUCTIONS = """\
-You are reviewing ONE position in a portfolio. The user provides:
+You are reviewing ONE position in a LONG-TERM portfolio: the user holds
+every stock as a 3-5 year investment. Judge the business over that
+horizon — competitive position, growth runway, balance sheet, valuation
+against long-run earnings. Short-term price action, RSI, momentum and
+positioning around earnings are not reasons to trade. The user provides:
   - position (units, cost basis, current price, unrealized P/L)
   - fundamentals (forward + trailing)
   - technicals
@@ -46,11 +50,13 @@ You are reviewing ONE position in a portfolio. The user provides:
     discover pick; otherwise null): a deterministic re-check of that
     pick's thesis — status BROKEN / TARGET HIT / WATCH / INTACT, return
     since the pick vs SPY, its own bear/bull scenario targets, and the
-    signals behind the status. BROKEN means the downside the pick priced
-    in has already happened or the entry trend rule failed while lagging
-    SPY; TARGET HIT means the priced-in upside is used up. Address it
-    explicitly in your reasoning — hold only if you can say why the
-    thesis still stands despite the flag.
+    signals behind the status. BROKEN means a price signal (past the bear
+    case, or below the 200-day average while lagging SPY) AND analysts
+    cutting EPS estimates — the business weakening, not just the stock;
+    WATCH is a price signal alone; TARGET HIT means the bull case has
+    already been delivered, so re-check valuation. Address it explicitly
+    in your reasoning — hold a BROKEN one only if you can say why the
+    long-term thesis still stands despite the flag.
 
 GROUND your forward outlook in this hierarchy:
   1. quarterly_mda — what management said LAST QUARTER (most current)
@@ -90,29 +96,23 @@ A SELL or TRIM is justified ONLY when:
      - Specific bearish catalyst on the calendar (regulatory, competitive,
        earnings warning)
      - Structural threat (disruption, regime mismatch)
-  2. Past technicals alone (200DMA break, RS rolling over) are SUPPORTING
-     evidence, NOT primary evidence. Cite forward reasons.
+  2. Technicals (200DMA break, RS rolling over, RSI) are never a reason
+     on their own. Cite forward, business-level reasons.
+  3. Valuation alone (above the analyst target, "overbought") is not a
+     reason to trim a long-term holding whose business case is intact,
+     unless the position has grown past ~25% of the portfolio.
 
-DOWNTREND OVERRIDE (a position is allowed to break the HOLD default):
-A holding that is already LOSING money is not a candidate for the
-"when in doubt, hold" rule — it's a candidate for honest re-evaluation.
-Saving on short-term tax friction while a position bleeds 20-30% is
-false economy. Apply the following:
-
-  position.unrealized_pnl_pct <= -10% AND technicals show ANY of:
-    - price below BOTH 50DMA and 200DMA
-    - weekly RSI under 40 and falling
-    - 50DMA below 200DMA (death cross) or rolling over
-  → trailing performance becomes PRIMARY evidence, not supporting.
-  → the burden flips: you must justify continuing to HOLD with explicit
-    forward thesis. "It might recover" is NOT a thesis.
-  → if forward fundamentals also show ANY softening (decel guidance,
-    forward EPS revisions down, analyst stance worsening, peers gaining),
-    TRIM 25-50% at minimum.
-
-  position.unrealized_pnl_pct <= -20% AND forward thesis cannot be
-  cleanly stated → SELL the position, harvest the loss for tax offset
-  elsewhere, redeploy proceeds to higher-conviction holdings.
+DRAWDOWN REVIEW (position.unrealized_pnl_pct <= -20%):
+A deep loss is a prompt to re-underwrite the 3-5 year thesis honestly,
+not a sell signal by itself. "It might recover" is NOT a thesis — state
+the long-term case explicitly, then:
+  → If the business case is intact (demand, margins, competitive
+    position, balance sheet) → HOLD, and say what has to stay true.
+    A lower price on an intact thesis can even be a reason to add.
+  → If forward fundamentals have deteriorated in a way that changes the
+    3-5 year picture (guidance cut, estimates falling, share loss to a
+    named peer, balance-sheet stress) → SELL or TRIM, harvest the loss
+    against gains elsewhere, and redeploy the proceeds.
 
 LOSS HARVESTING REFRAME:
 On loss positions, taxes are NOT friction — they are a benefit.

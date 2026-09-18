@@ -112,51 +112,32 @@ def build_holding_review_payloads(
     return payloads
 
 
-def apply_stop_loss_overrides(
+def flag_drawdown_reviews(
     reviews: dict[str, HoldingReview],
     positions: dict[str, dict[str, Any]],
     technicals: dict[str, dict[str, Any]],
     *,
-    hard_stop_pct: float = -20.0,
-) -> tuple[dict[str, HoldingReview], list[str]]:
-    """Deterministic backstop for the Reviewer's own soft DOWNTREND
-    OVERRIDE prompt rule (reviewer.py): a HOLD verdict on a position down
-    `hard_stop_pct` or worse from cost basis is mechanically escalated to
-    TRIM 25%, regardless of what the LLM's reasoning argued.
+    review_pct: float = -20.0,
+) -> list[str]:
+    """One line per holding down `review_pct` or worse from cost, stating
+    the verdict the Reviewer reached on it.
 
-    This is a backstop for exactly the case the soft prompt rule already
-    flags as serious (`unrealized_pnl_pct <= -20%`) but where the LLM
-    chose to stay HOLD anyway — not a redundant second trigger. TRIM/SELL
-    verdicts the LLM already chose are left untouched.
-
-    Same compute-then-force-correct shape as cc_validation.py::
-    validate_option_writes and reviewer.py::_repair_verdict_inconsistencies
-    — mutates frozen Pydantic output via model_copy.
-    """
-    updated: dict[str, HoldingReview] = {}
-    warnings: list[str] = []
+    Holdings are long-term (3-5 year) investments, so a drawdown asks for
+    the thesis to be re-underwritten (the Reviewer's DRAWDOWN REVIEW rule),
+    not for a mechanical sale — verdicts are never changed here. The lines
+    surface in the report so a HOLD on a deep loser is a visible, reasoned
+    choice rather than a silent one."""
+    out: list[str] = []
     for ticker, review in reviews.items():
-        if review.verdict != "HOLD":
-            updated[ticker] = review
-            continue
         pos = positions.get(ticker)
-        tech = technicals.get(ticker) or {}
-        current = tech.get("price")
-        avg = pos.get("avg_buy_price") if pos else None
-        pnl_pct = _compute_unrealized_pnl_pct(current, avg)
-        if pnl_pct is None or pnl_pct > hard_stop_pct:
-            updated[ticker] = review
+        current = (technicals.get(ticker) or {}).get("price")
+        pnl_pct = _compute_unrealized_pnl_pct(current, pos.get("avg_buy_price") if pos else None)
+        if pnl_pct is None or pnl_pct > review_pct:
             continue
-        note = (
-            f"MECHANICAL STOP-LOSS: down {pnl_pct:.0f}% from cost basis — auto-escalated from HOLD"
+        line = (
+            f"{ticker}: down {pnl_pct:.0f}% from cost — thesis re-checked, "
+            f"reviewer says {review.verdict} (confidence {review.confidence}/10)"
         )
-        warnings.append(f"{ticker}: {note}")
-        logger.warning("Stop-loss override %s: %s", ticker, note)
-        updated[ticker] = review.model_copy(
-            update={
-                "verdict": "TRIM",
-                "trim_pct": 25.0,
-                "reasoning": f"{review.reasoning} {note}",
-            }
-        )
-    return updated, warnings
+        out.append(line)
+        logger.info("Drawdown review %s", line)
+    return out

@@ -10,8 +10,9 @@ Extends the discover pipeline with three new steps:
 
 User-configured behavior (locked in via conversation):
   - Sizing: self-fund from SELL/TRIM proceeds AND add available cash
-  - Aggressiveness: AGGRESSIVE churn — actively recommend SELLs where a
-    materially better alternative exists, not only when thesis is broken
+  - Horizon: every holding and pick is a long-term (3-5 year) investment;
+    sells need a broken thesis, a clearly better long-term use of the
+    money, concentration, or a tax loss — never short-term price action
 
 Output: email with HTML body (charts for new picks inline) + PDF attachment.
 Run history shares the discover.db SQLite file.
@@ -58,8 +59,8 @@ from ..discover.rebalance_csp import (
     run_csp_data_pipeline,
 )
 from ..discover.rebalance_holdings import (
-    apply_stop_loss_overrides,
     build_holding_review_payloads,
+    flag_drawdown_reviews,
 )
 from ..discover.rebalance_persist import (
     deliver_rebalance_email,
@@ -407,13 +408,13 @@ class RebalancePipeline(DiscoverPipeline):
         reviews, _ = repair_catalysts(
             review_batch(reviewer, payloads), self.state.get("recent_news") or {}
         )
-        reviews, stop_loss_warnings = apply_stop_loss_overrides(
+        drawdown_notes = flag_drawdown_reviews(
             reviews,
             self.state["holdings_positions"],
             self.state["holdings_technicals"],
         )
-        if stop_loss_warnings:
-            self.state["stop_loss_warnings"] = stop_loss_warnings
+        if drawdown_notes:
+            self.state["stop_loss_warnings"] = drawdown_notes
         self.state["holdings_reviews"] = reviews
         return StepOutput(content=f"Reviewed {len(self.state['holdings_reviews'])} holdings")
 

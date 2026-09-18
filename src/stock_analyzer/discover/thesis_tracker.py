@@ -15,6 +15,13 @@ when it made the call, with no LLM involved:
     whose reaction went the wrong way, and events coming up soon;
   - EPS estimate revisions, when this run already fetched them.
 
+Picks are long-term (3-5 year) holds, so price alone never marks a thesis
+BROKEN: a price signal (past the bear case, or below the 200-day average
+while lagging SPY) is WATCH, and becomes BROKEN only when analysts are
+also cutting EPS estimates — the business, not just the stock, weakening.
+Annualized scenario targets (3-5 year picks) are compounded over the time
+elapsed, at least one year, before comparing.
+
 A pick is "open" for `OPEN_WINDOW_DAYS` after its latest run; re-picking a
 name replaces its thesis (new entry price, new scenarios).
 """
@@ -33,7 +40,7 @@ from .track_record import _close_on_or_after, _close_on_or_before, _fetch_histor
 
 logger = get_logger(__name__)
 
-OPEN_WINDOW_DAYS = 180
+OPEN_WINDOW_DAYS = 365
 LAG_THRESHOLD_PTS = 10.0
 UPCOMING_DAYS = 14
 _TREND_DAYS = 200
@@ -51,6 +58,9 @@ class OpenPick:
     bear_target_pct: float | None
     bull_target_pct: float | None
     catalysts: tuple[dict[str, Any], ...] = ()
+    # True when the targets are %/yr over a multi-year horizon (3-5 year
+    # picks); False for the older 6-12 month total-return targets.
+    annualized: bool = False
 
 
 @dataclass(frozen=True)
@@ -99,7 +109,7 @@ def load_open_picks(
     with get_session(db_path) as session:
         picks = session.exec(
             text(
-                "SELECT p.run_id, p.rank, p.ticker, p.entry_price, r.run_at "
+                "SELECT p.run_id, p.rank, p.ticker, p.entry_price, r.run_at, p.time_horizon "
                 "FROM picks p JOIN runs r ON r.id = p.run_id "
                 "WHERE r.run_at >= :earliest ORDER BY p.run_id ASC"
             ),
@@ -137,7 +147,7 @@ def load_open_picks(
         }
 
     latest: dict[str, OpenPick] = {}
-    for run_id, rank, ticker, entry_price, run_at in picks:
+    for run_id, rank, ticker, entry_price, run_at, horizon in picks:
         t = targets.get((run_id, rank), {})
         latest[ticker] = OpenPick(
             run_id=run_id,
@@ -146,6 +156,7 @@ def load_open_picks(
             entry_price=entry_price,
             bear_target_pct=t.get("bear"),
             bull_target_pct=t.get("bull"),
+            annualized="year" in (horizon or "").lower(),
             catalysts=tuple(
                 sorted(
                     events.get(ticker, {}).values(),
@@ -197,6 +208,16 @@ def _catalyst_signals(
     return out
 
 
+def _target_to_date(target_pct: float, pick: OpenPick, today: date) -> float:
+    """A scenario target as a cumulative return comparable to the return
+    since the pick. Annualized targets compound over the years elapsed —
+    at least one, so a rate isn't read as nearly hit within weeks."""
+    if not pick.annualized:
+        return target_pct
+    years = max((today - pick.pick_date).days / 365.0, 1.0)
+    return ((1 + target_pct / 100) ** years - 1) * 100
+
+
 def check_theses(
     picks: list[OpenPick],
     *,
@@ -244,36 +265,40 @@ def check_theses(
         excess = check.excess_pct
         lagging = excess is not None and excess <= -lag_threshold_pts
 
-        if pick.bear_target_pct is not None and ret <= pick.bear_target_pct:
-            check.signals.append(
-                ThesisSignal(
-                    "broken",
-                    f"{ret:+.1f}% since the pick, at or past its own bear-case "
-                    f"target of {pick.bear_target_pct:+.0f}%",
-                )
+        price_concerns: list[str] = []
+        per = "/yr" if pick.annualized else ""
+        bear = (
+            None
+            if pick.bear_target_pct is None
+            else _target_to_date(pick.bear_target_pct, pick, today)
+        )
+        bull = (
+            None
+            if pick.bull_target_pct is None
+            else _target_to_date(pick.bull_target_pct, pick, today)
+        )
+        if bear is not None and ret <= bear:
+            price_concerns.append(
+                f"{ret:+.1f}% since the pick, at or past its own bear case "
+                f"({pick.bear_target_pct:+.0f}%{per})"
             )
-        elif pick.bull_target_pct is not None and ret >= pick.bull_target_pct:
+        elif bull is not None and ret >= bull:
             check.signals.append(
                 ThesisSignal(
                     "target",
-                    f"{ret:+.1f}% since the pick, past its bull-case target of "
-                    f"{pick.bull_target_pct:+.0f}%: re-underwrite or take profits",
+                    f"{ret:+.1f}% since the pick, past its bull case "
+                    f"({pick.bull_target_pct:+.0f}%{per}): re-check the valuation; trim only "
+                    f"if it has grown too large a share of the portfolio",
                 )
             )
 
         trailing = closes.tail(_TREND_DAYS)
         sma = float(trailing.mean()) if len(trailing) >= _TREND_DAYS else None
-        if sma is not None and last[0] < sma:
-            text = (
-                f"Closed {(1 - last[0] / sma) * 100:.1f}% below its 200-day average: "
-                f"the screen's entry trend rule no longer holds"
+        if sma is not None and last[0] < sma and lagging:
+            price_concerns.append(
+                f"Closed {(1 - last[0] / sma) * 100:.1f}% below its 200-day average "
+                f"and {excess:+.1f} pts vs SPY"
             )
-            if lagging:
-                check.signals.append(
-                    ThesisSignal("broken", f"{text}, and {excess:+.1f} pts vs SPY")
-                )
-            else:
-                check.signals.append(ThesisSignal("watch", text))
         elif lagging:
             check.signals.append(
                 ThesisSignal("watch", f"Lagging SPY by {-excess:.1f} pts since the pick")
@@ -283,10 +308,21 @@ def check_theses(
             check.signals.extend(_catalyst_signals(pick, closes, spy_closes, today))
 
         rev = eps_revisions.get(pick.ticker) or {}
-        if rev.get("direction_30d") == "lowering":
+        cutting = rev.get("direction_30d") == "lowering"
+        if cutting:
             net = rev.get("net_revisions_30d")
             detail = f" (net {net:+d} revisions in 30d)" if isinstance(net, int) else ""
-            check.signals.append(ThesisSignal("watch", f"Analysts cutting EPS estimates{detail}"))
+            cut_text = f"analysts cutting EPS estimates{detail}"
+        # Price alone is WATCH for a long-term hold; a price signal plus
+        # falling estimates means the business itself is weakening.
+        if price_concerns and cutting:
+            check.signals.insert(
+                0, ThesisSignal("broken", f"{'; '.join(price_concerns)}, and {cut_text}")
+            )
+        else:
+            check.signals[:0] = [ThesisSignal("watch", c) for c in price_concerns]
+            if cutting:
+                check.signals.append(ThesisSignal("watch", cut_text[0].upper() + cut_text[1:]))
         results.append(check)
     return sorted(results, key=lambda c: (_STATUS_ORDER[c.status], c.ticker))
 

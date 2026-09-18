@@ -51,3 +51,37 @@ def test_missing_volatility_data_skips_the_sigma_check_but_not_unit_check():
 def test_missing_price_skips_the_unit_check():
     pick = _pick([Scenario(label="base", probability=0.4, target_return_pct=250.0, rationale="x")])
     assert validate_pick_scenarios(pick, price=None, hv=None) == []
+
+
+def test_annualized_3_to_5_year_targets():
+    # 3-5 years (4 yr midpoint), 40% vol -> a CAGR's sigma is ~20%/yr, so
+    # +30%/yr is fine and +90%/yr is >4 sigma; >100%/yr is a unit error.
+    hv = RealizedVolatility(ticker="NVDA", hv_annualized=0.40, sample_size=252)
+
+    def check(target: float) -> list[str]:
+        scen = Scenario(label="bull", probability=0.4, target_return_pct=target, rationale="x")
+        return validate_pick_scenarios(_pick([scen], "3-5 years"), price=100.0, hv=hv)
+
+    assert check(30.0) == []
+    assert any("+90%/yr over 3-5 years" in w for w in check(90.0))
+    assert any("implausibly large" in w for w in check(120.0))
+
+
+def test_calibration_grades_annualized_forecasts_at_one_year():
+    from stock_analyzer.discover.calibration import _Forecast
+
+    def horizon(time_horizon: str | None) -> int:
+        return _Forecast(
+            ticker="X",
+            pick_date="2026-01-01",
+            age_days=0,
+            conviction=7,
+            ev_pct=10.0,
+            entry_price=1.0,
+            scenarios={},
+            time_horizon=time_horizon,
+        ).ev_horizon_days
+
+    assert horizon("3-5 years") == 365
+    assert horizon("6-12 months") == 270
+    assert horizon(None) == 270

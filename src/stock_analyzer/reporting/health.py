@@ -5,8 +5,9 @@ applied to today's holdings, so the daily email flags what needs attention
 between rebalance runs:
 
   - snapshot: market value and unrealized P/L;
-  - stop-loss: positions at or past the rebalance pipeline's -20% hard
-    stop (discover/rebalance_holdings.py), and ones within 5 points of it;
+  - drawdown review: positions down 20%+ from cost. Holdings are long-term
+    (3-5 year) investments, so this asks for a thesis re-check, not a sale
+    (same threshold as discover/rebalance_holdings.flag_drawdown_reviews);
   - thesis check: holdings that were recent discover picks, re-checked
     against their own targets and trend (discover/thesis_tracker.py);
   - sector weight: any sector above the Sizer's book cap
@@ -31,15 +32,14 @@ from ..logging import get_logger
 
 logger = get_logger(__name__)
 
-STOP_LOSS_PCT = -20.0  # discover/rebalance_holdings.apply_stop_loss_overrides
-NEAR_STOP_PTS = 5.0
+DRAWDOWN_REVIEW_PCT = -20.0  # discover/rebalance_holdings.flag_drawdown_reviews
 EARNINGS_DAYS = 7
 
 
 @dataclass
 class PortfolioHealth:
     snapshot: dict[str, float] = field(default_factory=dict)
-    stop_loss: list[dict[str, Any]] = field(default_factory=list)
+    drawdowns: list[dict[str, Any]] = field(default_factory=list)
     thesis: list[dict[str, Any]] = field(default_factory=list)
     sectors: list[dict[str, Any]] = field(default_factory=list)
     harvest: list[dict[str, Any]] = field(default_factory=list)
@@ -93,17 +93,15 @@ def build_portfolio_health(
             "unrealized_pct": (value / cost - 1) * 100 if cost else 0.0,
         }
 
-    def stops() -> None:
+    def drawdowns() -> None:
         for t in tickers:
             p = positions[t]
             if not p["cost"] or not p["value"]:
                 continue
             pnl = (p["value"] / p["cost"] - 1) * 100
-            if pnl <= STOP_LOSS_PCT + NEAR_STOP_PTS:
-                health.stop_loss.append(
-                    {"ticker": t, "pnl_pct": pnl, "past_stop": pnl <= STOP_LOSS_PCT}
-                )
-        health.stop_loss.sort(key=lambda r: r["pnl_pct"])
+            if pnl <= DRAWDOWN_REVIEW_PCT:
+                health.drawdowns.append({"ticker": t, "pnl_pct": pnl, "value": p["value"]})
+        health.drawdowns.sort(key=lambda r: r["pnl_pct"])
 
     def sectors() -> None:
         if sector_of is None:
@@ -134,7 +132,7 @@ def build_portfolio_health(
             health.earnings = sorted(earnings(tickers).values(), key=lambda e: e["days_until"])
 
     attempt("snapshot", snapshot)
-    attempt("stop-loss", stops)
+    attempt("drawdown review", drawdowns)
     attempt("sector weights", sectors)
     attempt("thesis check", thesis)
     attempt("tax-loss harvesting", harvesting)
@@ -148,8 +146,7 @@ _BADGE = {
     "BROKEN": ("#9c1010", "#fde4e4"),
     "TARGET HIT": ("#0e6432", "#e6f4ea"),
     "WATCH": ("#8a4a00", "#fff4e0"),
-    "PAST STOP": ("#9c1010", "#fde4e4"),
-    "NEAR STOP": ("#8a4a00", "#fff4e0"),
+    "DRAWDOWN": ("#8a4a00", "#fff4e0"),
     "OVER CAP": ("#8a4a00", "#fff4e0"),
 }
 
@@ -184,19 +181,15 @@ def render_health_html(h: PortfolioHealth) -> str:
         )
 
     alerts = 0
-    if h.stop_loss:
-        alerts += len(h.stop_loss)
-        parts.append("<h3>Stop-loss watch (−20% from cost)</h3>")
+    if h.drawdowns:
+        alerts += len(h.drawdowns)
+        parts.append("<h3>Down 20%+ from cost: re-check the long-term thesis</h3>")
         parts.append(
             _table(
                 ["", "Ticker", "From cost"],
                 [
-                    [
-                        _badge("PAST STOP" if r["past_stop"] else "NEAR STOP"),
-                        html.escape(r["ticker"]),
-                        f"{r['pnl_pct']:+.1f}%",
-                    ]
-                    for r in h.stop_loss
+                    [_badge("DRAWDOWN"), html.escape(r["ticker"]), f"{r['pnl_pct']:+.1f}%"]
+                    for r in h.drawdowns
                 ],
             )
         )
@@ -269,7 +262,7 @@ def render_health_html(h: PortfolioHealth) -> str:
             )
         )
     if not alerts:
-        parts.append("<p>No stop-loss, thesis, sector or tax-loss alerts today.</p>")
+        parts.append("<p>No drawdown, thesis, sector or tax-loss alerts today.</p>")
     top = [r for r in h.sectors if r["sector"] != "Unknown"][:3]
     if top:
         parts.append(
@@ -294,50 +287,52 @@ MAX_DECISIONS = 6
 
 def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
     """Everything above, reduced to one line per decision, most urgent first
-    (priority 1 = act today). The email leads with the top MAX_DECISIONS."""
+    (priority 1 = act today). The email leads with the top MAX_DECISIONS.
+
+    Holdings are long-term (3-5 year) investments: only a broken business
+    thesis is a reason to sell. Price drops ask for a thesis re-check, and
+    upcoming earnings or a pick past its bull case are information, not
+    something to trade on."""
     items: list[dict[str, Any]] = []
 
     def add(priority: int, ticker: str | None, label: str, text: str) -> None:
         items.append({"priority": priority, "ticker": ticker, "label": label, "text": text})
 
-    for r in h.stop_loss:
-        if r["past_stop"]:
-            add(
-                1,
-                r["ticker"],
-                "PAST STOP",
-                f"Review {r['ticker']}: {r['pnl_pct']:+.1f}% from cost, past the −20% stop "
-                f"(the rebalance rule would trim 25%).",
-            )
-        else:
-            add(
-                3,
-                r["ticker"],
-                "NEAR STOP",
-                f"Watch {r['ticker']}: {r['pnl_pct']:+.1f}% from cost, "
-                f"{r['pnl_pct'] - STOP_LOSS_PCT:.1f} pts above the −20% stop.",
-            )
+    for r in h.drawdowns:
+        add(
+            2,
+            r["ticker"],
+            "DRAWDOWN",
+            f"Re-check the long-term thesis for {r['ticker']}: {r['pnl_pct']:+.1f}% from cost. "
+            f"A lower price alone isn't a reason to sell — sell only if the business case "
+            f"has broken.",
+        )
     for c in h.thesis:
         reason = next((s["text"] for s in c["signals"] if s["severity"] != "info"), "")
         if c["status"] == "BROKEN":
-            add(1, c["ticker"], "BROKEN", f"Review {c['ticker']}: thesis broken — {reason}.")
+            add(
+                1,
+                c["ticker"],
+                "BROKEN",
+                f"Consider selling {c['ticker']}: long-term thesis broken — {reason}.",
+            )
         elif c["status"] == "TARGET HIT":
             add(
-                2,
+                4,
                 c["ticker"],
                 "TARGET HIT",
-                f"Consider taking profit on {c['ticker']}: {c['return_pct']:+.1f}% since the pick, "
-                f"past its bull-case target.",
+                f"{c['ticker']} is {c['return_pct']:+.1f}% since the pick, past its bull case — "
+                f"re-check the valuation; trim only if it has grown too large a share.",
             )
         else:
             add(4, c["ticker"], "WATCH", f"Keep an eye on {c['ticker']}: {reason}.")
     for e in h.earnings:
         add(
-            2 if e["days_until"] <= 2 else 4,
+            4,
             e["ticker"],
             "EARNINGS",
-            f"{e['ticker']} reports {e['earnings_date']} (in {e['days_until']}d) — decide "
-            f"before the print whether to hold through it.",
+            f"{e['ticker']} reports {e['earnings_date']} (in {e['days_until']}d) — nothing to "
+            f"do before the print; check the results against the long-term thesis.",
         )
     for c in h.harvest:
         wash = (
@@ -395,8 +390,9 @@ def render_decisions_html(h: PortfolioHealth) -> str:
     return f'<section class="decide"><h2>Decide today</h2><ol style="padding-left:20px">{lis}</ol>{more}</section>'
 
 
-# Priority 4 items (thesis on watch, sector already over the cap) are
-# standing guidance rather than something to act on today.
+# Priority 4 items (thesis on watch, past the bull case, earnings coming,
+# sector already over the cap) are information rather than something to
+# act on today.
 ACTION_PRIORITY = 3
 
 

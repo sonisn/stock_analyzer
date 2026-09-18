@@ -29,7 +29,7 @@ For each pick, output:
 ---
 TICKER: <symbol>
 
-Bear case (what must go wrong for a 30%+ decline in 12 months):
+Bear case (what must go wrong for a lasting 30%+ loss over the 3-5 year hold):
 <3-4 sentences naming concrete failure modes — earnings miss, margin
 compression, competitor wins, valuation re-rating, regulatory action —
 drawn from the data already on this ticker. Cite specific numbers

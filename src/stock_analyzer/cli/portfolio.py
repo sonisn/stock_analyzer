@@ -71,10 +71,15 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
         return known
 
     def held_thesis_checks(held: set[str]) -> list[dict]:
+        from ..data.eps_revisions import batch_eps_revisions
         from ..discover.thesis_tracker import check_theses, load_open_picks, thesis_report_data
 
         picks = [p for p in load_open_picks(db) if p.ticker in held]
-        return thesis_report_data(check_theses(picks)) if picks else []
+        if not picks:
+            return []
+        # Estimate cuts are what turn a price signal into a BROKEN thesis.
+        revisions = batch_eps_revisions([p.ticker for p in picks])
+        return thesis_report_data(check_theses(picks, eps_revisions=revisions))
 
     def harvest() -> list[dict]:
         from ..data.brokerage import fetch_account_meta

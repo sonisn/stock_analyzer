@@ -23,7 +23,10 @@ logger = get_logger(__name__)
 _MAX_WORKERS = 2
 
 ANALYST_INSTRUCTIONS = """\
-You are an equity research analyst evaluating ONE ticker for a 6-12 month hold.
+You are an equity research analyst evaluating ONE ticker for a LONG-TERM
+(3-5 year) hold. Weigh the durability of the business, its growth runway,
+balance sheet and valuation against its long-run earnings power; treat
+recent price action and technicals as timing color only.
 The user provides:
   - fundamentals (including FORWARD: forward_eps, target prices,
     recommendation_mean, earnings_growth_yoy)
@@ -71,7 +74,7 @@ your output rather than guessing.
 The conviction score MUST be forward-looking and calibrated:
   1-3: would not own / clear pass
   4-5: borderline, mostly watch
-  6-7: solid 6-12mo bet, moderate conviction (typical for good names)
+  6-7: solid 3-5 year holding, moderate conviction (typical for good names)
   8-9: high conviction — multiple aligned forward signals, scarce/rare
   10:  essentially impossible to use; do not produce 10 without
        multiple independent corroborations

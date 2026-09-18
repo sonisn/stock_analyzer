@@ -75,8 +75,9 @@ logger = get_logger(__name__)
 # every horizon it is old enough to have finished, and the resulting rows
 # are only ever aggregated with other rows at the SAME horizon. 90 days is
 # the evaluation window the reports headline; 30 gives an earlier read
-# while a fresh database fills up.
-_HORIZONS: tuple[int, ...] = (30, 90)
+# while a fresh database fills up; 365 is the first long-term read for
+# 3-5 year picks (the same year calibration grades annualized EV on).
+_HORIZONS: tuple[int, ...] = (30, 90, 365)
 # The horizon the top-level TrackRecord fields describe when it has data.
 _PRIMARY_HORIZON = 90
 # Anything younger than the shortest horizon cannot be scored yet; it is

@@ -152,9 +152,9 @@ class Scenario(BaseModel):
     target_return_pct: float = Field(
         ...,
         description=(
-            "Total return (price + dividends) over the 6-12 month horizon "
-            "IF this scenario plays out. Sign matters: bear can be "
-            "negative; base typically modest positive; bull large positive."
+            "ANNUALIZED total return (% per year, price + dividends) over "
+            "the 3-5 year horizon IF this scenario plays out. Sign matters: "
+            "bear can be negative; base modest positive; bull large positive."
         ),
     )
     rationale: str = Field(
@@ -182,7 +182,7 @@ class RankerPick(BaseModel):
         ),
     )
     conviction: int = Field(..., ge=1, le=10)
-    time_horizon: str = Field(default="6-12 months")
+    time_horizon: str = Field(default="3-5 years")
     sector_concentration_check: str = Field(
         ...,
         description=("Does this overlap with current holdings? Flag concentration risk."),

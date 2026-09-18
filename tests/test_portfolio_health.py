@@ -69,7 +69,8 @@ def _health(**overrides):
 def test_snapshot_and_alerts():
     h = _health()
     assert h.snapshot["positions"] == 3 and h.snapshot["value"] == 750 + 820 + 2600
-    assert [(r["ticker"], r["past_stop"]) for r in h.stop_loss] == [("DOWN", True), ("NEAR", False)]
+    # Only -20% or worse asks for a thesis re-check; NEAR (-18%) is not flagged.
+    assert [(r["ticker"], round(r["pnl_pct"])) for r in h.drawdowns] == [("DOWN", -25)]
     tech = next(r for r in h.sectors if r["sector"] == "Technology")
     assert round(tech["pct"], 1) == 37.6 and tech["over"]
     assert h.unavailable == []
@@ -78,15 +79,16 @@ def test_snapshot_and_alerts():
 def test_decisions_are_ranked_by_urgency():
     items = decision_items(_health())
     assert [i["label"] for i in items] == [
-        "PAST STOP",
-        "TARGET HIT",
-        "EARNINGS",
-        "NEAR STOP",
+        "DRAWDOWN",
         "TAX LOSS",
-        "OVER CAP",  # standing guidance ranks last
+        "TARGET HIT",  # long-term: information, not a trade
+        "EARNINGS",
+        "OVER CAP",
         "OVER CAP",
     ]
-    assert items[0]["text"].startswith("Review DOWN: -25.0% from cost")
+    assert items[0]["text"].startswith("Re-check the long-term thesis for DOWN: -25.0% from cost")
+    assert "isn't a reason to sell" in items[0]["text"]
+    assert "nothing to do before the print" in items[3]["text"]
     assert flagged_tickers(_health()) == ["DOWN", "OK", "NEAR"]
 
 
@@ -109,7 +111,7 @@ def test_quiet_day_says_so():
 
 def test_email_leads_with_decisions_and_orders_flagged_holdings_first():
     subject, body = build_email(REPORT, _health(), {})
-    assert subject.endswith(": 5 to decide")  # the two sector notes don't count
+    assert subject.endswith(": 2 to decide")  # information items don't count
     assert body.index("Decide today") < body.index("Portfolio health") < body.index("Sentiment")
     assert body.index("<h2>DOWN") < body.index("<h2>OK") < body.index("<h2>NEAR")
 

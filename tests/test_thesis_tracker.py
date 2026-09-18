@@ -57,10 +57,41 @@ def _check(pick: OpenPick, frame: pd.DataFrame, spy: pd.DataFrame | None = None,
     return check_theses([pick], today=TODAY, fetch=lambda t, s, e: frames.get(t), **kw)
 
 
-def test_bear_target_breach_is_broken():
+CUTTING = {"AAA": {"direction_30d": "lowering", "net_revisions_30d": -3}}
+
+
+def test_bear_target_breach_alone_is_watch():
+    # Long-term hold: a price drop alone is a reason to look, not to sell.
     [c] = _check(_pick("AAA"), _path(100, 100, 75))
+    assert c.status == "WATCH"
+    assert "past its own bear case (-20%)" in c.signals[0].text
+
+
+def test_bear_target_breach_with_estimate_cuts_is_broken():
+    [c] = _check(_pick("AAA"), _path(100, 100, 75), eps_revisions=CUTTING)
     assert c.status == "BROKEN"
-    assert "bear-case target of -20%" in c.signals[0].text
+    assert "bear case (-20%)" in c.signals[0].text
+    assert "analysts cutting EPS estimates (net -3" in c.signals[0].text
+
+
+def test_annualized_targets_compound_over_at_least_a_year():
+    # -12%/yr bear, two months in: judged against a full year (-12%), so
+    # a -10% dip is not yet past it; -15% is.
+    pick = OpenPick(
+        run_id=1,
+        ticker="AAA",
+        pick_date=PICKED,
+        entry_price=100.0,
+        bear_target_pct=-12.0,
+        bull_target_pct=25.0,
+        annualized=True,
+    )
+    [c] = _check(pick, _path(80, 100, 90))
+    assert not any("bear case" in s.text for s in c.signals)
+    [c] = _check(pick, _path(80, 100, 85))
+    assert "past its own bear case (-12%/yr)" in c.signals[0].text
+    [c] = _check(pick, _path(80, 100, 126))
+    assert c.status == "TARGET HIT"
 
 
 def test_bull_target_reached():
@@ -68,11 +99,13 @@ def test_bull_target_reached():
     assert c.status == "TARGET HIT"
 
 
-def test_below_200dma_while_lagging_spy_is_broken():
+def test_below_200dma_while_lagging_spy():
     # Long history at 120 keeps the 200-day mean above today's 88.
     [c] = _check(_pick("AAA", bear=-30), _path(120, 100, 88))
-    assert c.status == "BROKEN"
+    assert c.status == "WATCH"
     assert "200-day average" in c.signals[0].text
+    [c] = _check(_pick("AAA", bear=-30), _path(120, 100, 88), eps_revisions=CUTTING)
+    assert c.status == "BROKEN"
 
 
 def test_lagging_spy_alone_is_watch():
@@ -148,7 +181,7 @@ def test_load_open_picks_keeps_latest_thesis_per_ticker(tmp_path):
                 [{"event": "Earnings", "expected_date": catalyst_date, "direction": "positive"}],
             )
 
-    seed("2025-12-01T10:00:00", 50.0, -10, "2026-01-15")  # outside the window
+    seed("2025-08-01T10:00:00", 50.0, -10, "2025-09-15")  # outside the window
     seed("2026-07-01T10:00:00", 100.0, -20, "2026-08-03")
     seed("2026-08-01T10:00:00", 110.0, -25, "2026-08-03")  # same event re-named
 
@@ -169,7 +202,10 @@ def test_section_lists_flagged_picks_and_names_intact_ones():
         "OK": _path(80, 100, 110),
     }
     checks = check_theses(
-        [_pick("OK"), _pick("BAD")], today=TODAY, fetch=lambda t, s, e: frames.get(t)
+        [_pick("OK"), _pick("BAD")],
+        today=TODAY,
+        eps_revisions={"BAD": CUTTING["AAA"]},
+        fetch=lambda t, s, e: frames.get(t),
     )
     sections = []
     append_thesis_check_section(sections, thesis_report_data(checks))

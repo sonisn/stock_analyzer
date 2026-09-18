@@ -21,9 +21,11 @@ the forecast was never written down:
      pick; this is the check on whether 10% was the right floor.
 
 Two horizons are in play and they are deliberately kept apart. EV targets
-are quoted over the ranker's own 6-12 month horizon, so EV error is only
-scored once `_EV_HORIZON_DAYS` have elapsed — comparing a 9-month forecast
-to a 90-day outcome would manufacture a bias that isn't there. Conviction
+are now quoted as ANNUALIZED returns over a 3-5 year horizon, so EV error
+is scored once a pick is a year old, against its realized 1-year return
+(older picks quoted a total return over 6-12 months and are scored at
+`_EV_HORIZON_DAYS`) — comparing either to a 90-day outcome would
+manufacture a bias that isn't there. Conviction
 ordering, by contrast, should be visible at any horizon, so it is measured
 on the same 90-day window the track record uses and labeled as such.
 
@@ -51,9 +53,11 @@ from .track_record import _close_on_or_after, _close_on_or_before, _fetch_histor
 
 logger = get_logger(__name__)
 
-# The midpoint of the ranker's stated "6-12 months" horizon. EV error is
-# only computed for picks at least this old.
+# EV error is only computed for picks at least this old: the midpoint of
+# the old "6-12 months" horizon, or one year for annualized 3-5 year
+# forecasts (whose EV is a per-year rate).
 _EV_HORIZON_DAYS = 270
+_EV_HORIZON_DAYS_ANNUALIZED = 365
 # Conviction ordering is measured on the same window the track record
 # headlines, so the two numbers in the prompt are comparable.
 _CONVICTION_HORIZON_DAYS = 90
@@ -79,6 +83,12 @@ class _Forecast:
     ev_pct: float | None
     entry_price: float | None
     scenarios: dict[str, tuple[float, float]]  # label -> (probability, target)
+    time_horizon: str | None = None
+
+    @property
+    def ev_horizon_days(self) -> int:
+        annual = "year" in (self.time_horizon or "").lower()
+        return _EV_HORIZON_DAYS_ANNUALIZED if annual else _EV_HORIZON_DAYS
 
 
 # --- DB read ---------------------------------------------------------------
@@ -101,7 +111,7 @@ def _load_forecasts(db_path: str, lookback_days: int) -> list[_Forecast]:
                 session.exec(
                     text(
                         "SELECT r.run_at, p.run_id, p.rank, p.ticker, p.conviction, "
-                        "       p.ev_pct, p.entry_price "
+                        "       p.ev_pct, p.entry_price, p.time_horizon "
                         "FROM picks p JOIN runs r ON r.id = p.run_id "
                         "WHERE r.run_at >= :cutoff "
                         "ORDER BY r.run_at ASC"
@@ -128,7 +138,7 @@ def _load_forecasts(db_path: str, lookback_days: int) -> list[_Forecast]:
     today = date.today()
     seen: set[str] = set()
     out: list[_Forecast] = []
-    for run_at, run_id, rank, ticker, conviction, ev_pct, entry_price in rows:
+    for run_at, run_id, rank, ticker, conviction, ev_pct, entry_price, horizon in rows:
         if ticker in seen:
             continue
         seen.add(ticker)
@@ -145,6 +155,7 @@ def _load_forecasts(db_path: str, lookback_days: int) -> list[_Forecast]:
                 ev_pct=float(ev_pct) if ev_pct is not None else None,
                 entry_price=float(entry_price) if entry_price is not None else None,
                 scenarios=dict(by_pick.get((run_id, rank), {})),
+                time_horizon=horizon,
             )
         )
     return out
@@ -224,12 +235,12 @@ def measure_calibration(db_path: str, *, lookback_days: int = 540) -> Calibratio
         return CalibrationRecord()
 
     ev_candidates = [
-        f for f in forecasts if f.ev_pct is not None and f.age_days >= _EV_HORIZON_DAYS
+        f for f in forecasts if f.ev_pct is not None and f.age_days >= f.ev_horizon_days
     ]
     conviction_candidates = [
         f for f in forecasts if f.conviction is not None and f.age_days >= _CONVICTION_HORIZON_DAYS
     ]
-    n_pending = sum(1 for f in forecasts if f.ev_pct is not None and f.age_days < _EV_HORIZON_DAYS)
+    n_pending = sum(1 for f in forecasts if f.ev_pct is not None and f.age_days < f.ev_horizon_days)
     n_no_forecast = sum(1 for f in forecasts if f.ev_pct is None)
 
     # --- EV error + scenario reliability (EV horizon) ---
@@ -239,7 +250,7 @@ def measure_calibration(db_path: str, *, lookback_days: int = 540) -> Calibratio
     # Results are zipped positionally: _Forecast carries a dict field, so it
     # is not hashable and cannot key a lookup.
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
-        realized = list(ex.map(lambda f: _realized_return_pct(f, _EV_HORIZON_DAYS), ev_candidates))
+        realized = list(ex.map(lambda f: _realized_return_pct(f, f.ev_horizon_days), ev_candidates))
     for forecast, got in zip(ev_candidates, realized, strict=True):
         if got is None or forecast.ev_pct is None:
             continue
@@ -313,7 +324,9 @@ def measure_calibration(db_path: str, *, lookback_days: int = 540) -> Calibratio
         )
 
     record = CalibrationRecord(
-        ev_horizon_days=_EV_HORIZON_DAYS,
+        ev_horizon_days=max(
+            (f.ev_horizon_days for f in ev_candidates), default=_EV_HORIZON_DAYS_ANNUALIZED
+        ),
         conviction_horizon_days=_CONVICTION_HORIZON_DAYS,
         n_scored=len(ev_errors),
         n_pending=n_pending,
