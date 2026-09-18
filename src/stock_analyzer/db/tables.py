@@ -176,6 +176,57 @@ class RunOutput(SQLModel, table=True):
     dashboard_data: str | None = None  # JSON
 
 
+class CandidateSnapshot(SQLModel, table=True):
+    """Point-in-time fundamentals a run saw for one candidate.
+
+    Prices can be refetched for any past date, but yfinance fundamentals are
+    a live snapshot with no history — once a run is over, what the screen
+    saw is gone. Storing a compact numeric copy lets a future model train
+    on fundamentals without leaking today's values into past rows. Only
+    names whose fundamentals were actually fetched get a row.
+    """
+
+    __tablename__ = "candidate_snapshots"
+
+    run_id: int = Field(foreign_key="runs.id", primary_key=True, ondelete="CASCADE")
+    ticker: str = Field(primary_key=True)
+    data: str  # JSON {field: number}
+
+
+class CandidateOutcome(SQLModel, table=True):
+    """Realized forward excess return of a screened candidate: entry at the
+    first close after the run, exit `horizon_days` trading days later."""
+
+    __tablename__ = "candidate_outcomes"
+
+    run_id: int = Field(foreign_key="runs.id", primary_key=True, ondelete="CASCADE")
+    ticker: str = Field(primary_key=True)
+    horizon_days: int = Field(primary_key=True)
+    entry_date: str
+    exit_date: str
+    return_pct: float
+    spy_return_pct: float
+    excess_pct: float
+
+
+class ModelVersion(SQLModel, table=True):
+    """One trained forward-return model and its walk-forward validation.
+    Only rows with accepted=1 are ever used by the screen."""
+
+    __tablename__ = "model_versions"
+
+    id: int | None = Field(default=None, primary_key=True)
+    created_at: str
+    horizon_days: int
+    population: str
+    features: str  # JSON list
+    coefficients: str  # JSON {feature: weight}
+    metrics: str  # JSON
+    train_start: str
+    train_end: str
+    accepted: int = 0
+
+
 __all__ = [
     "Run",
     "Candidate",
@@ -185,4 +236,7 @@ __all__ = [
     "PickCatalyst",
     "HoldingReviewRow",
     "RunOutput",
+    "CandidateSnapshot",
+    "CandidateOutcome",
+    "ModelVersion",
 ]

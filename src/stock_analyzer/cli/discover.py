@@ -54,6 +54,7 @@ from ..data.ticker_news import batch_ticker_news
 from ..data.transcripts import batch_transcript_snippets
 from ..db.repository import (
     insert_candidate,
+    insert_candidate_snapshot,
     insert_pick,
     insert_pick_catalysts,
     insert_run,
@@ -106,6 +107,7 @@ from ..discover.track_record import (
 )
 from ..discover.universe import build_universe
 from ..logging import current_log_file, get_logger
+from ..model.ranker_model import load_latest_model, score_percentiles, screen_points
 from ..preflight import PreflightError, preflight
 from ..reporting.smtp import SmtpServer
 from ..usage import TRACKER, log_usage_summary
@@ -840,6 +842,7 @@ class DiscoverPipeline:
             cand["sector_bias"] = sector_bias(cand["sector"], self.state.get("sector_rotation", {}))
             candidates.append(cand)
 
+        self._apply_model_scores(candidates, technicals)
         survivors = sorted(
             [c for c in candidates if c["passed_filter"]],
             key=lambda c: c["score"] or 0,
@@ -1374,6 +1377,43 @@ class DiscoverPipeline:
         self.state["sizer_text"] = sizer_output.full_text
         return StepOutput(content="Position sizing complete")
 
+    def _apply_model_scores(
+        self, candidates: list[dict[str, Any]], technicals: dict[str, dict[str, Any]]
+    ) -> None:
+        """Score screen survivors with the latest forward-return model.
+        An ACCEPTED model adds up to +/-5 points to the composite; any other
+        model is recorded in shadow (score_breakdown only) so it can be
+        graded on live runs before it is ever allowed to move a ranking."""
+        try:
+            model = load_latest_model(self.settings.discover_db_path)
+        except Exception as e:
+            logger.warning("model load failed (%s) — screening without it", e)
+            return
+        if model is None:
+            return
+        passed = [c for c in candidates if c["passed_filter"] and c["score"] is not None]
+        feats = {
+            c["ticker"]: (technicals.get(c["ticker"]) or {}).get("model_features") or {}
+            for c in passed
+        }
+        pct = score_percentiles(model, {t: f for t, f in feats.items() if f})
+        for c in passed:
+            if c["ticker"] not in pct:
+                continue
+            p = round(pct[c["ticker"]], 1)
+            meta = {"version": model.version, "percentile": p, "accepted": model.accepted}
+            if model.accepted:
+                points = screen_points(p)
+                c["score"] = round(c["score"] + points, 1)
+                c["score_components"] = {**c["score_components"], "model": points}
+            c["score_breakdown"] = {**c["score_breakdown"], "model": meta}
+        logger.info(
+            "Forward-return model v%d %s: scored %d survivors",
+            model.version,
+            "applied" if model.accepted else "in shadow",
+            len(pct),
+        )
+
     def _sector_exposure(self, picked: set[str]) -> tuple[dict[str, str], dict[str, float]]:
         """(pick -> sector, current holdings value per sector) for the sector
         caps. Sectors come from the screen's fundamentals; held names the
@@ -1431,6 +1471,17 @@ class DiscoverPipeline:
                     sector=c["sector"],
                     price=c["price"],
                 )
+            fundamentals = self.state.get("fundamentals") or {}
+            revisions = self.state.get("eps_revisions") or {}
+            for c in self.state["candidates"]:
+                if c["ticker"] in fundamentals:
+                    insert_candidate_snapshot(
+                        session,
+                        run_id,
+                        c["ticker"],
+                        fundamentals.get(c["ticker"]),
+                        revisions.get(c["ticker"]),
+                    )
             for ticker, report in self.state["analyses"].items():
                 analyst_text = getattr(report, "full_text", None) or (
                     report if isinstance(report, str) else ""

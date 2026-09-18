@@ -12,6 +12,7 @@ from ..config import Settings
 from ..data.chart_img import fetch_charts
 from ..db.repository import (
     insert_candidate,
+    insert_candidate_snapshot,
     insert_holdings_review,
     insert_pick,
     insert_pick_catalysts,
@@ -69,6 +70,17 @@ def persist_rebalance_run(
             sector=c["sector"],
             price=c["price"],
         )
+    fundamentals = state.get("fundamentals") or {}
+    revisions = state.get("eps_revisions") or {}
+    for c in candidates:
+        if c["ticker"] in fundamentals:
+            insert_candidate_snapshot(
+                session,
+                run_id,
+                c["ticker"],
+                fundamentals.get(c["ticker"]),
+                revisions.get(c["ticker"]),
+            )
     for ticker, report in analyses.items():
         analyst_text = getattr(report, "full_text", None) or (
             report if isinstance(report, str) else ""

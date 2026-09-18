@@ -115,6 +115,8 @@ class Settings(BaseSettings):
     # many dollars AND this many percent below cost basis.
     harvest_min_loss_usd: float = 1000.0
     harvest_min_loss_pct: float = 10.0
+    # Where `train-model` caches the multi-year price panel it trains on.
+    model_cache_dir: str = "~/.stock_analyzer/cache"
     # Ranker consensus: one round per (provider, model) pair listed here,
     # each a full high-effort ranking pass; picks are kept if a majority of
     # rounds agree. A blank model in `discover_ranker_models` (or too few

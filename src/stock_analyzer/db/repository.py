@@ -17,6 +17,7 @@ from sqlmodel import Session, select
 
 from .tables import (
     Candidate,
+    CandidateSnapshot,
     HoldingReviewRow,
     Pick,
     PickCatalyst,
@@ -59,6 +60,50 @@ def insert_run(
 
 
 # --- candidates -----------------------------------------------------------
+
+# Numeric fundamentals worth keeping point-in-time (see CandidateSnapshot).
+SNAPSHOT_FIELDS: tuple[str, ...] = (
+    "market_cap",
+    "revenue_growth_yoy",
+    "earnings_growth_yoy",
+    "fcf_yield",
+    "debt_to_equity",
+    "gross_margin",
+    "operating_margin",
+    "profit_margin",
+    "forward_pe",
+    "trailing_pe",
+    "peg_ratio",
+    "analyst_target_upside_pct",
+    "analyst_recommendation_mean",
+    "analyst_count",
+    "shares_short_pct",
+    "short_ratio_days",
+)
+
+
+def insert_candidate_snapshot(
+    session: Session,
+    run_id: int,
+    ticker: str,
+    fundamentals: dict[str, Any] | None,
+    revisions: dict[str, Any] | None = None,
+) -> None:
+    """Store the numeric fundamentals (4 significant figures) and EPS
+    revision counts this run saw. Skipped when there is nothing to keep."""
+    data: dict[str, float] = {}
+    for key in SNAPSHOT_FIELDS:
+        v = (fundamentals or {}).get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v:
+            data[key] = float(f"{v:.4g}")
+    for key in ("net_revisions_30d", "net_revisions_7d"):
+        v = (revisions or {}).get(key)
+        if isinstance(v, int):
+            data[key] = v
+    if data:
+        session.add(
+            CandidateSnapshot(run_id=run_id, ticker=ticker, data=json.dumps(data, sort_keys=True))
+        )
 
 
 def insert_candidate(

@@ -176,7 +176,23 @@ def fetch_technicals(ticker: str) -> dict[str, Any] | None:
         "dist_from_52w_high": _distance_from_52w_high(hist),
         "volume_trend_20_60": _volume_trend(hist),
         "weekly_rsi": _rsi_weekly(hist),
+        "model_features": _model_features(hist),
     }
+
+
+def _model_features(hist: pd.DataFrame) -> dict[str, float | None]:
+    """Inputs for the forward-return model (model/features.py), from the
+    history already fetched here — no extra request."""
+    from ..model.features import ticker_features
+
+    spy = _spy_history()
+    if spy is None:
+        return {}
+    try:
+        return ticker_features(hist, spy["Close"])
+    except Exception as e:  # noqa: BLE001 — a feature bug must not drop the ticker
+        logger.warning("model features failed: %s", e)
+        return {}
 
 
 def batch_technicals(tickers: list[str]) -> dict[str, dict[str, Any]]:
