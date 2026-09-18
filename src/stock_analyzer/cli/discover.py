@@ -91,7 +91,13 @@ from ..discover.report import (
     render_pdf,
 )
 from ..discover.screen import passes_hard_filter, passes_trend_gate, score_candidate
-from ..discover.sizer import Sizer, enforce_correlation_caps, enforce_earnings_blackout
+from ..discover.sizer import (
+    Sizer,
+    enforce_correlation_caps,
+    enforce_earnings_blackout,
+    enforce_sector_caps,
+    format_sector_exposure_block,
+)
 from ..discover.track_record import (
     format_track_record_block,
     format_track_record_summary,
@@ -507,6 +513,23 @@ def _holdings_table_rows(holdings: dict[str, list[dict[str, Any]]]) -> list[list
         avg = v["cost"] / v["units"] if v["units"] else 0
         rows.append([ticker, f"{v['units']:.0f}", f"${avg:,.2f}", f"${v['cost']:,.0f}"])
     return rows
+
+
+def _holdings_value_by_sector(
+    holdings: dict[str, list[dict[str, Any]]],
+    sector_of: dict[str, str],
+) -> dict[str, float]:
+    """Market value of current holdings per sector (units x brokerage price).
+    Positions with no price or no known sector are left out."""
+    out: dict[str, float] = {}
+    for items in holdings.values():
+        for h in items:
+            ticker = str(h.get("ticker") or "").upper()
+            value = float(h.get("units") or 0) * float(h.get("price") or 0)
+            sector = sector_of.get(ticker)
+            if value > 0 and sector:
+                out[sector] = out.get(sector, 0.0) + value
+    return out
 
 
 # --- pipeline ----------------------------------------------------------------
@@ -1271,6 +1294,13 @@ class DiscoverPipeline:
             f"  {t}: reports {a.get('earnings_date')} (in {a.get('days_until')}d)"
             for t, a in sorted(earnings_alerts.items())
         )
+        pick_sectors, holdings_by_sector = self._sector_exposure(picked)
+        sector_block = format_sector_exposure_block(
+            pick_sectors,
+            holdings_by_sector,
+            max_book_pct=self.settings.discover_max_sector_pct,
+            max_new_pct=self.settings.discover_max_sector_new_pct,
+        )
         sizer = Sizer(
             "claude",
             self.settings.discover_opus_model,
@@ -1290,6 +1320,7 @@ class DiscoverPipeline:
                 correlated_pairs=correlated_pairs,
                 risk_parity_block=risk_parity_block,
                 earnings_block=earnings_block,
+                sector_block=sector_block,
             )
         except Exception as e:
             # Same rationale as step_redteam: a sizing failure shouldn't
@@ -1311,9 +1342,47 @@ class DiscoverPipeline:
                 cash_budget=self.settings.discover_cash_budget,
                 max_pct=self.settings.discover_earnings_blackout_max_pct,
             )
+        if pick_sectors:
+            sizer_output = enforce_sector_caps(
+                sizer_output,
+                pick_sectors,
+                holdings_by_sector,
+                cash_budget=self.settings.discover_cash_budget,
+                max_book_pct=self.settings.discover_max_sector_pct,
+                max_new_pct=self.settings.discover_max_sector_new_pct,
+            )
         self.state["sizer_output"] = sizer_output
         self.state["sizer_text"] = sizer_output.full_text
         return StepOutput(content="Position sizing complete")
+
+    def _sector_exposure(self, picked: set[str]) -> tuple[dict[str, str], dict[str, float]]:
+        """(pick -> sector, current holdings value per sector) for the sector
+        caps. Sectors come from the screen's fundamentals; held names the
+        screen never fetched (prescreened out) are looked up once here."""
+        sector_of = {
+            str(c["ticker"]).upper(): c["sector"]
+            for c in self.state.get("candidates") or []
+            if c.get("sector")
+        }
+        holdings = self.state.get("holdings_raw") or {}
+        missing = sorted(
+            {
+                str(h.get("ticker") or "").upper()
+                for items in holdings.values()
+                for h in items
+                if h.get("ticker")
+            }
+            - set(sector_of)
+        )
+        if missing:
+            try:
+                for t, f in batch_fundamentals(missing).items():
+                    if (f or {}).get("sector"):
+                        sector_of[t.upper()] = f["sector"]
+            except Exception as e:
+                logger.warning("sector lookup for holdings failed (%s) — cap uses picks only", e)
+        pick_sectors = {t: sector_of[t] for t in picked if t in sector_of}
+        return pick_sectors, _holdings_value_by_sector(holdings, sector_of)
 
     def step_persist_and_report(self, step_input: StepInput) -> StepOutput:
         # 1. SQLite persistence (same as before)

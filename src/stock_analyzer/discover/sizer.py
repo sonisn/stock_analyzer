@@ -126,6 +126,7 @@ class Sizer:
         correlated_pairs: list[CorrelatedPair] | None = None,
         risk_parity_block: str = "",
         earnings_block: str = "",
+        sector_block: str = "",
     ) -> SizerOutput:
         budget_line = (
             f"Cash budget: ${cash_budget:,.0f}"
@@ -167,6 +168,13 @@ class Sizer:
             if earnings_block
             else ""
         )
+        sector_block_text = (
+            f"Sector exposure (a deterministic check will enforce these caps after "
+            f"you respond, holding any excess as cash — size within them):\n"
+            f"{sector_block}\n\n"
+            if sector_block
+            else ""
+        )
         prompt = (
             f"{budget_line}\n\n"
             f"{ev_block}"
@@ -174,6 +182,7 @@ class Sizer:
             f"{correlated_pairs_block}"
             f"{risk_parity_block_text}"
             f"{earnings_block_text}"
+            f"{sector_block_text}"
             f"Current holdings:\n{holdings_summary or '(none)'}\n\n"
             f"Picks (with bull theses):\n{picks_text}\n\n"
             f"Bear cases:\n{bear_case_text}"
@@ -309,6 +318,127 @@ def enforce_correlation_caps(
     return output.model_copy(
         update={
             "allocations": new_allocations,
+            "concentration_warnings": [*output.concentration_warnings, *warnings],
+        }
+    )
+
+
+def format_sector_exposure_block(
+    pick_sectors: dict[str, str],
+    holdings_by_sector: dict[str, float],
+    *,
+    max_book_pct: float,
+    max_new_pct: float,
+) -> str:
+    """Sizer prompt input: current sector weights of the holdings (for the
+    sectors the picks fall in) and the caps a deterministic check will
+    enforce after the Sizer responds."""
+    sectors = sorted(set(pick_sectors.values()))
+    if not sectors:
+        return ""
+    total = sum(holdings_by_sector.values())
+    lines = []
+    for sector in sectors:
+        tickers = ", ".join(sorted(t for t, s in pick_sectors.items() if s == sector))
+        held = (
+            f"{holdings_by_sector.get(sector, 0.0) / total * 100:.0f}% of current holdings"
+            if total > 0
+            else "no current holdings data"
+        )
+        lines.append(f"  {sector}: picks {tickers}; {held}")
+    lines.append(
+        f"  Caps: at most {max_new_pct:.0f}% of new capital per sector, and (when a "
+        f"cash budget is given) at most {max_book_pct:.0f}% of holdings + new money"
+    )
+    return "\n".join(lines)
+
+
+def enforce_sector_caps(
+    output: SizerOutput,
+    pick_sectors: dict[str, str],
+    holdings_by_sector: dict[str, float],
+    *,
+    cash_budget: float | None = None,
+    max_book_pct: float = 30.0,
+    max_new_pct: float = 50.0,
+) -> SizerOutput:
+    """Deterministic post-LLM sector cap, same force-correct shape as
+    enforce_correlation_caps.
+
+    Per sector, the picks' combined share of new capital is limited to
+    `max_new_pct`. With a cash budget and known holdings values, it is
+    further limited so the sector stays at or under `max_book_pct` of the
+    combined book (holdings + budget) — a sector already over the cap
+    gets no new money at all. Over-cap picks are scaled down
+    proportionally and the trimmed amount is held as cash (redistributing
+    could breach the other caps). Without a budget the book cap cannot be
+    computed in dollars, so an already-overweight sector only gets a
+    warning. Picks with no known sector are left alone.
+    """
+    by_ticker = {a.ticker: a for a in output.allocations}
+    warnings: list[str] = []
+    holdings_total = sum(holdings_by_sector.values())
+
+    def _effective_pct(a: Allocation) -> float | None:
+        if a.allocation_pct is not None:
+            return a.allocation_pct
+        if a.allocation_usd is not None and cash_budget:
+            return a.allocation_usd / cash_budget * 100
+        return None
+
+    sectors = sorted({s for t, s in pick_sectors.items() if s and t in by_ticker})
+    for sector in sectors:
+        pcts = {
+            t: pct
+            for t, s in pick_sectors.items()
+            if s == sector and t in by_ticker
+            if (pct := _effective_pct(by_ticker[t])) is not None
+        }
+        new_total = sum(pcts.values())
+        if new_total <= 0:
+            continue
+        existing = holdings_by_sector.get(sector, 0.0)
+        limit, why = max_new_pct, f"{max_new_pct:.0f}% of new capital"
+        if cash_budget and holdings_total > 0:
+            book = holdings_total + cash_budget
+            room_pct = max(0.0, max_book_pct / 100 * book - existing) / cash_budget * 100
+            if room_pct < limit:
+                limit = room_pct
+                why = (
+                    f"keeping {sector} at {max_book_pct:.0f}% of holdings + new money "
+                    f"(already {existing / book * 100:.1f}% of that book)"
+                )
+        elif holdings_total > 0 and existing / holdings_total * 100 >= max_book_pct:
+            warnings.append(
+                f"SECTOR CONCENTRATION: {sector} is already "
+                f"{existing / holdings_total * 100:.0f}% of current holdings and the "
+                f"picks add {new_total:.1f}% of new capital to it — set "
+                f"DISCOVER_CASH_BUDGET to enforce the {max_book_pct:.0f}% book cap"
+            )
+        if new_total <= limit + 0.05:
+            continue
+        scale = limit / new_total
+        for t, pct in pcts.items():
+            a = by_ticker[t]
+            new_pct = pct * scale
+            update = (
+                {"allocation_pct": new_pct}
+                if a.allocation_pct is not None
+                else {"allocation_usd": new_pct / 100 * cash_budget}
+            )
+            by_ticker[t] = a.model_copy(update=update)
+        names = " + ".join(sorted(pcts))
+        warnings.append(
+            f"SECTOR CAP: {sector} picks ({names}) totaled {new_total:.1f}% of new "
+            f"capital — scaled to {limit:.1f}%, {why}; hold the other "
+            f"{new_total - limit:.1f}% as cash"
+        )
+
+    if not warnings:
+        return output
+    return output.model_copy(
+        update={
+            "allocations": [by_ticker[a.ticker] for a in output.allocations],
             "concentration_warnings": [*output.concentration_warnings, *warnings],
         }
     )

@@ -103,6 +103,13 @@ class Settings(BaseSettings):
     # A new pick that reports earnings within the alert window (5 days) is
     # capped at this % of new capital; the rest waits for the print.
     discover_earnings_blackout_max_pct: float = 5.0
+    # Hard sector caps applied after the Sizer responds. With a cash budget,
+    # no sector may exceed `discover_max_sector_pct` of the combined book
+    # (current holdings + new money). Always, no sector may take more than
+    # `discover_max_sector_new_pct` of the new capital. Trimmed dollars are
+    # held as cash rather than redistributed, like the other caps.
+    discover_max_sector_pct: float = 30.0
+    discover_max_sector_new_pct: float = 50.0
     # Ranker consensus: one round per (provider, model) pair listed here,
     # each a full high-effort ranking pass; picks are kept if a majority of
     # rounds agree. A blank model in `discover_ranker_models` (or too few
