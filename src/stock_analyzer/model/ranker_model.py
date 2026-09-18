@@ -126,8 +126,9 @@ def walk_forward(
     *,
     horizon: int,
     population: str = "gated",
+    label_kind: str = "excess",
 ) -> ModelResult:
-    label = f"fwd_{horizon}"
+    label = f"fwd_{horizon}" if label_kind == "excess" else f"fwd_{horizon}_badj"
     frame = data[data["gated"]] if population == "gated" else data
     features = list(FEATURES)
     x_all = rank_center(frame, features)
@@ -171,6 +172,7 @@ def walk_forward(
     metrics = {
         "horizon_days": horizon,
         "population": population,
+        "label": label_kind,
         "rows": int(len(frame)),
         "oos_rows": int(oos_label.notna().sum()),
         "oos_start": str(oos.index.get_level_values("date").min().date()),
@@ -301,7 +303,8 @@ def format_model_report(result: ModelResult) -> str:
         )
 
     lines = [
-        f"Forward-return model — {result.horizon}-day horizon, population={result.population}",
+        f"Forward-return model — {result.horizon}-day horizon, "
+        f"population={result.population}, label={m.get('label', 'excess')}",
         f"  trained {result.train_start} .. {result.train_end}; "
         f"out-of-sample {m['oos_start']} .. {m['oos_end']} ({m['oos_rows']:,} rows)",
         row("model", m["model"]),

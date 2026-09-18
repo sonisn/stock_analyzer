@@ -101,19 +101,24 @@ def load_panel(tickers: list[str], cache_dir: str, *, years: int = 6) -> PricePa
     return panel
 
 
-def forward_excess(panel: PricePanel, horizon: int) -> pd.DataFrame:
-    """(date x ticker) excess return over SPY from the next bar's close to
-    `horizon` bars after it. NaN where the window runs past the data."""
+def forward_returns(panel: PricePanel, horizon: int) -> tuple[pd.DataFrame, pd.Series]:
+    """(date x ticker) return from the next bar's close to `horizon` bars
+    after it, and SPY's return over the same bars. NaN past the data."""
     spy = panel.spy.reindex(panel.close.index)
-    entry, exit_ = panel.close.shift(-1), panel.close.shift(-1 - horizon)
-    spy_entry, spy_exit = spy.shift(-1), spy.shift(-1 - horizon)
-    return (exit_ / entry - 1).sub(spy_exit / spy_entry - 1, axis=0)
+    ret = panel.close.shift(-1 - horizon) / panel.close.shift(-1) - 1
+    return ret, spy.shift(-1 - horizon) / spy.shift(-1) - 1
+
+
+def forward_excess(panel: PricePanel, horizon: int) -> pd.DataFrame:
+    """Forward return minus SPY's over the same bars."""
+    ret, spy_ret = forward_returns(panel, horizon)
+    return ret.sub(spy_ret, axis=0)
 
 
 def build_dataset(panel: PricePanel, *, freq: str = "W-FRI") -> pd.DataFrame:
     """Long frame: one row per (date, ticker) on the last trading day of
-    each week, with every feature, the trend-gate flag and one label per
-    horizon (`fwd_{h}`). Rows missing any feature are dropped; rows whose
+    each week, with every feature, the trend-gate flag and two labels per
+    horizon: `fwd_{h}` (excess over SPY) and `fwd_{h}_badj` (beta-neutral). Rows missing any feature are dropped; rows whose
     label is still in the future keep NaN labels (used for scoring only)."""
     feats = panel_features(panel.close, panel.high, panel.volume, panel.spy)
     cal = feats[FEATURES[0]].index
@@ -121,10 +126,17 @@ def build_dataset(panel: PricePanel, *, freq: str = "W-FRI") -> pd.DataFrame:
     dates = pd.DatetimeIndex(weekly_last.to_numpy())
 
     parts = {name: feats[name].loc[dates].stack(future_stack=True) for name in FEATURES}
+    beta = feats["beta_252"].loc[dates]
     for h in HORIZONS:
-        parts[f"fwd_{h}"] = (
-            forward_excess(panel, h).reindex(cal).loc[dates].stack(future_stack=True)
-        )
+        ret, spy_ret = forward_returns(panel, h)
+        ret, spy_ret = ret.reindex(cal).loc[dates], spy_ret.reindex(cal).loc[dates]
+        parts[f"fwd_{h}"] = ret.sub(spy_ret, axis=0).stack(future_stack=True)
+        # Beta-neutral: remove the market move the stock's trailing beta
+        # (known on the feature date) implies, so a high-beta name is not
+        # credited with skill for simply riding a rising market.
+        parts[f"fwd_{h}_badj"] = (
+            ret - beta.reindex(columns=ret.columns).mul(spy_ret, axis=0)
+        ).stack(future_stack=True)
     frame = pd.DataFrame(parts)
     frame.index.names = ["date", "ticker"]
     frame = frame.dropna(subset=list(FEATURES))

@@ -6,9 +6,10 @@ cached for the day). A model is saved every time for the record, but the
 screen only ever uses the latest version whose walk-forward validation
 accepted it.
 
-    uv run train-model                 # 63-day model, gated population
+    uv run train-model                 # 63-day model, 15 years, gated population
     uv run train-model --horizon 21
     uv run train-model --no-save       # report only
+    uv run train-model --horizon 21 --label beta_adj
 """
 
 from __future__ import annotations
@@ -32,7 +33,13 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="train-model", description=__doc__.split("\n\n")[0])
     parser.add_argument("--horizon", type=int, default=63, choices=HORIZONS)
     parser.add_argument("--population", default="gated", choices=("gated", "all"))
-    parser.add_argument("--years", type=int, default=6)
+    parser.add_argument("--years", type=int, default=15)
+    parser.add_argument(
+        "--label",
+        default="excess",
+        choices=("excess", "beta_adj"),
+        help="excess = return minus SPY; beta_adj = return minus trailing beta x SPY",
+    )
     parser.add_argument("--no-save", action="store_true")
     parser.add_argument("--skip-labels", action="store_true")
     args = parser.parse_args(argv)
@@ -49,7 +56,11 @@ def main(argv: list[str] | None = None) -> None:
         f"tickers, {int(data['gated'].sum()):,} passing the trend gate"
     )
     result = walk_forward(
-        data, panel.spy.dropna().index, horizon=args.horizon, population=args.population
+        data,
+        panel.spy.dropna().index,
+        horizon=args.horizon,
+        population=args.population,
+        label_kind=args.label,
     )
     print(format_model_report(result))
     if not args.no_save:

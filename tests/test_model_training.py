@@ -231,3 +231,19 @@ def test_candidate_snapshot_keeps_numeric_fields_only(tmp_path):
         "market_cap": 1.5e12,
         "net_revisions_30d": 3,
     }
+
+
+def test_beta_adjusted_label_removes_market_exposure():
+    rng = np.random.default_rng(3)
+    idx = pd.bdate_range("2020-01-01", periods=600)
+    spy_r = rng.normal(0.001, 0.01, 600)  # a rising market
+    spy = pd.Series(100 * np.cumprod(1 + spy_r), index=idx)
+    # Day-by-day 2x SPY with no stock-specific return: pure market exposure.
+    lev = pd.Series(50 * np.cumprod(1 + 2 * spy_r), index=idx)
+    close = pd.DataFrame({"LEV": lev})
+    vol = pd.DataFrame({"LEV": rng.integers(1e6, 2e6, 600).astype(float)}, index=idx)
+    data = build_dataset(PricePanel(close, close, vol, spy)).dropna(subset=["fwd_21"])
+    assert data["beta_252"].mean() == pytest.approx(2.0, abs=1e-6)
+    # Plain excess credits the leverage; the beta-neutral label mostly doesn't
+    # (what is left is compounding, a small fraction of the excess).
+    assert data["fwd_21"].abs().mean() > 5 * data["fwd_21_badj"].abs().mean()
