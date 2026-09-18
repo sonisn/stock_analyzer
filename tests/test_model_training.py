@@ -247,3 +247,56 @@ def test_beta_adjusted_label_removes_market_exposure():
     # Plain excess credits the leverage; the beta-neutral label mostly doesn't
     # (what is left is compounding, a small fraction of the excess).
     assert data["fwd_21"].abs().mean() > 5 * data["fwd_21_badj"].abs().mean()
+
+
+def test_shadow_scores_are_graded_against_realized_outcomes(tmp_path):
+    import json
+
+    from stock_analyzer.db.tables import CandidateOutcome
+    from stock_analyzer.model.labels import grade_shadow_scores
+
+    db = str(tmp_path / "g.db")
+    with get_session(db) as session:
+        for run in range(2):
+            run_id = insert_run(
+                session,
+                universe_size=6,
+                survivors=6,
+                picks=0,
+                opus_model="o",
+                sonnet_model="s",
+                cash_budget=None,
+            )
+            for i in range(6):
+                insert_candidate(
+                    session,
+                    run_id,
+                    f"T{i}",
+                    passed_filter=True,
+                    fail_reasons=[],
+                    score=50.0,
+                    score_components={},
+                    score_breakdown={"model": {"version": 1, "percentile": i * 20.0}},
+                    sources=[],
+                    conviction=0,
+                    sector=None,
+                    price=None,
+                )
+                # Run 0: outcomes follow the percentile; run 1: reversed.
+                excess = float(i if run == 0 else -i)
+                session.add(
+                    CandidateOutcome(
+                        run_id=run_id,
+                        ticker=f"T{i}",
+                        horizon_days=21,
+                        entry_date="2026-01-02",
+                        exit_date="2026-02-02",
+                        return_pct=excess,
+                        spy_return_pct=0.0,
+                        excess_pct=excess,
+                    )
+                )
+    g = grade_shadow_scores(db, horizon=21)
+    assert (g["runs"], g["names"]) == (2, 12)
+    assert g["mean_ic"] == pytest.approx(0.0) and g["hit_rate"] == 0.5
+    assert json.dumps(g)  # plain JSON-able numbers for the email

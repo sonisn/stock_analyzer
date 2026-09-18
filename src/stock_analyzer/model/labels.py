@@ -98,3 +98,37 @@ def label_candidates(
             session.add(row)
     logger.info("Labeled %d candidate outcomes (%d pending)", len(rows), len(pending))
     return len(rows)
+
+
+def grade_shadow_scores(db_path: str, horizon: int = 21) -> dict[str, float | int | None]:
+    """Live, truly out-of-sample check of the model: the percentile each
+    run recorded for its survivors (score_breakdown["model"]) against the
+    excess return those names then realized. Per-run Spearman IC, averaged."""
+    import json
+
+    with get_session(db_path) as session:
+        rows = session.exec(
+            text(
+                "SELECT c.run_id, c.score_breakdown, o.excess_pct FROM candidates c "
+                "JOIN candidate_outcomes o ON o.run_id = c.run_id AND o.ticker = c.ticker "
+                "WHERE o.horizon_days = :h AND c.score_breakdown LIKE '%\"model\"%'"
+            ),
+            params={"h": horizon},
+        ).all()
+    frame = pd.DataFrame(
+        [
+            (run_id, (json.loads(bd).get("model") or {}).get("percentile"), excess)
+            for run_id, bd, excess in rows
+        ],
+        columns=["run_id", "pct", "excess"],
+    ).dropna()
+    ics = [
+        g["pct"].rank().corr(g["excess"].rank()) for _, g in frame.groupby("run_id") if len(g) >= 5
+    ]
+    ics = [ic for ic in ics if pd.notna(ic)]
+    return {
+        "runs": len(ics),
+        "names": int(len(frame)),
+        "mean_ic": float(np.mean(ics)) if ics else None,
+        "hit_rate": float(np.mean([ic > 0 for ic in ics])) if ics else None,
+    }
