@@ -60,6 +60,52 @@ def build_holdings_dashboard_rows(
     return dashboard_rows, total_value, total_cost, sector_value, total_pnl_pct
 
 
+def append_rebalance_glance(
+    sections: list[Section],
+    *,
+    rebalance_plan: object,
+    thesis_checks: list[dict[str, Any]] | None,
+    harvest_candidates: list[dict[str, Any]] | None,
+    stop_loss_warnings: list[str] | None,
+) -> None:
+    """'At a glance' under the status banner: the plan's actions in order,
+    then what else needs a decision. The full plan, reviews and history
+    follow further down."""
+    plan = rebalance_plan if isinstance(rebalance_plan, RebalancePlan) else None
+    rows = [[a.action, a.ticker, a.sizing] for a in (plan.actions if plan else [])]
+    flags: list[str] = []
+    for c in thesis_checks or []:
+        if c["status"] == "BROKEN":
+            flags.append(
+                f"{c['ticker']}: original thesis broken ({c['return_pct']:+.1f}% since pick)."
+            )
+        elif c["status"] == "TARGET HIT":
+            flags.append(
+                f"{c['ticker']}: past its bull target ({c['return_pct']:+.1f}% since pick)."
+            )
+    for w in stop_loss_warnings or []:
+        flags.append(w.rstrip(".") + ".")
+    if harvest_candidates:
+        loss = sum(-c["loss_usd"] for c in harvest_candidates)
+        saving = sum(c["est_tax_saving_usd"] for c in harvest_candidates)
+        flags.append(
+            f"Tax-loss harvesting: {len(harvest_candidates)} candidate(s), ${loss:,.0f} of losses "
+            f"(~${saving:,.0f} tax) — see the harvesting table."
+        )
+    if not rows and not flags:
+        return
+    sections.append(Section(kind="heading", text="At a glance", level=2))
+    if rows:
+        sections.append(
+            Section(kind="table", table_header=["Action", "Ticker", "Size"], table_rows=rows)
+        )
+    if not flags:
+        sections.append(Section(kind="para", text="Nothing else needs a decision."))
+        return
+    sections.append(Section(kind="para", text="Also decide:"))
+    sections.extend(Section(kind="para", text=f"• {f}") for f in flags)
+
+
 def append_rebalance_overview(
     sections: list[Section],
     *,
@@ -77,6 +123,9 @@ def append_rebalance_overview(
     track_record: TrackRecord | None,
     thesis_checks: list[dict[str, Any]] | None,
     market_themes: object,
+    rebalance_plan: object = None,
+    harvest_candidates: list[dict[str, Any]] | None = None,
+    stop_loss_warnings: list[str] | None = None,
     macro_summary: str,
 ) -> None:
     sections.extend(
@@ -92,6 +141,13 @@ def append_rebalance_overview(
         ("Cash", f"${cash_balance:,.0f}" if cash_balance is not None else "—"),
     ]
     sections.append(Section(kind="metric_strip", metrics=metrics))
+    append_rebalance_glance(
+        sections,
+        rebalance_plan=rebalance_plan,
+        thesis_checks=thesis_checks,
+        harvest_candidates=harvest_candidates,
+        stop_loss_warnings=stop_loss_warnings,
+    )
 
     if dashboard_rows:
         sections.append(Section(kind="heading", text="Holdings dashboard", level=2))
@@ -487,6 +543,9 @@ def build_rebalance_sections(
         track_record=track_record,
         thesis_checks=thesis_checks,
         market_themes=market_themes,
+        rebalance_plan=rebalance_plan,
+        harvest_candidates=harvest_candidates,
+        stop_loss_warnings=stop_loss_warnings,
         macro_summary=macro_summary,
     )
     append_rebalance_plan_body(

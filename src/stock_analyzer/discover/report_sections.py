@@ -608,6 +608,84 @@ def append_paper_ledger_section(sections: list[Section], ledger: dict[str, Any] 
         )
 
 
+def append_at_a_glance(
+    sections: list[Section],
+    *,
+    structured_ranker: Any,
+    structured_sizer: Any,
+    pick_order: list[str],
+    thesis_checks: list[dict[str, Any]] | None,
+    data_warnings: list[str] | None,
+    usage: dict[str, Any] | None,
+) -> None:
+    """'At a glance' — the few lines that decide this run: each pick with
+    its size, conviction and consensus, then anything that needs attention
+    (open picks whose thesis broke or hit target, deterministic trims,
+    data warnings, cost-cap cuts). Everything else is detail below."""
+    if not pick_order and not thesis_checks:
+        return
+    sections.append(Section(kind="heading", text="At a glance", level=2))
+    picks = {p.ticker: p for p in getattr(structured_ranker, "picks", None) or []}
+    allocs = {a.ticker: a for a in getattr(structured_sizer, "allocations", None) or []}
+    rows = []
+    for t in pick_order:
+        p, a = picks.get(t), allocs.get(t)
+        size = "—"
+        if a is not None and a.allocation_pct is not None:
+            size = f"{a.allocation_pct:.0f}%"
+        elif a is not None and a.allocation_usd is not None:
+            size = f"${a.allocation_usd:,.0f}"
+        # agreement_ratio = agreeing rounds / rounds run; voting_providers
+        # lists the agreeing ones.
+        agree = len(getattr(p, "voting_providers", None) or [])
+        consensus = (
+            f"{agree}/{round(agree / p.agreement_ratio)}"
+            if p is not None and p.agreement_ratio and agree
+            else "—"
+        )
+        why = (p.one_liner if p is not None else "") or ""
+        rows.append(
+            [
+                t,
+                size,
+                f"{p.conviction}/10" if p is not None else "—",
+                consensus,
+                why if len(why) <= 110 else why[:107].rstrip() + "…",
+            ]
+        )
+    if rows:
+        sections.append(
+            Section(
+                kind="table",
+                table_header=["Buy", "Size", "Conviction", "Models agree", "Why"],
+                table_rows=rows,
+            )
+        )
+    flags: list[str] = []
+    for c in thesis_checks or []:
+        if c["status"] == "BROKEN":
+            flags.append(
+                f"Open pick {c['ticker']}: thesis broken ({c['return_pct']:+.1f}% since pick)."
+            )
+        elif c["status"] == "TARGET HIT":
+            flags.append(
+                f"Open pick {c['ticker']}: past its bull target ({c['return_pct']:+.1f}%) — "
+                f"re-underwrite or take profits."
+            )
+    for w in getattr(structured_sizer, "concentration_warnings", None) or []:
+        if w.startswith(("SECTOR CAP", "CORRELATION CAP", "EARNINGS BLACKOUT")):
+            flags.append(w.split(" — ")[0].rstrip(".") + " (sizes above already reflect it).")
+    if data_warnings:
+        flags.append(f"{len(data_warnings)} data warning(s) — see Data warnings below.")
+    for note in ((usage or {}).get("budget") or {}).get("notes") or []:
+        flags.append(f"Cost cap: {note}.")
+    if not flags:
+        sections.append(Section(kind="para", text="Nothing else needs attention this run."))
+        return
+    sections.append(Section(kind="para", text="Needs attention:"))
+    sections.extend(Section(kind="para", text=f"• {f}") for f in flags)
+
+
 def append_usage_section(sections: list[Section], usage: dict[str, Any] | None) -> None:
     """'Model usage this run' table from usage.UsageTracker.report_data()."""
     if not usage or not usage.get("rows"):
@@ -708,16 +786,26 @@ def build_sections(
         )
     )
 
-    append_track_record_section(s, track_record, track_record_block)
-    append_thesis_check_section(s, thesis_checks)
-    append_paper_ledger_section(s, paper_ledger)
+    append_at_a_glance(
+        s,
+        structured_ranker=structured_ranker,
+        structured_sizer=structured_sizer,
+        pick_order=pick_order,
+        thesis_checks=thesis_checks,
+        data_warnings=data_warnings,
+        usage=usage,
+    )
+
+    # Context (themes, macro, rotation, holdings) is collected here and
+    # placed after the picks: the report leads with what to act on.
+    ctx: list[Section] = []
 
     # Market themes panel — what's hot right now (drives ranker bias).
     from ..models.llm import MarketThemes
 
     if isinstance(market_themes, MarketThemes) and market_themes.themes:
-        s.append(Section(kind="heading", text="Current market themes", level=2))
-        s.append(
+        ctx.append(Section(kind="heading", text="Current market themes", level=2))
+        ctx.append(
             Section(
                 kind="market_themes_panel",
                 data={
@@ -736,12 +824,12 @@ def build_sections(
         )
 
     if macro_summary:
-        s.append(Section(kind="heading", text="Macro regime", level=2))
-        s.append(Section(kind="blockquote", text=macro_summary))
+        ctx.append(Section(kind="heading", text="Macro regime", level=2))
+        ctx.append(Section(kind="blockquote", text=macro_summary))
 
     if data_warnings:
-        s.append(Section(kind="heading", text="Data warnings", level=2))
-        s.append(
+        ctx.append(Section(kind="heading", text="Data warnings", level=2))
+        ctx.append(
             Section(
                 kind="preformatted",
                 text="\n".join(f"- {w}" for w in data_warnings),
@@ -751,13 +839,13 @@ def build_sections(
     if sector_rotation and sector_rotation.get("leaders"):
         leaders = ", ".join(sector_rotation.get("leaders", []))
         laggards = ", ".join(sector_rotation.get("laggards", []))
-        s.append(Section(kind="heading", text="Sector rotation (6-month returns)", level=2))
-        s.append(Section(kind="para", text=f"Leaders: {leaders}"))
-        s.append(Section(kind="para", text=f"Laggards: {laggards}"))
+        ctx.append(Section(kind="heading", text="Sector rotation (6-month returns)", level=2))
+        ctx.append(Section(kind="para", text=f"Leaders: {leaders}"))
+        ctx.append(Section(kind="para", text=f"Laggards: {laggards}"))
 
-    s.append(Section(kind="heading", text="Current holdings (concentration context)", level=2))
+    ctx.append(Section(kind="heading", text="Current holdings (concentration context)", level=2))
     if holdings_rows:
-        s.append(
+        ctx.append(
             Section(
                 kind="table",
                 table_header=["Ticker", "Shares", "Avg cost", "Cost basis"],
@@ -765,7 +853,7 @@ def build_sections(
             )
         )
     else:
-        s.append(Section(kind="preformatted", text=holdings_summary or "(none)"))
+        ctx.append(Section(kind="preformatted", text=holdings_summary or "(none)"))
 
     # Per-pick cards. When structured outputs are present, emit a single
     # rich pick_card section per ticker (renderer composes rank pill +
@@ -889,6 +977,11 @@ def build_sections(
             s.append(Section(kind="para", text="(none)"))
     else:
         s.append(Section(kind="preformatted", text=sizer_text.split("---")[-1].strip() or "(none)"))
+
+    append_thesis_check_section(s, thesis_checks)
+    s.extend(ctx)
+    append_track_record_section(s, track_record, track_record_block)
+    append_paper_ledger_section(s, paper_ledger)
 
     if survivors:
         s.append(Section(kind="page_break"))
