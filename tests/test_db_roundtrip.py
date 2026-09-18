@@ -65,9 +65,6 @@ def test_roundtrip_through_repository(tmp_path: Path) -> None:
             run_id,
             rank=1,
             ticker="NVDA",
-            ranker_text="pick one prose",
-            bear_case_text="bear prose",
-            allocation_text="35%",
             agreement_ratio=0.6667,
             voting_providers=["claude", "openai"],
         )
@@ -115,7 +112,7 @@ def test_roundtrip_through_repository(tmp_path: Path) -> None:
 
         pk = s.exec(select(Pick).where(Pick.run_id == run_id, Pick.rank == 1)).one()
         assert pk.ticker == "NVDA"
-        assert pk.allocation_text == "35%"
+        assert pk.ranker_text == "" and pk.allocation_text is None  # prose lives in run_outputs
         assert pk.agreement_ratio == 0.6667
         assert pk.voting_providers == "claude,openai"
 

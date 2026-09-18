@@ -88,15 +88,26 @@ def persist_rebalance_run(
             confidence=parse_confidence(review),
             review_text=review_text,
         )
+    # Same forecast fields the discover persist step stores, so rebalance
+    # runs' picks feed calibration and the thesis check too.
+    from ..cli.discover import _pick_forecasts
+
+    forecasts = _pick_forecasts(state.get("ranker_output"))
+    prices = {c["ticker"]: c.get("price") for c in state.get("candidates") or []}
     for rank, ticker, _ in picks:
+        forecast = forecasts.get(ticker, {})
         insert_pick(
             session,
             run_id,
             rank=rank,
             ticker=ticker,
-            ranker_text=ranker_text,
-            bear_case_text=redteam_text,
-            allocation_text=sizer_text,
+            conviction=forecast.get("conviction"),
+            ev_pct=forecast.get("ev_pct"),
+            entry_price=prices.get(ticker),
+            time_horizon=forecast.get("time_horizon"),
+            scenarios=forecast.get("scenarios"),
+            agreement_ratio=forecast.get("agreement_ratio"),
+            voting_providers=forecast.get("voting_providers"),
         )
         analysis = analyses.get(ticker)
         if analysis is not None and getattr(analysis, "upcoming_catalysts", None):

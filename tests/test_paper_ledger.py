@@ -83,9 +83,6 @@ def _seed_run(db, run_at: str, tickers: list[str], sizer: str = "") -> None:
                 run_id,
                 rank=rank,
                 ticker=t,
-                ranker_text="",
-                bear_case_text=None,
-                allocation_text=None,
             )
         insert_run_outputs(
             session, run_id, ranker_full="", redteam_full="", sizer_full=sizer, holdings_summary=""

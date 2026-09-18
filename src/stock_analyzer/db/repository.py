@@ -109,9 +109,6 @@ def insert_pick(
     *,
     rank: int,
     ticker: str,
-    ranker_text: str,
-    bear_case_text: str | None,
-    allocation_text: str | None,
     conviction: int | None = None,
     ev_pct: float | None = None,
     entry_price: float | None = None,
@@ -134,15 +131,17 @@ def insert_pick(
     `discover/track_record.py::_compute_provider_breakdown`.
 
     Each scenario dict is {"label", "probability", "target_return_pct"}.
+
+    The ranker / red-team / sizer prose is stored once per run in
+    `run_outputs`; the per-pick text columns used to hold a full copy of it
+    for every pick and are left empty now.
     """
     session.add(
         Pick(
             run_id=run_id,
             rank=rank,
             ticker=ticker,
-            ranker_text=ranker_text,
-            bear_case_text=bear_case_text,
-            allocation_text=allocation_text,
+            ranker_text="",
             conviction=conviction,
             ev_pct=ev_pct,
             entry_price=entry_price,

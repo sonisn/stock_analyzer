@@ -213,9 +213,6 @@ def test_persistence_round_trip(tmp_path: Path):
             run_id,
             rank=1,
             ticker="NVDA",
-            ranker_text=RANKER_OUTPUT,
-            bear_case_text=REDTEAM_OUTPUT,
-            allocation_text=SIZER_OUTPUT,
         )
         insert_run_outputs(
             session,
