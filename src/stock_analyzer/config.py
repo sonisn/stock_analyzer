@@ -125,6 +125,18 @@ class Settings(BaseSettings):
     # million input:output tokens).
     discover_max_cost_usd: float | None = None
     llm_prices: str = ""
+    # Per-run history upkeep (db/retention.py), the last step of every run:
+    # adds backfilled pick fields + survivor outcome labels, then trims LLM
+    # prose older than the text window, agno step logs, failed-screen
+    # candidates past the longest lookback any check uses, old model
+    # versions, and stale log / price-cache files. Analysis rows the track
+    # record, calibration and model read are never deleted.
+    history_upkeep: bool = True
+    history_text_retention_days: int = 365
+    history_session_retention_days: int = 30
+    history_candidate_retention_days: int = 540
+    history_keep_model_versions: int = 12
+    history_file_retention_days: int = 30
     # Ranker consensus: one round per (provider, model) pair listed here,
     # each a full high-effort ranking pass; picks are kept if a majority of
     # rounds agree. A blank model in `discover_ranker_models` (or too few

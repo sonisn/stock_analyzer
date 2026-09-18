@@ -10,6 +10,8 @@ the screen score, emailed. No LLM calls; yfinance prices only.
      those names then did: the only test on data the model never saw.
   4. `validate-screen`: IC of every screen sub-score (fundamentals included,
      as run history accumulates) and the Ranker's forecast calibration.
+  5. History upkeep (db/retention.py), so history stays trimmed even in a
+     month with no discover/rebalance run.
 
 Cron (scripts/run_model_review.sh) runs it on the 1st of each month.
 """
@@ -92,12 +94,30 @@ def main(argv: list[str] | None = None) -> None:
 
         validate_main(["--horizon", "63"])
 
+    def upkeep() -> None:
+        from ..db.retention import RetentionPolicy, default_file_targets, run_history_upkeep
+
+        report = run_history_upkeep(
+            db,
+            policy=RetentionPolicy(
+                text_days=settings.history_text_retention_days,
+                session_days=settings.history_session_retention_days,
+                candidate_days=settings.history_candidate_retention_days,
+                keep_models=settings.history_keep_model_versions,
+                file_days=settings.history_file_retention_days,
+            ),
+            file_targets=default_file_targets(settings.model_cache_dir),
+            label_outcomes=False,  # section 1 labels every candidate, not just survivors
+        )
+        print(report.summary())
+
     body = "\n".join(
         [
             _section("1. Candidate outcomes", labels),
             _section("2. Shadow model retrain (21d, beta-neutral, 15y)", train),
             _section("3. Shadow model on live runs", shadow),
             _section("4. Screen score and forecast calibration (validate-screen)", screen),
+            _section("5. History upkeep (trim old prose, logs, files)", upkeep),
         ]
     )
     status = {True: "MODEL ACCEPTED — screen now uses it", False: "model still in shadow"}.get(

@@ -24,12 +24,15 @@ from .dataset import HORIZONS, PricePanel, download_panel
 logger = get_logger(__name__)
 
 
-def pending_labels(db_path: str) -> pd.DataFrame:
-    """(run_id, ticker, run_date, horizon) rows that have no outcome yet."""
+def pending_labels(db_path: str, *, only_passed: bool = False) -> pd.DataFrame:
+    """(run_id, ticker, run_date, horizon) rows that have no outcome yet;
+    `only_passed` limits it to screen survivors (the per-run upkeep)."""
+    where = " WHERE c.passed_filter = 1" if only_passed else ""
     with get_session(db_path) as session:
         rows = session.exec(
             text(
-                "SELECT c.run_id, c.ticker, r.run_at FROM candidates c JOIN runs r ON r.id = c.run_id"
+                "SELECT c.run_id, c.ticker, r.run_at FROM candidates c "
+                "JOIN runs r ON r.id = c.run_id" + where
             )
         ).all()
         done = set(
@@ -48,9 +51,10 @@ def label_candidates(
     db_path: str,
     *,
     fetch_panel: Callable[[list[str]], PricePanel] | None = None,
+    only_passed: bool = False,
 ) -> int:
     """Write every outcome whose window has closed; returns rows written."""
-    pending = pending_labels(db_path)
+    pending = pending_labels(db_path, only_passed=only_passed)
     # A window needs 1 + horizon trading days; ~7/5 calendar days each plus
     # a holiday margin. Skip rows that cannot have closed so a routine run
     # doesn't download prices for hundreds of names it can't label yet.

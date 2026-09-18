@@ -1464,6 +1464,26 @@ class DiscoverPipeline:
         pick_sectors = {t: sector_of[t] for t in picked if t in sector_of}
         return pick_sectors, _holdings_value_by_sector(holdings, sector_of)
 
+    def step_history_upkeep(self, step_input: StepInput) -> StepOutput:
+        """Last step of every run: add new history, trim old (db/retention.py).
+        Never fails the run — every sub-step only logs on error."""
+        if not self.settings.history_upkeep:
+            return StepOutput(content="history upkeep: disabled")
+        from ..db.retention import RetentionPolicy, default_file_targets, run_history_upkeep
+
+        report = run_history_upkeep(
+            self.settings.discover_db_path,
+            policy=RetentionPolicy(
+                text_days=self.settings.history_text_retention_days,
+                session_days=self.settings.history_session_retention_days,
+                candidate_days=self.settings.history_candidate_retention_days,
+                keep_models=self.settings.history_keep_model_versions,
+                file_days=self.settings.history_file_retention_days,
+            ),
+            file_targets=default_file_targets(self.settings.model_cache_dir),
+        )
+        return StepOutput(content=report.summary())
+
     def step_persist_and_report(self, step_input: StepInput) -> StepOutput:
         # 1. SQLite persistence (same as before)
         with get_session(self.settings.discover_db_path) as session:
@@ -1734,6 +1754,7 @@ class DiscoverPipeline:
                 Step(name="redteam", executor=self.step_redteam),
                 Step(name="sizer", executor=self.step_sizer),
                 Step(name="persist_and_report", executor=self.step_persist_and_report),
+                Step(name="history_upkeep", executor=self.step_history_upkeep),
             ],
         )
 

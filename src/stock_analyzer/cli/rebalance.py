@@ -764,6 +764,7 @@ class RebalancePipeline(DiscoverPipeline):
                     name="persist_and_email_rebalance",
                     executor=self.step_persist_and_email_rebalance,
                 ),
+                Step(name="history_upkeep", executor=self.step_history_upkeep),
             ],
         )
 
