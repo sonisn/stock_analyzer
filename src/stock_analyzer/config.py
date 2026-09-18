@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     # candidates past the longest lookback any check uses, old model
     # versions, and stale log / price-cache files. Analysis rows the track
     # record, calibration and model read are never deleted.
+    # Deterministic "Portfolio health" block at the top of the daily
+    # analyze-portfolio email (reporting/health.py): stop-loss watch, thesis
+    # check on held former picks, sector weight vs the cap, tax-loss
+    # harvesting candidates, earnings this week. No LLM calls.
+    portfolio_health: bool = True
     history_upkeep: bool = True
     history_text_retention_days: int = 365
     history_session_retention_days: int = 30

@@ -23,6 +23,8 @@ def format_html(
     *,
     title: str = "Portfolio Analysis",
     chart_cids: dict[str, str] | None = None,
+    health_html: str = "",
+    first_tickers: list[str] | None = None,
 ) -> str:
     """Render the analyst report as HTML.
 
@@ -31,9 +33,13 @@ def format_html(
     metrics table. CIDs must be attached as inline images by the SMTP layer.
     """
     sentiment, tickers = _parse(report)
-    body_parts: list[str] = []
+    body_parts: list[str] = [health_html] if health_html else []
     if sentiment:
         body_parts.append(_render_sentiment(sentiment))
+    if first_tickers:
+        # Holdings with a decision waiting come first, in urgency order.
+        rank = {t: i for i, t in enumerate(first_tickers)}
+        tickers.sort(key=lambda t: rank.get(t.symbol, len(rank)))
     body_parts.extend(_render_ticker(t, chart_cids or {}) for t in tickers)
     return _wrap_html(title, "\n".join(body_parts))
 
@@ -194,6 +200,9 @@ def _wrap_html(title: str, body: str) -> str:
         "h3{font-size:15px;margin:18px 0 6px;color:#374151;}"
         "ul{margin:6px 0 14px 20px;padding:0;}"
         "li{margin:3px 0;font-size:14px;}"
+        "section.health p.health-strip{background:#f9fafb;padding:10px 14px;"
+        "border-left:3px solid #0891b2;border-radius:4px;font-size:15px;}"
+        "table.health th{width:auto;background:#f9fafb;font-size:13px;}"
         "img.chart{display:block;max-width:100%;height:auto;margin:8px 0 14px;"
         "border:1px solid #1f2937;border-radius:6px;background:#111;}"
     )

@@ -39,10 +39,92 @@ def _build_agent(settings: Settings) -> PortfolioAgent:
     )
 
 
-def run_analysis(settings: Settings) -> tuple[str, list[str]]:
+def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
+    """The deterministic PortfolioHealth (reporting/health.py) with the live
+    data sources wired in. None when disabled or on any failure — the daily
+    email must still go out."""
+    if not settings.portfolio_health:
+        return None
+    from ..reporting.health import build_portfolio_health
+
+    db = settings.discover_db_path
+
+    def sector_of(tickers: list[str]) -> dict[str, str]:
+        from sqlalchemy import text
+
+        from ..data.fundamentals import batch_fundamentals
+        from ..db.session import get_session
+
+        with get_session(db) as session:
+            rows = session.exec(
+                text(
+                    "SELECT c.ticker, c.sector FROM candidates c JOIN runs r ON r.id = c.run_id "
+                    "WHERE c.sector IS NOT NULL ORDER BY r.run_at"
+                )
+            ).all()
+        known = {t: s for t, s in rows if t in set(tickers)}  # latest run wins
+        missing = [t for t in tickers if t not in known]
+        if missing:
+            known.update(
+                {t: f["sector"] for t, f in batch_fundamentals(missing).items() if f.get("sector")}
+            )
+        return known
+
+    def held_thesis_checks(held: set[str]) -> list[dict]:
+        from ..discover.thesis_tracker import check_theses, load_open_picks, thesis_report_data
+
+        picks = [p for p in load_open_picks(db) if p.ticker in held]
+        return thesis_report_data(check_theses(picks)) if picks else []
+
+    def harvest() -> list[dict]:
+        from ..data.brokerage import fetch_account_meta
+        from ..data.transactions import fetch_transaction_history, to_tax_payloads
+        from ..discover.tax_harvest import find_harvest_candidates, harvest_report_data
+        from .rebalance import _build_position_splits
+
+        splits = _build_position_splits(holdings, fetch_account_meta())
+        prices = {
+            h["ticker"]: h.get("price")
+            for items in holdings.values()
+            for h in items
+            if h.get("ticker")
+        }
+        return harvest_report_data(
+            find_harvest_candidates(
+                splits,
+                prices,
+                to_tax_payloads(fetch_transaction_history(years_back=3)),
+                min_loss_usd=settings.harvest_min_loss_usd,
+                min_loss_pct=settings.harvest_min_loss_pct,
+            )
+        )
+
+    def earnings(tickers: list[str]) -> dict[str, dict]:
+        from ..data.earnings_calendar import batch_earnings_flags
+
+        return batch_earnings_flags(tickers, within_days=7)
+
+    try:
+        return build_portfolio_health(
+            holdings,
+            max_sector_pct=settings.discover_max_sector_pct,
+            sector_of=sector_of,
+            held_thesis_checks=held_thesis_checks,
+            harvest=harvest,
+            earnings=earnings,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Portfolio health block failed (%s) — sending the email without it", e)
+        return None
+
+
+def run_analysis(
+    settings: Settings, holdings: dict[str, list[dict]] | None = None
+) -> tuple[str, list[str]]:
     """Return (report_text, tickers). Tickers are exposed so callers can fetch
     per-ticker chart images for the email."""
-    holdings = fetch_portfolio_holdings()
+    if holdings is None:
+        holdings = fetch_portfolio_holdings()
     tickers = sorted({h["ticker"] for items in holdings.values() for h in items if h.get("ticker")})
     if not tickers:
         raise RuntimeError("No tickers returned from SnapTrade — check connected accounts.")
@@ -50,6 +132,32 @@ def run_analysis(settings: Settings) -> tuple[str, list[str]]:
 
     agent = _build_agent(settings)
     return agent.run_analysis(tickers, holdings=holdings), tickers
+
+
+def build_email(result: str, health, chart_cids: dict[str, str]) -> tuple[str, str]:
+    """(subject, HTML body). With a health result, the email opens with the
+    short "Decide today" list, the subject carries how many decisions are
+    waiting, and flagged holdings are listed first."""
+    from ..reporting.health import (
+        decision_count,
+        flagged_tickers,
+        render_decisions_html,
+        render_health_html,
+    )
+
+    day = date.today().strftime("%b-%d")
+    if health is None:
+        subject = f"Portfolio Analysis - {day}"
+        return subject, format_html(result, title=subject, chart_cids=chart_cids)
+    n = decision_count(health)
+    subject = f"Portfolio {day}: " + (f"{n} to decide" if n else "nothing to decide")
+    return subject, format_html(
+        result,
+        title=f"Portfolio Analysis - {day}",
+        chart_cids=chart_cids,
+        health_html=render_decisions_html(health) + render_health_html(health),
+        first_tickers=flagged_tickers(health),
+    )
 
 
 def _chart_cid(ticker: str) -> str:
@@ -65,7 +173,9 @@ def main() -> None:
     finnhub.reload_from_env()
     settings = Settings.from_env()
 
-    result, tickers = run_analysis(settings)
+    holdings = fetch_portfolio_holdings()
+    result, tickers = run_analysis(settings, holdings)
+    health = portfolio_health(settings, holdings)
     if not settings.email_to:
         logger.error("EMAIL_TO not set; printing report instead of emailing")
         print(result)
@@ -75,11 +185,11 @@ def main() -> None:
     chart_cids = {t: _chart_cid(t) for t in charts}
     inline_images = {_chart_cid(t): data for t, data in charts.items()}
 
-    subject = f"Portfolio Analysis - {date.today().strftime('%b-%d')}"
+    subject, body = build_email(result, health, chart_cids)
     SmtpServer().send_email(
         settings.email_to,
         subject,
-        format_html(result, title=subject, chart_cids=chart_cids),
+        body,
         content_type="html",
         inline_images=inline_images or None,
     )
