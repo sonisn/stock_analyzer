@@ -7,7 +7,9 @@ from typing import Any
 
 from ..models.rebalance import RebalancePlan
 from ..models.reports import PreMortem, Section
+from ..models.track_record import TrackRecord
 from .report_sections import (
+    append_track_record_section,
     append_usage_section,
     build_sections,
     parse_confidence,
@@ -71,6 +73,7 @@ def append_rebalance_overview(
     holdings_news: dict[str, list[dict[str, Any]]] | None,
     sector_value: dict[str, float],
     track_record_block: str,
+    track_record: TrackRecord | None,
     market_themes: object,
     macro_summary: str,
 ) -> None:
@@ -131,9 +134,7 @@ def append_rebalance_overview(
         sections.append(Section(kind="heading", text="Sector allocation", level=2))
         sections.append(Section(kind="sector_pie", pie_data=pie_data))
 
-    if track_record_block:
-        sections.append(Section(kind="heading", text="Track record", level=2))
-        sections.append(Section(kind="preformatted", text=track_record_block))
+    append_track_record_section(sections, track_record, track_record_block)
 
     from ..models.llm import MarketThemes
 
@@ -354,6 +355,7 @@ def build_rebalance_sections(
     holdings_technicals: dict[str, dict[str, Any]],
     holdings_fundamentals: dict[str, dict[str, Any]],
     track_record_block: str = "",
+    track_record: TrackRecord | None = None,
     rebalance_plan: object = None,
     market_themes: object = None,
     premortem: object = None,
@@ -404,6 +406,7 @@ def build_rebalance_sections(
         holdings_news=holdings_news,
         sector_value=sector_value,
         track_record_block=track_record_block,
+        track_record=track_record,
         market_themes=market_themes,
         macro_summary=macro_summary,
     )

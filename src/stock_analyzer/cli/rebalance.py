@@ -550,6 +550,7 @@ class RebalancePipeline(DiscoverPipeline):
             holdings_technicals=self.state.get("holdings_technicals", {}),
             holdings_fundamentals=self.state.get("holdings_fundamentals", {}),
             track_record_block=self.state.get("track_record_block", ""),
+            track_record=self.state.get("track_record"),
             rebalance_plan=self.state.get("rebalance_plan"),
             market_themes=self.state.get("market_themes"),
             premortem=self.state.get("premortem"),

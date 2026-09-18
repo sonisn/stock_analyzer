@@ -19,6 +19,7 @@ from rich.console import Console
 from rich.table import Table as RichTable
 
 from ..models.reports import Section
+from ..models.track_record import PickReturn, TrackRecord
 
 # --- pick / ticker block parsing --------------------------------------------
 
@@ -259,6 +260,237 @@ def _primary_reject_reason(reasons: list[str]) -> str:
     return first[:40]
 
 
+_DIRECTION_LABELS = {"buy": "Buy", "hold": "Hold", "trim": "Trim", "sell": "Sell"}
+_MAX_DECISION_ROWS = 12
+
+
+def _pct_or_dash(v: float | None) -> str:
+    return f"{v:+.1f}%" if v is not None else "—"
+
+
+def _decision_row(p: PickReturn) -> list[str]:
+    return [
+        _DIRECTION_LABELS.get(p.direction, p.direction),
+        p.ticker,
+        p.pick_date,
+        _pct_or_dash(p.pick_return_pct),
+        _pct_or_dash(p.spy_return_pct),
+        _pct_or_dash(p.alpha_pct),
+        _pct_or_dash(p.beta_adjusted_alpha_pct),
+    ]
+
+
+def append_track_record_section(
+    sections: list[Section],
+    record: TrackRecord | None,
+    fallback_block: str = "",
+) -> None:
+    """'Track record' — headline sentence, alpha-by-call bar chart, per-horizon
+    stats table, provider/model breakdown, scored decisions, pending and
+    unmeasurable decisions. Falls back to the preformatted prompt block when
+    no structured record is available (legacy callers)."""
+    if not isinstance(record, TrackRecord):
+        if fallback_block:
+            sections.append(Section(kind="heading", text="Track record", level=2))
+            sections.append(Section(kind="preformatted", text=fallback_block))
+        return
+    if record.n_picks_total == 0:
+        return
+
+    from .track_record import format_track_record_summary
+
+    sections.append(Section(kind="heading", text="Track record", level=2))
+    horizon = record.reported_horizon_days
+    by_direction = [
+        ("buy", record.buy_stats),
+        ("hold", record.hold_stats),
+        ("trim", record.trim_stats),
+        ("sell", record.sell_stats),
+    ]
+    if record.n_mature == 0:
+        sections.append(Section(kind="para", text=format_track_record_summary(record)))
+    else:
+        beta_adj = [
+            (s.mean_beta_adjusted_alpha_pct, s.n_beta_adjusted)
+            for _, s in by_direction
+            if s.mean_beta_adjusted_alpha_pct is not None and s.n_beta_adjusted
+        ]
+        beta_bit = ""
+        if beta_adj:
+            n_beta = sum(n for _, n in beta_adj)
+            mean_beta = sum(v * n for v, n in beta_adj) / n_beta
+            beta_bit = f" ({mean_beta:+.1f}% after removing market beta)"
+        sections.append(
+            Section(
+                kind="para",
+                text=(
+                    f"Over a {horizon}-day horizon, {record.n_mature} scored calls averaged "
+                    f"{_pct_or_dash(record.mean_alpha_pct)} alpha vs SPY{beta_bit}: "
+                    f"{record.winners} right, {record.losers} wrong, {record.flats} flat. "
+                    f"Positive alpha means the call was right — buys and holds beat SPY, "
+                    f"trims and sells lagged it."
+                ),
+            )
+        )
+        bars = [
+            {
+                "label": f"{_DIRECTION_LABELS[d]} · {s.n_mature} scored",
+                "value": s.mean_alpha_pct,
+                "note": (
+                    f"beta-adj {s.mean_beta_adjusted_alpha_pct:+.1f}%"
+                    if s.mean_beta_adjusted_alpha_pct is not None
+                    else ""
+                ),
+            }
+            for d, s in by_direction
+            if s.n_mature and s.mean_alpha_pct is not None
+        ]
+        if bars:
+            sections.append(
+                Section(
+                    kind="bar_chart",
+                    data={
+                        "title": f"Mean alpha vs SPY by call, {horizon}d",
+                        "unit": "%",
+                        "bars": bars,
+                    },
+                )
+            )
+
+    stat_rows: list[list[str]] = []
+    breakdown_rows: list[list[str]] = []
+    for h in record.horizons:
+        for d, s in [
+            ("buy", h.buy_stats),
+            ("hold", h.hold_stats),
+            ("trim", h.trim_stats),
+            ("sell", h.sell_stats),
+        ]:
+            if not s.n_mature:
+                continue
+            stat_rows.append(
+                [
+                    f"{h.horizon_days}d",
+                    _DIRECTION_LABELS[d],
+                    str(s.n_mature),
+                    _pct_or_dash(s.mean_alpha_pct),
+                    _pct_or_dash(s.mean_beta_adjusted_alpha_pct),
+                    f"{s.winners}/{s.losers}/{s.flats}",
+                    f"{s.sharpe:.2f}" if s.sharpe is not None else "n/a",
+                ]
+            )
+        for m in h.model_breakdown:
+            breakdown_rows.append(
+                [
+                    f"{h.horizon_days}d",
+                    f"Model: {m.opus_model}",
+                    str(m.n_mature),
+                    _pct_or_dash(m.mean_alpha_pct),
+                    f"{m.sharpe:.2f}" if m.sharpe is not None else "n/a",
+                ]
+            )
+        for p in h.provider_breakdown:
+            breakdown_rows.append(
+                [
+                    f"{h.horizon_days}d",
+                    f"Provider: {p.provider}",
+                    str(p.n_mature),
+                    _pct_or_dash(p.mean_alpha_pct),
+                    f"{p.sharpe:.2f}" if p.sharpe is not None else "n/a",
+                ]
+            )
+    if stat_rows:
+        sections.append(
+            Section(
+                kind="table",
+                table_header=[
+                    "Horizon",
+                    "Call",
+                    "Scored",
+                    "Mean alpha",
+                    "Beta-adj alpha",
+                    "W/L/F",
+                    "Sharpe",
+                ],
+                table_rows=stat_rows,
+            )
+        )
+    if breakdown_rows:
+        sections.append(Section(kind="heading", text="Buy alpha by model and provider", level=3))
+        sections.append(
+            Section(
+                kind="table",
+                table_header=["Horizon", "Source", "Picks", "Mean alpha", "Sharpe"],
+                table_rows=breakdown_rows,
+            )
+        )
+
+    scored = sorted(
+        (p for p in record.picks if p.alpha_pct is not None),
+        key=lambda p: p.alpha_pct or 0.0,
+        reverse=True,
+    )
+    if scored:
+        half = _MAX_DECISION_ROWS // 2
+        shown = scored if len(scored) <= _MAX_DECISION_ROWS else scored[:half] + scored[-half:]
+        title = f"Scored calls, {horizon}d, best to worst"
+        if len(shown) < len(scored):
+            title += f" ({half} best and {half} worst of {len(scored)})"
+        sections.append(Section(kind="heading", text=title, level=3))
+        sections.append(
+            Section(
+                kind="table",
+                table_header=["Call", "Ticker", "Date", "Return", "SPY", "Alpha", "Beta-adj"],
+                table_rows=[_decision_row(p) for p in shown],
+            )
+        )
+
+    if record.pending:
+        pending = sorted(record.pending, key=lambda p: p.pick_date, reverse=True)[:5]
+        sections.append(
+            Section(
+                kind="heading",
+                text=f"Too young to score ({record.n_pending}; live mark only)",
+                level=3,
+            )
+        )
+        sections.append(
+            Section(
+                kind="table",
+                table_header=["Call", "Ticker", "Date", "Age", "Live return"],
+                table_rows=[
+                    [
+                        _DIRECTION_LABELS.get(p.direction, p.direction),
+                        p.ticker,
+                        p.pick_date,
+                        f"{p.age_days}d",
+                        _pct_or_dash(p.pick_return_pct),
+                    ]
+                    for p in pending
+                ],
+            )
+        )
+
+    no_data = sorted(
+        (u for u in record.unmeasurable if u.reason == "no_price_data"),
+        key=lambda u: u.pick_date,
+    )
+    if no_data:
+        names = ", ".join(
+            f"{u.ticker} ({_DIRECTION_LABELS.get(u.direction, u.direction).lower()}, {u.pick_date})"
+            for u in no_data
+        )
+        sections.append(
+            Section(
+                kind="para",
+                text=(
+                    f"No forward price for {len(no_data)} call(s) — delisted or a bad symbol, "
+                    f"and likely a loss, so they are flagged rather than dropped: {names}."
+                ),
+            )
+        )
+
+
 def append_paper_ledger_section(sections: list[Section], ledger: dict[str, Any] | None) -> None:
     """'Paper portfolio vs SPY' — headline sentence, equity curve, per-run table."""
     if not ledger or not ledger.get("dates"):
@@ -347,6 +579,7 @@ def build_sections(
     macro_summary: str = "",
     sector_rotation: dict[str, Any] | None = None,
     track_record_block: str = "",
+    track_record: TrackRecord | None = None,
     ranker_output: object = None,
     redteam_output: object = None,
     sizer_output: object = None,
@@ -388,10 +621,7 @@ def build_sections(
         )
     )
 
-    if track_record_block:
-        s.append(Section(kind="heading", text="Track record", level=2))
-        s.append(Section(kind="preformatted", text=track_record_block))
-
+    append_track_record_section(s, track_record, track_record_block)
     append_paper_ledger_section(s, paper_ledger)
 
     # Market themes panel — what's hot right now (drives ranker bias).
