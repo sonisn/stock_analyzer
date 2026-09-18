@@ -9,6 +9,7 @@ from ..models.rebalance import RebalancePlan
 from ..models.reports import PreMortem, Section
 from ..models.track_record import TrackRecord
 from .report_sections import (
+    append_thesis_check_section,
     append_track_record_section,
     append_usage_section,
     build_sections,
@@ -74,6 +75,7 @@ def append_rebalance_overview(
     sector_value: dict[str, float],
     track_record_block: str,
     track_record: TrackRecord | None,
+    thesis_checks: list[dict[str, Any]] | None,
     market_themes: object,
     macro_summary: str,
 ) -> None:
@@ -135,6 +137,7 @@ def append_rebalance_overview(
         sections.append(Section(kind="sector_pie", pie_data=pie_data))
 
     append_track_record_section(sections, track_record, track_record_block)
+    append_thesis_check_section(sections, thesis_checks)
 
     from ..models.llm import MarketThemes
 
@@ -356,6 +359,7 @@ def build_rebalance_sections(
     holdings_fundamentals: dict[str, dict[str, Any]],
     track_record_block: str = "",
     track_record: TrackRecord | None = None,
+    thesis_checks: list[dict[str, Any]] | None = None,
     rebalance_plan: object = None,
     market_themes: object = None,
     premortem: object = None,
@@ -407,6 +411,7 @@ def build_rebalance_sections(
         sector_value=sector_value,
         track_record_block=track_record_block,
         track_record=track_record,
+        thesis_checks=thesis_checks,
         market_themes=market_themes,
         macro_summary=macro_summary,
     )

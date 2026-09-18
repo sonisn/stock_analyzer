@@ -42,6 +42,15 @@ You are reviewing ONE position in a portfolio. The user provides:
   - news (bare recent headlines, no dates — weaker than recent_news)
   - tax_lots (lot-level cost basis history for SPECIFIC-ID lot selection
     on any SELL/TRIM recommendation)
+  - original_pick_thesis_check (only when this holding was a recent
+    discover pick; otherwise null): a deterministic re-check of that
+    pick's thesis — status BROKEN / TARGET HIT / WATCH / INTACT, return
+    since the pick vs SPY, its own bear/bull scenario targets, and the
+    signals behind the status. BROKEN means the downside the pick priced
+    in has already happened or the entry trend rule failed while lagging
+    SPY; TARGET HIT means the priced-in upside is used up. Address it
+    explicitly in your reasoning — hold only if you can say why the
+    thesis still stands despite the flag.
 
 GROUND your forward outlook in this hierarchy:
   1. quarterly_mda — what management said LAST QUARTER (most current)

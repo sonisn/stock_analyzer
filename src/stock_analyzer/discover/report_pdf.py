@@ -102,6 +102,51 @@ def _pdf_styles():
     return styles
 
 
+_TABLE_WIDTH = 7.3 * inch  # letter width minus the 0.6in side margins
+_CELL_PAD = 12  # Table's default 6pt left + right padding
+
+
+def _fit_table(
+    header: list[str], rows: list[list[str]], styles
+) -> tuple[list[list[Any]], list[float] | None]:
+    """Plain table cells never wrap in ReportLab, so a long cell (a headline,
+    a list of signals) ran off the page. When the natural widths overflow,
+    narrow columns keep their width, the rest share what is left, and cells
+    in the shrunk columns become wrapping Paragraphs."""
+    n = len(header)
+    natural = [
+        max(
+            stringWidth(str(header[i]), "Helvetica-Bold", 9),
+            *(stringWidth(str(r[i]), _PDF_FONT, 9) for r in rows if i < len(r)),
+        )
+        + _CELL_PAD
+        for i in range(n)
+    ]
+    if sum(natural) <= _TABLE_WIDTH:
+        return [header, *rows], None
+    widths: list[float | None] = [None] * n
+    remaining, open_cols = _TABLE_WIDTH, list(range(n))
+    while open_cols:
+        share = remaining / len(open_cols)
+        fits = [i for i in open_cols if natural[i] <= share]
+        if not fits:
+            for i in open_cols:
+                widths[i] = share
+            break
+        for i in fits:
+            widths[i] = natural[i]
+            remaining -= natural[i]
+            open_cols.remove(i)
+    wrapped = {i for i in range(n) if widths[i] < natural[i]}
+    cell_style = ParagraphStyle("TableCell", parent=styles["BodyText"], fontSize=9, leading=11)
+
+    def cell(i: int, v: Any) -> Any:
+        return Paragraph(html.escape(str(v)), cell_style) if i in wrapped else v
+
+    body = [[cell(i, v) for i, v in enumerate(r)] for r in rows]
+    return [header, *body], [float(w) for w in widths]
+
+
 def _pdf_status_banner(status: str, text: str, styles):
     """A status banner rendered as a single-row colored Table for PDF."""
     cs = _STATUS_COLORS.get(status, _STATUS_COLORS["UNKNOWN"])
@@ -1319,8 +1364,8 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
                 except Exception:
                     pass
         elif s.kind == "table" and s.table_header and s.table_rows:
-            tdata = [s.table_header] + s.table_rows
-            t = Table(tdata, repeatRows=1, hAlign="LEFT")
+            tdata, col_widths = _fit_table(s.table_header, s.table_rows, styles)
+            t = Table(tdata, repeatRows=1, hAlign="LEFT", colWidths=col_widths)
             t.setStyle(
                 TableStyle(
                     [

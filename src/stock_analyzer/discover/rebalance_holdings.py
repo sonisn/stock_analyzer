@@ -46,8 +46,10 @@ def build_holding_review_payloads(
     quarterly_mda_chars: int,
     transcript_chars: int,
     recent_news: dict[str, list[dict[str, Any]]] | None = None,
+    thesis_checks: list[dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     recent_news = recent_news or {}
+    thesis_by_ticker = {c["ticker"]: c for c in thesis_checks or []}
     payloads: dict[str, dict[str, Any]] = {}
     for ticker, pos in positions.items():
         t = tech.get(ticker) or {}
@@ -98,6 +100,9 @@ def build_holding_review_payloads(
             ),
             "recent_news": recent_news.get(ticker, []),
             "news": news.get(ticker, []),
+            # Only for holdings that were discover picks: how the original
+            # thesis is holding up against its own targets and catalysts.
+            "original_pick_thesis_check": thesis_by_ticker.get(ticker),
             "tax_lots": enrich_tax_lots_with_impact(
                 tax_lots_raw.get(ticker) or {},
                 current or 0.0,

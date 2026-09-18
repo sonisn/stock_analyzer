@@ -491,6 +491,79 @@ def append_track_record_section(
         )
 
 
+def append_thesis_check_section(
+    sections: list[Section], checks: list[dict[str, Any]] | None
+) -> None:
+    """'Open picks: thesis check' — a one-line tally, then a table of every
+    pick that needs attention (broken, past its bull target, or on watch).
+    Intact picks are only named, to keep the section short."""
+    if not checks:
+        return
+    by_status: dict[str, list[dict[str, Any]]] = {}
+    for c in checks:
+        by_status.setdefault(c["status"], []).append(c)
+    tally = ", ".join(
+        f"{len(by_status[k])} {label}"
+        for k, label in (
+            ("BROKEN", "broken"),
+            ("TARGET HIT", "past the bull target"),
+            ("WATCH", "on watch"),
+            ("INTACT", "intact"),
+        )
+        if by_status.get(k)
+    )
+    from .thesis_tracker import OPEN_WINDOW_DAYS
+
+    sections.append(Section(kind="heading", text="Open picks: thesis check", level=2))
+    text = (
+        f"{len(checks)} picks from the last {OPEN_WINDOW_DAYS} days, re-checked against their own "
+        f"bear/bull targets, the 200-day trend, SPY, their catalysts and EPS "
+        f"revisions: {tally}."
+    )
+    intact = sorted(c["ticker"] for c in by_status.get("INTACT", []))
+    if intact:
+        text += f" Intact: {', '.join(intact)}."
+    sections.append(Section(kind="para", text=text))
+    flagged = [c for c in checks if c["status"] != "INTACT"]
+    if not flagged:
+        return
+
+    def targets(c: dict[str, Any]) -> str:
+        bear, bull = c.get("bear_target_pct"), c.get("bull_target_pct")
+        if bear is None and bull is None:
+            return "—"
+        return f"{_pct_or_dash(bear)} / {_pct_or_dash(bull)}"
+
+    sections.append(
+        Section(
+            kind="table",
+            table_header=["Status", "Ticker", "Picked", "Return", "vs SPY", "Bear / bull", "Why"],
+            table_rows=[
+                [
+                    c["status"],
+                    c["ticker"],
+                    c["pick_date"],
+                    _pct_or_dash(c.get("return_pct")),
+                    f"{c['excess_pct']:+.1f} pts" if c.get("excess_pct") is not None else "—",
+                    targets(c),
+                    "; ".join(s["text"] for s in c["signals"] if s["severity"] != "info") or "—",
+                ]
+                for c in flagged
+            ],
+        )
+    )
+    upcoming = [
+        (c["ticker"], s["text"]) for c in checks for s in c["signals"] if s["severity"] == "info"
+    ]
+    if upcoming:
+        sections.append(
+            Section(
+                kind="para",
+                text="Coming up: " + "; ".join(f"{t}: {msg}" for t, msg in upcoming) + ".",
+            )
+        )
+
+
 def append_paper_ledger_section(sections: list[Section], ledger: dict[str, Any] | None) -> None:
     """'Paper portfolio vs SPY' — headline sentence, equity curve, per-run table."""
     if not ledger or not ledger.get("dates"):
@@ -590,6 +663,7 @@ def build_sections(
     pick_catalysts: dict[str, list[dict[str, Any]]] | None = None,
     usage: dict[str, Any] | None = None,
     paper_ledger: dict[str, Any] | None = None,
+    thesis_checks: list[dict[str, Any]] | None = None,
 ) -> list[Section]:
     # Prefer the structured Phase 4 objects when present; fall back to
     # parsing the free-text variants so legacy callers / partial runs
@@ -622,6 +696,7 @@ def build_sections(
     )
 
     append_track_record_section(s, track_record, track_record_block)
+    append_thesis_check_section(s, thesis_checks)
     append_paper_ledger_section(s, paper_ledger)
 
     # Market themes panel — what's hot right now (drives ranker bias).

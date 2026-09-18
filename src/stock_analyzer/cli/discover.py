@@ -98,6 +98,7 @@ from ..discover.sizer import (
     enforce_sector_caps,
     format_sector_exposure_block,
 )
+from ..discover.thesis_tracker import check_theses, load_open_picks, thesis_report_data
 from ..discover.track_record import (
     format_track_record_block,
     format_track_record_summary,
@@ -728,6 +729,24 @@ class DiscoverPipeline:
             logger.warning("paper ledger failed (%s) — report will omit it", e)
             self.state["paper_ledger"] = None
         return StepOutput(content=self.state["track_record_summary"])
+
+    def step_thesis_check(self, step_input: StepInput) -> StepOutput:
+        """Re-check every recent pick's thesis (no LLM). Runs after the
+        screen so this run's EPS revisions are available."""
+        try:
+            checks = check_theses(
+                load_open_picks(self.settings.discover_db_path),
+                eps_revisions=self.state.get("eps_revisions") or {},
+            )
+        except Exception as e:
+            logger.warning("thesis check failed (%s) — report will omit it", e)
+            self.state["thesis_checks"] = []
+            return StepOutput(content="thesis check: failed; skipping")
+        self.state["thesis_checks"] = thesis_report_data(checks)
+        flagged = [f"{c.ticker} {c.status}" for c in checks if c.status != "INTACT"]
+        for line in flagged:
+            logger.info("Thesis check: %s", line)
+        return StepOutput(content=f"Thesis check: {len(checks)} open picks, {len(flagged)} flagged")
 
     def step_market_themes(self, step_input: StepInput) -> StepOutput:
         """Detect 3-8 named market themes that are visible in the
@@ -1511,6 +1530,7 @@ class DiscoverPipeline:
             pick_catalysts=pick_catalysts,
             usage=TRACKER.report_data(),
             paper_ledger=self.state.get("paper_ledger"),
+            thesis_checks=self.state.get("thesis_checks"),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -1622,6 +1642,7 @@ class DiscoverPipeline:
                 # so it runs sequentially after the market_data block.
                 Step(name="market_themes", executor=self.step_market_themes),
                 Step(name="screen", executor=self.step_screen),
+                Step(name="thesis_check", executor=self.step_thesis_check),
                 Parallel(
                     Step(name="risk_factors", executor=self.step_risk_factors),
                     Step(name="quarterly_mda", executor=self.step_quarterly_mda),

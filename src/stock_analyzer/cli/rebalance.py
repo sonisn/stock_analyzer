@@ -374,6 +374,7 @@ class RebalancePipeline(DiscoverPipeline):
             holdings_transcripts=self.state.get("holdings_transcripts", {}),
             news=self.state.get("news") or {},
             recent_news=self.state.get("recent_news") or {},
+            thesis_checks=self.state.get("thesis_checks") or [],
             risk_factors_chars=_RISK_FACTORS_CHARS,
             quarterly_mda_chars=_QUARTERLY_MDA_CHARS,
             transcript_chars=_TRANSCRIPT_CHARS,
@@ -565,6 +566,7 @@ class RebalancePipeline(DiscoverPipeline):
             holdings_fundamentals=self.state.get("holdings_fundamentals", {}),
             track_record_block=self.state.get("track_record_block", ""),
             track_record=self.state.get("track_record"),
+            thesis_checks=self.state.get("thesis_checks"),
             rebalance_plan=self.state.get("rebalance_plan"),
             market_themes=self.state.get("market_themes"),
             premortem=self.state.get("premortem"),
@@ -668,6 +670,7 @@ class RebalancePipeline(DiscoverPipeline):
                 # macro_regime from inside the parallel block).
                 Step(name="market_themes", executor=self.step_market_themes),
                 Step(name="screen", executor=self.step_screen),
+                Step(name="thesis_check", executor=self.step_thesis_check),
                 Parallel(
                     Step(name="risk_factors", executor=self.step_risk_factors),
                     Step(name="quarterly_mda", executor=self.step_quarterly_mda),
