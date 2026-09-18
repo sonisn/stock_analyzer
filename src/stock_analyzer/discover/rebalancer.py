@@ -287,6 +287,21 @@ Apply these rules to your action list:
      Different sectors or competitors (NVDA vs AMD) are NOT
      substantially identical and are safe.
 
+TAX-LOSS HARVEST CANDIDATES (when that block is present):
+A deterministic check lists taxable position slices sitting well below
+cost basis, with the realized loss, its short/long-term split, a rough
+tax-saving estimate, a wash-sale warning when shares were bought in the
+last 30 days, and peers that keep similar exposure without being
+substantially identical. Weigh each one against its holding review:
+  - A TRIM/SELL verdict on a listed name → do it from the listed taxable
+    account first and say the loss is being harvested.
+  - A HOLD verdict → harvesting is only worth it with a swap: SELL the
+    taxable slice and BUY a listed peer so market exposure is kept. Only
+    recommend this when the saving is material relative to the position
+    and the peer is a reasonable substitute; otherwise leave it.
+  - Never ADD/BUY a harvested ticker in the same plan, and honor any
+    wash-sale warning on the line.
+
 Output EXACTLY one of these two formats:
 
 === Format A — when NO ACTION is warranted ===
@@ -644,6 +659,7 @@ class Rebalancer:
         history_block: str = "",
         market_themes_block: str = "",
         cc_context_block: str = "",
+        harvest_block: str = "",
     ) -> RebalancePlan:
         # Accept either the new structured form ({ticker: HoldingReview})
         # or the legacy free-text form ({ticker: str}). For the LLM prompt
@@ -678,6 +694,11 @@ class Rebalancer:
             else ""
         )
         cc_section = f"{cc_context_block}\n\n" if cc_context_block else ""
+        harvest_section = (
+            f"TAX-LOSS HARVEST CANDIDATES (deterministic; see instructions):\n{harvest_block}\n\n"
+            if harvest_block
+            else ""
+        )
         prompt = (
             f"AGGRESSIVENESS: {agg}\n"
             f"(Apply the {agg} rule set from your instructions. The "
@@ -686,6 +707,7 @@ class Rebalancer:
             f"{macro_block}"
             f"{themes_section}"
             f"{cc_section}"
+            f"{harvest_section}"
             f"{cash_line}\n\n"
             f"{history_section}"
             f"Current holdings reviews ({len(holdings_reviews)}):\n\n{reviews_block}\n\n"

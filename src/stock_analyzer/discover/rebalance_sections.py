@@ -166,6 +166,79 @@ def append_rebalance_overview(
         sections.append(Section(kind="blockquote", text=macro_summary))
 
 
+def append_harvest_section(
+    sections: list[Section], candidates: list[dict[str, Any]] | None
+) -> None:
+    """'Tax-loss harvesting candidates' — deterministic, taxable accounts
+    only. One row per account slice; the specific loss lots and any wash-
+    sale or plan conflict go in the notes column."""
+    if not candidates:
+        return
+    total_loss = sum(-c["loss_usd"] for c in candidates)
+    total_saving = sum(c["est_tax_saving_usd"] for c in candidates)
+    sections.append(Section(kind="heading", text="Tax-loss harvesting candidates", level=2))
+    sections.append(
+        Section(
+            kind="para",
+            text=(
+                f"{len(candidates)} taxable position slice(s) could realize "
+                f"${total_loss:,.0f} of losses, worth roughly ${total_saving:,.0f} in tax "
+                f"at the report's assumed 32% short-term / 18% long-term rates. Selling "
+                f"means not buying the same ticker back (in any account, IRAs included) "
+                f"for 31 days; a listed peer keeps similar exposure meanwhile. Estimates "
+                f"only: confirm lots and your own rates with your broker."
+            ),
+        )
+    )
+    rows = []
+    for c in candidates:
+        notes = []
+        if c["lots"]:
+            notes.append(
+                "sell lots "
+                + ", ".join(
+                    f"{lot['date']} ({lot['units']:g} sh @ ${lot['cost_per_share']:,.2f}, "
+                    f"{'LT' if lot['long_term'] else 'ST'})"
+                    for lot in c["lots"][:3]
+                )
+                + (" …" if len(c["lots"]) > 3 else "")
+            )
+        if c.get("wash_sale_until"):
+            notes.append(
+                f"bought within 30 days: a loss sale before {c['wash_sale_until']} may be "
+                f"a wash sale unless those shares are sold too"
+            )
+        if c.get("plan_conflict"):
+            notes.append(c["plan_conflict"])
+        notes.append(f"rebuy after {c['rebuy_ok_after']}")
+        rows.append(
+            [
+                c["ticker"],
+                c["account"],
+                f"-${-c['loss_usd']:,.0f} ({c['loss_pct']:+.1f}%)",
+                f"${-c['short_term_loss_usd']:,.0f} / ${-c['long_term_loss_usd']:,.0f}",
+                f"~${c['est_tax_saving_usd']:,.0f}",
+                ", ".join(c["swap_candidates"]) or "—",
+                "; ".join(notes),
+            ]
+        )
+    sections.append(
+        Section(
+            kind="table",
+            table_header=[
+                "Ticker",
+                "Account",
+                "Loss",
+                "ST / LT loss",
+                "Est. saving",
+                "Swap into",
+                "Notes",
+            ],
+            table_rows=rows,
+        )
+    )
+
+
 def append_rebalance_plan_body(
     sections: list[Section],
     *,
@@ -360,6 +433,7 @@ def build_rebalance_sections(
     track_record_block: str = "",
     track_record: TrackRecord | None = None,
     thesis_checks: list[dict[str, Any]] | None = None,
+    harvest_candidates: list[dict[str, Any]] | None = None,
     rebalance_plan: object = None,
     market_themes: object = None,
     premortem: object = None,
@@ -426,6 +500,7 @@ def build_rebalance_sections(
         cc_slippage_buffer=cc_slippage_buffer,
         stop_loss_warnings=stop_loss_warnings,
     )
+    append_harvest_section(sections, harvest_candidates)
     append_holding_review_sections(sections, holdings_reviews)
     append_discover_appendix(
         sections,

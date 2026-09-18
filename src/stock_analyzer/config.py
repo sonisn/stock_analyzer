@@ -110,6 +110,11 @@ class Settings(BaseSettings):
     # held as cash rather than redistributed, like the other caps.
     discover_max_sector_pct: float = 30.0
     discover_max_sector_new_pct: float = 50.0
+    # Tax-loss harvesting candidates in the rebalance report: a taxable
+    # position slice qualifies when its unrealized loss is at least this
+    # many dollars AND this many percent below cost basis.
+    harvest_min_loss_usd: float = 1000.0
+    harvest_min_loss_pct: float = 10.0
     # Ranker consensus: one round per (provider, model) pair listed here,
     # each a full high-effort ranking pass; picks are kept if a majority of
     # rounds agree. A blank model in `discover_ranker_models` (or too few

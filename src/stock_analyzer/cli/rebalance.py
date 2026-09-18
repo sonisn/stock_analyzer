@@ -70,6 +70,12 @@ from ..discover.report import (
     render_pdf,
 )
 from ..discover.reviewer import Reviewer, review_batch
+from ..discover.tax_harvest import (
+    find_harvest_candidates,
+    flag_plan_conflicts,
+    format_harvest_block,
+    harvest_report_data,
+)
 from ..logging import get_logger
 from ..preflight import PreflightError, preflight
 from ..usage import TRACKER, log_usage_summary
@@ -427,6 +433,32 @@ class RebalancePipeline(DiscoverPipeline):
                 content=f"cc_data: failed ({type(e).__name__}); CC disabled for this run"
             )
 
+    def step_tax_harvest(self, step_input: StepInput) -> StepOutput:
+        """Deterministic tax-loss harvesting candidates (no LLM), fed to the
+        Rebalancer and shown in the report."""
+        try:
+            prices = {
+                t: (v or {}).get("price")
+                for t, v in (self.state.get("holdings_technicals") or {}).items()
+            }
+            candidates = find_harvest_candidates(
+                self.state.get("position_splits") or {},
+                prices,
+                self.state.get("tax_lots") or {},
+                self.state.get("holdings_peers") or {},
+                min_loss_usd=self.settings.harvest_min_loss_usd,
+                min_loss_pct=self.settings.harvest_min_loss_pct,
+            )
+        except Exception as e:
+            logger.warning("tax-loss harvest scan failed (%s) — skipping", e)
+            candidates = []
+        self.state["harvest_candidates_obj"] = candidates
+        self.state["harvest_block"] = format_harvest_block(candidates)
+        total = sum(-c.loss_usd for c in candidates)
+        return StepOutput(
+            content=f"Tax-loss harvest: {len(candidates)} candidates, ${total:,.0f} of losses"
+        )
+
     def step_rebalance(self, step_input: StepInput) -> StepOutput:
         history_block = _build_history_block(self.settings.discover_db_path)
         if history_block:
@@ -466,6 +498,7 @@ class RebalancePipeline(DiscoverPipeline):
             history_block=history_block,
             market_themes_block=self.state.get("market_themes_block", ""),
             cc_context_block=self.state.get("cc_context_block", ""),
+            harvest_block=self.state.get("harvest_block", ""),
         )
         try:
             plan, cc_warnings = apply_cc_plan_validation(
@@ -486,6 +519,9 @@ class RebalancePipeline(DiscoverPipeline):
             self.state["cc_warnings"] = [f"validation crashed: {e}"]
         self.state["rebalance_plan"] = plan
         self.state["rebalance_text"] = plan.full_text
+        self.state["harvest_candidates"] = harvest_report_data(
+            flag_plan_conflicts(self.state.get("harvest_candidates_obj") or [], plan)
+        )
         return StepOutput(
             content=(
                 f"Rebalance plan generated "
@@ -567,6 +603,7 @@ class RebalancePipeline(DiscoverPipeline):
             track_record_block=self.state.get("track_record_block", ""),
             track_record=self.state.get("track_record"),
             thesis_checks=self.state.get("thesis_checks"),
+            harvest_candidates=self.state.get("harvest_candidates"),
             rebalance_plan=self.state.get("rebalance_plan"),
             market_themes=self.state.get("market_themes"),
             premortem=self.state.get("premortem"),
@@ -691,6 +728,7 @@ class RebalancePipeline(DiscoverPipeline):
                 Step(name="sizer", executor=self.step_sizer),
                 Step(name="review_holdings", executor=self.step_review_holdings),
                 Step(name="cc_data", executor=self.step_cc_data),
+                Step(name="tax_harvest", executor=self.step_tax_harvest),
                 Step(name="rebalance", executor=self.step_rebalance),
                 Step(name="premortem", executor=self.step_premortem),
                 Step(
