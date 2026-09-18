@@ -635,6 +635,19 @@ def append_usage_section(sections: list[Section], usage: dict[str, Any] | None) 
         )
     )
     sections.append(Section(kind="para", text=f"Estimated Claude cost: {total}"))
+    budget = usage.get("budget")
+    if budget:
+        cuts = budget.get("notes") or []
+        text = (
+            f"Cost cap ${budget['cap_usd']:.2f}: estimated priced spend "
+            f"${budget['spent_usd']:.2f}. "
+        )
+        text += (
+            "To stay under it this run: " + "; ".join(cuts) + "."
+            if cuts
+            else "Nothing had to be cut."
+        )
+        sections.append(Section(kind="para", text=text))
 
 
 # --- sections (unified IR for HTML + PDF) -----------------------------------

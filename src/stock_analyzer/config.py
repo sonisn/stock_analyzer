@@ -117,6 +117,14 @@ class Settings(BaseSettings):
     harvest_min_loss_pct: float = 10.0
     # Where `train-model` caches the multi-year price panel it trains on.
     model_cache_dir: str = "~/.stock_analyzer/cache"
+    # Per-run cap on estimated model spend (USD). Unset = no cap. Stages
+    # with cheaper options plan to fit (Analyst tier/count, extra Ranker
+    # rounds, Reviewer model) and any single call that would pass the cap is
+    # refused. Only priced models count: Claude is built in; add others via
+    # LLM_PRICES, e.g. "gemini-pro-latest=1.25:10,gpt-6-astra=2:8" (USD per
+    # million input:output tokens).
+    discover_max_cost_usd: float | None = None
+    llm_prices: str = ""
     # Ranker consensus: one round per (provider, model) pair listed here,
     # each a full high-effort ranking pass; picks are kept if a majority of
     # rounds agree. A blank model in `discover_ranker_models` (or too few

@@ -13,6 +13,8 @@ cost is shown as unknown rather than guessed.
 from __future__ import annotations
 
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -103,6 +105,7 @@ class UsageTracker:
             ],
             "total_cost_usd": total,
             "cost_complete": complete,
+            "budget": BUDGET.report_data(),
         }
 
     def reset(self) -> None:
@@ -133,3 +136,122 @@ def log_usage_summary() -> None:
     logger.info(
         "LLM usage total: $%.2f%s", total, "" if complete else " (+ unpriced non-Claude calls)"
     )
+
+
+# --- per-run cost cap ----------------------------------------------------------
+
+# A token is ~4 characters of English; JSON payloads run denser, so divide
+# by less to estimate on the high side.
+_CHARS_PER_TOKEN = 3.5
+
+
+def set_extra_prices(spec: str) -> None:
+    """Add prices for models the table doesn't know, from LLM_PRICES:
+    "gemini-pro-latest=1.25:10,gpt-6-astra=2:8" (USD per million input:output
+    tokens). Unknown models are never guessed — they just don't count."""
+    for part in (spec or "").split(","):
+        name, _, rates = part.strip().partition("=")
+        p_in, _, p_out = rates.partition(":")
+        try:
+            _PRICES_PER_MTOK[name.strip()] = (float(p_in), float(p_out))
+        except ValueError:
+            continue
+
+
+def estimate_cost(model: str, input_chars: int, output_tokens: int) -> float | None:
+    price = price_for(model)
+    if price is None:
+        return None
+    p_in, p_out = price
+    return (input_chars / _CHARS_PER_TOKEN * p_in + output_tokens * p_out) / 1_000_000
+
+
+class BudgetExceededError(RuntimeError):
+    """A model call was refused because it could push the run past its cap.
+    Deliberately not a provider error, so it never triggers a fallback
+    provider (which could spend unpriced money instead)."""
+
+
+class Budget:
+    """Per-run cap on estimated (priced) model spend.
+
+    Every call reserves its worst-case cost before it runs and is refused if
+    spent + in-flight + that estimate would pass the cap, so parallel calls
+    cannot jointly overshoot. Stages with cheaper options (Analyst tiers,
+    extra Ranker rounds, Reviewer model) plan against `remaining()` first
+    and record what they cut in `notes`, which the report shows.
+    """
+
+    # Share of the cap kept back for the stages after the Ranker (red team,
+    # sizer, rebalancer, pre-mortem) so the early fan-outs can't starve them.
+    FINAL_RESERVE = 0.25
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.cap: float | None = None
+        self._pending = 0.0
+        self.notes: list[str] = []
+
+    def configure(self, cap: float | None) -> None:
+        with self._lock:
+            self.cap = cap if cap and cap > 0 else None
+            self._pending = 0.0
+            self.notes = []
+
+    def spent(self) -> float:
+        return TRACKER.total_cost()[0]
+
+    def remaining(self) -> float | None:
+        if self.cap is None:
+            return None
+        with self._lock:
+            return self.cap - self.spent() - self._pending
+
+    def available_for(self, share: float = 1.0, *, keep_reserve: bool = True) -> float | None:
+        """What a planning stage may spend: `share` of what is left after the
+        final-stage reserve. None when no cap is set."""
+        left = self.remaining()
+        if left is None:
+            return None
+        reserve = self.FINAL_RESERVE * self.cap if keep_reserve else 0.0
+        return max(0.0, left - reserve) * share
+
+    def note(self, message: str) -> None:
+        from .logging import get_logger
+
+        get_logger(__name__).warning("Cost cap: %s", message)
+        with self._lock:
+            self.notes.append(message)
+
+    @contextmanager
+    def hold(self, stage: str, model: str, input_chars: int, output_tokens: int) -> Iterator[None]:
+        est = estimate_cost(model, input_chars, output_tokens) if self.cap else None
+        if est is None:
+            yield
+            return
+        with self._lock:
+            projected = TRACKER.total_cost()[0] + self._pending + est
+            if projected > self.cap:
+                refused = True
+            else:
+                refused = False
+                self._pending += est
+        if refused:
+            self.note(
+                f"refused a {stage} call on {model} (est. ${est:.2f}): it would take the "
+                f"run past the ${self.cap:.2f} cap"
+            )
+            raise BudgetExceededError(f"{stage} call would exceed the ${self.cap:.2f} cost cap")
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._pending -= est
+
+    def report_data(self) -> dict[str, Any] | None:
+        if self.cap is None:
+            return None
+        return {"cap_usd": self.cap, "spent_usd": self.spent(), "notes": list(self.notes)}
+
+
+BUDGET = Budget()

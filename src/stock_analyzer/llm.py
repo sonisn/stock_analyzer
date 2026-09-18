@@ -17,7 +17,7 @@ from agno.models.openai import OpenAIChat
 from agno.run.base import RunStatus
 
 from .logging import get_logger
-from .usage import TRACKER
+from .usage import BUDGET, TRACKER
 
 logger = get_logger(__name__)
 
@@ -40,6 +40,11 @@ _FALLBACK_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
+# Output ceiling assumed for the cost cap when a call sets no max-tokens
+# field (agno's Claude default is 8192).
+_DEFAULT_OUTPUT_ALLOWANCE = 8192
+
+
 class AgnoAgent:
     """Factory wrapper around `agno.agent.Agent` supporting multiple providers."""
 
@@ -60,14 +65,28 @@ class AgnoAgent:
         self.name = name
         self.provider: Provider = provider
         self.model_id = model
+        # For the cost cap's worst-case estimate: system prompt size and the
+        # most output the model is allowed to produce on one call.
+        kw = model_kwargs or {}
+        self._max_output_tokens = int(
+            kw.get("max_tokens")
+            or kw.get("max_completion_tokens")
+            or kw.get("max_output_tokens")
+            or _DEFAULT_OUTPUT_ALLOWANCE
+        )
+        self._instruction_chars = len(str(agent_kwargs.get("instructions") or ""))
 
         model_cls = _MODEL_REGISTRY[provider]
         self._model = model_cls(id=model, **(model_kwargs or {}))
         self.agent = Agent(name=name, model=self._model, **agent_kwargs)
 
     def run(self, *args: Any, **kwargs: Any) -> Any:
-        result = self.agent.run(*args, **kwargs)
-        TRACKER.record(self.name, self.model_id, getattr(result, "metrics", None))
+        prompt_chars = self._instruction_chars + sum(
+            len(a) for a in (*args, *kwargs.values()) if isinstance(a, str)
+        )
+        with BUDGET.hold(self.name, self.model_id, prompt_chars, self._max_output_tokens):
+            result = self.agent.run(*args, **kwargs)
+            TRACKER.record(self.name, self.model_id, getattr(result, "metrics", None))
         # agno 3.0's Agent.run() no longer raises once it has exhausted its
         # own internal retries (Model.retries, default 0 — so effectively
         # on the very first non-retryable provider error, e.g. an HTTP 404

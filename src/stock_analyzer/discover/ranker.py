@@ -17,6 +17,7 @@ from typing import Any
 from ..llm import AgnoAgent, Provider, reasoning_model_kwargs, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import AnalystReport, RankerOutput
+from ..usage import BUDGET, estimate_cost
 from .catalysts import format_catalyst_block
 
 logger = get_logger(__name__)
@@ -156,6 +157,18 @@ def _build_agent(provider: Provider, model: str, effort: str) -> AgnoAgent:
     )
 
 
+# Planning estimate of one ranking pass's output (thinking + the picks).
+EXPECTED_ROUND_OUTPUT_TOKENS = 12000
+
+
+def _round_affordable(agent: AgnoAgent, prompt_chars: int) -> bool:
+    """Whether another consensus round fits without touching the budget kept
+    for the stages after the Ranker. Unpriced models always fit."""
+    available = BUDGET.available_for()
+    est = estimate_cost(agent.model_id, prompt_chars, EXPECTED_ROUND_OUTPUT_TOKENS)
+    return available is None or est is None or est <= available
+
+
 class Ranker:
     def __init__(
         self,
@@ -288,7 +301,24 @@ class Ranker:
 
         outputs: list[RankerOutput] = []
         pick_sets: list[set[str]] = []
+        prompt_chars = sum(len(str(getattr(a, "full_text", a))) for a in analyses.values()) + sum(
+            len(b)
+            for b in (
+                holdings_summary,
+                macro_context,
+                track_record_block,
+                market_themes_block,
+                calibration_block,
+                RANKER_INSTRUCTIONS,
+            )
+        )
         for i, agent in enumerate(self._agents):
+            if i > 0 and not _round_affordable(agent, prompt_chars):
+                BUDGET.note(
+                    f"ran {i} of {self.consensus_runs} Ranker rounds; skipped "
+                    f"{', '.join(f'{p}/{m}' for p, m in self.rounds[i:])}"
+                )
+                break
             output = self._rank_once(
                 agent,
                 analyses,
@@ -311,8 +341,11 @@ class Ranker:
                 sorted(picks),
             )
 
+        n_runs = len(outputs)
+        if n_runs == 1:
+            return outputs[0]
         # Majority threshold = ceil(N/2). With N=3 → 2 runs agreeing.
-        threshold = (self.consensus_runs + 1) // 2
+        threshold = (n_runs + 1) // 2
         all_tickers = set().union(*pick_sets)
         consensus = {t for t in all_tickers if sum(1 for s in pick_sets if t in s) >= threshold}
         logger.info(
@@ -329,13 +362,13 @@ class Ranker:
                 "candidate set does not separate cleanly. Returning the "
                 "first round's output verbatim; treat these picks as "
                 "low-confidence.",
-                self.consensus_runs,
+                n_runs,
                 [p for p, _ in self.rounds],
             )
             return outputs[0]
 
         best_idx = max(
-            range(self.consensus_runs),
+            range(n_runs),
             key=lambda i: len(pick_sets[i] & consensus),
         )
         logger.info(
@@ -350,7 +383,7 @@ class Ranker:
             annotated_picks.append(
                 pick.model_copy(
                     update={
-                        "agreement_ratio": len(agreeing_rounds) / self.consensus_runs,
+                        "agreement_ratio": len(agreeing_rounds) / n_runs,
                         "voting_providers": [self.rounds[i][0] for i in agreeing_rounds],
                     }
                 )

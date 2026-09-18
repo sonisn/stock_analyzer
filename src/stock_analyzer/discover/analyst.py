@@ -274,3 +274,52 @@ def analyze_batch(
             if report is not None:
                 results[ticker] = report
     return results
+
+
+# Planning estimate of one scorecard's output (the report plus its
+# structured fields), not the hard ceiling the cost cap reserves per call.
+EXPECTED_OUTPUT_TOKENS = 2000
+MIN_NAMES_UNDER_BUDGET = 5
+
+
+def plan_under_budget(
+    order: list[str],
+    payload_chars: dict[str, int],
+    deep_tickers: set[str],
+    deep_model: str,
+    light_model: str | None,
+    available_usd: float | None,
+) -> tuple[list[str], set[str], list[str]]:
+    """Fit the analyst batch into `available_usd`, cheapest cut first:
+    move the deep tier to the light model, then drop the lowest-scored
+    names (never below MIN_NAMES_UNDER_BUDGET). `order` is screen-score
+    order. Returns (tickers to analyze, deep tier, notes on what was cut).
+    Unpriced models count as free, so they are never cut."""
+    from ..usage import estimate_cost
+
+    def cost(tickers: list[str], deep: set[str]) -> float:
+        total = 0.0
+        for t in tickers:
+            model = deep_model if (t in deep or light_model is None) else light_model
+            est = estimate_cost(
+                model, payload_chars[t] + len(ANALYST_INSTRUCTIONS), EXPECTED_OUTPUT_TOKENS
+            )
+            total += est or 0.0
+        return total
+
+    tickers, deep = list(order), set(deep_tickers)
+    notes: list[str] = []
+    if available_usd is None or cost(tickers, deep) <= available_usd:
+        return tickers, deep, notes
+    if light_model is not None and deep:
+        notes.append(
+            f"analysed the top {len(deep)} names on {light_model} instead of {deep_model} "
+            f"(estimated ${cost(tickers, deep):.2f} vs ${available_usd:.2f} available)"
+        )
+        deep = set()
+    n = len(tickers)
+    while len(tickers) > MIN_NAMES_UNDER_BUDGET and cost(tickers, deep) > available_usd:
+        tickers.pop()
+    if len(tickers) < n:
+        notes.append(f"analysed only the top {len(tickers)} of {n} survivors by screen score")
+    return tickers, deep, notes

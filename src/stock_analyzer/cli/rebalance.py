@@ -69,7 +69,7 @@ from ..discover.report import (
     render_html_email,
     render_pdf,
 )
-from ..discover.reviewer import Reviewer, review_batch
+from ..discover.reviewer import REVIEWER_INSTRUCTIONS, Reviewer, review_batch
 from ..discover.tax_harvest import (
     find_harvest_candidates,
     flag_plan_conflicts,
@@ -78,7 +78,8 @@ from ..discover.tax_harvest import (
 )
 from ..logging import get_logger
 from ..preflight import PreflightError, preflight
-from ..usage import TRACKER, log_usage_summary
+from ..serialization import dumps_pretty
+from ..usage import BUDGET, TRACKER, BudgetExceededError, estimate_cost, log_usage_summary
 from .discover import (
     _QUARTERLY_MDA_CHARS,
     _RISK_FACTORS_CHARS,
@@ -230,6 +231,10 @@ def _build_position_splits(
 
 class RebalancePipeline(DiscoverPipeline):
     """Discovery + per-holding review + Opus rebalance plan delivery."""
+
+    # Rebalance runs also review every holding, so the discover-side
+    # Analyst fan-out gets a smaller slice of the budget.
+    ANALYST_BUDGET_SHARE = 0.3
 
     # --- new step executors -------------------------------------------------
 
@@ -387,7 +392,7 @@ class RebalancePipeline(DiscoverPipeline):
         )
         reviewer = Reviewer(
             "claude",
-            self.settings.discover_sonnet_model,
+            self._reviewer_model(payloads),
             fallback=(
                 self.settings.discover_fallback_provider,
                 self.settings.resolve_fallback_model(),
@@ -405,6 +410,26 @@ class RebalancePipeline(DiscoverPipeline):
             self.state["stop_loss_warnings"] = stop_loss_warnings
         self.state["holdings_reviews"] = reviews
         return StepOutput(content=f"Reviewed {len(self.state['holdings_reviews'])} holdings")
+
+    def _reviewer_model(self, payloads: dict[str, dict[str, Any]]) -> str:
+        """Sonnet, unless reviewing every holding on it would not fit the cost
+        cap's remaining room (after the final-stage reserve) — then Haiku."""
+        sonnet = self.settings.discover_sonnet_model
+        haiku = self.settings.discover_haiku_model
+        available = BUDGET.available_for()
+        if available is None or not haiku:
+            return sonnet
+        est = sum(
+            estimate_cost(sonnet, len(dumps_pretty(p)) + len(REVIEWER_INSTRUCTIONS), 2000) or 0.0
+            for p in payloads.values()
+        )
+        if est <= available:
+            return sonnet
+        BUDGET.note(
+            f"reviewed {len(payloads)} holdings on {haiku} instead of {sonnet} "
+            f"(estimated ${est:.2f} vs ${available:.2f} available)"
+        )
+        return haiku
 
     def step_cc_data(self, step_input: StepInput) -> StepOutput:
         """Build the COVERED-CALL CONTEXT block consumed by the rebalancer."""
@@ -548,11 +573,15 @@ class RebalancePipeline(DiscoverPipeline):
             for ticker, r in self.state.get("holdings_reviews", {}).items()
         )
         agent = PreMortemAgent("claude", self.settings.discover_opus_model)
-        premortem = agent.run(
-            rebalance_plan_text=plan.full_text,
-            ranker_text=self.state.get("ranker_text", ""),
-            holdings_reviews_text=reviews_text,
-        )
+        try:
+            premortem = agent.run(
+                rebalance_plan_text=plan.full_text,
+                ranker_text=self.state.get("ranker_text", ""),
+                holdings_reviews_text=reviews_text,
+            )
+        except BudgetExceededError:
+            self.state["premortem"] = None
+            return StepOutput(content="premortem: skipped (cost cap)")
         self.state["premortem"] = premortem
         if premortem is None:
             return StepOutput(content="premortem: agent returned no content")

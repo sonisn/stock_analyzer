@@ -62,7 +62,7 @@ from ..db.repository import (
     insert_scorecard,
 )
 from ..db.session import get_session
-from ..discover.analyst import Analyst, analyze_tiered
+from ..discover.analyst import Analyst, analyze_tiered, plan_under_budget
 from ..discover.calibration import (
     format_calibration_block,
     format_similar_setups_block,
@@ -110,7 +110,8 @@ from ..logging import current_log_file, get_logger
 from ..model.ranker_model import load_latest_model, score_percentiles, screen_points
 from ..preflight import PreflightError, preflight
 from ..reporting.smtp import SmtpServer
-from ..usage import TRACKER, log_usage_summary
+from ..serialization import dumps_pretty
+from ..usage import BUDGET, TRACKER, BudgetExceededError, log_usage_summary, set_extra_prices
 
 logger = get_logger(__name__)
 
@@ -547,10 +548,16 @@ class DiscoverPipeline:
     the Workflow aborts cleanly and the run shows as failed in workflow_session.
     """
 
+    # Share of the post-reserve budget the Analyst fan-out may plan to use;
+    # the rest is left for the Ranker rounds (and, in rebalance, reviews).
+    ANALYST_BUDGET_SHARE = 0.5
+
     def __init__(self, settings: Settings):
         self.settings = settings
         self.state: dict[str, Any] = {}
         TRACKER.reset()
+        set_extra_prices(settings.llm_prices)
+        BUDGET.configure(settings.discover_max_cost_usd)
 
     # --- step executors ------------------------------------------------
 
@@ -763,13 +770,16 @@ class DiscoverPipeline:
                 self.settings.resolve_fallback_model(),
             ),
         )
-        themes = agent.detect(
-            macro_summary=self.state.get("macro_summary", ""),
-            sector_rotation=self.state.get("sector_rotation"),
-            technicals=self.state.get("technicals", {}),
-            fundamentals=self.state.get("fundamentals", {}),
-            eps_revisions=self.state.get("eps_revisions", {}),
-        )
+        try:
+            themes = agent.detect(
+                macro_summary=self.state.get("macro_summary", ""),
+                sector_rotation=self.state.get("sector_rotation"),
+                technicals=self.state.get("technicals", {}),
+                fundamentals=self.state.get("fundamentals", {}),
+                eps_revisions=self.state.get("eps_revisions", {}),
+            )
+        except BudgetExceededError:
+            themes = None
         # Anti-hallucination pass: filter unknown tickers + recompute
         # strength against the actual cohort relative-strength data.
         themes = _validate_and_correct_themes(
@@ -1169,6 +1179,17 @@ class DiscoverPipeline:
         )
         # `survivors` is already in screen-score order.
         deep_tickers = {c["ticker"] for c in survivors[:deep_count]}
+        keep, deep_tickers, cuts = plan_under_budget(
+            [c["ticker"] for c in survivors],
+            {t: len(dumps_pretty(p)) for t, p in payloads.items()},
+            deep_tickers,
+            self.settings.discover_sonnet_model,
+            self.settings.discover_haiku_model if light is not None else None,
+            BUDGET.available_for(self.ANALYST_BUDGET_SHARE),
+        )
+        for cut in cuts:
+            BUDGET.note(cut)
+        payloads = {t: payloads[t] for t in keep}
         analyses, catalyst_warnings = repair_catalysts(
             analyze_tiered(deep, light, payloads, deep_tickers), recent_news
         )
