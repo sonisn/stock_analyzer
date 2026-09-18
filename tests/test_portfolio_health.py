@@ -115,3 +115,14 @@ def test_email_leads_with_decisions_and_orders_flagged_holdings_first():
 
     subject, body = build_email(REPORT, None, {})
     assert subject.startswith("Portfolio Analysis - ") and "Decide today" not in body
+
+
+def test_every_stock_keeps_its_chart_when_decisions_reorder_the_email():
+    cids = {t: f"chart-{t}" for t in ("OK", "NEAR", "DOWN")}
+    _, body = build_email(REPORT, _health(), cids)
+    for t in cids:
+        img = f'src="cid:chart-{t}"'
+        assert body.count(img) == 1
+        # The chart sits inside its own stock's section, after that heading.
+        assert body.index(f"<h2>{t}") < body.index(img)
+    assert body.index('src="cid:chart-DOWN"') < body.index('src="cid:chart-OK"')
