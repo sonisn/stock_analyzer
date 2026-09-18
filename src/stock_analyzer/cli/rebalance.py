@@ -650,6 +650,29 @@ class RebalancePipeline(DiscoverPipeline):
             )
         )
 
+    def _reinvest_for_unfunded_sales(self) -> dict[str, Any] | None:
+        """Ideas for proceeds the plan leaves without a destination (runs
+        after persistence, so this run's picks are in the pool)."""
+        from ..discover.reinvest import load_pick_pool, reinvest_ideas, unfunded_sales
+
+        sold = unfunded_sales(self.state.get("rebalance_plan"))
+        if not sold:
+            return None
+        broken = {
+            c["ticker"] for c in self.state.get("thesis_checks") or [] if c["status"] == "BROKEN"
+        }
+        try:
+            ideas = reinvest_ideas(
+                load_pick_pool(self.settings.discover_db_path),
+                held=set(self.state.get("holdings_positions") or {}),
+                exclude=broken,
+                n=3,
+            )
+        except Exception as e:
+            logger.warning("reinvestment ideas failed (%s) — report goes without them", e)
+            return None
+        return {"sold": sold, "ideas": ideas}
+
     def step_persist_and_email_rebalance(self, step_input: StepInput) -> StepOutput:
         candidates = self.state.get("candidates") or []
         survivors = self.state.get("survivors") or []
@@ -674,6 +697,7 @@ class RebalancePipeline(DiscoverPipeline):
             )
 
         charts, chart_cids = fetch_pick_charts(picks)
+        reinvest = self._reinvest_for_unfunded_sales()
         sections = build_rebalance_sections(
             rebalance_text=self.state.get("rebalance_text", "") or "",
             holdings_reviews=self.state.get("holdings_reviews", {}),
@@ -705,6 +729,7 @@ class RebalancePipeline(DiscoverPipeline):
                 cash_budget=self.state.get("csp_cash_budget") or 0.0,
             ),
             csp_warnings=self.state.get("csp_warnings") or [],
+            reinvest=reinvest,
             stop_loss_warnings=self.state.get("stop_loss_warnings") or [],
             usage=TRACKER.report_data(),
         )

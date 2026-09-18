@@ -84,6 +84,7 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
     def harvest() -> list[dict]:
         from ..data.brokerage import fetch_account_meta
         from ..data.transactions import fetch_transaction_history, to_tax_payloads
+        from ..discover.reinvest import sector_peers
         from ..discover.tax_harvest import find_harvest_candidates, harvest_report_data
         from .rebalance import _build_position_splits
 
@@ -99,6 +100,8 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
                 splits,
                 prices,
                 to_tax_payloads(fetch_transaction_history(years_back=3)),
+                # Same-sector names keep the exposure after a loss sale.
+                sector_peers(db, list(splits), held=set(splits)),
                 min_loss_usd=settings.harvest_min_loss_usd,
                 min_loss_pct=settings.harvest_min_loss_pct,
             )
@@ -109,6 +112,11 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
 
         return batch_earnings_flags(tickers, within_days=7)
 
+    def reinvest(held: set[str], over_cap: set[str], n: int) -> list[dict]:
+        from ..discover.reinvest import load_pick_pool, reinvest_ideas
+
+        return reinvest_ideas(load_pick_pool(db), held=held, avoid_sectors=over_cap, n=n)
+
     try:
         return build_portfolio_health(
             holdings,
@@ -117,6 +125,7 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
             held_thesis_checks=held_thesis_checks,
             harvest=harvest,
             earnings=earnings,
+            reinvest=reinvest,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Portfolio health block failed (%s) — sending the email without it", e)

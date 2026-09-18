@@ -15,7 +15,11 @@ between rebalance runs:
   - tax-loss harvesting: taxable slices past the HARVEST_* thresholds
     (discover/tax_harvest.py; swaps are in the rebalance report, which has
     the peer data);
-  - earnings in the next 7 days.
+  - earnings in the next 7 days;
+  - reinvestment ideas: whenever a line suggests selling, it names where
+    the money could go — a recent discover pick not held, outside any
+    over-cap sector (discover/reinvest.py), or for a tax-loss sale a
+    same-sector swap that keeps the exposure.
 
 Each check is isolated: one that fails is listed as unavailable and the
 rest still render.
@@ -44,6 +48,8 @@ class PortfolioHealth:
     sectors: list[dict[str, Any]] = field(default_factory=list)
     harvest: list[dict[str, Any]] = field(default_factory=list)
     earnings: list[dict[str, Any]] = field(default_factory=list)
+    reinvest: list[dict[str, Any]] = field(default_factory=list)
+    values: dict[str, float] = field(default_factory=dict)  # ticker -> market value
     unavailable: list[str] = field(default_factory=list)
 
 
@@ -71,7 +77,10 @@ def build_portfolio_health(
     held_thesis_checks: Callable[[set[str]], list[dict[str, Any]]] | None = None,
     harvest: Callable[[], list[dict[str, Any]]] | None = None,
     earnings: Callable[[list[str]], dict[str, dict[str, Any]]] | None = None,
+    reinvest: Callable[[set[str], set[str], int], list[dict[str, Any]]] | None = None,
 ) -> PortfolioHealth:
+    """`reinvest(held, over_cap_sectors, n)` returns up to `n` ranked ideas
+    for sale proceeds; it is only called when something suggests a sale."""
     health = PortfolioHealth()
     positions = aggregate_positions(holdings)
     tickers = sorted(positions)
@@ -86,6 +95,7 @@ def build_portfolio_health(
     def snapshot() -> None:
         value = sum(p["value"] for p in positions.values())
         cost = sum(p["cost"] for p in positions.values() if p["value"])
+        health.values = {t: p["value"] for t, p in positions.items()}
         health.snapshot = {
             "positions": len(positions),
             "value": value,
@@ -137,7 +147,24 @@ def build_portfolio_health(
     attempt("thesis check", thesis)
     attempt("tax-loss harvesting", harvesting)
     attempt("earnings calendar", upcoming)
+
+    def ideas() -> None:
+        sales = len(_sale_items(health))
+        if reinvest is not None and sales:
+            over = {r["sector"] for r in health.sectors if r["over"]}
+            health.reinvest = reinvest(set(tickers), over, min(sales, 3))
+
+    attempt("reinvestment ideas", ideas)
     return health
+
+
+def _sale_items(h: PortfolioHealth) -> list[str]:
+    """Tickers the email suggests selling (or may, after a thesis
+    re-check) — each gets a destination for the money."""
+    out = [c["ticker"] for c in h.thesis if c["status"] == "BROKEN"]
+    out += [r["ticker"] for r in h.drawdowns if r["ticker"] not in out]
+    out += [c["ticker"] for c in h.harvest if not c.get("swap_candidates")]
+    return out
 
 
 # --- rendering -------------------------------------------------------------------
@@ -246,6 +273,15 @@ def render_health_html(h: PortfolioHealth) -> str:
                 ],
             )
         )
+    if h.reinvest:
+        from ..discover.reinvest import format_idea
+
+        parts.append("<h3>Where sale proceeds could go</h3>")
+        parts.append(
+            "<p>Recent discover picks you don't hold, outside any over-cap sector: "
+            + ", ".join(html.escape(format_idea(i)) for i in h.reinvest)
+            + ".</p>"
+        )
     if h.earnings:
         parts.append("<h3>Earnings in the next 7 days</h3>")
         parts.append(
@@ -298,6 +334,23 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
     def add(priority: int, ticker: str | None, label: str, text: str) -> None:
         items.append({"priority": priority, "ticker": ticker, "label": label, "text": text})
 
+    from ..discover.reinvest import format_idea
+
+    # Each sale gets its own idea while they last, then they repeat.
+    dest = (
+        {t: h.reinvest[i % len(h.reinvest)] for i, t in enumerate(_sale_items(h))}
+        if (h.reinvest)
+        else {}
+    )
+
+    def proceeds(ticker: str, amount: float | None, *, conditional: bool = False) -> str:
+        idea = dest.get(ticker)
+        if idea is None:
+            return ""
+        money = f"the ~{_money(amount)}" if amount else "the proceeds"
+        lead = " If you do sell, reinvest" if conditional else " Reinvest"
+        return f"{lead} {money} in {format_idea(idea)}."
+
     for r in h.drawdowns:
         add(
             2,
@@ -305,7 +358,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             "DRAWDOWN",
             f"Re-check the long-term thesis for {r['ticker']}: {r['pnl_pct']:+.1f}% from cost. "
             f"A lower price alone isn't a reason to sell — sell only if the business case "
-            f"has broken.",
+            f"has broken." + proceeds(r["ticker"], r.get("value"), conditional=True),
         )
     for c in h.thesis:
         reason = next((s["text"] for s in c["signals"] if s["severity"] != "info"), "")
@@ -314,7 +367,8 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
                 1,
                 c["ticker"],
                 "BROKEN",
-                f"Consider selling {c['ticker']}: long-term thesis broken — {reason}.",
+                f"Consider selling {c['ticker']}: long-term thesis broken — {reason}."
+                + proceeds(c["ticker"], h.values.get(c["ticker"])),
             )
         elif c["status"] == "TARGET HIT":
             add(
@@ -340,12 +394,22 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             if c.get("wash_sale_until")
             else ""
         )
+        slice_value = (c.get("units") or 0) * (c.get("price") or 0)
+        swaps = c.get("swap_candidates") or []
+        if swaps:
+            where = (
+                f" To keep similar exposure, buy {swaps[0]} (same sector, not the same "
+                f"stock) with the ~{_money(slice_value)}."
+            )
+        else:
+            where = proceeds(c["ticker"], slice_value)
         add(
             3,
             c["ticker"],
             "TAX LOSS",
             f"Tax-loss option: selling {c['ticker']} in {c['account']} realizes "
-            f"{_money(c['loss_usd'])} (~{_money(c['est_tax_saving_usd'])} tax saved){wash}.",
+            f"{_money(c['loss_usd'])} (~{_money(c['est_tax_saving_usd'])} tax saved){wash}."
+            + where,
         )
     for r in h.sectors:
         if r["over"]:

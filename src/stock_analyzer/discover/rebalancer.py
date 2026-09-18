@@ -237,8 +237,18 @@ track, no ticker complexity, you already understand the company.
           that discover pick for the residual budget.
 
   STEP 4: If BUDGET remains after STEP 2 and STEP 3 (no eligible ADDs
-          left, no discover pick clearly outranks them), leave the
-          residual as CASH. Do not force-deploy.
+          left, no discover pick clearly outranks them), idle cash may
+          stay as cash — but SELL/TRIM proceeds may not simply vanish
+          into it: see PROCEEDS RULE.
+
+PROCEEDS RULE (every SELL / TRIM names where its money goes):
+  For each SELL or TRIM, the plan must say where the proceeds go — an
+  ADD or BUY in `actions`, SELL_PUT collateral, or, only when no
+  destination is sound today, a named discover pick or holding to buy
+  later and why not now. Put one line per sale in full_text:
+      "Proceeds from TRIM MRVL (~$4,100) → ADD GOOGL $4,100"
+  A tax-loss sale should normally swap into a same-sector peer (not
+  substantially identical) so the long-term exposure is kept.
 
 Rationale: an ADD to an existing 8-confidence holding will typically
 beat a BUY of a new 8-confidence discover pick on a risk-adjusted basis
@@ -457,8 +467,8 @@ CRITICAL:
 - Order: SELLs → TRIMs → BUYs.
 - Sum constraint: BUYs total ≤ proceeds + cash.
 - If a holding has a SELL verdict but the math would over-deploy proceeds,
-  still recommend the SELL and let cash accumulate; do not invent BUYs
-  beyond budget.
+  still recommend the SELL; do not invent BUYs beyond budget, but still
+  name where the unspent proceeds should go (PROCEEDS RULE).
 
 CITATION RULE (anti-hallucination):
 Every numerical claim in your plan (tax cost in dollars, lot dates,

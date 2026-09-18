@@ -308,6 +308,7 @@ def append_rebalance_plan_body(
     stop_loss_warnings: list[str] | None = None,
     csp_summary: dict[str, Any] | None = None,
     csp_warnings: list[str] | None = None,
+    reinvest: dict[str, Any] | None = None,
 ) -> None:
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Rebalance plan (action list)", level=1))
@@ -404,6 +405,7 @@ def append_rebalance_plan_body(
         )
 
     append_csp_section(sections, csp_summary, csp_warnings)
+    append_reinvest_section(sections, reinvest)
 
     if stop_loss_warnings:
         sections.append(
@@ -415,6 +417,40 @@ def append_rebalance_plan_body(
         )
 
     sections.append(Section(kind="preformatted", text=rebalance_text))
+
+
+def append_reinvest_section(sections: list[Section], reinvest: dict[str, Any] | None) -> None:
+    """When the plan sells but deploys nothing, name where the money could
+    go: `reinvest` = {"sold": [tickers], "ideas": [discover/reinvest.py ideas]}."""
+    if not reinvest or not reinvest.get("sold") or not reinvest.get("ideas"):
+        return
+    sections.append(Section(kind="heading", text="Where the sale proceeds could go", level=2))
+    sections.append(
+        Section(
+            kind="para",
+            text=(
+                f"The plan sells {', '.join(reinvest['sold'])} but names no BUY or ADD. "
+                "These are the most recent discover picks you don't hold, outside any "
+                "over-cap sector — long-term candidates for the proceeds."
+            ),
+        )
+    )
+    sections.append(
+        Section(
+            kind="table",
+            table_header=["Ticker", "Pick", "Picked on", "Sector", "Conviction"],
+            table_rows=[
+                [
+                    i["ticker"],
+                    f"#{i['rank']}",
+                    i["pick_date"],
+                    i.get("sector") or "—",
+                    str(i["conviction"]) if i.get("conviction") is not None else "—",
+                ]
+                for i in reinvest["ideas"]
+            ],
+        )
+    )
 
 
 def append_csp_section(
@@ -564,6 +600,7 @@ def build_rebalance_sections(
     stop_loss_warnings: list[str] | None = None,
     csp_summary: dict[str, Any] | None = None,
     csp_warnings: list[str] | None = None,
+    reinvest: dict[str, Any] | None = None,
     usage: dict[str, Any] | None = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
@@ -624,6 +661,7 @@ def build_rebalance_sections(
         stop_loss_warnings=stop_loss_warnings,
         csp_summary=csp_summary,
         csp_warnings=csp_warnings,
+        reinvest=reinvest,
     )
     append_harvest_section(sections, harvest_candidates)
     append_holding_review_sections(sections, holdings_reviews)
