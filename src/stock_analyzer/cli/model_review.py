@@ -1,7 +1,8 @@
 """`model-review` — the monthly check-up for the forward-return model and
 the screen score, emailed. No LLM calls; yfinance prices only.
 
-  1. Label every candidate outcome whose window has closed.
+  1. Backfill any pick forecast fields still NULL, and label every
+     candidate outcome whose window has closed.
   2. Retrain the shadow model (21-day, beta-neutral, 15 years). If it ever
      passes the walk-forward gate, the screen starts using it — the email
      says so in its subject.
@@ -53,8 +54,12 @@ def main(argv: list[str] | None = None) -> None:
     verdict = {"accepted": None}
 
     def labels() -> None:
+        from ..db.backfill import backfill_pick_forecasts
         from ..model.labels import label_candidates
 
+        filled = {k: v for k, v in backfill_pick_forecasts(db).items() if v}
+        if filled:
+            print(f"Pick forecast fields backfilled from stored run text: {filled}")
         print(f"New candidate outcomes labeled: {label_candidates(db)}")
 
     def train() -> None:
