@@ -259,6 +259,50 @@ def _primary_reject_reason(reasons: list[str]) -> str:
     return first[:40]
 
 
+def append_paper_ledger_section(sections: list[Section], ledger: dict[str, Any] | None) -> None:
+    """'Paper portfolio vs SPY' — headline sentence, equity curve, per-run table."""
+    if not ledger or not ledger.get("dates"):
+        return
+    invested = ledger["invested"][-1]
+    picks_value = ledger["strategy"][-1]
+    spy_value = ledger["benchmark"][-1]
+    picks_ret = ledger.get("strategy_return_pct") or 0.0
+    spy_ret = ledger.get("benchmark_return_pct") or 0.0
+    verdict = "ahead of" if picks_ret > spy_ret else "behind"
+    sections.append(Section(kind="heading", text="Paper portfolio vs SPY", level=2))
+    sections.append(
+        Section(
+            kind="para",
+            text=(
+                f"If every past run's picks had received $1,000 at the Sizer's weights, "
+                f"the ${invested:,.0f} invested would be worth ${picks_value:,.0f} "
+                f"({picks_ret:+.1f}%) — {abs(picks_ret - spy_ret):.1f} points {verdict} the "
+                f"${spy_value:,.0f} ({spy_ret:+.1f}%) the same money earned in SPY. "
+                f"Dividend-adjusted; no costs, taxes or trims."
+            ),
+        )
+    )
+    sections.append(Section(kind="equity_curve", data=ledger))
+    rows = [
+        [
+            t["run_date"],
+            ", ".join(t["tickers"]),
+            f"{t['strategy_return_pct']:+.1f}%",
+            f"{t['benchmark_return_pct']:+.1f}%",
+            f"{t['strategy_return_pct'] - t['benchmark_return_pct']:+.1f}",
+        ]
+        for t in reversed(ledger.get("tranches") or [])
+    ]
+    if rows:
+        sections.append(
+            Section(
+                kind="table",
+                table_header=["Run", "Picks", "Picks return", "SPY return", "Excess (pts)"],
+                table_rows=rows,
+            )
+        )
+
+
 def append_usage_section(sections: list[Section], usage: dict[str, Any] | None) -> None:
     """'Model usage this run' table from usage.UsageTracker.report_data()."""
     if not usage or not usage.get("rows"):
@@ -312,6 +356,7 @@ def build_sections(
     portfolio_tilt: dict[str, float] | None = None,
     pick_catalysts: dict[str, list[dict[str, Any]]] | None = None,
     usage: dict[str, Any] | None = None,
+    paper_ledger: dict[str, Any] | None = None,
 ) -> list[Section]:
     # Prefer the structured Phase 4 objects when present; fall back to
     # parsing the free-text variants so legacy callers / partial runs
@@ -346,6 +391,8 @@ def build_sections(
     if track_record_block:
         s.append(Section(kind="heading", text="Track record", level=2))
         s.append(Section(kind="preformatted", text=track_record_block))
+
+    append_paper_ledger_section(s, paper_ledger)
 
     # Market themes panel — what's hot right now (drives ranker bias).
     from ..models.llm import MarketThemes

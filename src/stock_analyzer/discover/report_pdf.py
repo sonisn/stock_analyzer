@@ -18,11 +18,12 @@ from typing import Any
 
 from reportlab.graphics.charts.legends import Legend
 from reportlab.graphics.charts.piecharts import Pie
-from reportlab.graphics.shapes import Drawing
+from reportlab.graphics.shapes import Circle, Drawing, Line, PolyLine, Rect, String
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import inch
+from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.platypus import (
     Image,
     PageBreak,
@@ -35,6 +36,17 @@ from reportlab.platypus import (
 )
 
 from ..models.reports import Section
+from .report_html import (
+    _GRID,
+    _INK,
+    _INK_MUTED,
+    _REFERENCE_LINE,
+    _SERIES_1,
+    _nudge_apart,
+    _short_date,
+    ledger_chart_model,
+    pct_tick,
+)
 from .report_sections import (
     _FRAGILITY_COLORS,
     _LIKELIHOOD_COLOR,
@@ -47,6 +59,8 @@ from .report_sections import (
     _conviction_swatch,
     _theme_strength_color,
 )
+
+_PDF_FONT = "Helvetica"
 
 
 def _pdf_styles():
@@ -245,6 +259,168 @@ def _pdf_pill(text: str, fg: str, bg: str, styles) -> Paragraph:
             spaceAfter=0,
         ),
     )
+
+
+def _pdf_equity_curve(d: dict[str, Any]) -> Drawing | None:
+    """PDF counterpart of report_html._equity_curve_svg (same chart model)."""
+    model = ledger_chart_model(d)
+    if model is None:
+        return None
+    dates, series, lo, hi = model["dates"], model["series"], model["lo"], model["hi"]
+    n = len(dates)
+    w, h = 482, 200
+    left, right, top, bottom = 38, 78, 22, 20
+    pw, ph = w - left - right, h - top - bottom
+    ink, muted = colors.HexColor(_INK), colors.HexColor(_INK_MUTED)
+
+    def x(i: int) -> float:
+        return left + pw * i / (n - 1)
+
+    def y(v: float) -> float:
+        return bottom + ph * (v - lo) / (hi - lo)
+
+    def text(px: float, py: float, s: str, size: float, color, anchor: str = "start") -> String:
+        return String(
+            px, py, s, fontName=_PDF_FONT, fontSize=size, fillColor=color, textAnchor=anchor
+        )
+
+    drawing = Drawing(w, h)
+    for t in model["ticks"]:
+        drawing.add(
+            Line(left, y(t), w - right, y(t), strokeColor=colors.HexColor(_GRID), strokeWidth=0.5)
+        )
+        drawing.add(text(left - 4, y(t) - 2.5, pct_tick(t), 7, muted, "end"))
+    drawing.add(
+        Line(
+            left,
+            y(0),
+            w - right,
+            y(0),
+            strokeColor=colors.HexColor(_REFERENCE_LINE),
+            strokeWidth=1,
+            strokeDashArray=[3, 2],
+        )
+    )
+    for i in sorted({0, (n - 1) // 2, n - 1}):
+        anchor = "start" if i == 0 else "end" if i == n - 1 else "middle"
+        drawing.add(text(x(i), 6, _short_date(dates[i]), 7, muted, anchor))
+    for _, vals, color in series:
+        points: list[float] = []
+        for i, v in enumerate(vals):
+            points.extend([x(i), y(v)])
+        drawing.add(
+            PolyLine(points, strokeColor=colors.HexColor(color), strokeWidth=1.6, strokeLineJoin=1)
+        )
+    # Label positions spread apart; PDF y grows upward, so nudge on -y.
+    label_ys = [-v for v in _nudge_apart([-y(vals[-1]) for _, vals, _ in series], 10)]
+    for (name, vals, color), ly in zip(series, label_ys, strict=True):
+        drawing.add(
+            Circle(
+                x(n - 1),
+                y(vals[-1]),
+                2.5,
+                fillColor=colors.HexColor(color),
+                strokeColor=colors.white,
+                strokeWidth=1,
+            )
+        )
+        drawing.add(text(w - right + 8, ly - 2.5, f"{name} {vals[-1]:+.1f}%", 7.5, ink))
+    legend_x = left
+    drawing.add(text(legend_x, h - 11, "Return on invested capital —", 8, ink))
+    legend_x += 118
+    for name, color, dash in [
+        *((name, color, None) for name, _, color in series),
+        ("Break-even", _REFERENCE_LINE, [3, 2]),
+    ]:
+        drawing.add(
+            Line(
+                legend_x,
+                h - 8,
+                legend_x + 14,
+                h - 8,
+                strokeColor=colors.HexColor(color),
+                strokeWidth=1.6,
+                strokeDashArray=dash,
+            )
+        )
+        drawing.add(text(legend_x + 18, h - 11, name, 8, ink))
+        legend_x += 30 + len(name) * 5
+    return drawing
+
+
+def _pdf_bar_chart(d: dict[str, Any]) -> Drawing | None:
+    """PDF counterpart of report_html._bar_chart_svg."""
+    bars = d.get("bars") or []
+    if not bars:
+        return None
+    unit = str(d.get("unit") or "")
+    w, label_w, row_h = 482, 130, 20
+    values = [float(b.get("value") or 0.0) for b in bars]
+    value_texts = [
+        f"{v:+.1f}{unit}" + (f"  {b.get('note')}" if b.get("note") else "")
+        for b, v in zip(bars, values, strict=True)
+    ]
+    # Reserve room for the value text on whichever side of the bar it sits,
+    # so a negative value never lands on top of its category label.
+    neg_w = max(
+        (stringWidth(t, _PDF_FONT, 7) for t, v in zip(value_texts, values, strict=True) if v < 0),
+        default=0.0,
+    )
+    pos_w = max(
+        (stringWidth(t, _PDF_FONT, 7) for t, v in zip(value_texts, values, strict=True) if v >= 0),
+        default=0.0,
+    )
+    plot_l = label_w + 8 + (neg_w + 6 if neg_w else 0)
+    plot_r = w - (pos_w + 6 if pos_w else 4)
+    lo, hi = min(0.0, *values), max(0.0, *values)
+    span = (hi - lo) or 1.0
+
+    def x(v: float) -> float:
+        return plot_l + (plot_r - plot_l) * (v - lo) / span
+
+    h = row_h * len(bars) + 8
+    drawing = Drawing(w, h)
+    zero = x(0.0)
+    drawing.add(
+        Line(zero, 2, zero, h - 2, strokeColor=colors.HexColor(_INK_MUTED), strokeWidth=0.6)
+    )
+    for i, (b, v, value_text) in enumerate(zip(bars, values, value_texts, strict=True)):
+        cy = h - 4 - row_h * i - row_h / 2
+        x0, x1 = sorted((zero, x(v)))
+        if x1 > x0:
+            drawing.add(
+                Rect(
+                    x0,
+                    cy - 5,
+                    x1 - x0,
+                    10,
+                    fillColor=colors.HexColor(_SERIES_1),
+                    strokeColor=None,
+                )
+            )
+        drawing.add(
+            String(
+                label_w,
+                cy - 3,
+                str(b.get("label") or ""),
+                fontName=_PDF_FONT,
+                fontSize=8,
+                fillColor=colors.HexColor(_INK),
+                textAnchor="end",
+            )
+        )
+        drawing.add(
+            String(
+                x1 + 4 if v >= 0 else x0 - 4,
+                cy - 3,
+                value_text,
+                fontName=_PDF_FONT,
+                fontSize=7,
+                fillColor=colors.HexColor(_INK),
+                textAnchor="start" if v >= 0 else "end",
+            )
+        )
+    return drawing
 
 
 _PDF_CATALYST_DIRECTION_COLORS: dict[str, str] = {
@@ -1213,6 +1389,18 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
         elif s.kind == "factor_tilt_panel" and s.data:
             for el in _pdf_factor_tilt_panel(s.data, styles):
                 flow.append(el)
+
+        elif s.kind == "equity_curve" and s.data:
+            chart = _pdf_equity_curve(s.data)
+            if chart is not None:
+                flow.append(chart)
+                flow.append(Spacer(1, 6))
+
+        elif s.kind == "bar_chart" and s.data:
+            chart = _pdf_bar_chart(s.data)
+            if chart is not None:
+                flow.append(chart)
+                flow.append(Spacer(1, 6))
 
         elif s.kind == "premium_income" and s.data:
             for el in _pdf_premium_income(s.data, styles):

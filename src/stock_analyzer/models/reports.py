@@ -34,6 +34,8 @@ SectionKind = Literal[
     "market_themes_panel",
     "premortem_panel",
     "factor_tilt_panel",
+    "equity_curve",
+    "bar_chart",
     # Covered-call sections (cli/rebalance.py CC extension).
     "premium_income",
     "round_lot_coverage",

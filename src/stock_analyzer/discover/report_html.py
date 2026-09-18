@@ -12,6 +12,8 @@ Stays in sync with `report_pdf.py` because both pull palettes from
 from __future__ import annotations
 
 import html
+import math
+from datetime import date
 from typing import Any
 
 from ..models.reports import Section
@@ -162,6 +164,228 @@ def _svg_pie(pie_data: list[tuple[str, float]], diameter: int = 180) -> str:
         + "</svg>"
         "<div class='pie-legend'><ul>" + "".join(legend_items) + "</ul></div></div>"
     )
+
+
+# Chart series colors — validated categorical slots 1/2 (light surface):
+# lightness band, chroma floor, CVD + normal-vision separation, contrast.
+_SERIES_1 = "#2a78d6"
+_SERIES_2 = "#eb6834"
+_REFERENCE_LINE = "#9ca3af"
+_GRID = "#e5e7eb"
+_INK = "#374151"
+_INK_MUTED = "#6b7280"
+
+
+def _money_short(v: float) -> str:
+    if abs(v) >= 1000:
+        return f"${v / 1000:.1f}k"
+    return f"${v:,.0f}"
+
+
+def _short_date(iso: str) -> str:
+    try:
+        return date.fromisoformat(iso).strftime("%b %d")
+    except ValueError:
+        return iso
+
+
+def _nudge_apart(ys: list[float], min_gap: float) -> list[float]:
+    """Spread label y-positions so none sit closer than `min_gap`."""
+    order = sorted(range(len(ys)), key=lambda i: ys[i])
+    out = list(ys)
+    for a, b in zip(order, order[1:], strict=False):
+        if out[b] - out[a] < min_gap:
+            out[b] = out[a] + min_gap
+    return out
+
+
+def _nice_ticks(lo: float, hi: float, target: int = 5) -> list[float]:
+    """Round-number ticks (1/2/2.5/5 x 10^k) spanning [lo, hi]."""
+    span = (hi - lo) or 1.0
+    raw = span / max(target - 1, 1)
+    magnitude = 10 ** math.floor(math.log10(raw))
+    step = next(m * magnitude for m in (1, 2, 2.5, 5, 10) if m * magnitude >= raw)
+    start = math.floor(lo / step) * step
+    ticks = []
+    v = start
+    while v <= hi + step * 1e-9:
+        ticks.append(round(v, 10))
+        v += step
+    if ticks[-1] < hi:
+        ticks.append(round(v, 10))
+    return ticks
+
+
+def pct_tick(t: float) -> str:
+    return "0%" if t == 0 else f"{t:+g}%"
+
+
+def ledger_chart_model(d: dict[str, Any]) -> dict[str, Any] | None:
+    """Shared geometry for the paper-ledger chart (HTML + PDF).
+
+    Plots return on invested capital, not dollar value: the dollar curve is
+    dominated by each new tranche's contribution, which hides the gap the
+    chart exists to show."""
+    dates = d.get("dates") or []
+    invested = d.get("invested") or []
+    n = len(dates)
+    if n < 2 or len(invested) != n:
+        return None
+    series = []
+    for name, key, color in (("Picks", "strategy", _SERIES_1), ("SPY", "benchmark", _SERIES_2)):
+        vals = d.get(key) or []
+        if len(vals) != n:
+            return None
+        pct = [(v / inv - 1) * 100 if inv else 0.0 for v, inv in zip(vals, invested, strict=True)]
+        series.append((name, pct, color))
+    all_vals = [v for _, vals, _ in series for v in vals] + [0.0]
+    ticks = _nice_ticks(min(all_vals), max(all_vals))
+    return {"dates": dates, "series": series, "ticks": ticks, "lo": ticks[0], "hi": ticks[-1]}
+
+
+def _equity_curve_svg(d: dict[str, Any]) -> str:
+    """Picks vs SPY return on invested capital over time, a dashed
+    break-even line, end-of-line labels, legend above."""
+    model = ledger_chart_model(d)
+    if model is None:
+        return ""
+    dates, series, lo, hi = model["dates"], model["series"], model["lo"], model["hi"]
+    n = len(dates)
+    w, h, left, right, top, bottom = 640, 240, 48, 96, 10, 28
+    pw, ph = w - left - right, h - top - bottom
+
+    def x(i: int) -> float:
+        return left + pw * i / (n - 1)
+
+    def y(v: float) -> float:
+        return top + ph * (1 - (v - lo) / (hi - lo))
+
+    parts = [
+        f"<svg viewBox='0 0 {w} {h}' width='100%' style='max-width:{w}px;display:block' "
+        f"font-family='-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif' "
+        f"role='img' aria-label='Paper portfolio return vs SPY'>",
+        f"<title>{html.escape(_short_date(dates[-1]))}: "
+        + ", ".join(f"{name} {vals[-1]:+.1f}%" for name, vals, _ in series)
+        + "</title>",
+    ]
+    for t in model["ticks"]:
+        parts.append(
+            f"<line x1='{left}' x2='{w - right}' y1='{y(t):.1f}' y2='{y(t):.1f}' "
+            f"stroke='{_GRID}' stroke-width='1'/>"
+            f"<text x='{left - 6}' y='{y(t) + 4:.1f}' text-anchor='end' font-size='11' "
+            f"fill='{_INK_MUTED}' style='font-variant-numeric:tabular-nums'>{pct_tick(t)}</text>"
+        )
+    parts.append(
+        f"<line x1='{left}' x2='{w - right}' y1='{y(0):.1f}' y2='{y(0):.1f}' "
+        f"stroke='{_REFERENCE_LINE}' stroke-width='1.5' stroke-dasharray='4 3'/>"
+    )
+    for i in sorted({0, (n - 1) // 2, n - 1}):
+        anchor = "start" if i == 0 else "end" if i == n - 1 else "middle"
+        parts.append(
+            f"<text x='{x(i):.1f}' y='{h - 8}' text-anchor='{anchor}' font-size='11' "
+            f"fill='{_INK_MUTED}'>{html.escape(_short_date(dates[i]))}</text>"
+        )
+    for _, vals, color in series:
+        points = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in enumerate(vals))
+        parts.append(
+            f"<polyline points='{points}' fill='none' stroke='{color}' "
+            f"stroke-width='2' stroke-linejoin='round' stroke-linecap='round'/>"
+        )
+    label_ys = _nudge_apart([y(vals[-1]) for _, vals, _ in series], 14)
+    for (name, vals, color), ly in zip(series, label_ys, strict=True):
+        parts.append(
+            f"<circle cx='{x(n - 1):.1f}' cy='{y(vals[-1]):.1f}' r='4' fill='{color}' "
+            f"stroke='#fff' stroke-width='2'/>"
+            f"<text x='{w - right + 10}' y='{ly + 4:.1f}' font-size='11' fill='{_INK}'>"
+            f"{name} {vals[-1]:+.1f}%</text>"
+        )
+    parts.append("</svg>")
+    legend_items = [
+        f"<span style='display:inline-flex;align-items:center;gap:6px;margin-right:14px'>"
+        f"<svg width='18' height='6'><line x1='0' x2='18' y1='3' y2='3' "
+        f"stroke='{color}' stroke-width='2'{dash}/></svg>{label}</span>"
+        for label, color, dash in [
+            *((name, color, "") for name, _, color in series),
+            ("Break-even", _REFERENCE_LINE, " stroke-dasharray='4 3'"),
+        ]
+    ]
+    return (
+        f"<div style='font-size:12px;color:{_INK};margin:6px 0'>"
+        f"Return on invested capital — {''.join(legend_items)}</div>"
+        f"<div style='overflow-x:auto'>{''.join(parts)}</div>"
+    )
+
+
+def _bar_chart_svg(d: dict[str, Any]) -> str:
+    """Horizontal bars from a zero baseline (values may be negative), one
+    hue, value labels in ink at the bar end."""
+    bars = d.get("bars") or []
+    if not bars:
+        return ""
+    unit = str(d.get("unit") or "")
+    w, label_w, row_h, top = 640, 170, 30, 8
+    values = [float(b.get("value") or 0.0) for b in bars]
+    # Reserve room for the value text on whichever side of the bar it sits,
+    # so a negative value never lands on top of its category label. ~6.8px
+    # per character at 11px is a safe estimate for the email's sans stack.
+    text_w = [
+        6.8 * len(f"{v:+.1f}{unit}" + (f" {b.get('note')}" if b.get("note") else ""))
+        for b, v in zip(bars, values, strict=True)
+    ]
+    neg_w = max((t for t, v in zip(text_w, values, strict=True) if v < 0), default=0.0)
+    pos_w = max((t for t, v in zip(text_w, values, strict=True) if v >= 0), default=0.0)
+    plot_l = label_w + 10 + (neg_w + 8 if neg_w else 0)
+    plot_r = w - (pos_w + 8 if pos_w else 4)
+    lo, hi = min(0.0, *values), max(0.0, *values)
+    span = (hi - lo) or 1.0
+
+    def x(v: float) -> float:
+        return plot_l + (plot_r - plot_l) * (v - lo) / span
+
+    h = top * 2 + row_h * len(bars)
+    zero = x(0.0)
+    parts = [
+        f"<svg viewBox='0 0 {w} {h}' width='100%' style='max-width:{w}px;display:block' "
+        f"role='img' aria-label='{html.escape(str(d.get('title') or 'Bar chart'))}'>",
+        f"<line x1='{zero:.1f}' x2='{zero:.1f}' y1='{top - 4}' y2='{h - top + 4}' "
+        f"stroke='{_INK_MUTED}' stroke-width='1'/>",
+    ]
+    for i, (b, v) in enumerate(zip(bars, values, strict=True)):
+        cy = top + row_h * i + row_h / 2
+        bar_h = 14
+        x0, x1 = sorted((zero, x(v)))
+        length = x1 - x0
+        r = min(4.0, length)
+        # Square at the baseline, rounded at the data end.
+        if v >= 0:
+            path = (
+                f"M{x0:.1f},{cy - bar_h / 2:.1f} H{x1 - r:.1f} "
+                f"Q{x1:.1f},{cy - bar_h / 2:.1f} {x1:.1f},{cy - bar_h / 2 + r:.1f} "
+                f"V{cy + bar_h / 2 - r:.1f} Q{x1:.1f},{cy + bar_h / 2:.1f} "
+                f"{x1 - r:.1f},{cy + bar_h / 2:.1f} H{x0:.1f} Z"
+            )
+            value_x, anchor = x1 + 6, "start"
+        else:
+            path = (
+                f"M{x1:.1f},{cy - bar_h / 2:.1f} H{x0 + r:.1f} "
+                f"Q{x0:.1f},{cy - bar_h / 2:.1f} {x0:.1f},{cy - bar_h / 2 + r:.1f} "
+                f"V{cy + bar_h / 2 - r:.1f} Q{x0:.1f},{cy + bar_h / 2:.1f} "
+                f"{x0 + r:.1f},{cy + bar_h / 2:.1f} H{x1:.1f} Z"
+            )
+            value_x, anchor = x0 - 6, "end"
+        note = html.escape(str(b.get("note") or ""))
+        parts.append(
+            f"<g><title>{html.escape(str(b.get('label')))}: {v:+.1f}{unit} {note}</title>"
+            f"<text x='{label_w}' y='{cy + 4:.1f}' text-anchor='end' font-size='12' "
+            f"fill='{_INK}'>{html.escape(str(b.get('label')))}</text>"
+            + (f"<path d='{path}' fill='{_SERIES_1}'/>" if length > 0 else "")
+            + f"<text x='{value_x:.1f}' y='{cy + 4:.1f}' text-anchor='{anchor}' "
+            f"font-size='11' fill='{_INK}'>{v:+.1f}{unit}"
+            + (f" <tspan fill='{_INK_MUTED}'>{note}</tspan>" if note else "")
+            + "</text></g>"
+        )
+    parts.append("</svg>")
+    return f"<div style='overflow-x:auto'>{''.join(parts)}</div>"
 
 
 _CATALYST_DIRECTION_STYLE: dict[str, tuple[str, str]] = {
@@ -894,6 +1118,12 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
 
         elif s.kind == "factor_tilt_panel" and s.data:
             parts.append(_factor_tilt_panel_html(s.data))
+
+        elif s.kind == "equity_curve" and s.data:
+            parts.append(_equity_curve_svg(s.data))
+
+        elif s.kind == "bar_chart" and s.data:
+            parts.append(_bar_chart_svg(s.data))
 
         elif s.kind == "premium_income" and s.data:
             parts.append(_render_premium_income(s.data))

@@ -85,6 +85,21 @@ _FIXTURES: dict[str, dict[str, Any]] = {
     "premium_income": {"data": {"rows": []}},
     "round_lot_coverage": {"data": {"rows": []}},
     "premium_deployment": {"data": {"rows": []}},
+    "equity_curve": {
+        "data": {
+            "dates": ["2026-05-01", "2026-06-01", "2026-07-01"],
+            "strategy": [1000.0, 1050.0, 2100.0],
+            "benchmark": [1000.0, 1010.0, 2030.0],
+            "invested": [1000.0, 1000.0, 2000.0],
+        }
+    },
+    "bar_chart": {
+        "data": {
+            "title": "t",
+            "unit": "%",
+            "bars": [{"label": "Buy", "value": 2.5}, {"label": "Sell", "value": -4.0}],
+        }
+    },
     "factor_tilt_panel": {
         "data": {
             "portfolio": {"growth": 60.0, "value": 40.0},

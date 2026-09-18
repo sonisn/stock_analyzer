@@ -79,6 +79,7 @@ from ..discover.market_themes import (
     themes_by_ticker,
 )
 from ..discover.output_validation import validate_pick_scenarios
+from ..discover.paper_ledger import build_ledger, ledger_report_data, load_tranches
 from ..discover.peers import batch_peer_comparison
 from ..discover.ranker import Ranker
 from ..discover.redteam import RedTeam
@@ -696,6 +697,13 @@ class DiscoverPipeline:
             )
         except Exception as e:
             logger.warning("catalyst grading failed (%s) — continuing without", e)
+        try:
+            self.state["paper_ledger"] = ledger_report_data(
+                build_ledger(load_tranches(self.settings.discover_db_path))
+            )
+        except Exception as e:
+            logger.warning("paper ledger failed (%s) — report will omit it", e)
+            self.state["paper_ledger"] = None
         return StepOutput(content=self.state["track_record_summary"])
 
     def step_market_themes(self, step_input: StepInput) -> StepOutput:
@@ -1428,6 +1436,7 @@ class DiscoverPipeline:
             portfolio_tilt=portfolio_tilt,
             pick_catalysts=pick_catalysts,
             usage=TRACKER.report_data(),
+            paper_ledger=self.state.get("paper_ledger"),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
