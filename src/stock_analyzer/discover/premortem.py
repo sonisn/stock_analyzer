@@ -82,6 +82,18 @@ For each WRITE_CALL action in the plan, additionally consider:
   (c) opportunity cost of capping upside on high-confidence picks,
   (d) tax consequences if assignment triggers short-term gain on
       the underlying.
+Treat each of these as a candidate failure mode.
+
+SELL_PUT ACTIONS — additional critique dimensions
+For each SELL_PUT (cash-secured put) action in the plan, additionally
+consider:
+  (a) assignment in a gap-down, owning the stock well above market,
+  (b) the thesis breaking while the put is open (the user still buys
+      at the strike),
+  (c) the stock rallying away, leaving only the premium while cash sat
+      idle as collateral,
+  (d) several puts on correlated picks assigning together and draining
+      cash at the worst moment.
 Treat each of these as a candidate failure mode.\
 """
 

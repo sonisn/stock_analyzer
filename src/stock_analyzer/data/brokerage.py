@@ -9,7 +9,7 @@ from snaptrade_client import SnapTrade
 from snaptrade_client.auth import SnapTradeAuth
 
 from ..logging import get_logger
-from ..models.market import OCCParseError
+from ..models.market import OCCParseError, ParsedOCC
 from .options_symbols import is_option_symbol, parse_occ
 
 logger = get_logger(__name__)
@@ -301,23 +301,16 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
     return out
 
 
-def fetch_open_option_positions() -> dict[str, dict[str, int]]:
-    """Return {underlying_ticker: {account_name: short_call_contracts}}.
-
-    Per-account is required because each short call only collateralizes
-    shares of the same underlying IN THE SAME ACCOUNT. A short call in
-    Account A does NOT reduce CC capacity in Account B.
-
-    Only SHORT calls (units < 0) are counted. Long calls and any puts are
-    ignored. Returns {} when SnapTrade is unavailable or no positions are
-    found.
-    """
+def _short_option_positions(option_type: str) -> list[tuple[str, ParsedOCC, int]]:
+    """[(account_name, parsed OCC symbol, contracts short), ...] for every
+    SHORT option of `option_type` ("C" or "P") across connected accounts.
+    Long options are skipped. Returns [] when SnapTrade is unavailable."""
     try:
         user_id, user_secret = _credentials()
         client = _client()
     except Exception as e:
         logger.info("SnapTrade unavailable for option-position lookup: %s", e)
-        return {}
+        return []
 
     try:
         accounts = (
@@ -331,9 +324,9 @@ def fetch_open_option_positions() -> dict[str, dict[str, int]]:
         )
     except Exception as e:
         logger.info("SnapTrade list_user_accounts failed: %s", e)
-        return {}
+        return []
 
-    coverage: dict[str, dict[str, int]] = {}
+    out: list[tuple[str, ParsedOCC, int]] = []
     for account in accounts:
         if isinstance(account, dict):
             account_id = account.get("id")
@@ -363,14 +356,46 @@ def fetch_open_option_positions() -> dict[str, dict[str, int]]:
                 parsed = parse_occ(symbol)
             except OCCParseError:
                 continue
-            if parsed.option_type != "C":
+            if parsed.option_type != option_type:
                 continue
             units = float(pos.get("units") or 0)
             if units >= 0:
                 continue
-            per_account = coverage.setdefault(parsed.ticker, {})
-            per_account[account_name] = per_account.get(account_name, 0) + int(-units)
+            out.append((account_name, parsed, int(-units)))
+    return out
+
+
+def fetch_open_option_positions() -> dict[str, dict[str, int]]:
+    """Return {underlying_ticker: {account_name: short_call_contracts}}.
+
+    Per-account is required because each short call only collateralizes
+    shares of the same underlying IN THE SAME ACCOUNT. A short call in
+    Account A does NOT reduce CC capacity in Account B.
+
+    Only SHORT calls (units < 0) are counted. Long calls and any puts are
+    ignored. Returns {} when SnapTrade is unavailable or no positions are
+    found.
+    """
+    coverage: dict[str, dict[str, int]] = {}
+    for account_name, parsed, contracts in _short_option_positions("C"):
+        per_account = coverage.setdefault(parsed.ticker, {})
+        per_account[account_name] = per_account.get(account_name, 0) + contracts
     return coverage
+
+
+def fetch_open_short_puts() -> dict[str, dict[str, float]]:
+    """Return {underlying_ticker: {"contracts": n, "collateral_usd": x}}
+    for puts already sold, summed across accounts.
+
+    `collateral_usd` (strike × 100 × contracts) is cash the broker is
+    already holding against possible assignment, so it isn't free for
+    new cash-secured puts. Returns {} when SnapTrade is unavailable."""
+    out: dict[str, dict[str, float]] = {}
+    for _account, parsed, contracts in _short_option_positions("P"):
+        rec = out.setdefault(parsed.ticker, {"contracts": 0, "collateral_usd": 0.0})
+        rec["contracts"] += contracts
+        rec["collateral_usd"] += parsed.strike * 100.0 * contracts
+    return out
 
 
 def fetch_total_cash() -> float | None:

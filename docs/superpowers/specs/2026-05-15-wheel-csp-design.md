@@ -1,7 +1,13 @@
 # Wheel / CSP Action Generation — Design
 
 **Date:** 2026-05-15
-**Status:** Approved (pending spec review)
+**Status:** Implemented 2026-09-18. Differences from this spec:
+`cash_reserved` is computed from strike × contracts instead of being asked of
+the LLM (so rule 2 cannot fail); puts must match a fetched chain row, and
+delta/premium are re-read from it; over-cap puts are cut down to fit rather
+than dropped; open short puts are detected and their collateral removed
+from the budget; candidates also drop BROKEN/TARGET HIT picks and include
+the current run's picks; yfinance put deltas are estimated from IV.
 **Author:** snehal.soni
 
 ## Problem

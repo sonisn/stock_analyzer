@@ -207,6 +207,26 @@ class IvHvRegime(BaseModel):
     label: str  # "elevated" | "average" | "depressed"
 
 
+# --- Cash-secured put eligibility -----------------------------------------
+
+
+class CspCandidate(BaseModel):
+    """A recent discover pick you could sell a cash-secured put on this run.
+
+    `max_csp_cash` is the most collateral (strike × 100 × contracts) one
+    put on it may tie up: the per-put cap, or less when the total cap has
+    little room left."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ticker: str
+    last_pick_run_at: str  # ISO date of the most recent run that picked it
+    last_pick_rank: int
+    shares_held: int  # < 100 — a round lot routes to covered calls instead
+    thesis_status: str | None = None  # thesis tracker status, when known
+    max_csp_cash: float
+
+
 __all__ = [
     "LONG_TERM_DAYS",
     "Lot",
@@ -215,4 +235,5 @@ __all__ = [
     "EligibleHolding",
     "RoundLotCoverage",
     "IvHvRegime",
+    "CspCandidate",
 ]

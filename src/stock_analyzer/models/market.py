@@ -32,7 +32,8 @@ class ParsedOCC(BaseModel):
 
 
 class OptionQuote(BaseModel):
-    """One option strike/expiry row (calls only — puts not supported)."""
+    """One option strike/expiry row. `delta` is signed: positive for calls,
+    negative for puts."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -47,9 +48,11 @@ class OptionQuote(BaseModel):
 
 
 class OptionChain(BaseModel):
-    """A ticker's filtered OTM call chain.
+    """A ticker's filtered OTM chain: calls above spot, puts below it.
 
-    ``source`` records which provider answered. ``"missing"`` is a valid
+    Which side is populated depends on the ``kind`` asked of
+    ``fetch_chains`` (covered calls ask for calls, cash-secured puts for
+    puts). ``source`` records which provider answered. ``"missing"`` is a valid
     state that downstream code handles — it does NOT raise.
     """
 
@@ -59,6 +62,7 @@ class OptionChain(BaseModel):
     spot: float
     asof: datetime
     calls: list[OptionQuote] = Field(default_factory=list)
+    puts: list[OptionQuote] = Field(default_factory=list)
     source: Literal["tradier", "yfinance", "missing"] = "missing"
 
 

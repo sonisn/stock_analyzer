@@ -264,6 +264,15 @@ def print_rebalance_terminal(
         else:
             print("  No recommendations: rebalancer declined to write calls this run.")
             print(f"  CC context ({len(cc_block)} chars) WAS provided to Opus.")
+        csp_writes = getattr(plan, "csp_writes", None) or []
+        if csp_writes:
+            print(f"  Cash-secured puts: {len(csp_writes)} SELL_PUT action(s)")
+            for cp in csp_writes:
+                print(
+                    f"    {cp.ticker}: {cp.contracts}x ${cp.strike:.2f}P "
+                    f"expires {cp.expiry}, Δ={cp.delta:.2f}, "
+                    f"premium ${cp.premium_usd:,.0f}, cash reserved ${cp.cash_reserved:,.0f}"
+                )
 
     print_terminal_summary(ranker_text, sizer_text)
     print("\n" + "=" * 60)
@@ -279,10 +288,11 @@ def print_rebalance_terminal(
 def gross_premium_from_plan(plan: object | None) -> tuple[int, float]:
     gross_premium = 0.0
     action_count = 0
-    if plan is not None and getattr(plan, "option_writes", None):
+    if plan is not None:
         gross_premium = sum(
-            ow.contracts * ow.est_premium_per_share * 100.0 for ow in plan.option_writes
-        )
+            ow.contracts * ow.est_premium_per_share * 100.0
+            for ow in getattr(plan, "option_writes", None) or []
+        ) + sum(cp.premium_usd for cp in getattr(plan, "csp_writes", None) or [])
     if plan is not None:
         action_count = len(plan.actions)
     return action_count, gross_premium

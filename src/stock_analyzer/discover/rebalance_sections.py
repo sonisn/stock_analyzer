@@ -306,6 +306,8 @@ def append_rebalance_plan_body(
     cc_warnings: list[str] | None,
     cc_slippage_buffer: float,
     stop_loss_warnings: list[str] | None = None,
+    csp_summary: dict[str, Any] | None = None,
+    csp_warnings: list[str] | None = None,
 ) -> None:
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Rebalance plan (action list)", level=1))
@@ -401,6 +403,8 @@ def append_rebalance_plan_body(
             )
         )
 
+    append_csp_section(sections, csp_summary, csp_warnings)
+
     if stop_loss_warnings:
         sections.append(
             Section(
@@ -410,6 +414,63 @@ def append_rebalance_plan_body(
         )
 
     sections.append(Section(kind="preformatted", text=rebalance_text))
+
+
+def append_csp_section(
+    sections: list[Section],
+    summary: dict[str, Any] | None,
+    warnings: list[str] | None,
+) -> None:
+    """Cash-secured puts the plan sells: what each pays, the cash it ties
+    up, and what the shares would cost if assigned."""
+    if summary and summary.get("rows"):
+        sections.append(Section(kind="heading", text="Cash-secured puts", level=2))
+        rows = [
+            [
+                r["ticker"],
+                f"{r['contracts']} × ${r['strike']:,.2f}P",
+                r["expiry"],
+                f"{r['delta']:.2f}",
+                f"${r['premium_usd']:,.0f}",
+                "—" if r["annualized_yield_pct"] is None else f"{r['annualized_yield_pct']:.1f}%",
+                f"${r['cash_reserved']:,.0f}",
+                f"${r['net_cost_if_assigned']:,.2f}",
+            ]
+            for r in summary["rows"]
+        ]
+        sections.append(
+            Section(
+                kind="table",
+                table_header=[
+                    "Ticker",
+                    "Put",
+                    "Expiry",
+                    "Delta",
+                    "Premium",
+                    "Yield (ann.)",
+                    "Cash reserved",
+                    "Cost if assigned",
+                ],
+                table_rows=rows,
+            )
+        )
+        n = len(summary["rows"])
+        pct = summary.get("pct_of_budget")
+        share = f" ({pct:.1f}% of the ${summary['cash_budget']:,.0f} put budget)" if pct else ""
+        sections.append(
+            Section(
+                kind="para",
+                text=(
+                    f"Puts reserve ${summary['total_cash_reserved']:,.0f} of cash across "
+                    f"{n} ticker{'s' if n != 1 else ''}{share} for "
+                    f"${summary['total_premium_usd']:,.0f} of premium. That cash stays "
+                    "in the account until expiry; if a put is assigned you buy 100 "
+                    "shares per contract at the strike."
+                ),
+            )
+        )
+    if warnings:
+        sections.append(Section(kind="para", text="Put plan adjustments: " + "; ".join(warnings)))
 
 
 def append_holding_review_sections(
@@ -500,6 +561,8 @@ def build_rebalance_sections(
     cc_warnings: list[str] | None = None,
     cc_slippage_buffer: float = 0.10,
     stop_loss_warnings: list[str] | None = None,
+    csp_summary: dict[str, Any] | None = None,
+    csp_warnings: list[str] | None = None,
     usage: dict[str, Any] | None = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
@@ -558,6 +621,8 @@ def build_rebalance_sections(
         cc_warnings=cc_warnings,
         cc_slippage_buffer=cc_slippage_buffer,
         stop_loss_warnings=stop_loss_warnings,
+        csp_summary=csp_summary,
+        csp_warnings=csp_warnings,
     )
     append_harvest_section(sections, harvest_candidates)
     append_holding_review_sections(sections, holdings_reviews)

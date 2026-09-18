@@ -30,9 +30,15 @@ def _build_rebalancer_instructions(
     cc_slippage_buffer: float = 0.10,
     cc_min_stub_usd: float = 1000.0,
     cc_stub_optimization: bool = True,
+    csp_target_delta_min: float = 0.10,
+    csp_target_delta_max: float = 0.25,
+    csp_dte_min: int = 30,
+    csp_dte_max: int = 45,
+    csp_max_pct_per_put: float = 0.25,
+    csp_max_pct_total: float = 0.80,
 ) -> str:
-    """Build the rebalancer prompt. CC params are templated from Settings
-    so `.env` overrides actually flow into the LLM context.
+    """Build the rebalancer prompt. CC and CSP params are templated from
+    Settings so `.env` overrides actually flow into the LLM context.
     """
     buffer_pct = int(round(cc_slippage_buffer * 100))
     stub_section = (
@@ -251,9 +257,11 @@ This block is informational. Do not pretend it constrains you; the
 forward-looking evidence in today's reviews always wins.
 
 Hard constraints:
-- Total BUYs + ADDs must NOT exceed (SELL proceeds + TRIM proceeds + available cash).
+- Total BUYs + ADDs must NOT exceed (SELL proceeds + TRIM proceeds + available
+  cash − cash reserved as SELL_PUT collateral).
 - No single position should exceed ~25% of post-rebalance portfolio value.
-- No leverage, no options, no shorts.
+- No leverage, no shorts. The only options allowed are the covered calls
+  (WRITE_CALL) and cash-secured puts (SELL_PUT) described below.
 - Order actions by execution: SELLs first, TRIMs second, ADDs/BUYs last
   (you need the cash from sells before you can buy).
 - For each SELL/TRIM, follow the Tax lot plan from the holding's review:
@@ -459,9 +467,9 @@ Your response is validated against a small Pydantic schema
 (RebalancePlan) with FIVE fields only:
   - status: "NO_ACTION" or "ACTION".
   - aggressiveness_applied: "conservative" | "balanced" | "aggressive".
-  - actions: list of {{action: SELL/TRIM/ADD/BUY/WRITE_CALL, ticker, sizing}}.
-    Empty when status=NO_ACTION. Ordered SELLs first, TRIMs second,
-    ADDs/BUYs last when status=ACTION.
+  - actions: list of {{action: SELL/TRIM/ADD/BUY/WRITE_CALL/SELL_PUT,
+    ticker, sizing}}. Empty when status=NO_ACTION. Ordered SELLs first,
+    TRIMs second, ADDs/BUYs next, option writes last when status=ACTION.
   - summary: one sentence (the NO_ACTION rationale or the big shift
     on ACTION).
   - full_text: the COMPLETE prose plan rendered per the Format A or
@@ -475,6 +483,10 @@ Your response is validated against a small Pydantic schema
     COVERED-CALL CONTEXT block), strike, expiry (YYYY-MM-DD), contracts,
     est_premium_per_share, delta, assignment_probability, notes. Empty
     list when no calls are recommended.
+  - csp_writes: parallel to SELL_PUT actions. One entry per SELL_PUT with
+    ticker, strike, expiry (YYYY-MM-DD), contracts, est_premium_per_share,
+    delta (negative, as quoted), notes. Empty list when no puts are
+    recommended.
 
 Structured `actions` must agree with `full_text` — if full_text says
 "Action 1: SELL MRVL", actions[0] must be {{SELL, MRVL, ...}}.
@@ -587,6 +599,57 @@ Show the math explicitly in full_text:
 Note trade linkages, e.g. "If you skip the NVDA write, shrink the
 AMZN ADD by $340."
 
+========================================================================
+CASH-SECURED PUTS (when a CASH-SECURED PUT CONTEXT block is present)
+========================================================================
+The block lists recent discover picks the user doesn't own in a round
+lot. Selling a put pays premium now; if the stock closes below the
+strike at expiry the user buys 100 shares per contract at the strike
+(a lower price than today's), which the covered-call side then works.
+Posture: PREMIUM HARVEST — assignment should be the exception.
+
+TARGET BAND
+  |Δ| {csp_target_delta_min:.2f}-{csp_target_delta_max:.2f}, DTE {csp_dte_min}-{csp_dte_max} days. Use only strikes and expiries
+  listed in the block; stay inside the band.
+
+WHEN TO SELL ONE
+  - Only on a ticker you would be glad to own at the strike. Prefer
+    fresher, higher-ranked picks and an intact thesis.
+  - A put is an alternative to buying now, not an addition to it: do
+    not BUY and SELL_PUT the same ticker in one plan unless full_text
+    says why.
+  - Skip when the macro regime or market themes argue against adding
+    that exposure.
+
+LIQUIDITY GUARD (puts — replaces the call guard's open-interest rule)
+  Skip a strike when bid < $0.20 or (ask - bid) / mid > 0.25. Low open
+  interest alone is NOT a reason to skip: puts on mid-caps often show
+  OI under 100 yet fill fine with a limit order at or near mid. When two
+  strikes are otherwise equal, prefer the one with higher OI. Tell the
+  user to use a limit order at mid in the put's notes.
+
+CASH DISCIPLINE (hard limits, enforced in code after you answer)
+  - Collateral = strike × 100 × contracts, held in cash to expiry.
+  - Per put: at most {csp_max_pct_per_put:.0%} of the block's cash budget ("Max
+    collateral per put" line).
+  - All puts together: at most {csp_max_pct_total:.0%} of that budget.
+  - Cash reserved for puts is NOT available for BUY/ADD actions. The sum
+    of BUY/ADD dollars plus put collateral must not exceed cash +
+    SELL/TRIM proceeds. Show this in the cash math in full_text.
+
+STATE IN full_text, PER PUT
+  premium ($ total), annualized yield = (premium_per_share / strike) ×
+  (365 / DTE), net cost if assigned = strike − premium_per_share, and
+  its discount to today's price.
+
+OUTPUT
+  - One SELL_PUT action per ticker, sizing exactly:
+        "<N> contracts $<strike>P <YYYY-MM-DD>"
+    Example: "2 contracts $145P 2026-07-18"
+  - A matching csp_writes entry with ticker, strike, expiry, contracts,
+    est_premium_per_share (mid of bid/ask), delta (as quoted, negative),
+    and a one-line notes.
+
 {stub_section}
 """
 
@@ -609,6 +672,12 @@ class Rebalancer:
         cc_slippage_buffer: float = 0.10,
         cc_min_stub_usd: float = 1000.0,
         cc_stub_optimization: bool = True,
+        csp_target_delta_min: float = 0.10,
+        csp_target_delta_max: float = 0.25,
+        csp_dte_min: int = 30,
+        csp_dte_max: int = 45,
+        csp_max_pct_per_put: float = 0.25,
+        csp_max_pct_total: float = 0.80,
     ):
         instructions = _build_rebalancer_instructions(
             cc_target_delta_min=cc_target_delta_min,
@@ -619,6 +688,12 @@ class Rebalancer:
             cc_slippage_buffer=cc_slippage_buffer,
             cc_min_stub_usd=cc_min_stub_usd,
             cc_stub_optimization=cc_stub_optimization,
+            csp_target_delta_min=csp_target_delta_min,
+            csp_target_delta_max=csp_target_delta_max,
+            csp_dte_min=csp_dte_min,
+            csp_dte_max=csp_dte_max,
+            csp_max_pct_per_put=csp_max_pct_per_put,
+            csp_max_pct_total=csp_max_pct_total,
         )
         # Opus 4.7+ adaptive thinking — high effort for the deepest synthesis
         # (combining holdings reviews + new picks + cash math + concentration).
@@ -660,6 +735,7 @@ class Rebalancer:
         market_themes_block: str = "",
         cc_context_block: str = "",
         harvest_block: str = "",
+        csp_context_block: str = "",
     ) -> RebalancePlan:
         # Accept either the new structured form ({ticker: HoldingReview})
         # or the legacy free-text form ({ticker: str}). For the LLM prompt
@@ -694,6 +770,7 @@ class Rebalancer:
             else ""
         )
         cc_section = f"{cc_context_block}\n\n" if cc_context_block else ""
+        csp_section = f"{csp_context_block}\n\n" if csp_context_block else ""
         harvest_section = (
             f"TAX-LOSS HARVEST CANDIDATES (deterministic; see instructions):\n{harvest_block}\n\n"
             if harvest_block
@@ -707,6 +784,7 @@ class Rebalancer:
             f"{macro_block}"
             f"{themes_section}"
             f"{cc_section}"
+            f"{csp_section}"
             f"{harvest_section}"
             f"{cash_line}\n\n"
             f"{history_section}"

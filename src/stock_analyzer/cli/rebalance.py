@@ -40,7 +40,7 @@ from ..data.share_trades import batch_share_trade_data
 from ..data.technical_indicators import batch_technicals
 from ..data.transactions import fetch_transaction_history, to_tax_payloads
 from ..data.transcripts import batch_transcript_snippets
-from ..db.repository import fetch_recent_holdings_history
+from ..db.repository import fetch_recent_holdings_history, fetch_recent_picks
 from ..db.session import get_session
 from ..discover.catalysts import repair_catalysts
 from ..discover.peers import batch_peer_comparison
@@ -50,6 +50,12 @@ from ..discover.rebalance_cc import (
     cc_empty_state,
     log_rebalancer_input_estimate,
     run_cc_data_pipeline,
+)
+from ..discover.rebalance_csp import (
+    apply_csp_plan_validation,
+    csp_empty_state,
+    csp_report_data,
+    run_csp_data_pipeline,
 )
 from ..discover.rebalance_holdings import (
     apply_stop_loss_overrides,
@@ -153,7 +159,7 @@ def _aggregate_positions(
 
 def build_email_subject(*, action_count: int, gross_premium_usd: float) -> str:
     """Subject line for the rebalance email. Annotates premium total
-    only when WRITE_CALL actions produced a non-trivial credit."""
+    only when WRITE_CALL / SELL_PUT actions produced a non-trivial credit."""
     today = date.today()
     base = f"Portfolio Rebalance — {today.strftime('%b-%d')}"
     if gross_premium_usd >= 1.0:
@@ -458,6 +464,30 @@ class RebalancePipeline(DiscoverPipeline):
                 content=f"cc_data: failed ({type(e).__name__}); CC disabled for this run"
             )
 
+    def step_csp_data(self, step_input: StepInput) -> StepOutput:
+        """Build the CASH-SECURED PUT CONTEXT block consumed by the rebalancer."""
+        self.state.update(csp_empty_state())
+        if not self.settings.csp_enabled:
+            return StepOutput(content="csp_data: disabled via CSP_ENABLED=0")
+        try:
+            with get_session(self.settings.discover_db_path) as session:
+                recent = fetch_recent_picks(session, n_runs=self.settings.csp_pick_lookback_runs)
+            result = run_csp_data_pipeline(self.state, self.settings, recent)
+        except Exception as e:
+            logger.error(
+                "step_csp_data crashed (%s) — rebalance will run WITHOUT put ideas.",
+                e,
+                exc_info=True,
+            )
+            return StepOutput(
+                content=f"csp_data: failed ({type(e).__name__}); puts disabled for this run"
+            )
+        self.state["csp_context_block"] = result.context_block
+        self.state["csp_eligibility"] = result.eligibility
+        self.state["csp_chains"] = result.chains
+        self.state["csp_cash_budget"] = result.cash_budget
+        return StepOutput(content=result.content)
+
     def step_tax_harvest(self, step_input: StepInput) -> StepOutput:
         """Deterministic tax-loss harvesting candidates (no LLM), fed to the
         Rebalancer and shown in the report."""
@@ -508,6 +538,12 @@ class RebalancePipeline(DiscoverPipeline):
             cc_slippage_buffer=self.settings.cc_slippage_buffer,
             cc_min_stub_usd=self.settings.cc_min_stub_usd,
             cc_stub_optimization=self.settings.cc_stub_optimization,
+            csp_target_delta_min=self.settings.csp_target_delta_min,
+            csp_target_delta_max=self.settings.csp_target_delta_max,
+            csp_dte_min=self.settings.csp_dte_min,
+            csp_dte_max=self.settings.csp_dte_max,
+            csp_max_pct_per_put=self.settings.csp_max_pct_per_put,
+            csp_max_pct_total=self.settings.csp_max_pct_total,
         )
         log_rebalancer_input_estimate(
             self.state,
@@ -524,6 +560,7 @@ class RebalancePipeline(DiscoverPipeline):
             market_themes_block=self.state.get("market_themes_block", ""),
             cc_context_block=self.state.get("cc_context_block", ""),
             harvest_block=self.state.get("harvest_block", ""),
+            csp_context_block=self.state.get("csp_context_block", ""),
         )
         try:
             plan, cc_warnings = apply_cc_plan_validation(
@@ -542,6 +579,26 @@ class RebalancePipeline(DiscoverPipeline):
                 exc_info=True,
             )
             self.state["cc_warnings"] = [f"validation crashed: {e}"]
+        try:
+            plan, csp_warnings = apply_csp_plan_validation(
+                plan,
+                chains=self.state.get("csp_chains") or {},
+                eligibility=self.state.get("csp_eligibility") or {},
+                cash_budget=self.state.get("csp_cash_budget") or 0.0,
+                settings=self.settings,
+            )
+        except Exception as e:
+            # Unvalidated puts could over-commit cash — drop them all.
+            logger.error("CSP validation crashed (%s) — dropping all puts.", e, exc_info=True)
+            plan = plan.model_copy(
+                update={
+                    "actions": [a for a in plan.actions if a.action != "SELL_PUT"],
+                    "csp_writes": [],
+                }
+            )
+            csp_warnings = [f"put validation crashed ({e}); all puts dropped"]
+        if csp_warnings:
+            self.state["csp_warnings"] = csp_warnings
         self.state["rebalance_plan"] = plan
         self.state["rebalance_text"] = plan.full_text
         self.state["harvest_candidates"] = harvest_report_data(
@@ -642,6 +699,11 @@ class RebalancePipeline(DiscoverPipeline):
             cc_stub_pool_total_usd=self.state.get("cc_stub_pool_total_usd") or 0.0,
             cc_warnings=self.state.get("cc_warnings") or [],
             cc_slippage_buffer=self.settings.cc_slippage_buffer,
+            csp_summary=csp_report_data(
+                self.state.get("rebalance_plan"),
+                cash_budget=self.state.get("csp_cash_budget") or 0.0,
+            ),
+            csp_warnings=self.state.get("csp_warnings") or [],
             stop_loss_warnings=self.state.get("stop_loss_warnings") or [],
             usage=TRACKER.report_data(),
         )
@@ -757,6 +819,7 @@ class RebalancePipeline(DiscoverPipeline):
                 Step(name="sizer", executor=self.step_sizer),
                 Step(name="review_holdings", executor=self.step_review_holdings),
                 Step(name="cc_data", executor=self.step_cc_data),
+                Step(name="csp_data", executor=self.step_csp_data),
                 Step(name="tax_harvest", executor=self.step_tax_harvest),
                 Step(name="rebalance", executor=self.step_rebalance),
                 Step(name="premortem", executor=self.step_premortem),

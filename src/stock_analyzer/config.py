@@ -185,11 +185,32 @@ class Settings(BaseSettings):
     cc_target_delta_max: float = 0.45
     cc_dte_min: int = 30
     cc_dte_max: int = 45
-    cc_denylist: Annotated[tuple[str, ...], NoDecode] = ()
     cc_min_premium_usd: float = 500.0
     cc_slippage_buffer: float = 0.10
     cc_stub_optimization: bool = True
     cc_min_stub_usd: float = 1000.0
+    # Tickers never to write options on — covered calls or cash-secured
+    # puts. CC_DENYLIST is the old name, still honored.
+    options_denylist: Annotated[tuple[str, ...], NoDecode] = Field(
+        default=(),
+        validation_alias=AliasChoices("OPTIONS_DENYLIST", "CC_DENYLIST"),
+    )
+
+    # ---- Cash-secured puts (front half of the wheel, cli/rebalance.py) ---
+    # Sell puts on recent discover picks you don't own yet: paid to wait,
+    # assigned only at a price below today's. Premium-harvest posture —
+    # low delta, so assignment is the exception.
+    csp_enabled: bool = True
+    csp_target_delta_min: float = 0.10
+    csp_target_delta_max: float = 0.25
+    csp_dte_min: int = 30
+    csp_dte_max: int = 45
+    # Collateral caps, as fractions of available cash: per put, and all
+    # puts together (the rest stays free for BUYs and dry powder).
+    csp_max_pct_per_put: float = 0.25
+    csp_max_pct_total: float = 0.80
+    # How many past runs' picks are put candidates (plus this run's).
+    csp_pick_lookback_runs: int = 3
 
     # ---- Tradier options data (primary chain provider) -------------------
     tradier_api_key: str | None = None
@@ -205,9 +226,9 @@ class Settings(BaseSettings):
             return tuple(t.strip().upper() for t in v.split(",") if t.strip())
         return v
 
-    @field_validator("cc_denylist", mode="before")
+    @field_validator("options_denylist", mode="before")
     @classmethod
-    def _split_cc_denylist(cls, v: object) -> object:
+    def _split_options_denylist(cls, v: object) -> object:
         if isinstance(v, str):
             return tuple(t.strip().upper() for t in v.split(",") if t.strip())
         return v

@@ -79,7 +79,28 @@ then compare to current chain IV to label the regime as elevated
 skips writes in depressed regimes unless conviction is HOLD with
 confidence ≥ 8.
 
-See `.env.example` for the full set of `CC_*` and `TRADIER_*` knobs.
+### Cash-secured puts (rebalance pipeline)
+
+The front half of the wheel. When enabled (`CSP_ENABLED=1`, default), the
+rebalancer can recommend selling puts on recent discover picks you don't
+hold a round lot of: you're paid premium now and only buy the stock if it
+closes below the strike, i.e. below today's price. Candidates are the
+current run's picks plus the last `CSP_PICK_LOOKBACK_RUNS` runs', minus
+denylisted tickers, picks whose thesis is BROKEN or target already hit,
+and tickers with a put already open.
+
+Posture is premium harvest: |Δ| 0.10–0.25, 30–45 DTE, expiries near
+earnings removed. Collateral (strike × 100 × contracts) is capped at 25%
+of available cash per put and 80% in total; cash already backing open
+short puts is excluded first. After the LLM answers, every put is checked
+against the fetched chain (strike and expiry must exist; delta and premium
+are re-read from it) and contracts are cut to fit the caps. The rebalance
+email gets a **Cash-secured puts** table: premium, annualized yield, cash
+reserved and cost if assigned. When yfinance is the chain source, put
+deltas are estimated from IV (Black-Scholes).
+
+See `.env.example` for the full set of `CC_*`, `CSP_*`, `OPTIONS_DENYLIST`
+and `TRADIER_*` knobs.
 
 ## Quickstart
 

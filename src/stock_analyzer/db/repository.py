@@ -292,6 +292,29 @@ def fetch_recent_holdings_history(
     return out
 
 
+def fetch_recent_picks(session: Session, *, n_runs: int = 3) -> list[tuple[str, int, str]]:
+    """[(ticker, rank, run_at), ...] for every pick of the last `n_runs`
+    runs that made picks (discover or rebalance), newest run first. Used
+    to find cash-secured-put candidates."""
+    run_ids = list(
+        session.exec(
+            select(Run.id)
+            .where(Run.id.in_(select(Pick.run_id).distinct()))
+            .order_by(Run.id.desc())
+            .limit(n_runs)
+        )
+    )
+    if not run_ids:
+        return []
+    rows = session.exec(
+        select(Pick.ticker, Pick.rank, Run.run_at)
+        .join(Run, Run.id == Pick.run_id)
+        .where(Pick.run_id.in_(run_ids))
+        .order_by(Run.id.desc(), Pick.rank)
+    )
+    return [(t, r, at) for t, r, at in rows]
+
+
 # --- run outputs ----------------------------------------------------------
 
 

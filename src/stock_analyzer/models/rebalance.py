@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class OptionWrite(BaseModel):
@@ -47,12 +47,51 @@ class OptionWrite(BaseModel):
     notes: str = ""
 
 
+class CashSecuredPut(BaseModel):
+    """Structured detail for one SELL_PUT action (the front half of the
+    wheel: get paid to wait for a recent discover pick at a lower price).
+
+    Cash-secured: ``strike × 100 × contracts`` must sit in cash until
+    expiry in case of assignment. That collateral is computed here
+    (``cash_reserved``), never asked of the LLM, so the math can't be
+    wrong. Premium is per share (×100 per contract). ``delta`` is stored
+    negative (put convention) whatever sign the model emits; ``abs(delta)``
+    is the assignment-probability proxy."""
+
+    model_config = ConfigDict(frozen=True)
+
+    ticker: str
+    strike: float = Field(..., gt=0)
+    expiry: str = Field(..., description="ISO date YYYY-MM-DD.")
+    contracts: int = Field(..., gt=0, description="Number of puts to sell.")
+    est_premium_per_share: float = Field(
+        ...,
+        ge=0,
+        description="Mid of bid/ask in dollars per share. ×100 = per contract.",
+    )
+    delta: float = Field(..., ge=-1.0, le=1.0, description="Put delta, e.g. -0.15.")
+    notes: str = ""
+
+    @field_validator("delta")
+    @classmethod
+    def _put_delta_is_negative(cls, v: float) -> float:
+        return -abs(v)
+
+    @property
+    def cash_reserved(self) -> float:
+        return self.strike * 100.0 * self.contracts
+
+    @property
+    def premium_usd(self) -> float:
+        return self.est_premium_per_share * 100.0 * self.contracts
+
+
 class RebalanceAction(BaseModel):
     """One action line in an ACTION plan."""
 
     model_config = ConfigDict(frozen=True)
 
-    action: Literal["SELL", "TRIM", "ADD", "BUY", "WRITE_CALL"]
+    action: Literal["SELL", "TRIM", "ADD", "BUY", "WRITE_CALL", "SELL_PUT"]
     ticker: str
     sizing: str = Field(..., description="e.g. 'full position', '25%', '~$3,400'.")
 
@@ -96,6 +135,14 @@ class RebalancePlan(BaseModel):
             "Empty list when no calls are recommended."
         ),
     )
+    csp_writes: list[CashSecuredPut] = Field(
+        default_factory=list,
+        description=(
+            "Parallel to SELL_PUT actions. Each entry MUST have a "
+            "matching SELL_PUT in `actions` with the same ticker. "
+            "Empty list when no puts are recommended."
+        ),
+    )
 
 
 def status_from_plan(plan: RebalancePlan | None) -> str:
@@ -114,6 +161,7 @@ def actions_from_plan(plan: RebalancePlan | None) -> list[tuple[str, str]]:
 
 
 __all__ = [
+    "CashSecuredPut",
     "OptionWrite",
     "RebalanceAction",
     "RebalancePlan",

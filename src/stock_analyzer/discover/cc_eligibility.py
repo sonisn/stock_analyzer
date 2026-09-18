@@ -137,23 +137,21 @@ def apply_earnings_filter(
     *,
     earnings_date: date | None,
 ) -> tuple[OptionChain, tuple[date, date] | None]:
-    """Drop expiries that fall within ±EARNINGS_BLACKLIST_DAYS of
-    earnings_date. Returns the filtered chain and the blacklist window
-    (for prompt display) or None when no earnings date was provided.
+    """Drop expiries (calls and puts) that fall within
+    ±EARNINGS_BLACKLIST_DAYS of earnings_date. Returns the filtered chain
+    and the blacklist window (for prompt display) or None when no earnings
+    date was provided.
     """
     if earnings_date is None:
         return chain, None
     lo = earnings_date - timedelta(days=EARNINGS_BLACKLIST_DAYS)
     hi = earnings_date + timedelta(days=EARNINGS_BLACKLIST_DAYS)
-    survived = [q for q in chain.calls if q.expiry < lo or q.expiry > hi]
+
+    def _keep(quotes: list[OptionQuote]) -> list[OptionQuote]:
+        return [q for q in quotes if q.expiry < lo or q.expiry > hi]
+
     return (
-        OptionChain(
-            ticker=chain.ticker,
-            spot=chain.spot,
-            asof=chain.asof,
-            calls=survived,
-            source=chain.source,
-        ),
+        chain.model_copy(update={"calls": _keep(chain.calls), "puts": _keep(chain.puts)}),
         (lo, hi),
     )
 

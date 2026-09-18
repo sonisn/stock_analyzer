@@ -139,7 +139,7 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
     )
 
     positions = state.get("holdings_positions") or {}
-    denylist = settings.cc_denylist
+    denylist = settings.options_denylist
 
     try:
         open_short_calls = fetch_open_option_positions()

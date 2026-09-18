@@ -2,7 +2,9 @@
 
 The orchestrator (`fetch_chains`) tries Tradier per-ticker and falls
 back to yfinance on None/error. Both providers return a normalized
-`OptionChain` containing only OTM calls within the requested DTE band.
+`OptionChain` containing only OTM options within the requested DTE band:
+calls above spot (covered calls), puts below it (cash-secured puts), or
+both, per the `kind` argument.
 
 Failure of either provider for a given ticker is non-fatal — the
 returned `OptionChain.source` is set to `"missing"` and the rebalancer
@@ -13,7 +15,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime, timedelta
-from typing import Protocol
+from typing import Literal, Protocol
 
 from ..config import Settings
 from ..http_client import HttpClient, RetryPolicy
@@ -32,8 +34,23 @@ __all__ = [
     "OptionChainProvider",
     "YFinanceChain",
     "TradierChain",
+    "ChainKind",
     "fetch_chains",
 ]
+
+ChainKind = Literal["calls", "puts", "both"]
+
+
+def _wants(kind: ChainKind) -> tuple[bool, bool]:
+    """(want_calls, want_puts) for a `kind`."""
+    return kind in ("calls", "both"), kind in ("puts", "both")
+
+
+def _is_otm(option_type: str, strike: float, spot: float) -> bool:
+    """OTM test; with an unknown spot (<= 0) every strike is kept."""
+    if spot <= 0:
+        return True
+    return strike > spot if option_type == "call" else strike < spot
 
 
 def _safe_float(v: object) -> float | None:
@@ -61,12 +78,15 @@ class OptionChainProvider(Protocol):
     """Minimal contract every chain provider implements.
 
     Implementations MUST:
-      - filter to OTM calls only (strike > spot)
+      - filter to OTM options only (calls: strike > spot, puts: strike < spot)
+      - populate only the side(s) `kind` asks for
       - filter to expiries within [today+dte_min, today+dte_max]
       - return None on any error (graceful degradation)
     """
 
-    def fetch(self, ticker: str, dte_min: int, dte_max: int) -> OptionChain | None: ...
+    def fetch(
+        self, ticker: str, dte_min: int, dte_max: int, kind: ChainKind = "calls"
+    ) -> OptionChain | None: ...
 
 
 class YFinanceChain:
@@ -77,7 +97,10 @@ class YFinanceChain:
     strike vs spot when delta is missing.
     """
 
-    def fetch(self, ticker: str, dte_min: int, dte_max: int) -> OptionChain | None:
+    def fetch(
+        self, ticker: str, dte_min: int, dte_max: int, kind: ChainKind = "calls"
+    ) -> OptionChain | None:
+        want_calls, want_puts = _wants(kind)
         # Every Yahoo touch below goes through the gateway, which builds
         # (and caches) the Ticker inside its own retry/pacing envelope.
         spot = _safe_float(
@@ -94,6 +117,7 @@ class YFinanceChain:
         lo = today + timedelta(days=dte_min)
         hi = today + timedelta(days=dte_max)
         calls: list[OptionQuote] = []
+        puts: list[OptionQuote] = []
         expiries = yf_gateway.ticker_call(
             ticker, "chain.expiries", lambda tk: tuple(tk.options), default=()
         )
@@ -114,38 +138,47 @@ class YFinanceChain:
                 continue
             if expiry < lo or expiry > hi:
                 continue
-            df = yf_gateway.ticker_call(
-                ticker,
-                f"chain.{e_str}",
-                lambda tk, expiry_str=e_str: tk.option_chain(expiry_str).calls,
-            )
-            if df is None:
-                continue
-            for _, row in df.iterrows():
-                strike = _safe_float(row.get("strike"))
-                # NaN / None / 0 / negative strikes are nonsense; skip them.
-                if strike is None or strike <= 0:
-                    continue
-                if strike <= spot:  # OTM calls only
-                    continue
-                calls.append(
-                    OptionQuote(
-                        strike=strike,
-                        expiry=expiry,
-                        bid=_safe_float(row.get("bid")) or 0.0,
-                        ask=_safe_float(row.get("ask")) or 0.0,
-                        iv=_safe_float(row.get("impliedVolatility")),
-                        delta=None,  # yfinance does not provide Greeks
-                        open_interest=_safe_int(row.get("openInterest")),
-                        volume=_safe_int(row.get("volume")),
-                    )
+            sides = [
+                (side, out)
+                for side, out, want in (("call", calls, want_calls), ("put", puts, want_puts))
+                if want
+            ]
+            for option_type, out in sides:
+                df = yf_gateway.ticker_call(
+                    ticker,
+                    f"chain.{e_str}.{option_type}s",
+                    lambda tk, expiry_str=e_str, attr=f"{option_type}s": getattr(
+                        tk.option_chain(expiry_str), attr
+                    ),
                 )
+                if df is None:
+                    continue
+                for _, row in df.iterrows():
+                    strike = _safe_float(row.get("strike"))
+                    # NaN / None / 0 / negative strikes are nonsense; skip them.
+                    if strike is None or strike <= 0:
+                        continue
+                    if not _is_otm(option_type, strike, spot):
+                        continue
+                    out.append(
+                        OptionQuote(
+                            strike=strike,
+                            expiry=expiry,
+                            bid=_safe_float(row.get("bid")) or 0.0,
+                            ask=_safe_float(row.get("ask")) or 0.0,
+                            iv=_safe_float(row.get("impliedVolatility")),
+                            delta=None,  # yfinance does not provide Greeks
+                            open_interest=_safe_int(row.get("openInterest")),
+                            volume=_safe_int(row.get("volume")),
+                        )
+                    )
 
         return OptionChain(
             ticker=ticker,
             spot=spot,
             asof=datetime.now(),
             calls=calls,
+            puts=puts,
             source="yfinance",
         )
 
@@ -194,7 +227,10 @@ class TradierChain:
             name="tradier",
         )
 
-    def fetch(self, ticker: str, dte_min: int, dte_max: int) -> OptionChain | None:
+    def fetch(
+        self, ticker: str, dte_min: int, dte_max: int, kind: ChainKind = "calls"
+    ) -> OptionChain | None:
+        want_calls, want_puts = _wants(kind)
         s = Settings()  # type: ignore[call-arg]
         if not s.tradier_api_key:
             if self._configured is None:
@@ -252,20 +288,26 @@ class TradierChain:
                     source="tradier",
                 )
 
-            # Step 2: fetch spot for filtering ITM calls
+            # Step 2: fetch spot for filtering ITM strikes
             spot = self._fetch_spot(ticker, client) or 0.0
 
             calls: list[OptionQuote] = []
+            puts: list[OptionQuote] = []
             for expiry in in_band:
                 chain_rows = self._fetch_chain_for_expiry(ticker, expiry, client)
                 for row in chain_rows:
-                    if row.get("option_type") != "call":
+                    option_type = row.get("option_type")
+                    if option_type == "call" and want_calls:
+                        out = calls
+                    elif option_type == "put" and want_puts:
+                        out = puts
+                    else:
                         continue
                     strike = _safe_float(row.get("strike")) or 0.0
-                    if strike <= 0 or (spot > 0 and strike <= spot):
-                        continue  # OTM calls only when spot known; else keep all
+                    if strike <= 0 or not _is_otm(option_type, strike, spot):
+                        continue  # OTM only when spot known; else keep all
                     greeks = row.get("greeks") or {}
-                    calls.append(
+                    out.append(
                         OptionQuote(
                             strike=strike,
                             expiry=expiry,
@@ -283,6 +325,7 @@ class TradierChain:
                 spot=spot,
                 asof=datetime.now(),
                 calls=calls,
+                puts=puts,
                 source="tradier",
             )
 
@@ -363,8 +406,12 @@ def fetch_chains(
     *,
     dte_min: int,
     dte_max: int,
+    kind: ChainKind = "calls",
 ) -> dict[str, OptionChain]:
     """Per-ticker chain fetch with Tradier → yfinance fallback.
+
+    `kind` picks the side(s) populated: "calls" (the covered-call default),
+    "puts" (cash-secured puts) or "both".
 
     Always returns a chain object for every input ticker. When all
     providers fail, the returned `OptionChain.source` is `"missing"`.
@@ -375,9 +422,9 @@ def fetch_chains(
     yfin = YFinanceChain()
     out: dict[str, OptionChain] = {}
     for t in tickers:
-        chain = tradier.fetch(t, dte_min, dte_max)
+        chain = tradier.fetch(t, dte_min, dte_max, kind)
         if chain is None:
-            chain = yfin.fetch(t, dte_min, dte_max)
+            chain = yfin.fetch(t, dte_min, dte_max, kind)
         if chain is None:
             chain = OptionChain(
                 ticker=t,

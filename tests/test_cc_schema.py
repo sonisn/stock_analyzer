@@ -20,7 +20,7 @@ def test_cc_defaults():
     assert s.cc_target_delta_max == 0.45
     assert s.cc_dte_min == 30
     assert s.cc_dte_max == 45
-    assert s.cc_denylist == ()
+    assert s.options_denylist == ()
     assert s.cc_min_premium_usd == 500
     assert s.cc_slippage_buffer == 0.10
     assert s.cc_stub_optimization is True
@@ -30,7 +30,14 @@ def test_cc_defaults():
 def test_cc_denylist_parses_csv(monkeypatch):
     monkeypatch.setenv("CC_DENYLIST", "TSLA, AAPL ,nvda")
     s = Settings()  # type: ignore[call-arg]
-    assert s.cc_denylist == ("TSLA", "AAPL", "NVDA")
+    assert s.options_denylist == ("TSLA", "AAPL", "NVDA")
+
+
+def test_options_denylist_wins_over_old_name(monkeypatch):
+    monkeypatch.setenv("CC_DENYLIST", "TSLA")
+    monkeypatch.setenv("OPTIONS_DENYLIST", "nvda,amd")
+    s = Settings()  # type: ignore[call-arg]
+    assert s.options_denylist == ("NVDA", "AMD")
 
 
 def test_option_write_valid():
