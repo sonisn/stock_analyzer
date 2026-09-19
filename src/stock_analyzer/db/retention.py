@@ -20,6 +20,9 @@ TRIM — only data nothing reads back at full fidelity:
     back 540 days); screen survivors, picks, scenarios, catalysts, review
     verdicts, outcomes and fundamentals snapshots are always kept, because
     the track record, calibration and model depend on them;
+  - stored long-term views (`stock_views`) not refreshed in `stock_view_days`:
+    a stock that is no longer held stops being refreshed, and a view older
+    than that is rewritten on sight anyway;
   - model versions beyond the newest `keep_models` (accepted ones are kept);
   - log files and cached price panels untouched for `file_days`.
 """
@@ -60,6 +63,7 @@ class RetentionPolicy:
     keep_models: int = 12
     file_days: int = 30
     reference_days: int = 365  # ticker_reference rows untouched this long go
+    stock_view_days: int = 90  # stored long-term views not refreshed this long go
     vacuum_min_free_pct: float = 20.0  # compact the file once this much is free
     warn_mb: float = 50.0  # flag the database in the upkeep summary past this
 
@@ -120,6 +124,15 @@ def prune_database(db_path: str, policy: RetentionPolicy, *, today: date) -> dic
                     ).rowcount
                     or 0
                 )
+        if "stock_views" in tables:
+            # Views of stocks no longer held stop being refreshed; drop them.
+            out["stale_stock_views"] = (
+                session.exec(
+                    text("DELETE FROM stock_views WHERE written_on < :c"),
+                    params={"c": (today - timedelta(days=policy.stock_view_days)).isoformat()},
+                ).rowcount
+                or 0
+            )
         if "ticker_reference" in tables:
             ref_cutoff = (today - timedelta(days=policy.reference_days)).isoformat()
             out["stale_reference_rows"] = (

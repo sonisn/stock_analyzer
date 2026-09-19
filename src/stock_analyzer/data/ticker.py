@@ -141,6 +141,7 @@ def fetch_ticker_data(symbol: str) -> dict[str, Any]:
         "symbol": symbol,
         "name": name,
         "price": _fmt_money(price),
+        "price_value": float(price) if price else None,
         "pct_today": _fmt_pct(pct_today),
         "market_cap": _fmt_money(info.get("marketCap")),
         "range_52w": range_52w,

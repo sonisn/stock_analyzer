@@ -55,6 +55,9 @@ _LEGACY_MIGRATIONS: tuple[tuple[str, str], ...] = (
     # on picks from single-round runs, which have no agreement signal.
     ("picks", "ALTER TABLE picks ADD COLUMN agreement_ratio REAL"),
     ("picks", "ALTER TABLE picks ADD COLUMN voting_providers TEXT"),
+    # Headlines already shown per stock, added after stock_views shipped.
+    ("stock_views", "ALTER TABLE stock_views ADD COLUMN shown_links TEXT"),
+    ("stock_views", "ALTER TABLE stock_views ADD COLUMN news_on TEXT"),
 )
 
 

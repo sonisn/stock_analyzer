@@ -36,10 +36,18 @@ def _build_agent(settings: Settings) -> PortfolioAgent:
         ticker_model=settings.ticker_model,
         rerank_provider=settings.rerank_provider,
         rerank_model=settings.rerank_model,
+        db_path=settings.discover_db_path,
+        view_max_age_days=settings.stock_view_max_age_days,
+        view_move_pct=settings.stock_view_move_pct,
     )
 
 
-def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
+def portfolio_health(
+    settings: Settings,
+    holdings: dict[str, list[dict]],
+    *,
+    ticker_data: dict[str, dict] | None = None,
+):
     """The deterministic PortfolioHealth (reporting/health.py) with the live
     data sources wired in. None when disabled or on any failure — the daily
     email must still go out."""
@@ -119,6 +127,15 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
             highs=price_vs_high(sorted(kwargs["values"])), estimates_cut=estimates_cut, **kwargs
         )
 
+    def earnings_results() -> list[dict]:
+        from ..data.eps_revisions import batch_eps_revisions
+        from ..discover.post_earnings import recent_results, with_revisions
+
+        recent = recent_results(ticker_data or {}, today=date.today())
+        if not recent:
+            return []
+        return with_revisions(recent, batch_eps_revisions([r["ticker"] for r in recent]))
+
     def reinvest(held: set[str], over_cap: set[str], n: int) -> list[dict]:
         from ..discover.reinvest import load_pick_pool, reinvest_ideas
 
@@ -135,6 +152,7 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
             reinvest=reinvest,
             income=income,
             add_on=add_on,
+            earnings_results=earnings_results if ticker_data else None,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Portfolio health block failed (%s) — sending the email without it", e)
@@ -186,7 +204,10 @@ def record_daily_suggestions(settings: Settings, health) -> None:
 
 
 def run_analysis(
-    settings: Settings, holdings: dict[str, list[dict]] | None = None
+    settings: Settings,
+    holdings: dict[str, list[dict]] | None = None,
+    *,
+    agent: PortfolioAgent | None = None,
 ) -> tuple[str, list[str]]:
     """Return (report_text, tickers). Tickers are exposed so callers can fetch
     per-ticker chart images for the email."""
@@ -197,8 +218,14 @@ def run_analysis(
         raise RuntimeError("No tickers returned from SnapTrade — check connected accounts.")
     logger.info("Analyzing %d tickers: %s", len(tickers), ", ".join(tickers))
 
-    agent = _build_agent(settings)
-    return agent.run_analysis(tickers, holdings=holdings), tickers
+    agent = agent or _build_agent(settings)
+    text = agent.run_analysis(tickers, holdings=holdings)
+    logger.info(
+        "Long-term views: %d rewritten, %d reused from the database",
+        agent.views_written,
+        agent.views_reused,
+    )
+    return text, tickers
 
 
 def build_email(result: str, health, chart_cids: dict[str, str]) -> tuple[str, str]:
@@ -244,8 +271,9 @@ def main() -> None:
     settings = Settings.from_env()
 
     holdings = fetch_portfolio_holdings()
-    result, tickers = run_analysis(settings, holdings)
-    health = portfolio_health(settings, holdings)
+    agent = _build_agent(settings)
+    result, tickers = run_analysis(settings, holdings, agent=agent)
+    health = portfolio_health(settings, holdings, ticker_data=agent.ticker_data)
     record_daily_suggestions(settings, health)
     record_portfolio_snapshot(settings, holdings)
     if not settings.email_to:

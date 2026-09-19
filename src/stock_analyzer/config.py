@@ -186,6 +186,10 @@ class Settings(BaseSettings):
     discover_rebalance_aggressiveness: Aggressiveness = "balanced"
 
     # ---- Behavior ---------------------------------------------------------
+    # Daily email: reuse each stock's long-term view until it is this old,
+    # the price moves this much, or the company reports (agents/stock_views.py).
+    stock_view_max_age_days: int = 7
+    stock_view_move_pct: float = 8.0
     use_cached_analysis: bool = True
     insider_lookback_days: int = 5
 

@@ -15,7 +15,9 @@ between rebalance runs:
   - tax-loss harvesting: taxable slices past the HARVEST_* thresholds
     (discover/tax_harvest.py; swaps are in the rebalance report, which has
     the peer data);
-  - earnings in the next 7 days;
+  - earnings in the next 7 days, and results of the last 7 days: the
+    estimate direction since the report says whether the long-term case
+    changed (discover/post_earnings.py);
   - dividend income: forward annual income and yield, and what the last
     12 months paid — reinvested automatically or left as cash
     (discover/income.py);
@@ -55,6 +57,7 @@ class PortfolioHealth:
     earnings: list[dict[str, Any]] = field(default_factory=list)
     reinvest: list[dict[str, Any]] = field(default_factory=list)
     income: dict[str, Any] = field(default_factory=dict)
+    earnings_results: list[dict[str, Any]] = field(default_factory=list)
     add_on: list[dict[str, Any]] = field(default_factory=list)
     sector_by_ticker: dict[str, str] = field(default_factory=dict)
     values: dict[str, float] = field(default_factory=dict)  # ticker -> market value
@@ -90,6 +93,7 @@ def build_portfolio_health(
     reinvest: Callable[[set[str], set[str], int], list[dict[str, Any]]] | None = None,
     income: Callable[[dict[str, float], dict[str, float]], dict[str, Any]] | None = None,
     add_on: Callable[..., list[dict[str, Any]]] | None = None,
+    earnings_results: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> PortfolioHealth:
     """`reinvest(held, over_cap_sectors, n)` returns up to `n` ranked ideas
     for sale proceeds; it is only called when something suggests a sale."""
@@ -179,6 +183,11 @@ def build_portfolio_health(
                 | {c["ticker"] for c in health.harvest},
             )
 
+    def results() -> None:
+        if earnings_results is not None:
+            health.earnings_results = earnings_results()
+
+    attempt("earnings results", results)
     attempt("dividend income", dividends)
     attempt("add on weakness", dips)
 
@@ -212,6 +221,7 @@ _BADGE = {
     "GOOD CALL": ("#0e6432", "#e6f4ea"),
     "MISSED": ("#9c1010", "#fde4e4"),
     "ADD ON DIP": ("#0e6432", "#e6f4ea"),
+    "EARNINGS CUT": ("#9c1010", "#fde4e4"),
 }
 
 
@@ -373,6 +383,15 @@ def render_health_html(h: PortfolioHealth) -> str:
             + ", ".join(html.escape(format_idea(i)) for i in h.reinvest)
             + ".</p>"
         )
+    if h.earnings_results:
+        from ..discover.post_earnings import result_text
+
+        parts.append("<h3>Earnings results (last 7 days)</h3>")
+        parts.append(
+            "<ul>"
+            + "".join(f"<li>{html.escape(result_text(r))}</li>" for r in h.earnings_results)
+            + "</ul>"
+        )
     if h.earnings:
         parts.append("<h3>Earnings in the next 7 days</h3>")
         parts.append(
@@ -487,6 +506,16 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             )
         else:
             add(4, c["ticker"], "WATCH", f"Keep an eye on {c['ticker']}: {reason}.")
+    from ..discover.post_earnings import result_text
+
+    for r in h.earnings_results:
+        lowering = r["direction"] == "lowering"
+        add(
+            2 if lowering else 4,
+            r["ticker"],
+            "EARNINGS CUT" if lowering else "EARNINGS",
+            result_text(r),
+        )
     for e in h.earnings:
         add(
             4,
@@ -541,7 +570,12 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
 
 
 # Decision labels that are advice worth grading later, as ledger actions.
-_LEDGER_ACTIONS = {"BROKEN": "SELL", "DRAWDOWN": "REVIEW", "TAX LOSS": "TAX_LOSS"}
+_LEDGER_ACTIONS = {
+    "BROKEN": "SELL",
+    "DRAWDOWN": "REVIEW",
+    "TAX LOSS": "TAX_LOSS",
+    "EARNINGS CUT": "REVIEW",
+}
 
 
 def suggestion_rows(h: PortfolioHealth, *, today: str) -> list[dict[str, Any]]:

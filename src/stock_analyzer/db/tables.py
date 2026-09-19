@@ -298,7 +298,26 @@ class TickerReference(SQLModel, table=True):
     earnings_updated: str | None = None  # ISO date next_earnings was fetched
 
 
+class StockView(SQLModel, table=True):
+    """The daily email's latest long-term view per stock, reused until
+    something changes (see agents/stock_views.py). One row per ticker,
+    overwritten; rows for stocks no longer held age out."""
+
+    __tablename__ = "stock_views"
+
+    ticker: str = Field(primary_key=True)
+    written_on: str  # ISO date
+    price: float | None = None  # price when written
+    view: str
+    # Headline links already shown for this stock, newest first, JSON. Keeps
+    # a reused view from repeating the same five headlines all week. Capped,
+    # so the row never grows (see agents/stock_views.py).
+    shown_links: str | None = None
+    news_on: str | None = None  # ISO date the links were last written
+
+
 __all__ = [
+    "StockView",
     "BrokerageActivity",
     "TickerReference",
     "PortfolioSnapshot",
