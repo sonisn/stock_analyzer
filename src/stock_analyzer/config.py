@@ -96,6 +96,10 @@ class Settings(BaseSettings):
     # most of the index is in an uptrend. Survivors are kept by 6-month
     # relative strength, and holdings/watchlist names are never capped out.
     discover_max_screen_candidates: int = 250
+    # Price rules of the discover screen: "soft" (default: only skip names
+    # 40%+ below their 52-week high — long-term holds may be bought on a
+    # dip), "strict" (the old four uptrend rules), or "off".
+    discover_trend_gate: Literal["strict", "soft", "off"] = "soft"
     # Lookback window for the per-ticker Tavily news that grounds the
     # Analyst/Reviewer's upcoming-catalyst extraction (one Tavily search
     # per survivor/holding per run).

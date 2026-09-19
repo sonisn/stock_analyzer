@@ -91,18 +91,39 @@ def test_prescreen_caps_survivors_by_relative_strength():
         t: {**UPTREND, "rs_6mo": rs}
         for t, rs in zip(tickers, [0.01, 0.40, 0.30, 0.02], strict=True)
     }
-    pipe = _pipeline(tickers, technicals, discover_max_screen_candidates=2)
+    pipe = _pipeline(
+        tickers, technicals, discover_max_screen_candidates=2, discover_trend_gate="strict"
+    )
     pipe.step_prescreen(MagicMock())
     assert set(pipe.state["screen_tickers"]) == {"X", "Y"}
-    assert pipe.state["prescreen_reasons"]["W"] == [
-        "below the relative-strength cap for deep analysis"
-    ]
+    assert pipe.state["prescreen_reasons"]["W"] == ["outside the screen cap for deep analysis"]
+
+
+def test_soft_gate_admits_dips_and_caps_by_entry_zone_not_momentum():
+    # Long-term holds: a quality name 20% off its high in a downtrend is
+    # welcome; only a 40%+ collapse is skipped.
+    dip = {**DOWNTREND, "dist_from_52w_high": -0.20}
+    assert passes_trend_gate(dip, "soft")[0]
+    assert not passes_trend_gate(dip, "strict")[0]
+    assert not passes_trend_gate(DOWNTREND, "soft")[0]  # -55%
+    assert passes_trend_gate(DOWNTREND, "off")[0]
+
+    technicals = {
+        "HOT": {**UPTREND, "rs_6mo": 0.60, "dist_from_52w_high": 0.0},
+        "IDEAL": {**DOWNTREND, "rs_6mo": -0.10, "dist_from_52w_high": -0.10},
+        "NEAR": {**UPTREND, "rs_6mo": 0.05, "dist_from_52w_high": -0.14},
+    }
+    pipe = _pipeline(list(technicals), technicals, discover_max_screen_candidates=2)
+    pipe.step_prescreen(MagicMock())
+    assert set(pipe.state["screen_tickers"]) == {"IDEAL", "NEAR"}
 
 
 def test_screen_reports_the_real_reason_for_prescreened_names():
     """Without this, every gated name shows up as 'no fundamentals data',
     which reads as a fetch failure rather than a filter decision."""
-    pipe = _pipeline(["AAA", "BBB"], {"AAA": UPTREND, "BBB": DOWNTREND})
+    pipe = _pipeline(
+        ["AAA", "BBB"], {"AAA": UPTREND, "BBB": DOWNTREND}, discover_trend_gate="strict"
+    )
     pipe.step_prescreen(MagicMock())
     pipe.state["fundamentals"] = {"AAA": GOOD_FUNDAMENTALS}
     pipe.state["eps_revisions"] = {}

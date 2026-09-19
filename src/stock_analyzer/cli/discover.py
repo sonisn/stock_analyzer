@@ -91,7 +91,12 @@ from ..discover.report import (
     render_html_email,
     render_pdf,
 )
-from ..discover.screen import passes_hard_filter, passes_trend_gate, score_candidate
+from ..discover.screen import (
+    IDEAL_ENTRY_DRAWDOWN,
+    passes_hard_filter,
+    passes_trend_gate,
+    score_candidate,
+)
 from ..discover.sizer import (
     Sizer,
     enforce_correlation_caps,
@@ -660,26 +665,34 @@ class DiscoverPipeline:
         reasons: dict[str, list[str]] = {}
         passed: list[str] = []
         for ticker in tickers:
-            ok, why = passes_trend_gate(technicals.get(ticker))
+            ok, why = passes_trend_gate(technicals.get(ticker), self.settings.discover_trend_gate)
             if ok or ticker in always:
                 passed.append(ticker)
             else:
                 reasons[ticker] = why
 
-        # Cap the survivors by 6-month relative strength, keeping the
-        # user's names outside the cap.
+        # Cap the survivors, keeping the user's names outside the cap. The
+        # strict gate ranks by 6-month relative strength; the soft gate by
+        # closeness to the screen's ideal entry (10% below the high), so
+        # the cap doesn't quietly reintroduce a momentum filter.
         cap = self.settings.discover_max_screen_candidates
         capped_out: list[str] = []
         if len(passed) > cap:
-            ranked = sorted(
-                (t for t in passed if t not in always),
-                key=lambda t: (technicals.get(t) or {}).get("rs_6mo") or 0.0,
-                reverse=True,
-            )
+            if self.settings.discover_trend_gate == "strict":
+
+                def rank_key(t: str) -> float:
+                    return (technicals.get(t) or {}).get("rs_6mo") or 0.0
+            else:
+
+                def rank_key(t: str) -> float:
+                    dist = (technicals.get(t) or {}).get("dist_from_52w_high")
+                    return -abs(dist - IDEAL_ENTRY_DRAWDOWN) if dist is not None else -1.0
+
+            ranked = sorted((t for t in passed if t not in always), key=rank_key, reverse=True)
             keep = set(ranked[: max(0, cap - len(always))]) | always
             capped_out = [t for t in passed if t not in keep]
             for ticker in capped_out:
-                reasons[ticker] = ["below the relative-strength cap for deep analysis"]
+                reasons[ticker] = ["outside the screen cap for deep analysis"]
             passed = [t for t in passed if t in keep]
 
         self.state["screen_tickers"] = passed
@@ -840,7 +853,7 @@ class DiscoverPipeline:
                 # actually failed rather than "no fundamentals data".
                 passes, reasons = False, list(prescreen_reasons[ticker])
             else:
-                passes, reasons = passes_hard_filter(f, t)
+                passes, reasons = passes_hard_filter(f, t, self.settings.discover_trend_gate)
             cand: dict[str, Any] = {
                 "ticker": ticker,
                 "passed_filter": passes,

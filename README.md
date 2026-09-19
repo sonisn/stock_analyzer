@@ -311,6 +311,19 @@ estimate cuts, sector under the cap, under 20% of the portfolio, not
 already flagged for a thesis re-check or a loss sale). The rebalancer gets
 the same kind of list for its ADD decisions.
 
+## Screen price rules
+
+`DISCOVER_TREND_GATE=soft` (default) only rejects names more than 40% below
+their 52-week high; `strict` restores the old uptrend-only gate. Tested on
+15 years of S&P 500 weekly prices (320k observations): names passing the
+strict gate beat SPY by +3.4% over the next year vs +3.6% for those failing
+it (t = 0.6, sign flipping year to year) — the gate narrowed the field
+without improving it. (Current index members only, so crashed-and-dropped
+names are missing — why the 40% falling-knife rule stays.) When more names
+pass than `DISCOVER_MAX_SCREEN_CANDIDATES`, the soft gate keeps those closest
+to the screen's ideal entry (10% below the high) rather than the strongest
+momentum.
+
 ## Quarterly review
 
 The review opens with **Your portfolio vs SPY**: the daily email stores the

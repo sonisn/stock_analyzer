@@ -25,8 +25,15 @@ needs the network must say so:
 
 from __future__ import annotations
 
+import os
 import socket
+import tempfile
 from collections.abc import Iterator
+
+# Logging picks its directory when the package is first imported, which
+# happens during collection — set it before that so test runs don't fill
+# the real ~/.stock_analyzer/logs with hundreds of tiny log files.
+os.environ["LOG_DIR"] = tempfile.mkdtemp(prefix="stock-analyzer-test-logs-")
 
 import pytest
 
