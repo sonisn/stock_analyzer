@@ -62,6 +62,7 @@ rebalance-portfolio = "stock_analyzer.cli.rebalance:main"
 validate-screen = "stock_analyzer.cli.validate_screen:main"
 train-model = "stock_analyzer.cli.train_model:main"
 model-review = "stock_analyzer.cli.model_review:main"
+quarterly-review = "stock_analyzer.cli.quarterly_review:main"
 
 [build-system]
 requires = ["hatchling"]

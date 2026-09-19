@@ -650,6 +650,41 @@ class RebalancePipeline(DiscoverPipeline):
             )
         )
 
+    def _record_plan_suggestions(self, run_id: int) -> None:
+        """Keep the plan's actions for the quarterly review."""
+        from ..db.repository import record_suggestions
+
+        plan = self.state.get("rebalance_plan")
+        if plan is None or not plan.actions:
+            return
+        positions = self.state.get("holdings_positions") or {}
+        prices = {
+            **{t: (v or {}).get("price") for t, v in (self.state.get("technicals") or {}).items()},
+            **{
+                t: (v or {}).get("price")
+                for t, v in (self.state.get("holdings_technicals") or {}).items()
+            },
+        }
+        today = date.today().isoformat()
+        rows = [
+            {
+                "suggested_on": today,
+                "source": "rebalance",
+                "action": a.action,
+                "ticker": a.ticker,
+                "detail": a.sizing,
+                "price": prices.get(a.ticker),
+                "units_held": (positions.get(a.ticker) or {}).get("units", 0.0),
+                "run_id": run_id,
+            }
+            for a in plan.actions
+        ]
+        try:
+            with get_session(self.settings.discover_db_path) as session:
+                record_suggestions(session, rows)
+        except Exception as e:
+            logger.warning("Could not record the plan's suggestions (%s)", e)
+
     def _reinvest_for_unfunded_sales(self) -> dict[str, Any] | None:
         """Ideas for proceeds the plan leaves without a destination (runs
         after persistence, so this run's picks are in the pool)."""
@@ -696,6 +731,7 @@ class RebalancePipeline(DiscoverPipeline):
                 sizer_text=sizer_text,
             )
 
+        self._record_plan_suggestions(run_id)
         charts, chart_cids = fetch_pick_charts(picks)
         reinvest = self._reinvest_for_unfunded_sales()
         sections = build_rebalance_sections(

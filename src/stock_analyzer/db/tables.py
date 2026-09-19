@@ -11,6 +11,7 @@ Foreign keys preserve ON DELETE CASCADE via the ondelete arg.
 
 from __future__ import annotations
 
+from sqlalchemy import UniqueConstraint
 from sqlmodel import Field, SQLModel
 
 
@@ -227,7 +228,34 @@ class ModelVersion(SQLModel, table=True):
     accepted: int = 0
 
 
+class Suggestion(SQLModel, table=True):
+    """One piece of advice the user was given — a daily-email decision line
+    or a rebalance plan action — kept so the quarterly review can grade it
+    against what the stock (and the suggested reinvestment) did next.
+
+    The daily email repeats a standing suggestion every day; one row per
+    (day, source, action, ticker) is kept, and the review grades the first.
+    """
+
+    __tablename__ = "suggestions"
+    __table_args__ = (
+        UniqueConstraint("suggested_on", "source", "action", "ticker", name="uq_suggestion_day"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    suggested_on: str = Field(index=True)  # ISO date
+    source: str  # "daily" | "rebalance"
+    action: str  # SELL / TRIM / TAX_LOSS / REVIEW / BUY / ADD / WRITE_CALL / SELL_PUT
+    ticker: str = Field(index=True)
+    detail: str = ""
+    price: float | None = None  # price when suggested, when known
+    units_held: float | None = None  # position size then — "did the user act?"
+    reinvest_into: str | None = None  # where the proceeds were suggested to go
+    run_id: int | None = None  # rebalance run, when from one
+
+
 __all__ = [
+    "Suggestion",
     "Run",
     "Candidate",
     "Scorecard",

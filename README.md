@@ -278,6 +278,28 @@ Both read point-in-time values stored at decision time, so neither can leak
 the outcome into the feature. Prices are the only thing fetched
 retroactively (a historical close is the same number today as it was then).
 
+## Long-term horizon
+
+Every holding and pick is treated as a 3-5 year investment. The ranker
+states its bull/base/bear scenarios as annualized returns over 3-5 years
+(so its EV is graded against the realized 1-year return), and price moves
+alone never trigger a sale. A position down 20% from cost is flagged for a
+thesis re-check, and a thesis counts as BROKEN only when analysts are also
+cutting estimates. Every sell suggestion names where the money could go: a
+recent discover pick you don't hold, or a same-sector swap for a tax-loss
+sale.
+
+## Quarterly review
+
+Advice is kept in the `suggestions` table: the daily email's action lines
+(sell, tax-loss sale, thesis re-check) and every rebalance action. On the
+first trading day of each quarter `uv run quarterly-review` (cron via
+`scripts/run_quarterly_review.sh`) emails how last quarter's advice
+worked out — each suggestion and discover pick against SPY, sales against
+their suggested replacement, and whether you acted on it — followed by
+today's portfolio health. `--force` runs it any day; `--print` prints the
+HTML instead of emailing.
+
 ## Tests
 
 ```bash

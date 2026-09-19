@@ -25,6 +25,7 @@ from .tables import (
     Run,
     RunOutput,
     Scorecard,
+    Suggestion,
 )
 
 # --- runs -----------------------------------------------------------------
@@ -313,6 +314,41 @@ def fetch_recent_picks(session: Session, *, n_runs: int = 3) -> list[tuple[str, 
         .order_by(Run.id.desc(), Pick.rank)
     )
     return [(t, r, at) for t, r, at in rows]
+
+
+# --- suggestions ----------------------------------------------------------
+
+
+def record_suggestions(session: Session, rows: list[dict[str, Any]]) -> int:
+    """Store advice given today; a (day, source, action, ticker) already
+    stored is skipped, so re-running the daily email is harmless. Returns
+    how many rows were added."""
+    added = 0
+    for row in rows:
+        exists = session.exec(
+            select(Suggestion.id).where(
+                Suggestion.suggested_on == row["suggested_on"],
+                Suggestion.source == row["source"],
+                Suggestion.action == row["action"],
+                Suggestion.ticker == row["ticker"],
+            )
+        ).first()
+        if exists is None:
+            session.add(Suggestion(**row))
+            added += 1
+    session.flush()
+    return added
+
+
+def fetch_suggestions(session: Session, *, start: str, end: str) -> list[Suggestion]:
+    """Suggestions made on dates in [start, end] (ISO), oldest first."""
+    return list(
+        session.exec(
+            select(Suggestion)
+            .where(Suggestion.suggested_on >= start, Suggestion.suggested_on <= end)
+            .order_by(Suggestion.suggested_on, Suggestion.id)
+        )
+    )
 
 
 # --- run outputs ----------------------------------------------------------

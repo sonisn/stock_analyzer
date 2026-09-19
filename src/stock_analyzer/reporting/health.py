@@ -50,6 +50,7 @@ class PortfolioHealth:
     earnings: list[dict[str, Any]] = field(default_factory=list)
     reinvest: list[dict[str, Any]] = field(default_factory=list)
     values: dict[str, float] = field(default_factory=dict)  # ticker -> market value
+    units: dict[str, float] = field(default_factory=dict)  # ticker -> shares held
     unavailable: list[str] = field(default_factory=list)
 
 
@@ -96,6 +97,7 @@ def build_portfolio_health(
         value = sum(p["value"] for p in positions.values())
         cost = sum(p["cost"] for p in positions.values() if p["value"])
         health.values = {t: p["value"] for t, p in positions.items()}
+        health.units = {t: p["units"] for t, p in positions.items()}
         health.snapshot = {
             "positions": len(positions),
             "value": value,
@@ -175,6 +177,8 @@ _BADGE = {
     "WATCH": ("#8a4a00", "#fff4e0"),
     "DRAWDOWN": ("#8a4a00", "#fff4e0"),
     "OVER CAP": ("#8a4a00", "#fff4e0"),
+    "GOOD CALL": ("#0e6432", "#e6f4ea"),
+    "MISSED": ("#9c1010", "#fde4e4"),
 }
 
 
@@ -331,8 +335,18 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
     something to trade on."""
     items: list[dict[str, Any]] = []
 
-    def add(priority: int, ticker: str | None, label: str, text: str) -> None:
-        items.append({"priority": priority, "ticker": ticker, "label": label, "text": text})
+    def add(
+        priority: int, ticker: str | None, label: str, text: str, reinvest_into: str | None = None
+    ) -> None:
+        items.append(
+            {
+                "priority": priority,
+                "ticker": ticker,
+                "label": label,
+                "text": text,
+                "reinvest_into": reinvest_into,
+            }
+        )
 
     from ..discover.reinvest import format_idea
 
@@ -342,6 +356,10 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
         if (h.reinvest)
         else {}
     )
+
+    def dest_ticker(ticker: str) -> str | None:
+        idea = dest.get(ticker)
+        return idea["ticker"] if idea else None
 
     def proceeds(ticker: str, amount: float | None, *, conditional: bool = False) -> str:
         idea = dest.get(ticker)
@@ -359,6 +377,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             f"Re-check the long-term thesis for {r['ticker']}: {r['pnl_pct']:+.1f}% from cost. "
             f"A lower price alone isn't a reason to sell — sell only if the business case "
             f"has broken." + proceeds(r["ticker"], r.get("value"), conditional=True),
+            dest_ticker(r["ticker"]),
         )
     for c in h.thesis:
         reason = next((s["text"] for s in c["signals"] if s["severity"] != "info"), "")
@@ -369,6 +388,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
                 "BROKEN",
                 f"Consider selling {c['ticker']}: long-term thesis broken — {reason}."
                 + proceeds(c["ticker"], h.values.get(c["ticker"])),
+                dest_ticker(c["ticker"]),
             )
         elif c["status"] == "TARGET HIT":
             add(
@@ -410,6 +430,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             f"Tax-loss option: selling {c['ticker']} in {c['account']} realizes "
             f"{_money(c['loss_usd'])} (~{_money(c['est_tax_saving_usd'])} tax saved){wash}."
             + where,
+            swaps[0] if swaps else dest_ticker(c["ticker"]),
         )
     for r in h.sectors:
         if r["over"]:
@@ -421,6 +442,35 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             )
     items.sort(key=lambda i: i["priority"])
     return items
+
+
+# Decision labels that are advice worth grading later, as ledger actions.
+_LEDGER_ACTIONS = {"BROKEN": "SELL", "DRAWDOWN": "REVIEW", "TAX LOSS": "TAX_LOSS"}
+
+
+def suggestion_rows(h: PortfolioHealth, *, today: str) -> list[dict[str, Any]]:
+    """Today's actionable decision lines as `suggestions` rows, for the
+    quarterly review to grade."""
+    rows = []
+    for i in decision_items(h):
+        action = _LEDGER_ACTIONS.get(i["label"])
+        t = i["ticker"]
+        if action is None or not t:
+            continue
+        units = h.units.get(t)
+        rows.append(
+            {
+                "suggested_on": today,
+                "source": "daily",
+                "action": action,
+                "ticker": t,
+                "detail": i["text"],
+                "price": h.values[t] / units if units and t in h.values else None,
+                "units_held": units,
+                "reinvest_into": i["reinvest_into"],
+            }
+        )
+    return rows
 
 
 def flagged_tickers(h: PortfolioHealth) -> list[str]:

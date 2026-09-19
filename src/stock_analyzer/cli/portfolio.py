@@ -132,6 +132,25 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
         return None
 
 
+def record_daily_suggestions(settings: Settings, health) -> None:
+    """Keep today's actionable advice for the quarterly review. Never
+    blocks the email."""
+    if health is None:
+        return
+    from ..db.repository import record_suggestions
+    from ..db.session import get_session
+    from ..reporting.health import suggestion_rows
+
+    try:
+        rows = suggestion_rows(health, today=date.today().isoformat())
+        if rows:
+            with get_session(settings.discover_db_path) as session:
+                added = record_suggestions(session, rows)
+            logger.info("Recorded %d new suggestion(s) for the quarterly review", added)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not record today's suggestions (%s)", e)
+
+
 def run_analysis(
     settings: Settings, holdings: dict[str, list[dict]] | None = None
 ) -> tuple[str, list[str]]:
@@ -190,6 +209,7 @@ def main() -> None:
     holdings = fetch_portfolio_holdings()
     result, tickers = run_analysis(settings, holdings)
     health = portfolio_health(settings, holdings)
+    record_daily_suggestions(settings, health)
     if not settings.email_to:
         logger.error("EMAIL_TO not set; printing report instead of emailing")
         print(result)
