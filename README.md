@@ -340,6 +340,24 @@ losses available to harvest and how far they offset those gains plus the
 $3,000 of ordinary income, and short-term lots in profit that turn
 long-term within 60 days (wait to sell). `--force` / `--print` as usual.
 
+## Stored data and database size
+
+Besides run history, the database keeps small, reusable reference data so
+runs don't re-download it:
+
+| Table | What | Growth |
+|---|---|---|
+| `brokerage_activities` | every SnapTrade activity (compact, ~300 bytes); synced incrementally — only what's new since the last stored date per account | a few hundred rows/year, kept forever |
+| `ticker_reference` | sector / industry / name (refreshed after 30 days) and next earnings date (after 3 days, or once it has passed) | one row per stock, overwritten; unused rows dropped after 365 days |
+| `portfolio_snapshots`, `suggestions` | daily value, advice ledger | one row per day / per advice |
+
+Tax lots, cash flows and dividends read the stored activity history, so a
+purchase older than the brokerage API's window no longer drops out of lot
+splits or FIFO matching. History upkeep trims old prose (365 days), compacts
+the file (VACUUM) once trimming frees 20% of it, and the monthly
+`model-review` email reports the database size and largest tables, flagging
+it past `HISTORY_DB_WARN_MB` (50 MB).
+
 ## Tests
 
 ```bash

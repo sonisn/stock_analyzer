@@ -36,7 +36,9 @@ def performance_section(settings: Settings, *, start: date, today: date) -> str:
         if not snaps:
             return render_performance_html([], first_day=None)
         first = snaps[0][0]
-        activity = fetch_cash_activity(days_back=(today - first).days + 7)
+        activity = fetch_cash_activity(
+            days_back=(today - first).days + 7, db_path=settings.discover_db_path
+        )
         flows = [(f["date"], f["amount"]) for f in activity["flows"]]
         rows = performance_vs_spy(
             snaps,

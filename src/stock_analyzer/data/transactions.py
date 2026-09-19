@@ -137,24 +137,15 @@ def _fetch_account_activities(
     return all_activities
 
 
-def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary]:
-    """Pull BUY/SELL transactions over the lookback window, group by ticker.
-
-    Uses SnapTrade's per-account get_account_activities (the top-level
-    get_activities was deprecated and returns 410 Gone). Loops over
-    every connected account and paginates within each.
-    """
+def _live_activities_by_account(
+    start: date, end: date, *, since: dict[str, date] | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    """{account label: activities in [start, end]} straight from SnapTrade;
+    `since` overrides the start per account label. {} when SnapTrade is
+    unavailable."""
     try:
         user_id, user_secret = _credentials()
         client = _client()
-    except RuntimeError as e:
-        logger.warning("Cannot fetch transactions: %s", e)
-        return {}
-
-    today = date.today()
-    start_date_ = today - timedelta(days=years_back * 365)
-
-    try:
         accounts = (
             _unwrap(
                 client.account_information.list_user_accounts(
@@ -164,27 +155,57 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
             or []
         )
     except Exception as e:
-        logger.warning("Could not list accounts for transactions: %s", e)
+        logger.warning("Cannot fetch brokerage activities: %s", e)
         return {}
 
     from .brokerage import account_labels
 
-    account_id_to_name = account_labels(accounts)
-
-    activities: list[dict[str, Any]] = []
-    for acc_id, acc_name in account_id_to_name.items():
-        acc_activities = _fetch_account_activities(
-            client, user_id, user_secret, acc_id, start_date_, today
+    out: dict[str, list[dict[str, Any]]] = {}
+    for acc_id, label in account_labels(accounts).items():
+        rows = _fetch_account_activities(
+            client, user_id, user_secret, acc_id, (since or {}).get(label, start), end
         )
-        logger.info("Account %r: %d activities", acc_name, len(acc_activities))
-        activities.extend(acc_activities)
+        logger.info("Account %r: %d activities", label, len(rows))
+        out[label] = rows
+    return out
 
-    logger.info(
-        "Fetched %d total activities over %d-year lookback (from %s)",
-        len(activities),
-        years_back,
-        start_date_.isoformat(),
-    )
+
+def activities_by_account(
+    *, start: date | None, db_path: str | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    """{account label: activities since `start` (None = all)}.
+
+    With `db_path`, the stored activity history is brought up to date
+    (only new activity is fetched) and read from the database — full
+    history, not just the API window. Without it, SnapTrade is asked
+    directly for `start` onward (3 years when `start` is None)."""
+    if db_path:
+        from .activity_ledger import ledger_activities
+
+        return ledger_activities(db_path, start=start)
+    today = date.today()
+    return _live_activities_by_account(start or today - timedelta(days=3 * 365), today)
+
+
+def fetch_transaction_history(
+    years_back: int = 3, *, db_path: str | None = None
+) -> dict[str, TickerTaxSummary]:
+    """Pull BUY/SELL transactions, group by ticker into tax lots.
+
+    With `db_path` every stored activity counts (older purchases don't fall
+    out of a 3-year window, so lot splits and FIFO stay right); without
+    it, SnapTrade's last `years_back` years.
+    """
+    today = date.today()
+    start = None if db_path else today - timedelta(days=years_back * 365)
+    by_account = activities_by_account(start=start, db_path=db_path)
+    # Tag each activity with its account label so lots carry the same
+    # name everywhere, however the SDK shaped the nested account field.
+    activities = [
+        {**a, "account": {"name": label}} for label, rows in by_account.items() for a in rows
+    ]
+    account_id_to_name: dict[str, str] = {}
+    logger.info("Building tax lots from %d activities", len(activities))
 
     working: dict[str, TickerTaxSummaryMut] = {}
     for activity in activities:
@@ -234,11 +255,7 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
                         }
                     )
 
-    logger.info(
-        "Built tax summaries for %d tickers over %d-year lookback",
-        len(working),
-        years_back,
-    )
+    logger.info("Built tax summaries for %d tickers", len(working))
     # Freeze each per-ticker aggregate back into the immutable public type.
     return {t: TickerTaxSummary.model_validate(mut.model_dump()) for t, mut in working.items()}
 
@@ -250,7 +267,9 @@ def to_tax_payloads(
     return {ticker: s.to_payload() for ticker, s in summaries.items()}
 
 
-def fetch_cash_activity(days_back: int = 400) -> dict[str, list[dict[str, Any]]]:
+def fetch_cash_activity(
+    days_back: int = 400, *, db_path: str | None = None
+) -> dict[str, list[dict[str, Any]]]:
     """External cash flows and dividends over the last `days_back` days.
 
     {"flows": [{date, amount, account, type}], — CONTRIBUTION / WITHDRAWAL /
@@ -259,38 +278,20 @@ def fetch_cash_activity(days_back: int = 400) -> dict[str, list[dict[str, Any]]]
 
     `reinvested` is True when the same account shows a dividend
     reinvestment (REI) of that ticker on the same day. Empty lists when
-    SnapTrade is unavailable."""
+    no activity is available."""
     out: dict[str, list[dict[str, Any]]] = {"flows": [], "dividends": []}
-    try:
-        user_id, user_secret = _credentials()
-        client = _client()
-        accounts = (
-            _unwrap(
-                client.account_information.list_user_accounts(
-                    user_id=user_id, user_secret=user_secret
-                )
-            )
-            or []
-        )
-    except Exception as e:
-        logger.warning("Cannot fetch cash activity: %s", e)
-        return out
-
-    from .brokerage import account_labels
-
-    today = date.today()
-    start = today - timedelta(days=days_back)
+    start = date.today() - timedelta(days=days_back)
     reinvested: set[tuple[str, str, date]] = set()
     dividends: list[dict[str, Any]] = []
-    for acc_id, label in account_labels(accounts).items():
-        for a in _fetch_account_activities(client, user_id, user_secret, acc_id, start, today):
+    for label, rows in activities_by_account(start=start, db_path=db_path).items():
+        for a in rows:
             kind = (a.get("type") or "").upper()
             day = _coerce_date(a.get("trade_date") or a.get("settlement_date"))
             try:
                 amount = float(a.get("amount") or 0)
             except ValueError, TypeError:
                 continue
-            if day is None:
+            if day is None or day < start:
                 continue
             if kind in _FLOW_TYPES and amount:
                 out["flows"].append({"date": day, "amount": amount, "account": label, "type": kind})
@@ -310,29 +311,10 @@ def fetch_cash_activity(days_back: int = 400) -> dict[str, list[dict[str, Any]]]
     return out
 
 
-def fetch_activities_by_account(years_back: int = 3) -> dict[str, list[dict[str, Any]]]:
-    """{account label: raw activities} over the lookback window — for
-    per-account work such as realized-gain estimates. {} on failure."""
-    try:
-        user_id, user_secret = _credentials()
-        client = _client()
-        accounts = (
-            _unwrap(
-                client.account_information.list_user_accounts(
-                    user_id=user_id, user_secret=user_secret
-                )
-            )
-            or []
-        )
-    except Exception as e:
-        logger.warning("Cannot fetch activities: %s", e)
-        return {}
-
-    from .brokerage import account_labels
-
-    today = date.today()
-    start = today - timedelta(days=years_back * 365)
-    return {
-        label: _fetch_account_activities(client, user_id, user_secret, acc_id, start, today)
-        for acc_id, label in account_labels(accounts).items()
-    }
+def fetch_activities_by_account(
+    years_back: int = 3, *, db_path: str | None = None
+) -> dict[str, list[dict[str, Any]]]:
+    """{account label: raw activities} — full stored history with
+    `db_path`, else SnapTrade's last `years_back` years."""
+    start = None if db_path else date.today() - timedelta(days=years_back * 365)
+    return activities_by_account(start=start, db_path=db_path)

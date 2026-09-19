@@ -42,17 +42,17 @@ class CspDataResult:
     content: str = ""
 
 
-def _earnings_dates(tickers: list[str], finnhub_signals: dict[str, Any]) -> dict[str, date]:
-    """Finnhub's dates where the run already has them; one yfinance
-    calendar lookup for the rest (older picks aren't in this run's set)."""
-    from ..data.earnings_calendar import next_earnings_date
+def _earnings_dates(
+    tickers: list[str], finnhub_signals: dict[str, Any], db_path: str
+) -> dict[str, date]:
+    """Finnhub's dates where the run already has them; the cached calendar
+    (data/reference.py) for the rest (older picks aren't in this run's set)."""
+    from ..data.reference import next_earnings_dates
 
     out = earnings_dates_from_signals({t: [] for t in tickers}, finnhub_signals)
-    for t in tickers:
-        if t not in out:
-            d = next_earnings_date(t)
-            if d is not None:
-                out[t] = d
+    missing = [t for t in tickers if t not in out]
+    if missing:
+        out.update({t: d for t, d in next_earnings_dates(missing, db_path).items() if d})
     return out
 
 
@@ -153,7 +153,9 @@ def run_csp_data_pipeline(
     chains = fetch_chains(
         list(eligible), dte_min=settings.csp_dte_min, dte_max=settings.csp_dte_max, kind="puts"
     )
-    earnings = _earnings_dates(list(eligible), state.get("finnhub_signals") or {})
+    earnings = _earnings_dates(
+        list(eligible), state.get("finnhub_signals") or {}, settings.discover_db_path
+    )
     ready: dict[str, OptionChain] = {}
     for t, chain in chains.items():
         filtered, _ = apply_earnings_filter(chain, earnings_date=earnings.get(t))

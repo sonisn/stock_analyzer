@@ -69,8 +69,24 @@ def earnings_within_days(ticker: str, days: int = 5) -> dict[str, Any] | None:
     return None
 
 
-def batch_earnings_flags(tickers: list[str], within_days: int = 5) -> dict[str, dict[str, Any]]:
-    """Return only tickers with earnings in the next N days. Others are omitted."""
+def batch_earnings_flags(
+    tickers: list[str], within_days: int = 5, *, db_path: str | None = None
+) -> dict[str, dict[str, Any]]:
+    """Return only tickers with earnings in the next N days. Others are omitted.
+    With `db_path`, dates come from the ticker_reference cache."""
+    if db_path:
+        from .reference import next_earnings_dates
+
+        today = date.today()
+        flags = {}
+        for t, ed in next_earnings_dates(tickers, db_path).items():
+            if ed is not None and 0 <= (ed - today).days <= within_days:
+                flags[t] = {
+                    "ticker": t,
+                    "earnings_date": ed.isoformat(),
+                    "days_until": (ed - today).days,
+                }
+        return flags
 
     def _check(t: str) -> dict[str, Any] | None:
         return earnings_within_days(t, within_days)

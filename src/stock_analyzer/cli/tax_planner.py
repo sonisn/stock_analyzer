@@ -49,13 +49,13 @@ def build_plan(settings: Settings, today: date) -> tuple[str, str]:
     holdings = fetch_portfolio_holdings()
     meta = fetch_account_meta()
     taxable = sorted(name for name, m in meta.items() if m.get("tax_status") == "taxable")
-    activities = fetch_activities_by_account(years_back=3)
+    activities = fetch_activities_by_account(db_path=settings.discover_db_path)
     realized = {
         acct: realized_this_year(activities.get(acct, []), year=today.year) for acct in taxable
     }
     splits = _build_position_splits(holdings, meta)
     prices = {h["ticker"]: h.get("price") for items in holdings.values() for h in items}
-    tax_lots = to_tax_payloads(fetch_transaction_history(years_back=3))
+    tax_lots = to_tax_payloads(fetch_transaction_history(db_path=settings.discover_db_path))
     harvest = harvest_report_data(
         find_harvest_candidates(
             splits,

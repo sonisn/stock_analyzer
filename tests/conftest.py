@@ -51,6 +51,16 @@ def _isolate_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_db_path(monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
+    """With no `.env`, `Settings()` falls back to the default DB path in the
+    user's home directory — building a workflow there left an empty
+    `~/.stock_analyzer/discover.db` behind on every run. Point it at a
+    throwaway file instead (tests that need a DB still pass their own)."""
+    db = tmp_path_factory.mktemp("db") / "stock.db"
+    monkeypatch.setenv("DISCOVER_DB_PATH", str(db))
+
+
+@pytest.fixture(autouse=True)
 def _reset_yf_gateway() -> Iterator[None]:
     """Clear the yfinance gateway's caches between tests.
 

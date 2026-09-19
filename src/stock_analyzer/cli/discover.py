@@ -999,7 +999,9 @@ class DiscoverPipeline:
         if not tickers:
             self.state["earnings_alerts"] = {}
             return StepOutput(content="earnings: no survivors; skipping")
-        self.state["earnings_alerts"] = batch_earnings_flags(tickers, within_days=5)
+        self.state["earnings_alerts"] = batch_earnings_flags(
+            tickers, within_days=5, db_path=self.settings.discover_db_path
+        )
         return StepOutput(
             content=(
                 f"Earnings within 5d: {len(self.state['earnings_alerts'])}/{len(tickers)} flagged"
@@ -1501,6 +1503,9 @@ class DiscoverPipeline:
                 candidate_days=self.settings.history_candidate_retention_days,
                 keep_models=self.settings.history_keep_model_versions,
                 file_days=self.settings.history_file_retention_days,
+                reference_days=self.settings.history_reference_retention_days,
+                vacuum_min_free_pct=self.settings.history_vacuum_min_free_pct,
+                warn_mb=self.settings.history_db_warn_mb,
             ),
             file_targets=default_file_targets(self.settings.model_cache_dir),
         )

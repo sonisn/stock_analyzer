@@ -267,7 +267,40 @@ class PortfolioSnapshot(SQLModel, table=True):
     total: float
 
 
+class BrokerageActivity(SQLModel, table=True):
+    """One brokerage activity (buy, sell, dividend, reinvestment, deposit,
+    transfer, option event), kept permanently so tax lots and cash flows
+    come from the full history rather than a re-downloaded API window.
+    `data` is a compact JSON of only the fields the app reads (~300 bytes)."""
+
+    __tablename__ = "brokerage_activities"
+
+    id: str = Field(primary_key=True)  # SnapTrade activity id (or a content hash)
+    account: str = Field(index=True)  # account label (data/brokerage.account_labels)
+    trade_date: str = Field(index=True)  # ISO date
+    type: str
+    data: str
+
+
+class TickerReference(SQLModel, table=True):
+    """Slow-changing facts about a stock, one row per ticker, overwritten on
+    refresh (so the table is bounded by the number of stocks ever seen):
+    sector/industry/name, and the next earnings date."""
+
+    __tablename__ = "ticker_reference"
+
+    ticker: str = Field(primary_key=True)
+    name: str | None = None
+    sector: str | None = None
+    industry: str | None = None
+    profile_updated: str | None = None  # ISO date sector/industry were fetched
+    next_earnings: str | None = None  # ISO date, None when none is scheduled
+    earnings_updated: str | None = None  # ISO date next_earnings was fetched
+
+
 __all__ = [
+    "BrokerageActivity",
+    "TickerReference",
     "PortfolioSnapshot",
     "Suggestion",
     "Run",

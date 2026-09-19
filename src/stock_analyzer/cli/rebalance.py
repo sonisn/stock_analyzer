@@ -315,7 +315,7 @@ class RebalancePipeline(DiscoverPipeline):
     def step_transaction_history(self, step_input: StepInput) -> StepOutput:
         """Pull 3yr of SnapTrade activities and build per-ticker tax lot summaries.
         Runs independently of survivors — relies only on SnapTrade auth."""
-        summaries = fetch_transaction_history(years_back=3)
+        summaries = fetch_transaction_history(db_path=self.settings.discover_db_path)
         self.state["tax_lots"] = to_tax_payloads(summaries)
         n_lots = sum(s.get("lot_count", 0) for s in self.state["tax_lots"].values())
         return StepOutput(

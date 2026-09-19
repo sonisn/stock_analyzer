@@ -108,6 +108,9 @@ def main(argv: list[str] | None = None) -> None:
                 candidate_days=settings.history_candidate_retention_days,
                 keep_models=settings.history_keep_model_versions,
                 file_days=settings.history_file_retention_days,
+                reference_days=settings.history_reference_retention_days,
+                vacuum_min_free_pct=settings.history_vacuum_min_free_pct,
+                warn_mb=settings.history_db_warn_mb,
             ),
             file_targets=default_file_targets(settings.model_cache_dir),
             label_outcomes=False,  # section 1 labels every candidate, not just survivors

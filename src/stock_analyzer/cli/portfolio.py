@@ -50,25 +50,9 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
     db = settings.discover_db_path
 
     def sector_of(tickers: list[str]) -> dict[str, str]:
-        from sqlalchemy import text
+        from ..data.reference import profiles
 
-        from ..data.fundamentals import batch_fundamentals
-        from ..db.session import get_session
-
-        with get_session(db) as session:
-            rows = session.exec(
-                text(
-                    "SELECT c.ticker, c.sector FROM candidates c JOIN runs r ON r.id = c.run_id "
-                    "WHERE c.sector IS NOT NULL ORDER BY r.run_at"
-                )
-            ).all()
-        known = {t: s for t, s in rows if t in set(tickers)}  # latest run wins
-        missing = [t for t in tickers if t not in known]
-        if missing:
-            known.update(
-                {t: f["sector"] for t, f in batch_fundamentals(missing).items() if f.get("sector")}
-            )
-        return known
+        return {t: p["sector"] for t, p in profiles(tickers, db).items() if p.get("sector")}
 
     def held_thesis_checks(held: set[str]) -> list[dict]:
         from ..data.eps_revisions import batch_eps_revisions
@@ -99,7 +83,7 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
             find_harvest_candidates(
                 splits,
                 prices,
-                to_tax_payloads(fetch_transaction_history(years_back=3)),
+                to_tax_payloads(fetch_transaction_history(db_path=db)),
                 # Same-sector names keep the exposure after a loss sale.
                 sector_peers(db, list(splits), held=set(splits)),
                 min_loss_usd=settings.harvest_min_loss_usd,
@@ -110,7 +94,7 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
     def earnings(tickers: list[str]) -> dict[str, dict]:
         from ..data.earnings_calendar import batch_earnings_flags
 
-        return batch_earnings_flags(tickers, within_days=7)
+        return batch_earnings_flags(tickers, within_days=7, db_path=db)
 
     def income(units: dict[str, float], values: dict[str, float]) -> dict:
         from ..data.transactions import fetch_cash_activity
@@ -120,7 +104,7 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
             units=units,
             values=values,
             rates=forward_dividend_rates(sorted(units)),
-            received=fetch_cash_activity(days_back=370)["dividends"],
+            received=fetch_cash_activity(days_back=370, db_path=db)["dividends"],
         )
 
     def add_on(**kwargs) -> list[dict]:

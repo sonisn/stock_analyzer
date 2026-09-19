@@ -142,6 +142,12 @@ class Settings(BaseSettings):
     history_candidate_retention_days: int = 540
     history_keep_model_versions: int = 12
     history_file_retention_days: int = 30
+    # Per-stock reference rows (sector, earnings date) untouched this long go.
+    history_reference_retention_days: int = 365
+    # Compact the database file once trimming has freed this share of it.
+    history_vacuum_min_free_pct: float = 20.0
+    # The monthly review flags the database when it passes this size.
+    history_db_warn_mb: float = 50.0
     # Ranker consensus: one round per (provider, model) pair listed here,
     # each a full high-effort ranking pass; picks are kept if a majority of
     # rounds agree. A blank model in `discover_ranker_models` (or too few

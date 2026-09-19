@@ -31,6 +31,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import text
 
@@ -58,6 +59,9 @@ class RetentionPolicy:
     candidate_days: int = 540
     keep_models: int = 12
     file_days: int = 30
+    reference_days: int = 365  # ticker_reference rows untouched this long go
+    vacuum_min_free_pct: float = 20.0  # compact the file once this much is free
+    warn_mb: float = 50.0  # flag the database in the upkeep summary past this
 
 
 @dataclass
@@ -65,12 +69,15 @@ class UpkeepReport:
     added: dict[str, int] = field(default_factory=dict)
     trimmed: dict[str, int] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
+    size: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         def fmt(d: dict[str, int]) -> str:
             return ", ".join(f"{k}={v}" for k, v in d.items() if v) or "nothing"
 
         text_ = f"History upkeep — added: {fmt(self.added)}; trimmed: {fmt(self.trimmed)}"
+        if self.size:
+            text_ += f"\n{size_line(self.size)}"
         return text_ + (f"; errors: {'; '.join(self.errors)}" if self.errors else "")
 
 
@@ -113,6 +120,18 @@ def prune_database(db_path: str, policy: RetentionPolicy, *, today: date) -> dic
                     ).rowcount
                     or 0
                 )
+        if "ticker_reference" in tables:
+            ref_cutoff = (today - timedelta(days=policy.reference_days)).isoformat()
+            out["stale_reference_rows"] = (
+                session.exec(
+                    text(
+                        "DELETE FROM ticker_reference WHERE "
+                        "COALESCE(profile_updated, '') < :c AND COALESCE(earnings_updated, '') < :c"
+                    ),
+                    params={"c": ref_cutoff},
+                ).rowcount
+                or 0
+            )
         out["model_versions"] = (
             session.exec(
                 text(
@@ -195,10 +214,87 @@ def run_history_upkeep(
     def files() -> None:
         report.trimmed["old_files"] = prune_files(file_targets, policy.file_days)
 
+    def compact_and_measure() -> None:
+        freed = compact_if_worth_it(db_path, min_free_pct=policy.vacuum_min_free_pct)
+        if freed:
+            report.trimmed["vacuum_kb"] = int(freed / 1024)
+        report.size = database_size(db_path, warn_mb=policy.warn_mb)
+
     attempt("backfill", backfill)
     if label_outcomes:
         attempt("labels", labels)
     attempt("database", database)
     attempt("files", files)
+    attempt("compact", compact_and_measure)
     logger.info(report.summary())
     return report
+
+
+def _sqlite_path(db_path: str) -> str:
+    return os.path.expanduser(db_path)
+
+
+def compact_if_worth_it(db_path: str, *, min_free_pct: float) -> int:
+    """VACUUM when at least `min_free_pct` of the file is free pages (space
+    left by trimming); returns bytes reclaimed. Skipped otherwise — VACUUM
+    rewrites the whole file, so it isn't worth doing for a few pages."""
+    import sqlite3
+
+    path = _sqlite_path(db_path)
+    if not os.path.exists(path):
+        return 0
+    before = os.path.getsize(path)
+    con = sqlite3.connect(path)
+    try:
+        pages = con.execute("PRAGMA page_count").fetchone()[0] or 0
+        free = con.execute("PRAGMA freelist_count").fetchone()[0] or 0
+        if not pages or free / pages * 100 < min_free_pct:
+            return 0
+        con.execute("VACUUM")
+    finally:
+        con.close()
+    return max(before - os.path.getsize(path), 0)
+
+
+def database_size(db_path: str, *, warn_mb: float) -> dict[str, Any]:
+    """File size and the largest tables (bytes via dbstat when SQLite has
+    it, else row counts), with a warning flag past `warn_mb`."""
+    import sqlite3
+
+    path = _sqlite_path(db_path)
+    if not os.path.exists(path):
+        return {}
+    mb = os.path.getsize(path) / 1e6
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        try:
+            top = [
+                (name, int(size))
+                for name, size in con.execute(
+                    "SELECT name, SUM(pgsize) FROM dbstat WHERE name NOT LIKE 'sqlite_%' "
+                    "GROUP BY name ORDER BY 2 DESC LIMIT 5"
+                )
+            ]
+            unit = "bytes"
+        except sqlite3.OperationalError:
+            names = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")]
+            counts = [(n, con.execute(f'SELECT COUNT(*) FROM "{n}"').fetchone()[0]) for n in names]
+            top = sorted(counts, key=lambda kv: -kv[1])[:5]
+            unit = "rows"
+    finally:
+        con.close()
+    return {"mb": mb, "warn_mb": warn_mb, "over": mb > warn_mb, "top": top, "unit": unit}
+
+
+def size_line(size: dict[str, Any]) -> str:
+    def fmt(v: int) -> str:
+        return f"{v / 1024:.0f} KB" if size["unit"] == "bytes" else f"{v} rows"
+
+    tops = ", ".join(f"{n} {fmt(v)}" for n, v in size["top"])
+    line = f"Database: {size['mb']:.1f} MB (largest: {tops})"
+    if size["over"]:
+        line += (
+            f" — OVER the {size['warn_mb']:.0f} MB guide: lower HISTORY_TEXT_RETENTION_DAYS "
+            "or check which table grew"
+        )
+    return line
