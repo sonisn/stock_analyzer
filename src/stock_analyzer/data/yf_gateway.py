@@ -20,6 +20,9 @@ process:
     hardcoded interval because Yahoo's tolerance varies by time of day.
   - bounded retries around rate limits, so a throttled ticker comes back
     with data instead of a warning line
+  - the same bounded retries around dropped connections (Yahoo closes
+    sockets under load), which used to lose a ticker's earnings dates to
+    a single SSL error
   - a shared `yf.Ticker` cache, so the four modules that each want
     `.info` for the same symbol cost one network round trip, not four
   - a negative cache for symbols Yahoo has no data for (money-market
@@ -94,6 +97,10 @@ _RECOVERY_AFTER_SUCCESSES = 40
 _RECOVERY_STEP_PER_MIN = 15
 _MAX_COOLDOWN_SECONDS = 120.0
 
+# Local pause before re-trying a dropped connection. Short and per-call:
+# the process is not being throttled, one socket died.
+_TRANSIENT_BACKOFF_SECONDS = 0.75
+
 
 # --- error classification ---------------------------------------------------
 
@@ -115,6 +122,37 @@ _MISSING_MARKERS = (
 )
 
 
+# Transport-level failures: the connection died, not the data. Yahoo
+# drops connections under load (curl 35/28/56 via curl_cffi), and a plain
+# second attempt almost always succeeds. Unlike a 429 these do not mean
+# "you are going too fast", so they retry on a short local backoff without
+# penalizing the whole process's rate.
+_TRANSIENT_MARKERS = (
+    "failed to perform",  # curl_cffi's prefix for every transport error
+    "connection closed",
+    "connection reset",
+    "connection aborted",
+    "connection refused",
+    "connection error",
+    "remote end closed",
+    "incomplete read",
+    "max retries exceeded",
+    "ssl_connect",
+    "ssl error",
+    "sslerror",
+    "handshake",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "bad gateway",
+    "service unavailable",
+    "gateway time-out",
+    "502",
+    "503",
+    "504",
+)
+
+
 def _is_rate_limited(exc: BaseException) -> bool:
     from yfinance.exceptions import YFRateLimitError
 
@@ -127,6 +165,11 @@ def _is_rate_limited(exc: BaseException) -> bool:
 def _is_missing_symbol(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return any(m in msg for m in _MISSING_MARKERS)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(m in msg for m in _TRANSIENT_MARKERS)
 
 
 # --- pacing -----------------------------------------------------------------
@@ -260,7 +303,14 @@ _missing_lock = threading.Lock()
 _missing: dict[str, str] = {}
 
 _stats_lock = threading.Lock()
-_stats = {"calls": 0, "retries": 0, "rate_limited": 0, "missing": 0, "failed": 0}
+_stats = {
+    "calls": 0,
+    "retries": 0,
+    "rate_limited": 0,
+    "transient": 0,
+    "missing": 0,
+    "failed": 0,
+}
 
 
 def _bump(key: str, n: int = 1) -> None:
@@ -281,11 +331,13 @@ def log_stats(context: str = "") -> None:
     s = stats()
     logger.info(
         "yfinance%s: %d call(s), %d retried, %d rate-limit pause(s), "
-        "%d unavailable symbol(s), %d failure(s); ending rate %.0f/min",
+        "%d dropped connection(s), %d unavailable symbol(s), %d failure(s); "
+        "ending rate %.0f/min",
         f" [{context}]" if context else "",
         s["calls"],
         s["retries"],
         s["rate_limited"],
+        s["transient"],
         s["missing"],
         s["failed"],
         s["rate_per_min"],
@@ -375,6 +427,7 @@ def call[T](
     max_attempts = attempts or MAX_ATTEMPTS
     for attempt in range(1, max_attempts + 1):
         penalized = False
+        backoff = 0.0
         with _semaphore:
             _pacer.acquire()
             _bump("calls")
@@ -400,6 +453,28 @@ def call[T](
                     else:
                         logger.debug("%s: no data (%s)", what, e)
                     return default
+                elif _is_transient(e):
+                    _bump("transient")
+                    if attempt >= max_attempts:
+                        _bump("failed")
+                        logger.warning(
+                            "%s failed for %s after %d attempts: %s",
+                            what,
+                            symbol or "?",
+                            attempt,
+                            e,
+                        )
+                        return default
+                    _bump("retries")
+                    backoff = _TRANSIENT_BACKOFF_SECONDS * attempt + random.uniform(0, 0.25)
+                    logger.debug(
+                        "%s for %s: dropped connection (%s) — retry %d in %.1fs",
+                        what,
+                        symbol or "?",
+                        e,
+                        attempt + 1,
+                        backoff,
+                    )
                 else:
                     _bump("failed")
                     logger.warning("%s failed for %s: %s", what, symbol or "?", e)
@@ -410,6 +485,8 @@ def call[T](
         # Outside the semaphore so a cooldown doesn't hold a slot hostage.
         if penalized:
             _pacer.penalize()
+        elif backoff:
+            time.sleep(backoff)
     return default
 
 

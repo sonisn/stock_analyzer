@@ -189,3 +189,73 @@ def test_concurrent_rate_limits_count_as_one_penalty(monkeypatch: pytest.MonkeyP
         yf_gateway._pacer.penalize()
 
     assert yf_gateway._pacer.rate_per_min == pytest.approx(start / 2)
+
+
+# --- dropped connections ----------------------------------------------------
+
+# Verbatim from a daily-email run (2026-09-18): AMD and ARM each lost their
+# earnings dates to one of these, with no second attempt.
+_SSL_DROP = (
+    "Failed to perform, curl: (35) BoringSSL SSL_connect: Connection closed "
+    "abruptly (SSL_ERROR_SYSCALL; error queue empty) in connection to "
+    "guce.yahoo.com:443. See https://curl.se/libcurl/c/libcurl-errors.html "
+    "first for more details."
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_transient_backoff(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(yf_gateway, "_TRANSIENT_BACKOFF_SECONDS", 0)
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        _SSL_DROP,
+        "Connection reset by peer",
+        "HTTPSConnectionPool(host='query2.finance.yahoo.com'): Read timed out.",
+        "502 Bad Gateway",
+    ],
+)
+def test_dropped_connection_is_retried_then_succeeds(message):
+    attempts = {"n": 0}
+
+    def flaky():
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise RuntimeError(message)
+        return "earnings"
+
+    assert yf_gateway.call(flaky, symbol="AMD", what="earnings_dates") == "earnings"
+    assert attempts["n"] == 2
+    assert yf_gateway.stats()["transient"] == 1
+
+
+def test_dropped_connection_gives_up_after_max_attempts():
+    attempts = {"n": 0}
+
+    def always_dropped():
+        attempts["n"] += 1
+        raise RuntimeError(_SSL_DROP)
+
+    assert yf_gateway.call(always_dropped, symbol="ARM", what="earnings_dates", attempts=3) is None
+    assert attempts["n"] == 3
+    assert yf_gateway.stats()["failed"] == 1
+
+
+def test_a_dropped_connection_does_not_slow_the_whole_process():
+    """Unlike a 429, one dead socket says nothing about our request rate."""
+    before = yf_gateway._pacer.rate_per_min
+    yf_gateway.call(lambda: (_ for _ in ()).throw(RuntimeError(_SSL_DROP)), attempts=2)
+    assert yf_gateway._pacer.rate_per_min == before
+
+
+def test_missing_symbol_is_still_not_retried():
+    attempts = {"n": 0}
+
+    def delisted():
+        attempts["n"] += 1
+        raise RuntimeError("No price data found, symbol may be delisted")
+
+    assert yf_gateway.call(delisted, symbol="DEAD", what="history") is None
+    assert attempts["n"] == 1
