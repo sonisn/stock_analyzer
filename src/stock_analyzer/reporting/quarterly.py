@@ -137,11 +137,25 @@ def collect_suggestions(db_path: str, start: date, end: date) -> list[dict[str, 
             ),
             params={"s": start.isoformat(), "e": end.isoformat()},
         ).all()
+        # Picks made before the ledger recorded positions: a holdings
+        # review of the ticker in the 60 days up to the pick means it was
+        # already owned, so "acted on" can't be read from today's position.
+        reviewed = session.exec(
+            text(
+                "SELECT h.ticker, substr(r.run_at, 1, 10) FROM holdings_reviews h "
+                "JOIN runs r ON r.id = h.run_id"
+            )
+        ).all()
+    reviewed_on: dict[str, list[str]] = {}
+    for ticker, day in reviewed:
+        reviewed_on.setdefault(ticker, []).append(day)
     for ticker, run_at, entry, rank in picks:
+        day = str(run_at)[:10]
+        lo = (date.fromisoformat(day) - timedelta(days=60)).isoformat()
         items.setdefault(
             ("discover", "BUY", ticker),
             {
-                "suggested_on": str(run_at)[:10],
+                "suggested_on": day,
                 "source": "discover",
                 "action": "BUY",
                 "ticker": ticker,
@@ -149,6 +163,7 @@ def collect_suggestions(db_path: str, start: date, end: date) -> list[dict[str, 
                 "price": entry,
                 "units_held": None,
                 "reinvest_into": None,
+                "held_before": any(lo <= d <= day for d in reviewed_on.get(ticker, [])),
             },
         )
     return sorted(items.values(), key=lambda i: (i["suggested_on"], i["ticker"]))
@@ -178,6 +193,8 @@ def _acted(item: dict[str, Any], units_now: dict[str, float]) -> str:
     now = units_now.get(item["ticker"], 0.0)
     if action in SELLS:
         return "?" if before is None else ("yes" if now < before - 1e-6 else "no")
+    if item.get("held_before"):
+        return "held already"
     if action in BUYS or item["source"] == "discover":
         return "yes" if now > (before or 0.0) + 1e-6 else "no"
     return "—"

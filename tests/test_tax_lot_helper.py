@@ -148,3 +148,25 @@ def test_missing_or_empty_lots_is_a_no_op():
     payload = {"lots": [_LOT_100SH_50]}
     # current_price <= 0 → no enrichment
     assert enrich_tax_lots_with_impact(payload, 0.0, {}) == payload
+
+
+def test_long_term_starts_the_day_after_the_anniversary():
+    from datetime import date
+
+    from stock_analyzer.models.portfolio import Lot, long_term_on
+
+    assert long_term_on(date(2025, 1, 10)) == date(2026, 1, 11)
+    assert long_term_on(date(2024, 2, 29)) == date(2025, 3, 1)
+
+    def lot(today):
+        return Lot.from_activity(
+            {"trade_date": "2025-01-10", "units": 1, "price": 10},
+            "Brokerage",
+            today,
+            coerce_date=date.fromisoformat,
+            logger=None,
+        )
+
+    assert lot(date(2026, 1, 10)).is_long_term is False  # anniversary: still short-term
+    assert lot(date(2026, 1, 11)).is_long_term is True
+    assert lot(date(2026, 1, 11)).long_term_on == "2026-01-11"

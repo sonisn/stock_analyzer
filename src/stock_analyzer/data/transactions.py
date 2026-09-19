@@ -6,8 +6,9 @@ Pulls BUY/SELL activities over a lookback window and aggregates per-ticker
 last month (short-term, ordinary-income tax)."
 
 US tax treatment encoded:
-  - days_held >= 365 → long-term (preferential capital gains rate)
-  - days_held <  365 → short-term (ordinary income rate)
+  - held MORE than one year (sold on/after `long_term_on`, the day after
+    the purchase anniversary) → long-term (preferential rate)
+  - otherwise → short-term (ordinary income rate)
 
 This module returns RAW lot data; the LLM reviewer/rebalancer reasons
 about which specific lots to sell per recommendation.

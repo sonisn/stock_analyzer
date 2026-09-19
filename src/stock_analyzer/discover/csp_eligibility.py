@@ -55,12 +55,16 @@ def eligible_csp_tickers(
     max_pct_per_put: float = 0.25,
     max_pct_total: float = 0.80,
     max_candidates: int = 8,
+    covered_call_tickers: set[str] | None = None,
 ) -> dict[str, CspCandidate]:
     """Filter recent picks down to tickers you could sell a put on.
 
     `picks` is [(ticker, rank, run_at), ...] from any number of runs; a
     ticker picked more than once keeps its most recent run. Drops:
-      - tickers held in a round lot (>= 100 shares) — covered-call side
+      - tickers already on the covered-call side: `covered_call_tickers`
+        when given (100+ shares in ONE account), else >= 100 shares in total.
+        Shares split across accounts (e.g. 60 + 50) can't back a call, so
+        they stay put candidates when the covered-call set is known
       - tickers in `denylist`
       - tickers that already have a short put open (don't stack)
       - picks whose thesis is BROKEN or whose target is already hit
@@ -93,7 +97,10 @@ def eligible_csp_tickers(
         if status in _EXCLUDED_THESIS:
             continue
         shares = int((positions.get(ticker) or {}).get("units") or 0)
-        if shares >= 100:
+        on_cc_side = (
+            ticker in covered_call_tickers if covered_call_tickers is not None else shares >= 100
+        )
+        if on_cc_side:
             continue
         out[ticker] = CspCandidate(
             ticker=ticker,

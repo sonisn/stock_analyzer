@@ -78,6 +78,7 @@ class ThesisCheck:
     bear_target_pct: float | None
     bull_target_pct: float | None
     signals: list[ThesisSignal] = field(default_factory=list)
+    annualized: bool = False
 
     @property
     def excess_pct(self) -> float | None:
@@ -261,6 +262,7 @@ def check_theses(
             spy_return_pct=spy_ret,
             bear_target_pct=pick.bear_target_pct,
             bull_target_pct=pick.bull_target_pct,
+            annualized=pick.annualized,
         )
         excess = check.excess_pct
         lagging = excess is not None and excess <= -lag_threshold_pts
@@ -339,6 +341,7 @@ def thesis_report_data(checks: list[ThesisCheck]) -> list[dict[str, Any]]:
             "excess_pct": None if c.excess_pct is None else round(c.excess_pct, 2),
             "bear_target_pct": c.bear_target_pct,
             "bull_target_pct": c.bull_target_pct,
+            "annualized": c.annualized,
             "signals": [{"severity": s.severity, "text": s.text} for s in c.signals],
         }
         for c in checks

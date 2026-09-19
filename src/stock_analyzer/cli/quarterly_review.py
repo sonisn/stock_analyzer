@@ -62,6 +62,9 @@ def build_review(settings: Settings, today: date) -> tuple[str, str]:
 
 
 def main(argv: list[str] | None = None) -> None:
+    from ..market_time import use_market_timezone
+
+    use_market_timezone()
     import argparse
 
     parser = argparse.ArgumentParser(prog="quarterly-review", description=__doc__.split("\n\n")[0])

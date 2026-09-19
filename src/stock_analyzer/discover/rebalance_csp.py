@@ -54,6 +54,18 @@ def _earnings_dates(tickers: list[str], finnhub_signals: dict[str, Any]) -> dict
     return out
 
 
+def _round_lot_tickers(position_splits: dict[str, Any] | None) -> set[str] | None:
+    """Tickers with 100+ shares in a single account — the ones that can
+    back a covered call. None when per-account data is missing."""
+    if not position_splits:
+        return None
+    return {
+        t
+        for t, info in position_splits.items()
+        if any(float(s.get("units") or 0) >= 100 for s in info.get("splits") or [])
+    }
+
+
 def run_csp_data_pipeline(
     state: dict[str, Any],
     settings: Settings,
@@ -100,6 +112,7 @@ def run_csp_data_pipeline(
         thesis_status=thesis,
         max_pct_per_put=settings.csp_max_pct_per_put,
         max_pct_total=settings.csp_max_pct_total,
+        covered_call_tickers=_round_lot_tickers(state.get("position_splits")),
     )
     logger.info("CSP eligibility: %d candidate(s): %s", len(eligible), sorted(eligible))
     if not eligible:

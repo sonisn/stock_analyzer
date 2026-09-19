@@ -131,9 +131,11 @@ class PortfolioAgent:
         # data + LLM round-trip that doesn't depend on ticker data, so the
         # whole pipeline can finish in roughly max(sentiment, slowest-batch)
         # rather than the sum.
+        # Each piece is guarded: one stock's data or model failure must not
+        # cost the whole email (it did on 2026-07-22, a single timeout).
         with ThreadPoolExecutor(max_workers=_TICKER_MAX_WORKERS + 1) as ex:
-            sentiment_future = ex.submit(self._run_sentiment)
-            ticker_results = list(ex.map(self._run_ticker, stocks))
+            sentiment_future = ex.submit(self._safe_sentiment)
+            ticker_results = list(ex.map(self._safe_ticker, stocks))
             sentiment = sentiment_future.result()
 
         return "\n\n".join([sentiment, *ticker_results])
@@ -162,6 +164,29 @@ class PortfolioAgent:
                     "avg_buy_price": v["cost_basis"] / v["units"],
                 }
         return out
+
+    def _safe_sentiment(self) -> str:
+        try:
+            return self._run_sentiment() or "Social/Economic Sentiment: unavailable today."
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Market sentiment failed (%s) — email goes without it", e)
+            return "Social/Economic Sentiment: unavailable today."
+
+    def _safe_ticker(self, ticker: str) -> str:
+        try:
+            return self._run_ticker(ticker) or self._unavailable_block(ticker, "empty reply")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Analysis for %s failed (%s) — placeholder in the email", ticker, e)
+            return self._unavailable_block(ticker, type(e).__name__)
+
+    @staticmethod
+    def _unavailable_block(ticker: str, why: str) -> str:
+        return (
+            f"{'-' * 40}\n\n{ticker} - analysis unavailable today\n"
+            f"Long-term view: The analysis for {ticker} could not be produced today "
+            f"({why}); it will be back tomorrow. Holdings and health checks above "
+            f"still include it."
+        )
 
     def _run_sentiment(self) -> str:
         items = fetch_market_sentiment_news()

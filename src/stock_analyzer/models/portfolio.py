@@ -16,13 +16,25 @@ into ``TickerTaxSummary`` once the per-ticker aggregate is complete.
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
-# 365 days = long-term holding period for US capital gains.
+# 365 days ≈ the long-term holding period for US capital gains; the exact
+# rule is `long_term_on` (held MORE than one year).
 LONG_TERM_DAYS = 365
+
+
+def long_term_on(bought: date) -> date:
+    """First sale date that is long-term: the day after the one-year
+    anniversary (IRS: held more than one year). A Feb 29 purchase turns
+    long-term on Mar 1 of the next year."""
+    try:
+        anniversary = bought.replace(year=bought.year + 1)
+    except ValueError:  # Feb 29 -> no Feb 29 next year
+        anniversary = date(bought.year + 1, 2, 28)
+    return anniversary + timedelta(days=1)
 
 
 class _LoggerLike(Protocol):
@@ -47,6 +59,7 @@ class Lot(BaseModel):
     days_held: int
     is_long_term: bool
     account: str
+    long_term_on: str = ""  # ISO date the lot becomes long-term
 
     @classmethod
     def from_activity(
@@ -68,6 +81,7 @@ class Lot(BaseModel):
             if units <= 0 or price <= 0:
                 return None
             days_held = (today - d).days
+            lt_on = long_term_on(d)
             return cls(
                 date=d.isoformat(),
                 units=units,
@@ -75,8 +89,9 @@ class Lot(BaseModel):
                 total_cost=units * price + fee,
                 fee=fee,
                 days_held=days_held,
-                is_long_term=days_held >= LONG_TERM_DAYS,
+                is_long_term=today >= lt_on,
                 account=account_name,
+                long_term_on=lt_on.isoformat(),
             )
         except (ValueError, TypeError) as e:
             logger.debug("Could not parse activity: %s", e)
@@ -130,6 +145,7 @@ class TickerTaxSummary(BaseModel):
                     "total_cost": round(lot.total_cost, 2),
                     "days_held": lot.days_held,
                     "treatment": "long_term" if lot.is_long_term else "short_term",
+                    "long_term_on": lot.long_term_on,
                     "account": lot.account,
                 }
                 for lot in lots_sorted
@@ -229,6 +245,7 @@ class CspCandidate(BaseModel):
 
 __all__ = [
     "LONG_TERM_DAYS",
+    "long_term_on",
     "Lot",
     "TickerTaxSummary",
     "TickerTaxSummaryMut",

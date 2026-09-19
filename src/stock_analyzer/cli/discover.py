@@ -181,11 +181,13 @@ def _format_ev_table(ranker_output: object) -> str:
         bull = sc_map.get("bull")
         base = sc_map.get("base")
         bear = sc_map.get("bear")
-        bull_s = f"{bull.probability:.0%}/{bull.target_return_pct:+.0f}%" if bull else "—"
-        base_s = f"{base.probability:.0%}/{base.target_return_pct:+.0f}%" if base else "—"
-        bear_s = f"{bear.probability:.0%}/{bear.target_return_pct:+.0f}%" if bear else "—"
+        # 3-5 year picks quote per-year (annualized) returns.
+        per = "/yr" if "year" in (pick.time_horizon or "").lower() else ""
+        bull_s = f"{bull.probability:.0%}/{bull.target_return_pct:+.0f}%{per}" if bull else "—"
+        base_s = f"{base.probability:.0%}/{base.target_return_pct:+.0f}%{per}" if base else "—"
+        bear_s = f"{bear.probability:.0%}/{bear.target_return_pct:+.0f}%{per}" if bear else "—"
         rows.append(
-            f"  {pick.ticker:6s}  E[ret]={ev:+5.1f}%  "
+            f"  {pick.ticker:6s}  E[ret]={ev:+5.1f}%{per}  "
             f"bull {bull_s:>10s}  base {base_s:>10s}  bear {bear_s:>10s}  "
             f"(conv {pick.conviction})"
         )
@@ -537,6 +539,26 @@ def _holdings_value_by_sector(
 
 
 # --- pipeline ----------------------------------------------------------------
+
+
+def without_step_retries(workflow: Workflow) -> Workflow:
+    """Turn off agno's automatic step re-run (default: 3 retries).
+
+    A step that raises would otherwise be executed again from the top —
+    re-paying every LLM call it already made (the Analyst fan-out, all
+    Ranker rounds, the Opus Rebalancer). Provider failures are already
+    retried once on the fallback provider inside the step (llm.py
+    run_with_fallback); data fetches retry in the HTTP/yfinance layers.
+    """
+
+    def walk(steps) -> None:
+        for step in steps or []:
+            if hasattr(step, "max_retries"):
+                step.max_retries = 0
+            walk(getattr(step, "steps", None))
+
+    walk(workflow.steps)
+    return workflow
 
 
 class DiscoverPipeline:
@@ -1484,6 +1506,39 @@ class DiscoverPipeline:
         )
         return StepOutput(content=report.summary())
 
+    def _record_pick_suggestions(self, run_id: int) -> None:
+        """Keep this run's picks in the suggestions ledger with the shares
+        already held, so the quarterly review can tell a new buy from a
+        pick you owned before it was made."""
+        from ..db.repository import record_suggestions
+        from ..reporting.health import aggregate_positions
+
+        picks = self.state.get("picks") or []
+        if not picks:
+            return
+        held = aggregate_positions(self.state.get("holdings_raw") or {})
+        prices = {c["ticker"]: c.get("price") for c in self.state.get("candidates") or []}
+        rows = [
+            {
+                "suggested_on": date.today().isoformat(),
+                "source": "discover",
+                "action": "BUY",
+                "ticker": ticker,
+                "detail": f"discover pick #{rank}",
+                "price": prices.get(ticker),
+                "units_held": (held.get(ticker) or {}).get("units", 0.0)
+                if self.state.get("holdings_raw") is not None
+                else None,
+                "run_id": run_id,
+            }
+            for rank, ticker, _ in picks
+        ]
+        try:
+            with get_session(self.settings.discover_db_path) as session:
+                record_suggestions(session, rows)
+        except Exception as e:
+            logger.warning("Could not record the picks as suggestions (%s)", e)
+
     def step_persist_and_report(self, step_input: StepInput) -> StepOutput:
         # 1. SQLite persistence (same as before)
         with get_session(self.settings.discover_db_path) as session:
@@ -1564,6 +1619,8 @@ class DiscoverPipeline:
                 sizer_full=self.state["sizer_text"],
                 holdings_summary=self.state["holdings_summary"],
             )
+
+        self._record_pick_suggestions(run_id)
 
         # 2. Fetch a chart for each pick (existing chart-img.com client).
         pick_tickers = [t for _, t, _ in self.state["picks"]]
@@ -1699,67 +1756,72 @@ class DiscoverPipeline:
         db_path = Path(os.path.expanduser(self.settings.discover_db_path))
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        return Workflow(
-            name="Stock Discovery",
-            description="Find mid-long term holds via screen + Sonnet + Opus reasoning",
-            db=SqliteDb(
-                db_file=str(db_path),
-                session_table="workflow_session",
-            ),
-            steps=[
-                Step(name="universe", executor=self.step_universe),
-                # Technicals first, alone among the Yahoo-backed steps: one
-                # request per name buys the trend gate, which decides who is
-                # worth the three-requests-per-name fetches below.
-                Parallel(
-                    Step(name="technicals", executor=self.step_technicals),
-                    Step(name="sector_rotation", executor=self.step_sector_rotation),
-                    Step(name="macro_regime", executor=self.step_macro_regime),
-                    Step(name="track_record", executor=self.step_track_record),
-                    name="market_data",
+        return without_step_retries(
+            Workflow(
+                name="Stock Discovery",
+                description="Find mid-long term holds via screen + Sonnet + Opus reasoning",
+                db=SqliteDb(
+                    db_file=str(db_path),
+                    session_table="workflow_session",
                 ),
-                Step(name="prescreen", executor=self.step_prescreen),
-                Parallel(
-                    Step(name="fundamentals", executor=self.step_fundamentals),
-                    # EPS revisions run here so the score function can pick
-                    # up the +/-5 trend bonus from direction_30d.
-                    Step(name="eps_revisions", executor=self.step_eps_revisions),
-                    Step(
-                        name="historical_volatility",
-                        executor=self.step_historical_volatility,
+                steps=[
+                    Step(name="universe", executor=self.step_universe),
+                    # Technicals first, alone among the Yahoo-backed steps: one
+                    # request per name buys the trend gate, which decides who is
+                    # worth the three-requests-per-name fetches below.
+                    Parallel(
+                        Step(name="technicals", executor=self.step_technicals),
+                        Step(name="sector_rotation", executor=self.step_sector_rotation),
+                        Step(name="macro_regime", executor=self.step_macro_regime),
+                        Step(name="track_record", executor=self.step_track_record),
+                        name="market_data",
                     ),
-                    name="candidate_data",
-                ),
-                # Market themes need sector_rotation + macro_regime as input,
-                # so it runs sequentially after the market_data block.
-                Step(name="market_themes", executor=self.step_market_themes),
-                Step(name="screen", executor=self.step_screen),
-                Step(name="thesis_check", executor=self.step_thesis_check),
-                Parallel(
-                    Step(name="risk_factors", executor=self.step_risk_factors),
-                    Step(name="quarterly_mda", executor=self.step_quarterly_mda),
-                    Step(name="news", executor=self.step_news),
-                    Step(name="earnings", executor=self.step_earnings),
-                    Step(name="insider_selling", executor=self.step_insider_selling),
-                    Step(name="share_trades", executor=self.step_share_trades),
-                    Step(name="peer_comparison", executor=self.step_peer_comparison),
-                    Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
-                    Step(name="finnhub_signals", executor=self.step_finnhub_signals),
-                    name="enrichment",
-                ),
-                Step(name="analyst", executor=self.step_analyst),
-                Step(name="holdings", executor=self.step_holdings),
-                Step(name="ranker", executor=self.step_ranker),
-                Step(name="macro_veto", executor=self.step_macro_veto),
-                Step(name="redteam", executor=self.step_redteam),
-                Step(name="sizer", executor=self.step_sizer),
-                Step(name="persist_and_report", executor=self.step_persist_and_report),
-                Step(name="history_upkeep", executor=self.step_history_upkeep),
-            ],
+                    Step(name="prescreen", executor=self.step_prescreen),
+                    Parallel(
+                        Step(name="fundamentals", executor=self.step_fundamentals),
+                        # EPS revisions run here so the score function can pick
+                        # up the +/-5 trend bonus from direction_30d.
+                        Step(name="eps_revisions", executor=self.step_eps_revisions),
+                        Step(
+                            name="historical_volatility",
+                            executor=self.step_historical_volatility,
+                        ),
+                        name="candidate_data",
+                    ),
+                    # Market themes need sector_rotation + macro_regime as input,
+                    # so it runs sequentially after the market_data block.
+                    Step(name="market_themes", executor=self.step_market_themes),
+                    Step(name="screen", executor=self.step_screen),
+                    Step(name="thesis_check", executor=self.step_thesis_check),
+                    Parallel(
+                        Step(name="risk_factors", executor=self.step_risk_factors),
+                        Step(name="quarterly_mda", executor=self.step_quarterly_mda),
+                        Step(name="news", executor=self.step_news),
+                        Step(name="earnings", executor=self.step_earnings),
+                        Step(name="insider_selling", executor=self.step_insider_selling),
+                        Step(name="share_trades", executor=self.step_share_trades),
+                        Step(name="peer_comparison", executor=self.step_peer_comparison),
+                        Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
+                        Step(name="finnhub_signals", executor=self.step_finnhub_signals),
+                        name="enrichment",
+                    ),
+                    Step(name="analyst", executor=self.step_analyst),
+                    Step(name="holdings", executor=self.step_holdings),
+                    Step(name="ranker", executor=self.step_ranker),
+                    Step(name="macro_veto", executor=self.step_macro_veto),
+                    Step(name="redteam", executor=self.step_redteam),
+                    Step(name="sizer", executor=self.step_sizer),
+                    Step(name="persist_and_report", executor=self.step_persist_and_report),
+                    Step(name="history_upkeep", executor=self.step_history_upkeep),
+                ],
+            )
         )
 
 
 def run() -> None:
+    from ..market_time import use_market_timezone
+
+    use_market_timezone()
     load_dotenv()
     # Pacing knobs live in the environment, and these modules are
     # imported before `.env` is loaded — re-read them now.

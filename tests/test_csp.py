@@ -497,3 +497,18 @@ def test_rebalance_workflow_has_csp_step():
 
     names = [getattr(s, "name", None) for s in RebalancePipeline(Settings()).build_workflow().steps]
     assert names.index("cc_data") < names.index("csp_data") < names.index("rebalance")
+
+
+def test_split_shares_stay_put_candidates_when_cc_side_known():
+    picks = [("SPLT", 1, "2026-09-17"), ("CC", 2, "2026-09-17")]
+    positions = {"SPLT": {"units": 110}, "CC": {"units": 200}}
+    out = eligible_csp_tickers(
+        picks,
+        positions=positions,
+        cash_budget=100_000.0,
+        denylist=(),
+        covered_call_tickers={"CC"},
+    )
+    assert list(out) == ["SPLT"]
+    # Without the covered-call set, 100+ shares in total still routes away.
+    assert eligible_csp_tickers(picks, positions=positions, cash_budget=1e5, denylist=()) == {}

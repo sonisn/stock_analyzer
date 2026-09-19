@@ -37,8 +37,9 @@ where the new picks + existing holdings would exceed 30% combined.
 Allocation principles to follow:
 - The user message includes an EXPECTED RETURN TABLE — pre-computed
   E[return] = Σ(probability × scenario_return) from the ranker's
-  bull/base/bear scenarios. This is the PRIMARY ranking signal:
-  size proportional to expected return.
+  bull/base/bear scenarios, quoted per year (%/yr) over the 3-5 year
+  hold. This is the PRIMARY ranking signal: size proportional to
+  expected return.
 - Higher conviction (and thus typically higher EV) → larger position,
   up to ~30% of new capital
 - Higher fragility (bear-case rank 1-2) → smaller position, even if

@@ -59,6 +59,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from ..market_time import use_market_timezone
+
+    use_market_timezone()
     args = _parse_args(argv)
     settings = Settings()  # type: ignore[call-arg]
     db_path = os.path.expanduser(args.db or settings.discover_db_path)

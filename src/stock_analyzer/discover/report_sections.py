@@ -532,7 +532,8 @@ def append_thesis_check_section(
         bear, bull = c.get("bear_target_pct"), c.get("bull_target_pct")
         if bear is None and bull is None:
             return "—"
-        return f"{_pct_or_dash(bear)} / {_pct_or_dash(bull)}"
+        per = "/yr" if c.get("annualized") else ""
+        return f"{_pct_or_dash(bear)}{per} / {_pct_or_dash(bull)}{per}"
 
     sections.append(
         Section(

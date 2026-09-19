@@ -51,6 +51,7 @@ class PortfolioHealth:
     reinvest: list[dict[str, Any]] = field(default_factory=list)
     values: dict[str, float] = field(default_factory=dict)  # ticker -> market value
     units: dict[str, float] = field(default_factory=dict)  # ticker -> shares held
+    max_sector_pct: float = 30.0
     unavailable: list[str] = field(default_factory=list)
 
 
@@ -82,7 +83,7 @@ def build_portfolio_health(
 ) -> PortfolioHealth:
     """`reinvest(held, over_cap_sectors, n)` returns up to `n` ranked ideas
     for sale proceeds; it is only called when something suggests a sale."""
-    health = PortfolioHealth()
+    health = PortfolioHealth(max_sector_pct=max_sector_pct)
     positions = aggregate_positions(holdings)
     tickers = sorted(positions)
 
@@ -438,7 +439,8 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
                 4,
                 None,
                 "OVER CAP",
-                f"Don't add to {r['sector']}: already {r['pct']:.0f}% of holdings (cap 30%).",
+                f"Don't add to {r['sector']}: already {r['pct']:.0f}% of holdings "
+                f"(cap {h.max_sector_pct:.0f}%).",
             )
     items.sort(key=lambda i: i["priority"])
     return items

@@ -128,3 +128,37 @@ def test_every_stock_keeps_its_chart_when_decisions_reorder_the_email():
         # The chart sits inside its own stock's section, after that heading.
         assert body.index(f"<h2>{t}") < body.index(img)
     assert body.index('src="cid:chart-DOWN"') < body.index('src="cid:chart-OK"')
+
+
+def test_long_term_view_label_and_unavailable_placeholder_parse():
+    from stock_analyzer.agents.portfolio import PortfolioAgent
+    from stock_analyzer.reporting.html import _parse
+
+    report = (
+        "Social/Economic Sentiment:\nCalm.\n"
+        "----------------------------------------\n"
+        "OK - Okay Corp\nAnalysts:    Buy 3\nLong-term view: Durable franchise.\n"
+        + PortfolioAgent._unavailable_block("BAD", "ModelProviderError")
+    )
+    _, sections = _parse(report)
+    ok, bad = sections
+    assert dict(ok.fields) == {"Analysts": "Buy 3", "Long-term view": "Durable franchise."}
+    assert bad.symbol == "BAD" and "could not be produced" in dict(bad.fields)["Long-term view"]
+
+
+def test_one_failing_stock_does_not_cancel_the_email(monkeypatch):
+    from stock_analyzer.agents.portfolio import PortfolioAgent
+
+    agent = PortfolioAgent.__new__(PortfolioAgent)
+    agent._positions_by_ticker = {}
+
+    def run_ticker(t):
+        if t == "BAD":
+            raise RuntimeError("overloaded")
+        return f"{'-' * 40}\n\n{t} - Fine Inc\nPrice: 1"
+
+    monkeypatch.setattr(agent, "_run_ticker", run_ticker)
+    monkeypatch.setattr(agent, "_run_sentiment", lambda: (_ for _ in ()).throw(RuntimeError("x")))
+    out = agent.run_analysis(["OK", "BAD"])
+    assert "OK - Fine Inc" in out and "BAD - analysis unavailable today" in out
+    assert out.startswith("Social/Economic Sentiment: unavailable today.")

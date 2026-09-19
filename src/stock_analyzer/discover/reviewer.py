@@ -185,10 +185,11 @@ priorities (the helper has already done the math; you just rank):
      harvest_benefit_or_cost='cost') — lower rate than short-term.
   4. Avoid taxable SHORT-TERM gains unless thesis is truly broken.
      Quote the estimated_tax_dollars from the helper as your cost.
-  5. If a short-term lot is within ~30 days of becoming long-term
-     (days_held >= 335 and treatment still 'short_term'), recommend
-     WAITING explicitly: "delay sale ~<N> days; lot crosses long-term
-     on <date>" — the long-term rate is materially lower.
+  5. If a short-term lot becomes long-term within ~30 days (its
+     `long_term_on` date — the day AFTER the one-year anniversary; a sale
+     ON the anniversary is still short-term), recommend WAITING
+     explicitly: "delay sale until <long_term_on>" — the long-term rate
+     is materially lower. Copy the date; never compute it.
 
 Per-lot output format (cite the helper's numbers, don't invent):
   - Lot dated YYYY-MM-DD: sell N shares

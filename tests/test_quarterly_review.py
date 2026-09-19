@@ -8,7 +8,12 @@ from pathlib import Path
 import pandas as pd
 from sqlalchemy import text
 
-from stock_analyzer.db.repository import insert_pick, insert_run, record_suggestions
+from stock_analyzer.db.repository import (
+    insert_holdings_review,
+    insert_pick,
+    insert_run,
+    record_suggestions,
+)
 from stock_analyzer.db.session import get_session
 from stock_analyzer.reporting.health import build_portfolio_health, suggestion_rows
 from stock_analyzer.reporting.quarterly import (
@@ -136,6 +141,10 @@ def _seed(db: str) -> None:
             params={"i": run_id},
         )
         insert_pick(s, run_id, rank=1, ticker="PICK", entry_price=20.0)
+        insert_pick(s, run_id, rank=2, ticker="OWNED", entry_price=20.0)
+        insert_holdings_review(
+            s, run_id, ticker="OWNED", verdict="HOLD", confidence=7, review_text="x"
+        )
         s.commit()
 
 
@@ -149,6 +158,7 @@ def test_collect_grade_and_render(tmp_path: Path):
         ("daily", "REVIEW", "DIP"),
         ("rebalance", "SELL_PUT", "PUT"),
         ("rebalance", "ADD", "WIN"),
+        ("discover", "BUY", "OWNED"),
         ("discover", "BUY", "PICK"),
     ]
     fetch = _prices(
@@ -160,6 +170,7 @@ def test_collect_grade_and_render(tmp_path: Path):
             "WIN": (100, 130),
             "PUT": (100, 101),
             "PICK": (100, 102),
+            "OWNED": (100, 101),
         }
     )
     graded = {
@@ -176,6 +187,7 @@ def test_collect_grade_and_render(tmp_path: Path):
     assert graded["WIN"]["verdict"] == "good call" and graded["WIN"]["acted"] == "no"
     assert graded["PUT"]["verdict"] == "—" and graded["PUT"]["edge_pct"] is None
     assert graded["PICK"]["acted"] == "no"
+    assert graded["OWNED"]["acted"] == "held already"
 
     summary = summarize(list(graded.values()))
     lines = headline(summary)

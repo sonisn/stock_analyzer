@@ -8,7 +8,7 @@ import re
 from ..models.reports import TickerSection
 
 TICKER_HEADER_RE = re.compile(r"^([A-Z][A-Z0-9.\-]{0,9})\s+-\s+(.+)$")
-LABEL_LINE_RE = re.compile(r"^([A-Z][A-Za-z/0-9 &]+):\s*(.*)$")
+LABEL_LINE_RE = re.compile(r"^([A-Z][A-Za-z/0-9 &-]+):\s*(.*)$")
 DASHES_SPLIT_RE = re.compile(r"-{20,}")
 PREAMBLE_LINE_RE = re.compile(
     r"^\s*(I'?ll\b|I will\b|Let me\b|Let's\b|Now let\b|Now I\b|I have\b"

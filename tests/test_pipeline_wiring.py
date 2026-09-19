@@ -800,3 +800,22 @@ def test_rebalancer_prompt_documents_account_in_write_call():
     assert "per (ticker, account)" in text.lower() or "per account" in text.lower()
     # OptionWrite schema description mentions account.
     assert "account" in text.lower()
+
+
+def test_workflow_steps_never_auto_retry():
+    # A retried LLM step re-pays every call it already made.
+    from stock_analyzer.cli.discover import DiscoverPipeline
+    from stock_analyzer.cli.rebalance import RebalancePipeline
+    from stock_analyzer.config import Settings
+
+    for pipeline in (DiscoverPipeline, RebalancePipeline):
+        retrying: list[str] = []
+
+        def walk(steps, retrying=retrying):
+            for step in steps or []:
+                if getattr(step, "max_retries", 0):
+                    retrying.append(step.name)
+                walk(getattr(step, "steps", None))
+
+        walk(pipeline(Settings()).build_workflow().steps)
+        assert retrying == [], (pipeline.__name__, retrying)
