@@ -265,7 +265,8 @@ uv run validate-screen --what score --horizon 30
   the scores already stored per run. A flat quintile curve means the
   composite isn't separating winners from losers; a negative IC means that
   component is pointing the wrong way. Measure before re-tuning weights.
-- **Ranker calibration** — EV error (realized − EV) at the 270-day horizon,
+- **Ranker calibration** — EV error (realized − EV) after one year for 3-5
+  year picks (whose EV is annualized; 270 days for older 6-12 month ones),
   mean realized alpha bucketed by the stated conviction score, stated vs
   observed frequency for bull/base/bear, and the nearest past setups by
   factor similarity (from the screen's own `score_breakdown`). Conviction,
