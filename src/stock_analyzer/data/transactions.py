@@ -1,6 +1,8 @@
 """Transaction history → tax lots from SnapTrade.
 
-Pulls BUY/SELL activities over a lookback window and aggregates per-ticker
+Pulls BUY/SELL activities (dividend reinvestments — REI — count as buys:
+they are purchases for lot and wash-sale purposes) over a lookback window
+and aggregates per-ticker
 "tax lots" so the rebalance pipeline can do specific-ID lot selection:
 "Sell the lot dated YYYY-MM-DD (long-term, $X gain) — not the one from
 last month (short-term, ordinary-income tax)."
@@ -25,7 +27,14 @@ from .brokerage import _client, _credentials, _extract_ticker, _unwrap
 
 logger = get_logger(__name__)
 
-__all__ = ["fetch_transaction_history", "to_tax_payloads"]
+__all__ = ["fetch_transaction_history", "to_tax_payloads", "fetch_cash_activity"]
+
+# Activity types that are purchases (lots): plain buys and dividend
+# reinvestments (a DRIP purchase within 30 days is a wash-sale purchase too).
+_BUY_TYPES = {"BUY", "REI"}
+# Money or securities moving in/out of the portfolio — not investment
+# performance, so time-weighted returns take them out.
+_FLOW_TYPES = {"CONTRIBUTION", "WITHDRAWAL", "TRANSFER", "DEPOSIT"}
 
 
 def _coerce_date(value: Any) -> date | None:
@@ -52,7 +61,8 @@ def _activity_account_name(activity: dict[str, Any], account_id_to_name: dict[st
     acc = activity.get("account")
     if isinstance(acc, dict):
         return (
-            acc.get("name")
+            account_id_to_name.get(str(acc.get("id") or ""), "")
+            or acc.get("name")
             or acc.get("number")
             or account_id_to_name.get(acc.get("id") or "", "")
             or "unknown"
@@ -172,7 +182,7 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
         account_name = _activity_account_name(activity, account_id_to_name)
         summary = working.setdefault(ticker, TickerTaxSummaryMut(ticker=ticker))
 
-        if activity_type == "BUY":
+        if activity_type in _BUY_TYPES:
             lot = Lot.from_activity(
                 activity,
                 account_name,
@@ -225,3 +235,63 @@ def to_tax_payloads(
 ) -> dict[str, dict[str, Any]]:
     """Convert summaries to JSON-ready payloads keyed by ticker."""
     return {ticker: s.to_payload() for ticker, s in summaries.items()}
+
+
+def fetch_cash_activity(days_back: int = 400) -> dict[str, list[dict[str, Any]]]:
+    """External cash flows and dividends over the last `days_back` days.
+
+    {"flows": [{date, amount, account, type}], — CONTRIBUTION / WITHDRAWAL /
+                 TRANSFER (incl. securities moved in by ACAT, at value),
+     "dividends": [{date, ticker, amount, account, reinvested}]}
+
+    `reinvested` is True when the same account shows a dividend
+    reinvestment (REI) of that ticker on the same day. Empty lists when
+    SnapTrade is unavailable."""
+    out: dict[str, list[dict[str, Any]]] = {"flows": [], "dividends": []}
+    try:
+        user_id, user_secret = _credentials()
+        client = _client()
+        accounts = (
+            _unwrap(
+                client.account_information.list_user_accounts(
+                    user_id=user_id, user_secret=user_secret
+                )
+            )
+            or []
+        )
+    except Exception as e:
+        logger.warning("Cannot fetch cash activity: %s", e)
+        return out
+
+    from .brokerage import account_labels
+
+    today = date.today()
+    start = today - timedelta(days=days_back)
+    reinvested: set[tuple[str, str, date]] = set()
+    dividends: list[dict[str, Any]] = []
+    for acc_id, label in account_labels(accounts).items():
+        for a in _fetch_account_activities(client, user_id, user_secret, acc_id, start, today):
+            kind = (a.get("type") or "").upper()
+            day = _coerce_date(a.get("trade_date") or a.get("settlement_date"))
+            try:
+                amount = float(a.get("amount") or 0)
+            except ValueError, TypeError:
+                continue
+            if day is None:
+                continue
+            if kind in _FLOW_TYPES and amount:
+                out["flows"].append({"date": day, "amount": amount, "account": label, "type": kind})
+            elif kind == "DIVIDEND" and amount > 0:
+                ticker = _extract_ticker(a)
+                if ticker:
+                    dividends.append(
+                        {"date": day, "ticker": ticker, "amount": amount, "account": label}
+                    )
+            elif kind == "REI":
+                ticker = _extract_ticker(a)
+                if ticker:
+                    reinvested.add((label, ticker, day))
+    for d in dividends:
+        d["reinvested"] = (d["account"], d["ticker"], d["date"]) in reinvested
+    out["dividends"] = dividends
+    return out

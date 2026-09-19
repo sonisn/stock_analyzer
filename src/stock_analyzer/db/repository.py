@@ -22,6 +22,7 @@ from .tables import (
     Pick,
     PickCatalyst,
     PickScenario,
+    PortfolioSnapshot,
     Run,
     RunOutput,
     Scorecard,
@@ -349,6 +350,29 @@ def fetch_suggestions(session: Session, *, start: str, end: str) -> list[Suggest
             .order_by(Suggestion.suggested_on, Suggestion.id)
         )
     )
+
+
+# --- portfolio snapshots --------------------------------------------------
+
+
+def record_snapshot(session: Session, *, day: str, holdings_value: float, cash: float) -> None:
+    """Store (or replace) the portfolio's value for `day`."""
+    row = session.get(PortfolioSnapshot, day)
+    total = holdings_value + cash
+    if row is None:
+        session.add(
+            PortfolioSnapshot(day=day, holdings_value=holdings_value, cash=cash, total=total)
+        )
+    else:
+        row.holdings_value, row.cash, row.total = holdings_value, cash, total
+    session.flush()
+
+
+def fetch_snapshots(session: Session, *, start: str | None = None) -> list[PortfolioSnapshot]:
+    query = select(PortfolioSnapshot).order_by(PortfolioSnapshot.day)
+    if start:
+        query = query.where(PortfolioSnapshot.day >= start)
+    return list(session.exec(query))
 
 
 # --- run outputs ----------------------------------------------------------

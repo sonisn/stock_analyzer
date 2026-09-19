@@ -302,6 +302,13 @@ Non-USD cash balances are skipped rather than summed as dollars.
 
 ## Quarterly review
 
+The review opens with **Your portfolio vs SPY**: the daily email stores the
+portfolio's total value (holdings + cash) each weekday
+(`portfolio_snapshots`), and the review chains those into a time-weighted
+return — deposits, withdrawals and transfers (from the brokerage's activity
+history) are taken out — for last quarter, year to date and since tracking
+began, next to SPY over the same dates.
+
 Advice is kept in the `suggestions` table: the daily email's action lines
 (sell, tax-loss sale, thesis re-check) and every rebalance action. On the
 first trading day of each quarter `uv run quarterly-review` (cron via

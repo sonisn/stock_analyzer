@@ -132,6 +132,31 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
         return None
 
 
+def record_portfolio_snapshot(settings: Settings, holdings: dict[str, list[dict]]) -> None:
+    """Today's total value (holdings + cash) for the portfolio-vs-SPY
+    comparison. Skipped, not guessed, when cash can't be read."""
+    from ..data.brokerage import fetch_account_cash
+    from ..db.repository import record_snapshot
+    from ..db.session import get_session
+    from ..reporting.health import aggregate_positions
+
+    try:
+        cash = fetch_account_cash()
+        if not cash:
+            logger.warning("No cash balance readable — portfolio snapshot skipped today")
+            return
+        value = sum(p["value"] for p in aggregate_positions(holdings).values())
+        with get_session(settings.discover_db_path) as session:
+            record_snapshot(
+                session,
+                day=date.today().isoformat(),
+                holdings_value=value,
+                cash=sum(cash.values()),
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not record today's portfolio snapshot (%s)", e)
+
+
 def record_daily_suggestions(settings: Settings, health) -> None:
     """Keep today's actionable advice for the quarterly review. Never
     blocks the email."""
@@ -213,6 +238,7 @@ def main() -> None:
     result, tickers = run_analysis(settings, holdings)
     health = portfolio_health(settings, holdings)
     record_daily_suggestions(settings, health)
+    record_portfolio_snapshot(settings, holdings)
     if not settings.email_to:
         logger.error("EMAIL_TO not set; printing report instead of emailing")
         print(result)

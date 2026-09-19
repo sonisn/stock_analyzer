@@ -254,7 +254,21 @@ class Suggestion(SQLModel, table=True):
     run_id: int | None = None  # rebalance run, when from one
 
 
+class PortfolioSnapshot(SQLModel, table=True):
+    """End-of-run value of the whole portfolio, one row per day (the daily
+    email writes it). With the brokerage's deposit/withdrawal/transfer
+    history this gives a time-weighted return to compare against SPY."""
+
+    __tablename__ = "portfolio_snapshots"
+
+    day: str = Field(primary_key=True)  # ISO date
+    holdings_value: float
+    cash: float
+    total: float
+
+
 __all__ = [
+    "PortfolioSnapshot",
     "Suggestion",
     "Run",
     "Candidate",

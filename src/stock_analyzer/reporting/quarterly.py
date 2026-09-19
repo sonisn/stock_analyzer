@@ -309,6 +309,7 @@ def render_quarterly_html(
     graded: list[dict[str, Any]],
     summary: dict[str, Any],
     health_html: str = "",
+    performance_html: str = "",
 ) -> str:
     from .html import _wrap_html
 
@@ -317,6 +318,8 @@ def render_quarterly_html(
         f"given to today. A quarter is a short window for 3-5 year holdings — read it for "
         f"the pattern, not single names.</p>"
     ]
+    if performance_html:
+        parts.append(performance_html)
     if not graded:
         parts.append("<p>No suggestions were recorded last quarter.</p>")
     else:

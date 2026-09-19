@@ -22,6 +22,37 @@ from ..logging import get_logger
 logger = get_logger(__name__)
 
 
+def performance_section(settings: Settings, *, start: date, today: date) -> str:
+    """ "Your portfolio vs SPY" for last quarter, year to date and since the
+    first snapshot. Never blocks the review."""
+    from ..data.transactions import fetch_cash_activity
+    from ..db.repository import fetch_snapshots
+    from ..db.session import get_session
+    from ..reporting.performance import performance_vs_spy, render_performance_html
+
+    try:
+        with get_session(settings.discover_db_path) as session:
+            snaps = [(date.fromisoformat(s.day), s.total) for s in fetch_snapshots(session)]
+        if not snaps:
+            return render_performance_html([], first_day=None)
+        first = snaps[0][0]
+        activity = fetch_cash_activity(days_back=(today - first).days + 7)
+        flows = [(f["date"], f["amount"]) for f in activity["flows"]]
+        rows = performance_vs_spy(
+            snaps,
+            flows,
+            windows={
+                "Last quarter": start,
+                "Year to date": date(today.year, 1, 1),
+                "Since tracking began": first,
+            },
+        )
+        return render_performance_html(rows, first_day=first)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Portfolio-vs-SPY section failed (%s)", e)
+        return ""
+
+
 def build_review(settings: Settings, today: date) -> tuple[str, str]:
     """(subject, HTML) for the quarter before `today`."""
     from ..data.brokerage import fetch_portfolio_holdings
@@ -53,7 +84,13 @@ def build_review(settings: Settings, today: date) -> tuple[str, str]:
         else ""
     )
     body = render_quarterly_html(
-        label=label, start=start, end=end, graded=graded, summary=summary, health_html=health_html
+        label=label,
+        start=start,
+        end=end,
+        graded=graded,
+        summary=summary,
+        health_html=health_html,
+        performance_html=performance_section(settings, start=start, today=today),
     )
     scored = [g for g in graded if g["edge_pct"] is not None]
     good = sum(1 for g in scored if g["edge_pct"] >= 0)
