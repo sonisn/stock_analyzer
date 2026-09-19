@@ -27,7 +27,12 @@ from .brokerage import _client, _credentials, _extract_ticker, _unwrap
 
 logger = get_logger(__name__)
 
-__all__ = ["fetch_transaction_history", "to_tax_payloads", "fetch_cash_activity"]
+__all__ = [
+    "fetch_transaction_history",
+    "to_tax_payloads",
+    "fetch_cash_activity",
+    "fetch_activities_by_account",
+]
 
 # Activity types that are purchases (lots): plain buys and dividend
 # reinvestments (a DRIP purchase within 30 days is a wash-sale purchase too).
@@ -35,6 +40,14 @@ _BUY_TYPES = {"BUY", "REI"}
 # Money or securities moving in/out of the portfolio — not investment
 # performance, so time-weighted returns take them out.
 _FLOW_TYPES = {"CONTRIBUTION", "WITHDRAWAL", "TRANSFER", "DEPOSIT"}
+
+
+def is_option_activity(activity: dict[str, Any]) -> bool:
+    """Option trades carry the UNDERLYING's symbol on some brokerages
+    (Robinhood: an NFLX call reads as "NFLX"), so they must be told apart
+    by `option_symbol` — otherwise a $1.23 option premium becomes an NFLX
+    share lot at $1.23."""
+    return bool(activity.get("option_symbol"))
 
 
 def _coerce_date(value: Any) -> date | None:
@@ -176,7 +189,7 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
     working: dict[str, TickerTaxSummaryMut] = {}
     for activity in activities:
         ticker = _extract_ticker(activity)
-        if not ticker:
+        if not ticker or is_option_activity(activity):
             continue
         activity_type = (activity.get("type") or "").upper()
         account_name = _activity_account_name(activity, account_id_to_name)
@@ -295,3 +308,31 @@ def fetch_cash_activity(days_back: int = 400) -> dict[str, list[dict[str, Any]]]
         d["reinvested"] = (d["account"], d["ticker"], d["date"]) in reinvested
     out["dividends"] = dividends
     return out
+
+
+def fetch_activities_by_account(years_back: int = 3) -> dict[str, list[dict[str, Any]]]:
+    """{account label: raw activities} over the lookback window — for
+    per-account work such as realized-gain estimates. {} on failure."""
+    try:
+        user_id, user_secret = _credentials()
+        client = _client()
+        accounts = (
+            _unwrap(
+                client.account_information.list_user_accounts(
+                    user_id=user_id, user_secret=user_secret
+                )
+            )
+            or []
+        )
+    except Exception as e:
+        logger.warning("Cannot fetch activities: %s", e)
+        return {}
+
+    from .brokerage import account_labels
+
+    today = date.today()
+    start = today - timedelta(days=years_back * 365)
+    return {
+        label: _fetch_account_activities(client, user_id, user_secret, acc_id, start, today)
+        for acc_id, label in account_labels(accounts).items()
+    }

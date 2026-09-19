@@ -63,6 +63,7 @@ validate-screen = "stock_analyzer.cli.validate_screen:main"
 train-model = "stock_analyzer.cli.train_model:main"
 model-review = "stock_analyzer.cli.model_review:main"
 quarterly-review = "stock_analyzer.cli.quarterly_review:main"
+tax-planner = "stock_analyzer.cli.tax_planner:main"
 
 [build-system]
 requires = ["hatchling"]

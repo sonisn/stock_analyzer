@@ -329,6 +329,17 @@ their suggested replacement, and whether you acted on it — followed by
 today's portfolio health. `--force` runs it any day; `--print` prints the
 HTML instead of emailing.
 
+## Year-end tax planner
+
+On December's first trading day `uv run tax-planner` (cron via
+`scripts/run_tax_planner.sh`) emails, for taxable accounts only: realized
+gains so far this year (estimated FIFO from each account's own purchase
+lots — SnapTrade sells carry no cost basis — with closed option contracts
+netted separately and transferred-in shares flagged as basis unknown), the
+losses available to harvest and how far they offset those gains plus the
+$3,000 of ordinary income, and short-term lots in profit that turn
+long-term within 60 days (wait to sell). `--force` / `--print` as usual.
+
 ## Tests
 
 ```bash
