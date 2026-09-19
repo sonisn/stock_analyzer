@@ -788,6 +788,7 @@ class Rebalancer:
         harvest_block: str = "",
         csp_context_block: str = "",
         accounts_block: str = "",
+        add_on_block: str = "",
     ) -> RebalancePlan:
         # Accept either the new structured form ({ticker: HoldingReview})
         # or the legacy free-text form ({ticker: str}). For the LLM prompt
@@ -827,6 +828,13 @@ class Rebalancer:
             else ""
         )
         cc_section = f"{cc_context_block}\n\n" if cc_context_block else ""
+        if add_on_block:
+            cc_section = (
+                "ADD-ON-WEAKNESS CANDIDATES (deterministic: HOLD >= 7, 15%+ below the "
+                "52-week high, room under the weight limit — for a long-term holder a "
+                "lower price on an intact case is a better entry; prefer these for ADDs "
+                f"when the reviews still support them):\n{add_on_block}\n\n"
+            ) + cc_section
         csp_section = f"{csp_context_block}\n\n" if csp_context_block else ""
         harvest_section = (
             f"TAX-LOSS HARVEST CANDIDATES (deterministic; see instructions):\n{harvest_block}\n\n"

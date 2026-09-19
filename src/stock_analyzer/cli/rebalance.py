@@ -569,6 +569,7 @@ class RebalancePipeline(DiscoverPipeline):
             accounts_block=format_accounts_block(
                 self.state.get("account_cash") or {}, self.state.get("account_meta") or {}
             ),
+            add_on_block=self._add_on_block(),
         )
         try:
             plan, cc_warnings = apply_cc_plan_validation(
@@ -671,6 +672,16 @@ class RebalancePipeline(DiscoverPipeline):
                 f"{len(premortem.failures)} failure mode(s)"
             )
         )
+
+    def _add_on_block(self) -> str:
+        from ..discover.add_on import format_add_on_block
+
+        technicals = self.state.get("holdings_technicals") or {}
+        values = {
+            t: float(p.get("units") or 0) * float((technicals.get(t) or {}).get("price") or 0)
+            for t, p in (self.state.get("holdings_positions") or {}).items()
+        }
+        return format_add_on_block(self.state.get("holdings_reviews") or {}, technicals, values)
 
     def _record_plan_suggestions(self, run_id: int) -> None:
         """Keep the plan's actions for the quarterly review."""

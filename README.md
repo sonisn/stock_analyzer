@@ -300,6 +300,17 @@ Accounts are labelled by name; two with the same name get the institution
 (or the id's last 4 characters) appended, so neither overwrites the other.
 Non-USD cash balances are skipped rather than summed as dollars.
 
+## Income and adding on dips
+
+The daily email's Portfolio health shows **dividend income** — about how
+much the holdings pay per year at current rates, what the last 12 months
+paid, and whether it was reinvested automatically or left as cash (with a
+suggestion for idle cash) — and **add on weakness**: holdings 15%+ below
+their 52-week high whose long-term case is intact (no thesis flag, no
+estimate cuts, sector under the cap, under 20% of the portfolio, not
+already flagged for a thesis re-check or a loss sale). The rebalancer gets
+the same kind of list for its ADD decisions.
+
 ## Quarterly review
 
 The review opens with **Your portfolio vs SPY**: the daily email stores the

@@ -16,6 +16,11 @@ between rebalance runs:
     (discover/tax_harvest.py; swaps are in the rebalance report, which has
     the peer data);
   - earnings in the next 7 days;
+  - dividend income: forward annual income and yield, and what the last
+    12 months paid — reinvested automatically or left as cash
+    (discover/income.py);
+  - add on weakness: holdings 15%+ below their 52-week high with the
+    long-term case intact — candidates for new money (discover/add_on.py);
   - reinvestment ideas: whenever a line suggests selling, it names where
     the money could go — a recent discover pick not held, outside any
     over-cap sector (discover/reinvest.py), or for a tax-loss sale a
@@ -49,6 +54,9 @@ class PortfolioHealth:
     harvest: list[dict[str, Any]] = field(default_factory=list)
     earnings: list[dict[str, Any]] = field(default_factory=list)
     reinvest: list[dict[str, Any]] = field(default_factory=list)
+    income: dict[str, Any] = field(default_factory=dict)
+    add_on: list[dict[str, Any]] = field(default_factory=list)
+    sector_by_ticker: dict[str, str] = field(default_factory=dict)
     values: dict[str, float] = field(default_factory=dict)  # ticker -> market value
     units: dict[str, float] = field(default_factory=dict)  # ticker -> shares held
     max_sector_pct: float = 30.0
@@ -80,6 +88,8 @@ def build_portfolio_health(
     harvest: Callable[[], list[dict[str, Any]]] | None = None,
     earnings: Callable[[list[str]], dict[str, dict[str, Any]]] | None = None,
     reinvest: Callable[[set[str], set[str], int], list[dict[str, Any]]] | None = None,
+    income: Callable[[dict[str, float], dict[str, float]], dict[str, Any]] | None = None,
+    add_on: Callable[..., list[dict[str, Any]]] | None = None,
 ) -> PortfolioHealth:
     """`reinvest(held, over_cap_sectors, n)` returns up to `n` ranked ideas
     for sale proceeds; it is only called when something suggests a sale."""
@@ -120,6 +130,7 @@ def build_portfolio_health(
         if sector_of is None:
             return
         by_ticker = sector_of(tickers)
+        health.sector_by_ticker = dict(by_ticker)
         total = sum(p["value"] for p in positions.values())
         weights: dict[str, float] = {}
         for t, p in positions.items():
@@ -151,8 +162,28 @@ def build_portfolio_health(
     attempt("tax-loss harvesting", harvesting)
     attempt("earnings calendar", upcoming)
 
+    def dividends() -> None:
+        if income is not None:
+            health.income = income(health.units, health.values)
+
+    def dips() -> None:
+        if add_on is not None:
+            health.add_on = add_on(
+                values=health.values,
+                sector_of=health.sector_by_ticker,
+                over_cap_sectors={r["sector"] for r in health.sectors if r["over"]},
+                # Anything already flagged for a thesis re-check or a loss
+                # sale isn't also offered as a place for new money.
+                thesis_flagged={c["ticker"] for c in health.thesis}
+                | {r["ticker"] for r in health.drawdowns}
+                | {c["ticker"] for c in health.harvest},
+            )
+
+    attempt("dividend income", dividends)
+    attempt("add on weakness", dips)
+
     def ideas() -> None:
-        sales = len(_sale_items(health))
+        sales = len(_sale_items(health)) + (1 if health.income.get("cash_12m") else 0)
         if reinvest is not None and sales:
             over = {r["sector"] for r in health.sectors if r["over"]}
             health.reinvest = reinvest(set(tickers), over, min(sales, 3))
@@ -180,6 +211,7 @@ _BADGE = {
     "OVER CAP": ("#8a4a00", "#fff4e0"),
     "GOOD CALL": ("#0e6432", "#e6f4ea"),
     "MISSED": ("#9c1010", "#fde4e4"),
+    "ADD ON DIP": ("#0e6432", "#e6f4ea"),
 }
 
 
@@ -278,6 +310,60 @@ def render_health_html(h: PortfolioHealth) -> str:
                 ],
             )
         )
+    if h.add_on:
+        parts.append("<h3>Add on weakness (long-term case intact)</h3>")
+        parts.append(
+            _table(
+                ["Ticker", "Below 52-week high", "Share of portfolio", "Sector"],
+                [
+                    [
+                        html.escape(a["ticker"]),
+                        f"{a['off_high_pct']:+.1f}%",
+                        f"{a['weight_pct']:.1f}%",
+                        html.escape(a.get("sector") or "—"),
+                    ]
+                    for a in h.add_on
+                ],
+            )
+        )
+    inc = h.income
+    if inc and (inc.get("forward_annual") or inc.get("received_12m")):
+        parts.append("<h3>Dividend income</h3>")
+        yld = f" ({inc['yield_pct']:.2f}% of holdings)" if inc.get("yield_pct") else ""
+        line = (
+            f"About <b>{_money(inc['forward_annual'])}/yr</b> at current rates{yld}; "
+            f"{_money(inc['received_12m'])} received over the last 12 months"
+        )
+        if inc.get("reinvested_12m"):
+            line += f", {_money(inc['reinvested_12m'])} of it reinvested automatically"
+        parts.append(f"<p>{line}.</p>")
+        if inc.get("cash_12m"):
+            where = (
+                f" — consider putting it to work in {html.escape(h.add_on[0]['ticker'])}"
+                if h.add_on
+                else ""
+            )
+            parts.append(
+                f"<p>{_money(inc['cash_12m'])} of dividends arrived as cash in "
+                f"{html.escape(', '.join(inc.get('cash_accounts') or []))}{where}.</p>"
+            )
+        payers = [r for r in inc.get("rows") or [] if r["annual"]][:5]
+        if payers:
+            parts.append(
+                _table(
+                    ["Ticker", "Per year", "Yield", "Last 12 months", "Reinvested"],
+                    [
+                        [
+                            html.escape(r["ticker"]),
+                            _money(r["annual"]),
+                            f"{r['yield_pct']:.2f}%" if r.get("yield_pct") else "—",
+                            _money(r["received_12m"]),
+                            {True: "yes", False: "no", None: "—"}[r["reinvested"]],
+                        ]
+                        for r in payers
+                    ],
+                )
+            )
     if h.reinvest:
         from ..discover.reinvest import format_idea
 
@@ -432,6 +518,14 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             f"{_money(c['loss_usd'])} (~{_money(c['est_tax_saving_usd'])} tax saved){wash}."
             + where,
             swaps[0] if swaps else dest_ticker(c["ticker"]),
+        )
+    for a in h.add_on:
+        add(
+            4,
+            a["ticker"],
+            "ADD ON DIP",
+            f"{a['ticker']} is {-a['off_high_pct']:.0f}% below its 52-week high with its "
+            f"long-term case intact — a candidate for new money.",
         )
     for r in h.sectors:
         if r["over"]:

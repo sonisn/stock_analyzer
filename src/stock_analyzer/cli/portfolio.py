@@ -112,6 +112,29 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
 
         return batch_earnings_flags(tickers, within_days=7)
 
+    def income(units: dict[str, float], values: dict[str, float]) -> dict:
+        from ..data.transactions import fetch_cash_activity
+        from ..discover.income import dividend_income, forward_dividend_rates
+
+        return dividend_income(
+            units=units,
+            values=values,
+            rates=forward_dividend_rates(sorted(units)),
+            received=fetch_cash_activity(days_back=370)["dividends"],
+        )
+
+    def add_on(**kwargs) -> list[dict]:
+        from ..data.eps_revisions import batch_eps_revisions
+        from ..discover.add_on import add_on_candidates, price_vs_high
+
+        def estimates_cut(tickers: list[str]) -> set[str]:
+            revisions = batch_eps_revisions(tickers)
+            return {t for t, r in revisions.items() if (r or {}).get("direction_30d") == "lowering"}
+
+        return add_on_candidates(
+            highs=price_vs_high(sorted(kwargs["values"])), estimates_cut=estimates_cut, **kwargs
+        )
+
     def reinvest(held: set[str], over_cap: set[str], n: int) -> list[dict]:
         from ..discover.reinvest import load_pick_pool, reinvest_ideas
 
@@ -126,6 +149,8 @@ def portfolio_health(settings: Settings, holdings: dict[str, list[dict]]):
             harvest=harvest,
             earnings=earnings,
             reinvest=reinvest,
+            income=income,
+            add_on=add_on,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Portfolio health block failed (%s) — sending the email without it", e)
