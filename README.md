@@ -311,6 +311,41 @@ estimate cuts, sector under the cap, under 20% of the portfolio, not
 already flagged for a thesis re-check or a loss sale). The rebalancer gets
 the same kind of list for its ADD decisions.
 
+## Daily email: long-term views and earnings results
+
+Each holding's block is built in code from freshly fetched data — price,
+52-week range, P/E, yield, analyst counts, earnings dates, trend — so the
+numbers are current every morning. The one judgment in the block, the 2-3
+sentence **long-term view**, is written by the model and stored, then
+reused (shown with the date it was written) until it is
+`STOCK_VIEW_MAX_AGE_DAYS` old (7), the price has moved
+`STOCK_VIEW_MOVE_PCT` (8%) since, or the company has reported. For a 3-5
+year case nothing is lost by not re-deriving it daily, and a portfolio of
+25 holdings drops from ~50 model calls a morning to a handful.
+
+**News is filtered, not just sorted.** A holding's Yahoo feed is mostly
+syndicated commentary about other companies — measured on four holdings
+(2026-09-19), 35 of 40 items, and all ten of NVDA's were about AbbVie,
+Boeing, Iamgold and CoreWeave. So an item whose *headline* doesn't name
+the company is dropped, the list isn't padded back to five, and headlines
+an earlier email already carried don't come round again. Ranking the rest
+is one batched model call for the whole portfolio (it used to be one per
+holding), with a deterministic ranking as the fallback.
+
+When that leaves a stock with nothing to read, the block says so and
+shows what the company actually *did* instead, from sources that are
+company-specific by construction and free: recent SEC filings (8-K /
+10-Q, with links), where analysts have moved next year's EPS, and Form 4
+insider activity. On 2026-09-19 that turned NVDA's five filler links into
+an 8-K, a 10-Q and "42 up / 0 down" estimate revisions — and surfaced
+$270.8M of insider selling at AVGO that no headline mentioned.
+
+When a holding reports, the next day's Portfolio health carries the
+result: the EPS line, and — the part that matters for a 3-5 year hold —
+which way analysts have moved estimates since. Cuts raise an **EARNINGS
+CUT** item for a thesis re-check and are logged to the suggestions ledger
+as a REVIEW; steady or rising estimates say the long-term case holds.
+
 ## Screen price rules
 
 `DISCOVER_TREND_GATE=soft` (default) only rejects names more than 40% below
@@ -362,6 +397,7 @@ runs don't re-download it:
 |---|---|---|
 | `brokerage_activities` | every SnapTrade activity (compact, ~300 bytes); synced incrementally — only what's new since the last stored date per account | a few hundred rows/year, kept forever |
 | `ticker_reference` | sector / industry / name (refreshed after 30 days) and next earnings date (after 3 days, or once it has passed) | one row per stock, overwritten; unused rows dropped after 365 days |
+| `stock_views` | the daily email's latest long-term view per stock, plus the headlines already sent | one row per holding, overwritten (links capped at 40); dropped 90 days after the last refresh |
 | `portfolio_snapshots`, `suggestions` | daily value, advice ledger | one row per day / per advice |
 
 Tax lots, cash flows and dividends read the stored activity history, so a

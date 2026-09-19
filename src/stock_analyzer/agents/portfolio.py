@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from typing import Any
 
 from ..data.market_news import fetch_market_sentiment_news
 from ..data.ticker import fetch_ticker_data
@@ -42,36 +43,20 @@ CRITICAL:
 - No preamble, no "Here is", no closing remarks.\
 """
 
-TICKER_INSTRUCTIONS = """\
+VIEW_INSTRUCTIONS = """\
 You are an equity analyst writing for a LONG-TERM investor: every holding is
 a 3-5 year investment. The user provides ONE ticker's pre-fetched data as JSON.
-DO NOT make any tool calls. Use ONLY the data in the JSON; never invent values.
-For any field that is null/missing in the JSON, omit that line entirely.
+DO NOT make tool calls. Use ONLY the data in the JSON; never invent values.
 
-Begin your reply with a line of 40 dashes, then a blank line, then the block.
+Write the stock's long-term view: 2-3 sentences on the 3-5 year case —
+business quality and growth runway, valuation against long-run earnings,
+and whether the recent news or earnings change that case. Daily price
+moves and short-term trend are noise unless they signal the business
+changing. Never suggest trading around earnings, momentum or short-term
+targets.
 
-Block format:
-
-----------------------------------------
-
-[TICKER] - [Company Name]
-Your Position: <position.units> shares @ avg <position.avg_buy_price> | Unrealized: <position.unrealized_pl> (<position.pl_pct>)
-Price:       <price> (<pct_today> today)
-Market Cap:  <market_cap>
-52W Range:   <range_52w>
-P/E:         <pe>
-Div Yield:   <dividend_yield>
-Top News:    List items from `news` in the order given (already ranked by materiality), as: "- <title> (<link>)"
-Analysts:    Buy/Hold/Sell counts from `analysts`, mean target <analyst_target>
-Long-term view: 2-3 sentences on the 3-5 year case: business quality and growth runway, valuation against long-run earnings, and whether today's news changes that case. Daily price moves and short-term trend are noise unless they signal the business changing. This is your only narrative section.
-Earnings:    Last quarter EPS/Revenue (estimate vs actual) from earnings.history. Next earnings date with estimate from earnings.estimates.
-Trend:       7days: <trend_7days>; 1mo: <trend_1mo>; 3mo: <trend_3mo>; 6mo: <trend_6mo>; 1yr: <trend_1yr>
-
-CRITICAL:
-- Copy values verbatim from the JSON. The only place you reason is "Long-term view".
-- Never suggest trading around earnings, momentum or short-term targets.
-- Plain text, no markdown headings or bold.
-- Begin reply with the dashes line — no introductions, no closing remarks.\
+Reply with the 2-3 sentences only: plain text, no label, no heading, no
+markdown, no preamble.\
 """
 
 
@@ -88,6 +73,9 @@ class PortfolioAgent:
         sentiment_model: str | None = None,
         rerank_provider: Provider | None = None,
         rerank_model: str | None = None,
+        db_path: str | None = None,
+        view_max_age_days: int = 7,
+        view_move_pct: float = 8.0,
     ):
         self.name = name
         self.model = model
@@ -103,7 +91,7 @@ class PortfolioAgent:
             f"{name} (ticker)",
             ticker_provider or provider,
             ticker_model or model,
-            instructions=TICKER_INSTRUCTIONS,
+            instructions=VIEW_INSTRUCTIONS,
         )
 
         self.news_reranker = NewsReranker(
@@ -113,6 +101,19 @@ class PortfolioAgent:
         )
 
         self._positions_by_ticker: dict[str, dict] = {}
+        # Stored views (agents/stock_views.py); None = always write fresh.
+        self.db_path = db_path
+        self.view_max_age_days = view_max_age_days
+        self.view_move_pct = view_move_pct
+        # Each ticker's fetched data, for checks that run after the analysis
+        # (e.g. the post-earnings check) without fetching it again.
+        self.ticker_data: dict[str, dict] = {}
+        # Filled per phase in run_analysis.
+        self.stored_views: dict[str, Any] = {}
+        self.ranked_news: dict[str, list[dict]] = {}
+        self.facts: dict[str, dict[str, str]] = {}
+        self.views_written = 0
+        self.views_reused = 0
 
     def run_analysis(
         self,
@@ -121,24 +122,92 @@ class PortfolioAgent:
         holdings: dict[str, list[dict]] | None = None,
     ) -> str:
         self._positions_by_ticker = self._aggregate_positions(holdings or {})
+        # Per-run state: each run starts from a clean slate, so a second
+        # run in the same process can't show the first one's rankings.
+        self.ticker_data, self.stored_views = {}, {}
+        self.ranked_news, self.facts = {}, {}
+        self.views_written = self.views_reused = 0
         logger.info(
             "Running analysis for %d tickers (max_workers=%d)",
             len(stocks),
             _TICKER_MAX_WORKERS,
         )
 
-        # Run sentiment in parallel with ticker fan-out: it's a separate
+        # Run sentiment in parallel with the ticker work: it's a separate
         # data + LLM round-trip that doesn't depend on ticker data, so the
-        # whole pipeline can finish in roughly max(sentiment, slowest-batch)
+        # whole pipeline can finish in roughly max(sentiment, the rest)
         # rather than the sum.
         # Each piece is guarded: one stock's data or model failure must not
         # cost the whole email (it did on 2026-07-22, a single timeout).
         with ThreadPoolExecutor(max_workers=_TICKER_MAX_WORKERS + 1) as ex:
             sentiment_future = ex.submit(self._safe_sentiment)
+            # 1. Data for every holding, no model calls.
+            list(ex.map(self._safe_fetch, stocks))
+            # 2. One rerank call for the whole portfolio, on the headlines
+            #    that haven't been in an earlier email.
+            self._rank_all_news(stocks)
+            # 3. For holdings with nothing to read, what the company
+            #    actually did — filings, revisions, Form 4s.
+            self._collect_facts(stocks)
+            # 4. Long-term views (mostly reused) and the blocks themselves.
             ticker_results = list(ex.map(self._safe_ticker, stocks))
             sentiment = sentiment_future.result()
 
         return "\n\n".join([sentiment, *ticker_results])
+
+    def _safe_fetch(self, ticker: str) -> None:
+        """Phase 1: fetch and stash one holding's data and stored view."""
+        from .stock_views import load_view
+
+        try:
+            data = fetch_ticker_data(ticker)
+            position = self._build_position_block(ticker, data.get("price"))
+            if position:
+                data["position"] = position
+            self.ticker_data[ticker] = data
+            self.stored_views[ticker] = load_view(self.db_path, ticker)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Data fetch for %s failed (%s) — placeholder in the email", ticker, e)
+
+    def _rank_all_news(self, stocks: list[str]) -> None:
+        """Phase 2: one batched rerank for every holding at once."""
+        from .stock_views import shown_links
+
+        candidates, names = {}, {}
+        for ticker in stocks:
+            data = self.ticker_data.get(ticker)
+            if not data:
+                continue
+            seen = shown_links(self.stored_views.get(ticker))
+            # Yesterday's headlines are not news; a story doing the rounds
+            # for a week used to fill the section every morning.
+            candidates[ticker] = [n for n in data.get("news") or [] if n.get("link") not in seen]
+            names[ticker] = data.get("name")
+        try:
+            self.ranked_news = self.news_reranker.rerank_batch(candidates, names)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("News ranking failed (%s) — blocks go out without news", e)
+            self.ranked_news = {}
+
+    def _collect_facts(self, stocks: list[str]) -> None:
+        """Phase 3: for holdings whose news came up thin, what they did."""
+        from ..discover.stock_facts import THIN_NEWS, fetch_company_facts
+
+        thin = [
+            t
+            for t in stocks
+            if t in self.ticker_data and len(self.ranked_news.get(t) or []) < THIN_NEWS
+        ]
+        if not thin:
+            return
+        logger.info(
+            "No company-specific news for %s — fetching filings and revisions", ", ".join(thin)
+        )
+        try:
+            self.facts = fetch_company_facts(thin)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Could not fetch company facts (%s)", e)
+            self.facts = {}
 
     @staticmethod
     def _aggregate_positions(
@@ -198,15 +267,57 @@ class PortfolioAgent:
         return self.sentiment_agent.run(prompt).content
 
     def _run_ticker(self, ticker: str) -> str:
-        data = fetch_ticker_data(ticker)
-        if data.get("news"):
-            data["news"] = self.news_reranker.rerank(data["news"], data["symbol"], data.get("name"))
-        position = self._build_position_block(ticker, data.get("price"))
-        if position:
-            data["position"] = position
-        prompt = f"Ticker data:\n```json\n{dumps_pretty(data)}\n```"
-        logger.info("Synthesizing block for %s", ticker)
-        return self.ticker_agent.run(prompt).content
+        """Phase 4: this holding's block, from data phases 1-3 gathered."""
+        from .stock_views import (
+            format_ticker_block,
+            last_earnings_event,
+            record_shown_news,
+            refresh_reason,
+            save_view,
+        )
+
+        today = date.today()
+        data = self.ticker_data.get(ticker)
+        if not data:
+            raise RuntimeError("no data fetched")
+        news = self.ranked_news.get(ticker) or []
+        data["news"] = news
+        facts = self.facts.get(ticker) or {}
+
+        stored = self.stored_views.get(ticker)
+        reason = refresh_reason(
+            stored,
+            price=data.get("price_value"),
+            reported_on=last_earnings_event(data, today),
+            today=today,
+            max_age_days=self.view_max_age_days,
+            move_pct=self.view_move_pct,
+        )
+        if reason is None and stored is not None:
+            self.views_reused += 1
+            written = date.fromisoformat(stored.written_on)
+            block = format_ticker_block(
+                data,
+                view=stored.view,
+                view_note=f" (view from {written:%b %d})",
+                news=news,
+                facts=facts,
+                today=today,
+            )
+        else:
+            prompt = f"Ticker data:\n```json\n{dumps_pretty(data)}\n```"
+            logger.info("Writing long-term view for %s (%s)", ticker, reason)
+            view = (self.ticker_agent.run(prompt).content or "").strip()
+            if not view:
+                raise RuntimeError("empty long-term view")
+            save_view(self.db_path, ticker, view=view, price=data.get("price_value"), today=today)
+            self.views_written += 1
+            block = format_ticker_block(data, view=view, news=news, facts=facts, today=today)
+
+        record_shown_news(
+            self.db_path, ticker, [n["link"] for n in news if n.get("link")], today=today
+        )
+        return block
 
     def _build_position_block(self, ticker: str, current_price_str: str | None) -> dict | None:
         pos = self._positions_by_ticker.get(ticker)

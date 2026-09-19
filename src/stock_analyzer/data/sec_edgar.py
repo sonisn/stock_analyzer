@@ -16,6 +16,7 @@ from __future__ import annotations
 import html
 import re
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
 from typing import Any
 
 from ..http_client import HttpClient, HttpClientError
@@ -72,14 +73,60 @@ def _latest_filing_url(cik: int, form_type: str) -> tuple[str, str] | None:
     accessions = recent.get("accessionNumber", [])
     docs = recent.get("primaryDocument", [])
     dates = recent.get("filingDate", [])
-    for form, acc, doc, date in zip(forms, accessions, docs, dates, strict=False):
+    for form, acc, doc, filed in zip(forms, accessions, docs, dates, strict=False):
         if form == form_type:
             acc_clean = acc.replace("-", "")
             return (
-                date,
+                filed,
                 f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc_clean}/{doc}",
             )
     return None
+
+
+def fetch_recent_filings(
+    ticker: str,
+    *,
+    forms: tuple[str, ...] = ("8-K", "10-Q", "10-K"),
+    days: int = 30,
+    today: date | None = None,
+) -> list[dict[str, Any]]:
+    """Filings of the given forms from the last `days` days, newest first.
+
+    One submissions fetch per ticker. Unlike a news feed this is about the
+    company by construction, which is why the daily email falls back to it
+    when a holding's headlines are all syndicated commentary.
+    """
+    today = today or date.today()
+    cik = _load_ticker_map().get(ticker.upper())
+    if cik is None:
+        return []
+    try:
+        sub = _HTTP.get_json(_SUBMISSIONS_URL.format(cik=cik))
+    except HttpClientError as e:
+        logger.warning("SEC submissions fetch failed for %s: %s", ticker, e)
+        return []
+    recent = sub.get("filings", {}).get("recent", {})
+    cutoff = (today - timedelta(days=days)).isoformat()
+    out: list[dict[str, Any]] = []
+    for form, acc, doc, filed in zip(
+        recent.get("form", []),
+        recent.get("accessionNumber", []),
+        recent.get("primaryDocument", []),
+        recent.get("filingDate", []),
+        strict=False,
+    ):
+        if form not in forms or not filed or filed < cutoff:
+            continue
+        out.append(
+            {
+                "form": form,
+                "filed_on": filed,
+                "url": (
+                    f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}/{doc}"
+                ),
+            }
+        )
+    return sorted(out, key=lambda f: f["filed_on"], reverse=True)
 
 
 def _latest_10k_url(cik: int) -> tuple[str, str] | None:
