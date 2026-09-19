@@ -292,6 +292,22 @@ cutting estimates. Every sell suggestion names where the money could go: a
 recent discover pick you don't hold, or a same-sector swap for a tax-loss
 sale.
 
+## One price per ticker
+
+Each brokerage quotes its own price for a position, and those feeds go
+stale: on 2026-09-19 the HSA showed BE at $298.61 while the live quote
+and the other two accounts said $265.63, overstating the portfolio by
+$2,407. Valuation therefore uses the live quote the run already fetched,
+falls back to the broker's price only where there is no quote, and puts a
+"Check the data" line in the daily email when an account's price sits
+more than 2% off the market. Without that, one holding could be worth two
+different amounts in the same email, and the error went into
+`portfolio_snapshots`, where it permanently skewed the vs-SPY return.
+
+Unrealized P/L is measured only over positions that have both a value and
+a cost basis, so a holding transferred in without one is no longer
+counted as pure profit.
+
 ## Accounts
 
 Cash only funds buys (and put collateral) in its own account, so the

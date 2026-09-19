@@ -35,6 +35,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from ..logging import get_logger
 from ..models.reports import Section
 from .report_html import (
     _GRID,
@@ -59,6 +60,8 @@ from .report_sections import (
     _conviction_swatch,
     _theme_strength_color,
 )
+
+logger = get_logger(__name__)
 
 _PDF_FONT = "Helvetica"
 
@@ -618,8 +621,8 @@ def _pdf_pick_card(d: dict[str, Any], styles, chart_data: bytes | None = None) -
         try:
             flow.append(Image(BytesIO(chart_data), width=4.0 * inch, height=2.15 * inch))
             flow.append(Spacer(1, 6))
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001 — the page is worth more than its chart
+            logger.warning("Dropped a chart from the PDF (%s)", e)
 
     one_liner = str(d.get("one_liner") or "").strip()
     if one_liner:
@@ -1361,8 +1364,8 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
                     img = Image(BytesIO(data), width=6.5 * inch, height=3.5 * inch)
                     flow.append(img)
                     flow.append(Spacer(1, 4))
-                except Exception:
-                    pass
+                except Exception as e:  # noqa: BLE001 — as above
+                    logger.warning("Dropped the %s chart from the PDF (%s)", s.image_ticker, e)
         elif s.kind == "table" and s.table_header and s.table_rows:
             tdata, col_widths = _fit_table(s.table_header, s.table_rows, styles)
             t = Table(tdata, repeatRows=1, hAlign="LEFT", colWidths=col_widths)

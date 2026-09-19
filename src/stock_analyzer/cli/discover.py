@@ -529,14 +529,19 @@ def _holdings_table_rows(holdings: dict[str, list[dict[str, Any]]]) -> list[list
 def _holdings_value_by_sector(
     holdings: dict[str, list[dict[str, Any]]],
     sector_of: dict[str, str],
+    prices: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """Market value of current holdings per sector (units x brokerage price).
-    Positions with no price or no known sector are left out."""
+    """Market value of current holdings per sector. One price per ticker
+    (data/pricing.py) where it is known, so a stale account feed can't tip
+    a sector over its cap; the account's own price otherwise. Positions
+    with no price or no known sector are left out."""
     out: dict[str, float] = {}
+    prices = prices or {}
     for items in holdings.values():
         for h in items:
             ticker = str(h.get("ticker") or "").upper()
-            value = float(h.get("units") or 0) * float(h.get("price") or 0)
+            price = prices.get(ticker) or float(h.get("price") or 0)
+            value = float(h.get("units") or 0) * price
             sector = sector_of.get(ticker)
             if value > 0 and sector:
                 out[sector] = out.get(sector, 0.0) + value
@@ -1499,7 +1504,10 @@ class DiscoverPipeline:
             except Exception as e:
                 logger.warning("sector lookup for holdings failed (%s) — cap uses picks only", e)
         pick_sectors = {t: sector_of[t] for t in picked if t in sector_of}
-        return pick_sectors, _holdings_value_by_sector(holdings, sector_of)
+        from ..data.pricing import reconcile_prices
+
+        prices, _ = reconcile_prices(holdings)
+        return pick_sectors, _holdings_value_by_sector(holdings, sector_of, prices)
 
     def step_history_upkeep(self, step_input: StepInput) -> StepOutput:
         """Last step of every run: add new history, trim old (db/retention.py).

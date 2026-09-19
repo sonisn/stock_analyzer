@@ -155,3 +155,23 @@ def test_fetch_recent_holdings_history_returns_chronological(
     assert "AAPL" in hist
     confidences = [row["confidence"] for row in hist["AAPL"]]
     assert confidences == [7, 8, 9]  # oldest-first
+
+
+def test_schema_is_created_once_even_from_several_threads(tmp_path):
+    """A fresh database opened from parallel threads used to race inside
+    create_all: two threads both saw no `runs` table, both issued CREATE
+    TABLE, and the loser raised "table runs already exists"."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from sqlalchemy import text
+
+    from stock_analyzer.db.session import get_session
+
+    db = str(tmp_path / "fresh.db")
+
+    def touch(_):
+        with get_session(db) as session:
+            return session.exec(text("SELECT COUNT(*) FROM runs")).one()[0]
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        assert list(ex.map(touch, range(8))) == [0] * 8

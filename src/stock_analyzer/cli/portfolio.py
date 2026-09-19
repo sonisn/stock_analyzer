@@ -11,6 +11,7 @@ from ..config import Settings
 from ..data import finnhub, yf_gateway
 from ..data.brokerage import fetch_portfolio_holdings
 from ..data.chart_img import fetch_charts
+from ..data.pricing import quotes_from_ticker_data, reconcile_prices
 from ..logging import get_logger
 from ..reporting.html import format_html
 from ..reporting.smtp import SmtpServer
@@ -47,6 +48,8 @@ def portfolio_health(
     holdings: dict[str, list[dict]],
     *,
     ticker_data: dict[str, dict] | None = None,
+    prices: dict[str, float] | None = None,
+    data_notes: list[str] | None = None,
 ):
     """The deterministic PortfolioHealth (reporting/health.py) with the live
     data sources wired in. None when disabled or on any failure — the daily
@@ -56,6 +59,7 @@ def portfolio_health(
     from ..reporting.health import build_portfolio_health
 
     db = settings.discover_db_path
+    prices = prices or {}
 
     def sector_of(tickers: list[str]) -> dict[str, str]:
         from ..data.reference import profiles
@@ -81,8 +85,8 @@ def portfolio_health(
         from .rebalance import _build_position_splits
 
         splits = _build_position_splits(holdings, fetch_account_meta())
-        prices = {
-            h["ticker"]: h.get("price")
+        lot_prices = {
+            h["ticker"]: prices.get(str(h["ticker"]).upper()) or h.get("price")
             for items in holdings.values()
             for h in items
             if h.get("ticker")
@@ -90,7 +94,7 @@ def portfolio_health(
         return harvest_report_data(
             find_harvest_candidates(
                 splits,
-                prices,
+                lot_prices,
                 to_tax_payloads(fetch_transaction_history(db_path=db)),
                 # Same-sector names keep the exposure after a loss sale.
                 sector_peers(db, list(splits), held=set(splits)),
@@ -144,6 +148,8 @@ def portfolio_health(
     try:
         return build_portfolio_health(
             holdings,
+            prices=prices,
+            data_notes=data_notes,
             max_sector_pct=settings.discover_max_sector_pct,
             sector_of=sector_of,
             held_thesis_checks=held_thesis_checks,
@@ -159,7 +165,12 @@ def portfolio_health(
         return None
 
 
-def record_portfolio_snapshot(settings: Settings, holdings: dict[str, list[dict]]) -> None:
+def record_portfolio_snapshot(
+    settings: Settings,
+    holdings: dict[str, list[dict]],
+    *,
+    prices: dict[str, float] | None = None,
+) -> None:
     """Today's total value (holdings + cash) for the portfolio-vs-SPY
     comparison. Skipped, not guessed, when cash can't be read."""
     from ..data.brokerage import fetch_account_cash
@@ -172,7 +183,7 @@ def record_portfolio_snapshot(settings: Settings, holdings: dict[str, list[dict]
         if not cash:
             logger.warning("No cash balance readable — portfolio snapshot skipped today")
             return
-        value = sum(p["value"] for p in aggregate_positions(holdings).values())
+        value = sum(p["value"] for p in aggregate_positions(holdings, prices).values())
         with get_session(settings.discover_db_path) as session:
             record_snapshot(
                 session,
@@ -273,9 +284,19 @@ def main() -> None:
     holdings = fetch_portfolio_holdings()
     agent = _build_agent(settings)
     result, tickers = run_analysis(settings, holdings, agent=agent)
-    health = portfolio_health(settings, holdings, ticker_data=agent.ticker_data)
+    # One price per ticker — the live quotes the run just fetched — so a
+    # stale brokerage feed can't inflate the value, the sector weights or
+    # the snapshot the quarterly vs-SPY return is built from.
+    prices, price_notes = reconcile_prices(holdings, quotes_from_ticker_data(agent.ticker_data))
+    health = portfolio_health(
+        settings,
+        holdings,
+        ticker_data=agent.ticker_data,
+        prices=prices,
+        data_notes=price_notes,
+    )
     record_daily_suggestions(settings, health)
-    record_portfolio_snapshot(settings, holdings)
+    record_portfolio_snapshot(settings, holdings, prices=prices)
     if not settings.email_to:
         logger.error("EMAIL_TO not set; printing report instead of emailing")
         print(result)

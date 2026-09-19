@@ -68,6 +68,17 @@ def _isolate_db_path(monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _reset_db_engines() -> Iterator[None]:
+    """Engines (and their created schema) are cached per database file, so
+    a test that recreates a path would otherwise inherit the last one."""
+    from stock_analyzer.db.session import reset_engines
+
+    reset_engines()
+    yield
+    reset_engines()
+
+
+@pytest.fixture(autouse=True)
 def _reset_yf_gateway() -> Iterator[None]:
     """Clear the yfinance gateway's caches between tests.
 

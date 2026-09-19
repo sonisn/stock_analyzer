@@ -4,6 +4,7 @@ database size guard."""
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -158,3 +159,24 @@ def test_vacuum_only_when_enough_is_free(tmp_path: Path):
     con.commit()
     con.close()
     assert compact_if_worth_it(str(path), min_free_pct=20) > 1_000_000
+
+
+def test_history_syncs_once_even_from_several_threads(db, monkeypatch):
+    """The guard used to be check-then-act: two threads could each decide
+    they were first and each run a full ten-year SnapTrade fetch."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from stock_analyzer.data import activity_ledger
+
+    monkeypatch.setattr(activity_ledger, "_synced", set())
+    calls: list[str] = []
+
+    def slow_sync(db_path, **kw):
+        calls.append(db_path)
+        time.sleep(0.05)  # widen the window the old guard left open
+        return 0
+
+    monkeypatch.setattr(activity_ledger, "sync_activities", slow_sync)
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(lambda _: activity_ledger.ledger_activities(db), range(4)))
+    assert calls == [db]

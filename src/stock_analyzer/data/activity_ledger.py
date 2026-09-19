@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from datetime import date, timedelta
 from typing import Any
 
@@ -32,8 +33,11 @@ FIRST_SYNC_YEARS = 10
 OVERLAP_DAYS = 10
 
 # One sync per database per process: the daily email reads activities for
-# tax lots, cash flows and dividends in the same run.
+# tax lots, cash flows and dividends in the same run. Behind a lock, so
+# two threads can't both decide they are the first and each run a full
+# ten-year SnapTrade fetch.
 _synced: set[str] = set()
+_sync_lock = threading.Lock()
 
 
 def compact(activity: dict[str, Any]) -> dict[str, Any]:
@@ -129,12 +133,13 @@ def ledger_activities(
 ) -> dict[str, list[dict[str, Any]]]:
     """{account: activities since `start` (None = all)}, oldest first,
     after bringing the stored history up to date (once per process)."""
-    if db_path not in _synced:
-        try:
-            sync_activities(db_path)
-        except Exception as e:  # noqa: BLE001 — stored history still serves
-            logger.warning("Activity sync failed (%s) — using stored history", e)
-        _synced.add(db_path)
+    with _sync_lock:
+        if db_path not in _synced:
+            try:
+                sync_activities(db_path)
+            except Exception as e:  # noqa: BLE001 — stored history still serves
+                logger.warning("Activity sync failed (%s) — using stored history", e)
+            _synced.add(db_path)
     query = select(BrokerageActivity).order_by(BrokerageActivity.trade_date)
     if start is not None:
         query = query.where(BrokerageActivity.trade_date >= start.isoformat())

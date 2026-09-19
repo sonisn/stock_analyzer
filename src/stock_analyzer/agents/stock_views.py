@@ -142,6 +142,16 @@ def record_shown_news(db_path: str | None, ticker: str, links: list[str], *, tod
         logger.warning("Could not store shown headlines for %s (%s)", ticker, e)
 
 
+def is_equity(data: dict[str, Any] | None) -> bool:
+    """Is this holding a company at all? SPAXX and friends have no news,
+    no filings and no estimates — an empty news section for them is noise,
+    not information. Unknown (the info fetch failed) counts as equity."""
+    if not data:
+        return False
+    quote_type = (data.get("quote_type") or "EQUITY").upper()
+    return quote_type in ("EQUITY", "ADR")
+
+
 def _earnings_line(data: dict[str, Any], today: date) -> str | None:
     rows = (data.get("earnings") or {}).get("history") or []
     parts = []
@@ -205,7 +215,7 @@ def format_ticker_block(
     if items:
         lines.append("Top News:")
         lines.extend(f"- {n['title']} ({n['link']})" for n in items)
-    else:
+    elif is_equity(data):
         # Saying so beats padding the section with stories about other
         # companies (data/news_rank.py); `facts` then carries the morning.
         lines.append("Top News:    Nothing company-specific in today's feed.")

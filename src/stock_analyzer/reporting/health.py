@@ -64,10 +64,23 @@ class PortfolioHealth:
     units: dict[str, float] = field(default_factory=dict)  # ticker -> shares held
     max_sector_pct: float = 30.0
     unavailable: list[str] = field(default_factory=list)
+    # Data-quality notes (a stale account price, a missing cost basis):
+    # things that make the numbers above worth a second look.
+    data_notes: list[str] = field(default_factory=list)
 
 
-def aggregate_positions(holdings: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, float]]:
-    """{ticker: units, cost, value} across accounts, from brokerage rows."""
+def aggregate_positions(
+    holdings: dict[str, list[dict[str, Any]]],
+    prices: dict[str, float] | None = None,
+) -> dict[str, dict[str, float]]:
+    """{ticker: units, cost, value} across accounts, from brokerage rows.
+
+    `prices` (data/pricing.py) values every account's slice of a ticker at
+    the same price; without it each account's own — possibly stale — price
+    is used, which is how one holding ended up worth two different amounts
+    in the same email.
+    """
+    prices = prices or {}
     out: dict[str, dict[str, float]] = {}
     for items in holdings.values():
         for h in items:
@@ -75,16 +88,19 @@ def aggregate_positions(holdings: dict[str, list[dict[str, Any]]]) -> dict[str, 
             units = float(h.get("units") or 0)
             if not ticker or not units:
                 continue
+            price = prices.get(str(ticker).upper()) or float(h.get("price") or 0)
             row = out.setdefault(ticker, {"units": 0.0, "cost": 0.0, "value": 0.0})
             row["units"] += units
             row["cost"] += units * float(h.get("average_purchase_price") or 0)
-            row["value"] += units * float(h.get("price") or 0)
+            row["value"] += units * price
     return out
 
 
 def build_portfolio_health(
     holdings: dict[str, list[dict[str, Any]]],
     *,
+    prices: dict[str, float] | None = None,
+    data_notes: list[str] | None = None,
     max_sector_pct: float = 30.0,
     sector_of: Callable[[list[str]], dict[str, str]] | None = None,
     held_thesis_checks: Callable[[set[str]], list[dict[str, Any]]] | None = None,
@@ -98,7 +114,8 @@ def build_portfolio_health(
     """`reinvest(held, over_cap_sectors, n)` returns up to `n` ranked ideas
     for sale proceeds; it is only called when something suggests a sale."""
     health = PortfolioHealth(max_sector_pct=max_sector_pct)
-    positions = aggregate_positions(holdings)
+    health.data_notes.extend(data_notes or [])
+    positions = aggregate_positions(holdings, prices)
     tickers = sorted(positions)
 
     def attempt(name: str, fn: Callable[[], None]) -> None:
@@ -110,14 +127,24 @@ def build_portfolio_health(
 
     def snapshot() -> None:
         value = sum(p["value"] for p in positions.values())
-        cost = sum(p["cost"] for p in positions.values() if p["value"])
+        # Unrealized is measured only over positions that have BOTH a value
+        # and a cost basis. Summing all the value against only the known
+        # cost counted a position with no cost basis as pure profit.
+        priced = [p for p in positions.values() if p["value"] and p["cost"]]
+        cost = sum(p["cost"] for p in priced)
+        matched = sum(p["value"] for p in priced)
+        no_basis = [t for t, p in positions.items() if p["value"] and not p["cost"]]
+        if no_basis:
+            health.data_notes.append(
+                "no cost basis for " + ", ".join(sorted(no_basis)) + " — left out of unrealized P/L"
+            )
         health.values = {t: p["value"] for t, p in positions.items()}
         health.units = {t: p["units"] for t, p in positions.items()}
         health.snapshot = {
             "positions": len(positions),
             "value": value,
-            "unrealized": value - cost,
-            "unrealized_pct": (value / cost - 1) * 100 if cost else 0.0,
+            "unrealized": matched - cost,
+            "unrealized_pct": (matched / cost - 1) * 100 if cost else 0.0,
         }
 
     def drawdowns() -> None:
@@ -414,6 +441,12 @@ def render_health_html(h: PortfolioHealth) -> str:
         parts.append(
             '<p style="font-size:13px;color:#6b7280">Largest sectors: '
             + ", ".join(f"{html.escape(r['sector'])} {r['pct']:.0f}%" for r in top)
+            + "</p>"
+        )
+    if h.data_notes:
+        parts.append(
+            '<p style="font-size:13px;color:#9c1010">Check the data: '
+            + html.escape("; ".join(h.data_notes))
             + "</p>"
         )
     if h.unavailable:

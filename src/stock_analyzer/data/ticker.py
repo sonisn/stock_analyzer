@@ -140,6 +140,9 @@ def fetch_ticker_data(symbol: str) -> dict[str, Any]:
     return {
         "symbol": symbol,
         "name": name,
+        # EQUITY / MUTUALFUND / ETF ... A money-market fund like SPAXX has
+        # no news, no filings and no estimates to look for.
+        "quote_type": info.get("quoteType"),
         "price": _fmt_money(price),
         "price_value": float(price) if price else None,
         "pct_today": _fmt_pct(pct_today),

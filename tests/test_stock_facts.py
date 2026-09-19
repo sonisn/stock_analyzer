@@ -69,3 +69,32 @@ def test_labels_start_with_a_letter():
 def test_dates_are_read_as_dates_not_strings():
     assert "Sep 02" in filings_line([{"form": "8-K", "filed_on": "2026-09-02", "url": "u"}])
     assert date.fromisoformat("2026-09-02").strftime("%b %d") == "Sep 02"
+
+
+def test_every_holding_gets_estimates_but_only_thin_ones_get_the_rest(monkeypatch):
+    """AVGO's 25 estimate cuts never made a headline, so the estimate line
+    is worth showing even for a stock with plenty of news; filings and
+    Form 4s are fetched only where there is nothing to read."""
+    from stock_analyzer.discover import stock_facts
+
+    fetched: list[str] = []
+
+    def fake_filings(ticker, **kw):
+        fetched.append(ticker)
+        return FILINGS
+
+    monkeypatch.setattr("stock_analyzer.data.sec_edgar.fetch_recent_filings", fake_filings)
+    monkeypatch.setattr("stock_analyzer.data.finnhub._client", lambda: None)
+
+    facts = stock_facts.fetch_company_facts(
+        ["AVGO", "NVDA"],
+        deep=["NVDA"],
+        revisions={
+            "AVGO": {"next_year_up_30d": 11, "next_year_down_30d": 25},
+            "NVDA": {"next_year_up_30d": 42, "next_year_down_30d": 0},
+        },
+    )
+    assert fetched == ["NVDA"]
+    assert set(facts["AVGO"]) == {"Estimates"}
+    assert "analysts cutting" in facts["AVGO"]["Estimates"]
+    assert set(facts["NVDA"]) == {"Estimates", "Filings"}

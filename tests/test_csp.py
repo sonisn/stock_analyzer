@@ -580,3 +580,41 @@ def test_puts_fit_the_cash_left_after_the_plans_buys():
     assert (cp.account, cp.contracts) == ("IRA", 1)
     assert cleaned.actions[-1].sizing.endswith(" in IRA")
     assert any("cut from 2 to 1" in w for w in warnings)
+
+
+def test_unnamed_buys_cannot_be_double_spent_per_account():
+    """A BUY that names no account still spends cash, so no account may
+    claim more put room than the whole plan leaves."""
+    from stock_analyzer.discover.csp_validation import cash_left_for_puts
+    from stock_analyzer.models.rebalance import RebalanceAction
+
+    plan = _plan([], [RebalanceAction(ticker="NVDA", action="BUY", sizing="$18,000")])
+    budget, room, notes = cash_left_for_puts(
+        plan,
+        cash_budget=20_000.0,
+        account_room={"Traditional IRA": 20_000.0},
+        units={},
+        prices={},
+    )
+    assert budget == 2_000.0
+    assert room["Traditional IRA"] == 2_000.0  # not the untouched 20k
+    assert any("named no account" in n for n in notes)
+
+
+def test_a_buy_that_names_its_account_still_only_charges_that_account():
+    from stock_analyzer.discover.csp_validation import cash_left_for_puts
+    from stock_analyzer.models.rebalance import RebalanceAction
+
+    plan = _plan(
+        [], [RebalanceAction(ticker="NVDA", action="BUY", sizing="$5,000 in Traditional IRA")]
+    )
+    budget, room, notes = cash_left_for_puts(
+        plan,
+        cash_budget=20_000.0,
+        account_room={"Traditional IRA": 12_000.0, "HSA": 8_000.0},
+        units={},
+        prices={},
+    )
+    assert budget == 15_000.0
+    assert room == {"Traditional IRA": 7_000.0, "HSA": 8_000.0}
+    assert notes == []

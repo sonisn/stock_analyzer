@@ -89,9 +89,13 @@ def cash_left_for_puts(
 
     BUY/ADD dollars come out of the account they name (else out of the
     total); SELL/TRIM proceeds only add to the total, since their account
-    usually isn't named. Buys that can't be sized are noted, not guessed."""
+    usually isn't named. Buys that can't be sized are noted, not guessed.
+
+    A buy that names no account still spends real cash, so at the end no
+    account is left claiming more room than the whole plan leaves — the
+    per-account check used to pass on cash an unnamed buy would consume."""
     room = dict(account_room)
-    buys = proceeds = 0.0
+    buys = proceeds = unplaced = 0.0
     notes: list[str] = []
     for a in plan.actions:
         if a.action not in ("BUY", "ADD", "SELL", "TRIM"):
@@ -111,7 +115,15 @@ def cash_left_for_puts(
         acct = m.group(1).strip() if m else None
         if acct in room:
             room[acct] = max(room[acct] - dollars, 0.0)
-    return max(cash_budget + proceeds - buys, 0.0), room, notes
+        else:
+            unplaced += dollars
+    budget = max(cash_budget + proceeds - buys, 0.0)
+    if unplaced:
+        notes.append(
+            f"${unplaced:,.0f} of buys named no account — every account's "
+            "put room capped at the total left"
+        )
+    return budget, {a: min(r, budget) for a, r in room.items()}, notes
 
 
 def csp_sizing(cp: CashSecuredPut) -> str:

@@ -12,6 +12,7 @@ rebalance_text / dashboard_data columns existed still migrate forward.
 from __future__ import annotations
 
 import os
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -76,23 +77,52 @@ def _expanded_path(path: str) -> Path:
     return Path(os.path.expanduser(path))
 
 
+# One engine per database file, built once. Schema creation used to run on
+# every session open, which cost a has-table check plus 11 ALTERs per call
+# and — with the daily email opening sessions from five ticker threads —
+# raced on a fresh database: two threads both saw no `runs` table and both
+# issued CREATE TABLE, and the loser got "table runs already exists".
+_engines: dict[str, Engine] = {}
+_engine_lock = threading.Lock()
+
+
 def _build_engine(db_path: str) -> Engine:
     p = _expanded_path(db_path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return create_engine(f"sqlite:///{p}", echo=False)
+    key = str(p)
+    with _engine_lock:
+        engine = _engines.get(key)
+        if engine is None:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            engine = create_engine(
+                f"sqlite:///{p}",
+                echo=False,
+                # Pooled connections are handed to whichever thread asks,
+                # so the DBAPI's same-thread assertion has to come off.
+                connect_args={"check_same_thread": False},
+            )
+            SQLModel.metadata.create_all(engine)
+            _apply_legacy_migrations(engine)
+            _engines[key] = engine
+    return engine
+
+
+def reset_engines() -> None:
+    """Drop the cached engines (tests that recreate a database file)."""
+    with _engine_lock:
+        for engine in _engines.values():
+            engine.dispose()
+        _engines.clear()
 
 
 @contextmanager
 def get_session(db_path: str) -> Iterator[Session]:
     """Open a Session against the SQLite analytics DB.
 
-    create_all() runs first (no-op on existing tables), then the legacy
-    ALTER migrations run, then the caller's block executes inside a
-    Session that auto-commits on success and rolls back on exception.
+    The schema is created and migrated once per database file (see
+    `_build_engine`); the caller's block then executes inside a Session
+    that auto-commits on success and rolls back on exception.
     """
     engine = _build_engine(db_path)
-    SQLModel.metadata.create_all(engine)
-    _apply_legacy_migrations(engine)
     with Session(engine) as session:
         try:
             yield session
@@ -102,4 +132,4 @@ def get_session(db_path: str) -> Iterator[Session]:
             raise
 
 
-__all__ = ["get_session"]
+__all__ = ["get_session", "reset_engines"]

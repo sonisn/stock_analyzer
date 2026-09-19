@@ -12,6 +12,7 @@ from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
 from ..serialization import dumps_pretty
 from .news_reranker import NewsReranker
+from .stock_views import is_equity
 
 logger = get_logger(__name__)
 
@@ -178,6 +179,8 @@ class PortfolioAgent:
             data = self.ticker_data.get(ticker)
             if not data:
                 continue
+            if not is_equity(data):
+                continue  # a money-market fund has no company news
             seen = shown_links(self.stored_views.get(ticker))
             # Yesterday's headlines are not news; a story doing the rounds
             # for a week used to fill the section every morning.
@@ -190,21 +193,21 @@ class PortfolioAgent:
             self.ranked_news = {}
 
     def _collect_facts(self, stocks: list[str]) -> None:
-        """Phase 3: for holdings whose news came up thin, what they did."""
+        """Phase 3: estimate revisions for every holding, and for the ones
+        with nothing to read, what the company actually did."""
         from ..discover.stock_facts import THIN_NEWS, fetch_company_facts
 
-        thin = [
-            t
-            for t in stocks
-            if t in self.ticker_data and len(self.ranked_news.get(t) or []) < THIN_NEWS
-        ]
-        if not thin:
+        equities = [t for t in stocks if is_equity(self.ticker_data.get(t))]
+        if not equities:
             return
-        logger.info(
-            "No company-specific news for %s — fetching filings and revisions", ", ".join(thin)
-        )
+        thin = [t for t in equities if len(self.ranked_news.get(t) or []) < THIN_NEWS]
+        if thin:
+            logger.info(
+                "No company-specific news for %s — fetching filings and insider activity",
+                ", ".join(thin),
+            )
         try:
-            self.facts = fetch_company_facts(thin)
+            self.facts = fetch_company_facts(equities, deep=thin)
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not fetch company facts (%s)", e)
             self.facts = {}

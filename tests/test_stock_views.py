@@ -248,3 +248,30 @@ def test_facts_fill_a_block_with_no_news(tmp_path: Path, monkeypatch):
     assert fields["Top News"] == "Nothing company-specific in today's feed."
     assert fields["Filings"].startswith("8-K filed Sep 02 — material event")
     assert fields["Estimates"] == "Next-year EPS: 6 up / 1 down in 30 days — analysts raising"
+
+
+def test_money_market_holdings_get_no_news_section(tmp_path: Path, monkeypatch):
+    """SPAXX has no company news, no filings and no estimates — an empty
+    news section for it is noise, not information."""
+    data = _data()
+    data["symbol"], data["name"] = "SPAXX", "Fidelity Government Money Market"
+    data["quote_type"], data["news"], data["earnings"] = "MUTUALFUND", [], {}
+    monkeypatch.setattr(portfolio_agent, "fetch_ticker_data", lambda t: deepcopy(data))
+    agent = _bare_agent(tmp_path)
+
+    agent._safe_fetch("SPAXX")
+    agent._rank_all_news(["SPAXX"])
+    agent._collect_facts(["SPAXX"])  # must not reach the network
+    block = agent._run_ticker("SPAXX")
+    assert "Top News" not in block
+    assert agent.facts == {}
+
+
+def test_equities_still_say_when_there_is_nothing(tmp_path: Path, monkeypatch):
+    data = _data()
+    data["news"], data["quote_type"] = [], "EQUITY"
+    monkeypatch.setattr(portfolio_agent, "fetch_ticker_data", lambda t: deepcopy(data))
+    agent = _bare_agent(tmp_path)
+    agent._safe_fetch("AVGO")
+    agent._rank_all_news(["AVGO"])
+    assert "Nothing company-specific" in agent._run_ticker("AVGO")

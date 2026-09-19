@@ -102,16 +102,23 @@ def company_facts(
 def fetch_company_facts(
     tickers: list[str],
     *,
+    deep: list[str] | None = None,
     today: date | None = None,
     days: int = 45,
     revisions: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, str]]:
-    """Facts for the holdings whose news came up thin. One EDGAR fetch and
-    one Finnhub call per ticker, both free; `revisions` is passed in when
-    the caller already batched it. Any source failing just means one
-    fewer line."""
+    """Facts per holding.
+
+    Every ticker gets the estimate line — one batched call covers the
+    portfolio, and where analysts are moving next year's number is worth
+    seeing even on a stock with plenty of news (AVGO's 25 cuts never made
+    a headline). `deep` — the holdings whose news came up thin — also gets
+    an EDGAR fetch and a Finnhub call, both free. Any source failing just
+    means one fewer line.
+    """
     if not tickers:
         return {}
+    deep_set = set(deep if deep is not None else tickers)
     from ..data import finnhub as finnhub_data
     from ..data.eps_revisions import batch_eps_revisions
     from ..data.sec_edgar import fetch_recent_filings
@@ -119,9 +126,11 @@ def fetch_company_facts(
     today = today or date.today()
     if revisions is None:
         revisions = _guarded("estimate revisions", lambda: batch_eps_revisions(tickers)) or {}
-    client = finnhub_data._client()
+    client = finnhub_data._client() if deep_set else None
 
     def facts_for(ticker: str) -> tuple[str, dict[str, str]]:
+        if ticker not in deep_set:
+            return ticker, company_facts(revisions=revisions.get(ticker))
         filings = (
             _guarded(
                 f"SEC filings for {ticker}",
