@@ -465,6 +465,7 @@ def append_csp_section(
         rows = [
             [
                 r["ticker"],
+                r.get("account") or "—",
                 f"{r['contracts']} × ${r['strike']:,.2f}P",
                 r["expiry"],
                 f"{r['delta']:.2f}",
@@ -480,6 +481,7 @@ def append_csp_section(
                 kind="table",
                 table_header=[
                     "Ticker",
+                    "Account",
                     "Put",
                     "Expiry",
                     "Delta",

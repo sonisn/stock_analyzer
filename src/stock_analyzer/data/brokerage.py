@@ -180,6 +180,43 @@ def _extract_ticker(position: dict) -> str | None:
     return sym if isinstance(sym, str) else None
 
 
+def _field(account: Any, key: str) -> Any:
+    return account.get(key) if isinstance(account, dict) else getattr(account, key, None)
+
+
+def account_labels(accounts: list[Any]) -> dict[str, str]:
+    """{account_id: label} — the one name every module keys accounts by.
+
+    The account's name (else its institution, else its id). Two accounts
+    with the same name (e.g. two brokers' "Individual") get the
+    institution, or the id's last 4 characters, appended — otherwise the
+    second silently overwrote the first's holdings, cash and options."""
+    base: dict[str, str] = {}
+    for a in accounts:
+        account_id = _field(a, "id")
+        if account_id:
+            base[str(account_id)] = (
+                _field(a, "name") or _field(a, "institution_name") or str(account_id)
+            )
+    counts: dict[str, int] = {}
+    for label in base.values():
+        counts[label] = counts.get(label, 0) + 1
+    out: dict[str, str] = {}
+    for a in accounts:
+        account_id = _field(a, "id")
+        if not account_id:
+            continue
+        label = base[str(account_id)]
+        if counts[label] > 1:
+            institution = _field(a, "institution_name")
+            suffix = institution if institution and institution != label else str(account_id)[-4:]
+            label = f"{label} ({suffix})"
+            if label in out.values():
+                label = f"{label} {str(account_id)[-4:]}"
+        out[str(account_id)] = label
+    return out
+
+
 def fetch_account_meta() -> dict[str, dict[str, Any]]:
     """Return {account_name: {id, type, tax_status, institution}} for every
     connected SnapTrade account. Used to tag each position with the
@@ -201,14 +238,13 @@ def fetch_account_meta() -> dict[str, dict[str, Any]]:
         logger.warning("Could not list accounts for tax-status meta: %s", e)
         return {}
 
+    labels = account_labels(accounts)
     out: dict[str, dict[str, Any]] = {}
     for account in accounts:
         account_id = account.get("id")
-        account_name = (
-            account.get("name") or account.get("institution_name") or account_id or "unknown"
-        )
         if not account_id:
             continue
+        account_name = labels[str(account_id)]
         # SDK v13 dropped `type`/`account_type` from the Account model in
         # favor of `raw_type` (closest equivalent); `type`/`account_type`
         # are kept first for backward compatibility with any cached/legacy
@@ -249,14 +285,13 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
     )
     logger.info("Found %d SnapTrade accounts", len(accounts))
 
+    labels = account_labels(accounts)
     out: dict[str, list[dict]] = {}
     for account in accounts:
         account_id = account.get("id")
-        account_name = (
-            account.get("name") or account.get("institution_name") or account_id or "unknown"
-        )
         if not account_id:
             continue
+        account_name = labels[str(account_id)]
 
         positions = _positions_from_response(
             client.account_information.get_all_account_positions(
@@ -326,16 +361,13 @@ def _short_option_positions(option_type: str) -> list[tuple[str, ParsedOCC, int]
         logger.info("SnapTrade list_user_accounts failed: %s", e)
         return []
 
+    labels = account_labels(accounts)
     out: list[tuple[str, ParsedOCC, int]] = []
     for account in accounts:
-        if isinstance(account, dict):
-            account_id = account.get("id")
-            account_name = account.get("name") or account.get("id") or "Unknown"
-        else:
-            account_id = getattr(account, "id", None)
-            account_name = getattr(account, "name", None) or account_id or "Unknown"
+        account_id = _field(account, "id")
         if not account_id:
             continue
+        account_name = labels[str(account_id)]
         try:
             positions = _positions_from_response(
                 client.account_information.get_all_account_positions(
@@ -383,28 +415,51 @@ def fetch_open_option_positions() -> dict[str, dict[str, int]]:
     return coverage
 
 
-def fetch_open_short_puts() -> dict[str, dict[str, float]]:
-    """Return {underlying_ticker: {"contracts": n, "collateral_usd": x}}
-    for puts already sold, summed across accounts.
+def fetch_open_short_puts() -> dict[str, dict[str, Any]]:
+    """Return {underlying_ticker: {"contracts": n, "collateral_usd": x,
+    "by_account": {account: collateral_usd}}} for puts already sold.
 
     `collateral_usd` (strike × 100 × contracts) is cash the broker is
     already holding against possible assignment, so it isn't free for
     new cash-secured puts. Returns {} when SnapTrade is unavailable."""
     out: dict[str, dict[str, float]] = {}
-    for _account, parsed, contracts in _short_option_positions("P"):
-        rec = out.setdefault(parsed.ticker, {"contracts": 0, "collateral_usd": 0.0})
+    for account, parsed, contracts in _short_option_positions("P"):
+        rec = out.setdefault(
+            parsed.ticker, {"contracts": 0, "collateral_usd": 0.0, "by_account": {}}
+        )
+        collateral = parsed.strike * 100.0 * contracts
         rec["contracts"] += contracts
-        rec["collateral_usd"] += parsed.strike * 100.0 * contracts
+        rec["collateral_usd"] += collateral
+        rec["by_account"][account] = rec["by_account"].get(account, 0.0) + collateral
     return out
 
 
-def fetch_total_cash() -> float | None:
-    """Sum cash balances across all connected SnapTrade accounts.
+def _usd_cash(balances: Any) -> float | None:
+    """USD cash from SnapTrade's per-currency balance list. Non-USD
+    entries are skipped (no FX conversion) rather than summed as dollars."""
+    if isinstance(balances, dict):
+        balances = [balances]
+    total, found = 0.0, False
+    for b in balances or []:
+        if not isinstance(b, dict) or b.get("cash") is None:
+            continue
+        currency = b.get("currency")
+        code = currency.get("code") if isinstance(currency, dict) else currency
+        if code and str(code).upper() != "USD":
+            logger.warning("Skipping %s cash balance (no FX conversion)", code)
+            continue
+        try:
+            total += float(b["cash"])
+            found = True
+        except ValueError, TypeError:
+            continue
+    return total if found else None
 
-    Returns total in USD-equivalent or None if the API call fails or no
-    balance data is returned. Used by the rebalancer to size BUYs from
-    cash + sale proceeds.
-    """
+
+def fetch_account_cash() -> dict[str, float]:
+    """{account label: USD cash} for every connected account with a
+    readable balance. Cash only buys (or secures puts) in its own account,
+    so plans are checked per account, not against one pooled total."""
     try:
         user_id, user_secret = _credentials()
         client = _client()
@@ -418,41 +473,36 @@ def fetch_total_cash() -> float | None:
         )
     except Exception as e:
         logger.warning("Could not list accounts for cash balance: %s", e)
-        return None
+        return {}
 
-    total: float = 0.0
-    found_any = False
+    labels = account_labels(accounts)
+    out: dict[str, float] = {}
     for account in accounts:
-        account_id = account.get("id")
+        account_id = _field(account, "id")
         if not account_id:
             continue
         try:
-            balances = (
-                _unwrap(
-                    client.account_information.get_user_account_balance(
-                        user_id=user_id,
-                        user_secret=user_secret,
-                        account_id=account_id,
-                    )
+            balances = _unwrap(
+                client.account_information.get_user_account_balance(
+                    user_id=user_id,
+                    user_secret=user_secret,
+                    account_id=account_id,
                 )
-                or []
             )
         except Exception as e:
             logger.warning("Balance fetch failed for account %s: %s", account_id, e)
             continue
-        # SnapTrade returns a list of balances per currency. Sum cash entries.
-        if isinstance(balances, dict):
-            balances = [balances]
-        for b in balances:
-            cash = b.get("cash") if isinstance(b, dict) else None
-            if cash is None:
-                continue
-            try:
-                total += float(cash)
-                found_any = True
-            except ValueError, TypeError:
-                continue
-    return total if found_any else None
+        cash = _usd_cash(balances)
+        if cash is not None:
+            out[labels[str(account_id)]] = cash
+    return out
+
+
+def fetch_total_cash() -> float | None:
+    """Sum of USD cash across all connected accounts (None when no balance
+    could be read). Prefer `fetch_account_cash` where the account matters."""
+    per_account = fetch_account_cash()
+    return sum(per_account.values()) if per_account else None
 
 
 def fetch_portfolio_tickers() -> list[str]:

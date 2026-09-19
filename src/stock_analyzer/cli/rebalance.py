@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 
 from ..config import Settings
 from ..data import finnhub, yf_gateway
-from ..data.brokerage import fetch_account_meta, fetch_portfolio_holdings, fetch_total_cash
+from ..data.brokerage import fetch_account_cash, fetch_account_meta, fetch_portfolio_holdings
 from ..data.finnhub import batch_finnhub_signals
 from ..data.fundamentals import batch_fundamentals
 from ..data.insider_selling import insider_selling_mentions
@@ -70,7 +70,7 @@ from ..discover.rebalance_persist import (
     persist_rebalance_run,
     print_rebalance_terminal,
 )
-from ..discover.rebalancer import Rebalancer
+from ..discover.rebalancer import Rebalancer, format_accounts_block
 from ..discover.report import (
     build_rebalance_sections,
     render_html_email,
@@ -261,7 +261,9 @@ class RebalancePipeline(DiscoverPipeline):
         # of each holding is tax-advantaged.
         account_meta = fetch_account_meta()
         position_splits = _build_position_splits(holdings, account_meta)
-        cash = fetch_total_cash()
+        account_cash = fetch_account_cash()
+        cash = sum(account_cash.values()) if account_cash else None
+        self.state["account_cash"] = account_cash
         self.state["holdings_positions"] = positions
         self.state["account_meta"] = account_meta
         self.state["position_splits"] = position_splits
@@ -488,6 +490,7 @@ class RebalancePipeline(DiscoverPipeline):
         self.state["csp_eligibility"] = result.eligibility
         self.state["csp_chains"] = result.chains
         self.state["csp_cash_budget"] = result.cash_budget
+        self.state["csp_account_room"] = result.account_room
         return StepOutput(content=result.content)
 
     def step_tax_harvest(self, step_input: StepInput) -> StepOutput:
@@ -563,6 +566,9 @@ class RebalancePipeline(DiscoverPipeline):
             cc_context_block=self.state.get("cc_context_block", ""),
             harvest_block=self.state.get("harvest_block", ""),
             csp_context_block=self.state.get("csp_context_block", ""),
+            accounts_block=format_accounts_block(
+                self.state.get("account_cash") or {}, self.state.get("account_meta") or {}
+            ),
         )
         try:
             plan, cc_warnings = apply_cc_plan_validation(
@@ -588,6 +594,21 @@ class RebalancePipeline(DiscoverPipeline):
                 eligibility=self.state.get("csp_eligibility") or {},
                 cash_budget=self.state.get("csp_cash_budget") or 0.0,
                 settings=self.settings,
+                account_room=self.state.get("csp_account_room") or {},
+                units={
+                    t: float(p.get("units") or 0)
+                    for t, p in (self.state.get("holdings_positions") or {}).items()
+                },
+                prices={
+                    **{
+                        t: (v or {}).get("price")
+                        for t, v in (self.state.get("technicals") or {}).items()
+                    },
+                    **{
+                        t: (v or {}).get("price")
+                        for t, v in (self.state.get("holdings_technicals") or {}).items()
+                    },
+                },
             )
         except Exception as e:
             # Unvalidated puts could over-commit cash — drop them all.

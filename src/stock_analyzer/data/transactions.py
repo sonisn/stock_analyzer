@@ -144,13 +144,9 @@ def fetch_transaction_history(years_back: int = 3) -> dict[str, TickerTaxSummary
         logger.warning("Could not list accounts for transactions: %s", e)
         return {}
 
-    account_id_to_name: dict[str, str] = {
-        str(a.get("id")): (
-            a.get("name") or a.get("institution_name") or str(a.get("id")) or "unknown"
-        )
-        for a in accounts
-        if a.get("id")
-    }
+    from .brokerage import account_labels
+
+    account_id_to_name = account_labels(accounts)
 
     activities: list[dict[str, Any]] = []
     for acc_id, acc_name in account_id_to_name.items():

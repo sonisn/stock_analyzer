@@ -211,6 +211,9 @@ class Settings(BaseSettings):
     csp_max_pct_total: float = 0.80
     # How many past runs' picks are put candidates (plus this run's).
     csp_pick_lookback_runs: int = 3
+    # Accounts approved to sell puts (comma-separated labels as the
+    # reports show them). Empty = every account. HSAs and some IRAs can't.
+    options_accounts: Annotated[tuple[str, ...], NoDecode] = ()
 
     # ---- Tradier options data (primary chain provider) -------------------
     tradier_api_key: str | None = None
@@ -224,6 +227,13 @@ class Settings(BaseSettings):
         # Already-tuple/list values pass through untouched.
         if isinstance(v, str):
             return tuple(t.strip().upper() for t in v.split(",") if t.strip())
+        return v
+
+    @field_validator("options_accounts", mode="before")
+    @classmethod
+    def _split_options_accounts(cls, v: object) -> object:
+        if isinstance(v, str):
+            return tuple(t.strip() for t in v.split(",") if t.strip())
         return v
 
     @field_validator("options_denylist", mode="before")

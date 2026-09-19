@@ -282,3 +282,48 @@ def test_fetch_portfolio_holdings_skips_option_symbols():
     nvda = next(h for h in all_holdings if h["ticker"] == "NVDA")
     assert nvda["average_purchase_price"] == 200.0
     assert nvda["units"] == 400.0
+
+
+def test_account_labels_disambiguate_duplicate_names():
+    from stock_analyzer.data.brokerage import account_labels
+
+    labels = account_labels(
+        [
+            {"id": "a1111", "name": "Individual", "institution_name": "Schwab"},
+            {"id": "b2222", "name": "Individual", "institution_name": "Fidelity"},
+            {"id": "c3333", "name": None, "institution_name": "Robinhood"},
+            {"id": "d4444", "name": "IRA", "institution_name": "Schwab"},
+        ]
+    )
+    assert labels == {
+        "a1111": "Individual (Schwab)",
+        "b2222": "Individual (Fidelity)",
+        "c3333": "Robinhood",
+        "d4444": "IRA",
+    }
+    same_broker = account_labels(
+        [{"id": "x-0001", "name": "Joint"}, {"id": "y-0002", "name": "Joint"}]
+    )
+    assert same_broker == {"x-0001": "Joint (0001)", "y-0002": "Joint (0002)"}
+
+
+def test_account_cash_is_per_account_and_usd_only(monkeypatch):
+    fake_client = MagicMock()
+    fake_client.account_information.list_user_accounts.return_value = [
+        {"id": "a", "name": "IRA"},
+        {"id": "b", "name": "Taxable"},
+    ]
+    balances = {
+        "a": [{"cash": "1000.5", "currency": {"code": "USD"}}],
+        "b": [
+            {"cash": 200, "currency": "USD"},
+            {"cash": 999, "currency": {"code": "CAD"}},  # no FX: skipped
+        ],
+    }
+    fake_client.account_information.get_user_account_balance.side_effect = lambda **kw: balances[
+        kw["account_id"]
+    ]
+    monkeypatch.setattr(brokerage, "_client", lambda: fake_client)
+    monkeypatch.setattr(brokerage, "_credentials", lambda: ("u", "s"))
+    assert brokerage.fetch_account_cash() == {"IRA": 1000.5, "Taxable": 200.0}
+    assert brokerage.fetch_total_cash() == 1200.5

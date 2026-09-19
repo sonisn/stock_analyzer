@@ -12,6 +12,8 @@ or a harvestable tax loss — never short-term price action.
 
 from __future__ import annotations
 
+from typing import Any
+
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
 from ..models.llm import HoldingReview
@@ -240,6 +242,17 @@ track, no ticker complexity, you already understand the company.
           left, no discover pick clearly outranks them), idle cash may
           stay as cash — but SELL/TRIM proceeds may not simply vanish
           into it: see PROCEEDS RULE.
+
+ACCOUNT PLACEMENT (when a "Cash by account" list is given):
+  Money cannot move between accounts in a rebalance: a BUY/ADD in an
+  account is funded only by that account's cash plus SELL/TRIM proceeds
+  realized in that same account (see the per-account splits in the
+  reviews). Name the account in every BUY/ADD sizing, e.g.
+      "~$3,400 in Traditional IRA"
+  and never size a BUY past what its account can fund. A tax-loss sale's
+  proceeds stay in its taxable account, so its swap is bought there. When
+  several accounts could fund a long-term BUY, prefer the tax-advantaged
+  one for the highest-growth names (gains compound untaxed there).
 
 PROCEEDS RULE (every SELL / TRIM names where its money goes):
   For each SELL or TRIM, the plan must say where the proceeds go — an
@@ -504,8 +517,8 @@ Your response is validated against a small Pydantic schema
     list when no calls are recommended.
   - csp_writes: parallel to SELL_PUT actions. One entry per SELL_PUT with
     ticker, strike, expiry (YYYY-MM-DD), contracts, est_premium_per_share,
-    delta (negative, as quoted), notes. Empty list when no puts are
-    recommended.
+    delta (negative, as quoted), account, notes. Empty list when no puts
+    are recommended.
 
 Structured `actions` must agree with `full_text` — if full_text says
 "Action 1: SELL MRVL", actions[0] must be {{SELL, MRVL, ...}}.
@@ -663,17 +676,36 @@ STATE IN full_text, PER PUT
 
 OUTPUT
   - One SELL_PUT action per ticker, sizing exactly:
-        "<N> contracts $<strike>P <YYYY-MM-DD>"
-    Example: "2 contracts $145P 2026-07-18"
+        "<N> contracts $<strike>P <YYYY-MM-DD> in <ACCOUNT>"
+    Example: "2 contracts $145P 2026-07-18 in Traditional IRA"
+    The account must be one listed under "Cash per account that can
+    secure puts", with room for the whole collateral.
   - A matching csp_writes entry with ticker, strike, expiry, contracts,
     est_premium_per_share (mid of bid/ask), delta (as quoted, negative),
-    and a one-line notes.
+    account, and a one-line notes.
 
 {stub_section}
 """
 
 
 REBALANCER_INSTRUCTIONS = _build_rebalancer_instructions()
+
+
+def format_accounts_block(
+    account_cash: dict[str, float], account_meta: dict[str, dict[str, Any]]
+) -> str:
+    """One line per account: tax status and the cash that can only be
+    spent (or secure puts) inside that account."""
+    names = sorted(set(account_cash) | set(account_meta))
+    if not names:
+        return ""
+    lines = []
+    for name in names:
+        status = (account_meta.get(name) or {}).get("tax_status") or "unknown"
+        cash = account_cash.get(name)
+        cash_s = f"cash ${cash:,.0f}" if cash is not None else "cash unknown"
+        lines.append(f"  {name} ({status.replace('_', '-')}): {cash_s}")
+    return "\n".join(lines)
 
 
 class Rebalancer:
@@ -755,6 +787,7 @@ class Rebalancer:
         cc_context_block: str = "",
         harvest_block: str = "",
         csp_context_block: str = "",
+        accounts_block: str = "",
     ) -> RebalancePlan:
         # Accept either the new structured form ({ticker: HoldingReview})
         # or the legacy free-text form ({ticker: str}). For the LLM prompt
@@ -768,6 +801,11 @@ class Rebalancer:
             if cash_available is not None
             else "Available cash: unknown (size BUYs from SELL+TRIM proceeds only)"
         )
+        if accounts_block:
+            cash_line += (
+                "\nCash by account (cash only funds BUYs, ADDs and put collateral "
+                f"in its own account):\n{accounts_block}"
+            )
         macro_block = f"Macro regime:\n{macro_summary}\n\n" if macro_summary else ""
         agg = aggressiveness.lower() if aggressiveness else "balanced"
         if agg not in ("conservative", "balanced", "aggressive"):

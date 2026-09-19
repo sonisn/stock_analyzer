@@ -97,7 +97,9 @@ against the fetched chain (strike and expiry must exist; delta and premium
 are re-read from it) and contracts are cut to fit the caps. The rebalance
 email gets a **Cash-secured puts** table: premium, annualized yield, cash
 reserved and cost if assigned. When yfinance is the chain source, put
-deltas are estimated from IV (Black-Scholes).
+deltas are estimated from IV (Black-Scholes). Cash is tracked per account: each put is placed
+in one account that can secure it (`OPTIONS_ACCOUNTS` limits which), and the
+cash the plan's own BUYs/ADDs spend is taken out first.
 
 See `.env.example` for the full set of `CC_*`, `CSP_*`, `OPTIONS_DENYLIST`
 and `TRADIER_*` knobs.
@@ -289,6 +291,14 @@ thesis re-check, and a thesis counts as BROKEN only when analysts are also
 cutting estimates. Every sell suggestion names where the money could go: a
 recent discover pick you don't hold, or a same-sector swap for a tax-loss
 sale.
+
+## Accounts
+
+Cash only funds buys (and put collateral) in its own account, so the
+rebalancer sees cash per account and names the account in every BUY/ADD.
+Accounts are labelled by name; two with the same name get the institution
+(or the id's last 4 characters) appended, so neither overwrites the other.
+Non-USD cash balances are skipped rather than summed as dollars.
 
 ## Quarterly review
 

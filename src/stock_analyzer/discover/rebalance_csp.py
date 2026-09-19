@@ -28,6 +28,7 @@ def csp_empty_state() -> dict[str, Any]:
         "csp_eligibility": {},
         "csp_chains": {},
         "csp_cash_budget": 0.0,
+        "csp_account_room": {},
     }
 
 
@@ -37,6 +38,7 @@ class CspDataResult:
     eligibility: dict[str, CspCandidate] = field(default_factory=dict)
     chains: dict[str, OptionChain] = field(default_factory=dict)
     cash_budget: float = 0.0
+    account_room: dict[str, float] = field(default_factory=dict)
     content: str = ""
 
 
@@ -52,6 +54,27 @@ def _earnings_dates(tickers: list[str], finnhub_signals: dict[str, Any]) -> dict
             if d is not None:
                 out[t] = d
     return out
+
+
+def _account_room(
+    account_cash: dict[str, float],
+    open_puts: dict[str, dict[str, Any]],
+    options_accounts: tuple[str, ...],
+) -> dict[str, float]:
+    """{account: cash free to secure new puts} — the account's cash minus
+    collateral its open short puts already hold, for accounts allowed to
+    sell puts (`OPTIONS_ACCOUNTS`; empty = all). Assumes the broker's cash
+    balance still includes that collateral (the conservative reading)."""
+    held: dict[str, float] = {}
+    for rec in open_puts.values():
+        for acct, amount in (rec.get("by_account") or {}).items():
+            held[acct] = held.get(acct, 0.0) + amount
+    allowed = set(options_accounts)
+    return {
+        acct: max(cash - held.get(acct, 0.0), 0.0)
+        for acct, cash in account_cash.items()
+        if not allowed or acct in allowed
+    }
 
 
 def _round_lot_tickers(position_splits: dict[str, Any] | None) -> set[str] | None:
@@ -91,13 +114,17 @@ def run_csp_data_pipeline(
         logger.warning("open short-put fetch failed: %s", e)
         open_puts = {}
     reserved = sum(rec["collateral_usd"] for rec in open_puts.values())
-    budget = max(float(cash) - reserved, 0.0)
+    account_room = _account_room(
+        state.get("account_cash") or {}, open_puts, settings.options_accounts
+    )
+    budget = sum(account_room.values()) if account_room else max(float(cash) - reserved, 0.0)
     logger.info(
-        "CSP: cash $%s, $%s already reserved by %d open short put(s) → budget $%s",
+        "CSP: cash $%s, $%s already reserved by %d open short put(s) → budget $%s %s",
         f"{cash:,.0f}",
         f"{reserved:,.0f}",
         len(open_puts),
         f"{budget:,.0f}",
+        {a: round(r) for a, r in account_room.items()},
     )
 
     now = date.today().isoformat()
@@ -113,10 +140,15 @@ def run_csp_data_pipeline(
         max_pct_per_put=settings.csp_max_pct_per_put,
         max_pct_total=settings.csp_max_pct_total,
         covered_call_tickers=_round_lot_tickers(state.get("position_splits")),
+        max_account_room=max(account_room.values()) if account_room else None,
     )
     logger.info("CSP eligibility: %d candidate(s): %s", len(eligible), sorted(eligible))
     if not eligible:
-        return CspDataResult(cash_budget=budget, content="csp_data: no put candidates this run")
+        return CspDataResult(
+            cash_budget=budget,
+            account_room=account_room,
+            content="csp_data: no put candidates this run",
+        )
 
     chains = fetch_chains(
         list(eligible), dte_min=settings.csp_dte_min, dte_max=settings.csp_dte_max, kind="puts"
@@ -133,6 +165,7 @@ def run_csp_data_pipeline(
         earnings=earnings,
         cash_budget=budget,
         open_put_collateral=reserved,
+        account_room=account_room,
         delta_min=settings.csp_target_delta_min,
         delta_max=settings.csp_target_delta_max,
         max_pct_per_put=settings.csp_max_pct_per_put,
@@ -145,6 +178,7 @@ def run_csp_data_pipeline(
         eligibility=eligible,
         chains=ready,
         cash_budget=budget,
+        account_room=account_room,
         content=(
             f"csp_data: {len(eligible)} candidate(s); chain sources {sources}; "
             f"budget ${budget:,.0f}; context block {len(block)} chars"
@@ -159,21 +193,42 @@ def apply_csp_plan_validation(
     eligibility: dict[str, CspCandidate],
     cash_budget: float,
     settings: Settings,
+    account_room: dict[str, float] | None = None,
+    units: dict[str, float] | None = None,
+    prices: dict[str, float | None] | None = None,
 ) -> tuple[RebalancePlan, list[str]]:
-    from .csp_validation import backfill_csp_writes, validate_csp_writes
+    """Backfill, then validate the plan's puts against the cash its own
+    BUYs/ADDs leave behind (so buys + collateral can't exceed cash)."""
+    from .csp_validation import backfill_csp_writes, cash_left_for_puts, validate_csp_writes
 
     plan = backfill_csp_writes(plan, chains=chains)
+    budget, room, notes = cash_left_for_puts(
+        plan,
+        cash_budget=cash_budget,
+        account_room=account_room or {},
+        units=units or {},
+        prices=prices or {},
+    )
+    if plan.csp_writes and budget < cash_budget:
+        logger.info(
+            "CSP: plan's own trades leave $%s of the $%s put budget",
+            f"{budget:,.0f}",
+            f"{cash_budget:,.0f}",
+        )
     plan, warnings = validate_csp_writes(
         plan,
         eligible=eligibility,
         chains=chains,
-        cash_budget=cash_budget,
+        cash_budget=budget,
         delta_min=settings.csp_target_delta_min,
         delta_max=settings.csp_target_delta_max,
         dte_min=settings.csp_dte_min,
         dte_max=settings.csp_dte_max,
         max_pct_total=settings.csp_max_pct_total,
+        account_room=room if account_room else None,
     )
+    if plan.csp_writes and notes:
+        warnings.append("put cash check approximate: " + "; ".join(notes))
     for cp in plan.csp_writes:
         logger.info(
             "  - SELL_PUT %s: %d × $%.2fP %s, Δ %.2f, ~$%s premium, $%s cash reserved",
@@ -204,6 +259,7 @@ def csp_report_data(plan: RebalancePlan | None, *, cash_budget: float) -> dict[s
         rows.append(
             {
                 "ticker": cp.ticker,
+                "account": cp.account,
                 "contracts": cp.contracts,
                 "strike": cp.strike,
                 "expiry": cp.expiry,

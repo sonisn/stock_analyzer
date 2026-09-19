@@ -38,20 +38,90 @@ _DELTA_TOLERANCE = 0.01
 #   "2 contracts $145P 2026-07-18"
 #   "1 contract $1,250.00P expiring 2026-07-18"
 #   "2 contracts at $145 strike, exp 2026-07-18"
+#   "2 contracts $145P 2026-07-18 in Traditional IRA"
 _SIZING_RE = re.compile(
     r"(?P<contracts>\d+)\s+contracts?\s+(?:at\s+)?\$?(?P<strike>[\d,]+(?:\.\d+)?)"
-    r"\s*(?:P\b|strike\b)[,\s]*(?:exp\w*\s+)?(?P<expiry>\d{4}-\d{2}-\d{2})",
+    r"\s*(?:P\b|strike\b)[,\s]*(?:exp\w*\s+)?(?P<expiry>\d{4}-\d{2}-\d{2})"
+    r"(?:\s+in\s+(?P<account>[^,;\n]+?))?\s*$",
     re.IGNORECASE,
 )
 
 
+_DOLLARS_RE = re.compile(r"\$\s*([\d,]+(?:\.\d+)?)\s*([kKmM])?\b")
+_SHARES_RE = re.compile(r"(\d+(?:\.\d+)?)\s+shares?\b", re.IGNORECASE)
+_PCT_RE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_ACCOUNT_RE = re.compile(r"\bin\s+([^,;()\n]+?)\s*(?:[,;(]|$)")
+
+
+def estimate_action_dollars(
+    action: RebalanceAction, *, units: float, price: float | None
+) -> float | None:
+    """Best-effort dollar size of a BUY/ADD/SELL/TRIM from its free-text
+    sizing: "$3,400" / "~$3.4k", "100 shares", "full position", or a % of
+    the position (sells). None when it can't be read."""
+    text = action.sizing or ""
+    sized = any(r.search(text) for r in (_DOLLARS_RE, _SHARES_RE, _PCT_RE))
+    whole = re.search(r"\b(full|entire|all)\b", text, re.IGNORECASE)
+    if action.action in ("SELL", "TRIM") and (whole or (action.action == "SELL" and not sized)):
+        return units * price if price else None
+    m = _DOLLARS_RE.search(text)
+    if m:
+        scale = {"k": 1e3, "m": 1e6}.get((m.group(2) or "").lower(), 1.0)
+        return float(m.group(1).replace(",", "")) * scale
+    m = _SHARES_RE.search(text)
+    if m and price:
+        return float(m.group(1)) * price
+    m = _PCT_RE.search(text)
+    if m and price and action.action in ("SELL", "TRIM"):
+        return float(m.group(1)) / 100 * units * price
+    return None
+
+
+def cash_left_for_puts(
+    plan: RebalancePlan,
+    *,
+    cash_budget: float,
+    account_room: dict[str, float],
+    units: dict[str, float],
+    prices: dict[str, float | None],
+) -> tuple[float, dict[str, float], list[str]]:
+    """Cash left for put collateral once the plan's own trades settle.
+
+    BUY/ADD dollars come out of the account they name (else out of the
+    total); SELL/TRIM proceeds only add to the total, since their account
+    usually isn't named. Buys that can't be sized are noted, not guessed."""
+    room = dict(account_room)
+    buys = proceeds = 0.0
+    notes: list[str] = []
+    for a in plan.actions:
+        if a.action not in ("BUY", "ADD", "SELL", "TRIM"):
+            continue
+        dollars = estimate_action_dollars(
+            a, units=units.get(a.ticker, 0.0), price=prices.get(a.ticker)
+        )
+        if dollars is None:
+            if a.action in ("BUY", "ADD"):
+                notes.append(f"couldn't size {a.action} {a.ticker} ({a.sizing!r})")
+            continue
+        if a.action in ("SELL", "TRIM"):
+            proceeds += dollars
+            continue
+        buys += dollars
+        m = _ACCOUNT_RE.search(a.sizing or "")
+        acct = m.group(1).strip() if m else None
+        if acct in room:
+            room[acct] = max(room[acct] - dollars, 0.0)
+    return max(cash_budget + proceeds - buys, 0.0), room, notes
+
+
 def csp_sizing(cp: CashSecuredPut) -> str:
-    """Canonical SELL_PUT sizing, e.g. '2 contracts $145P 2026-07-18'."""
+    """Canonical SELL_PUT sizing, e.g. '2 contracts $145P 2026-07-18 in IRA'."""
     plural = "s" if cp.contracts != 1 else ""
-    return f"{cp.contracts} contract{plural} ${cp.strike:,.2f}P {cp.expiry}"
+    where = f" in {cp.account}" if cp.account else ""
+    return f"{cp.contracts} contract{plural} ${cp.strike:,.2f}P {cp.expiry}{where}"
 
 
-def _parse_sizing(sizing: str) -> tuple[int, float, str] | None:
+def _parse_sizing(sizing: str) -> tuple[int, float, str, str] | None:
     m = _SIZING_RE.search(sizing or "")
     if not m:
         return None
@@ -63,7 +133,7 @@ def _parse_sizing(sizing: str) -> tuple[int, float, str] | None:
         return None
     if contracts <= 0 or strike <= 0:
         return None
-    return contracts, strike, m.group("expiry")
+    return contracts, strike, m.group("expiry"), (m.group("account") or "").strip()
 
 
 def _find_put(chain: OptionChain | None, strike: float, expiry: str) -> OptionQuote | None:
@@ -100,7 +170,7 @@ def backfill_csp_writes(plan: RebalancePlan, *, chains: dict[str, OptionChain]) 
                 "CSP backfill: could not parse sizing %r for %s", action.sizing, action.ticker
             )
             continue
-        contracts, strike, expiry = parsed
+        contracts, strike, expiry, account = parsed
         q = _find_put(chains.get(action.ticker), strike, expiry)
         if q is None or q.delta is None:
             logger.warning(
@@ -115,6 +185,7 @@ def backfill_csp_writes(plan: RebalancePlan, *, chains: dict[str, OptionChain]) 
                 contracts=contracts,
                 est_premium_per_share=_mid(q),
                 delta=q.delta,
+                account=account,
                 notes="backfilled from chain after the plan omitted csp_writes",
             )
         )
@@ -135,9 +206,15 @@ def validate_csp_writes(
     dte_min: int,
     dte_max: int,
     max_pct_total: float,
+    account_room: dict[str, float] | None = None,
     today: date | None = None,
 ) -> tuple[RebalancePlan, list[str]]:
-    """Return (cleaned plan, warnings). See the module docstring."""
+    """Return (cleaned plan, warnings). See the module docstring.
+
+    With `account_room` ({account: cash free for collateral}), each put is
+    placed in its stated account when that account can secure at least one
+    contract, else in the account with the most room, and contracts are
+    cut to what that single account holds."""
     today = today or date.today()
     warnings: list[str] = []
 
@@ -151,6 +228,7 @@ def validate_csp_writes(
             action_counts[a.ticker] = action_counts.get(a.ticker, 0) + 1
 
     total_room = cash_budget * max_pct_total
+    room = dict(account_room or {})
     kept: dict[str, CashSecuredPut] = {}
     for cp in plan.csp_writes:
         t = cp.ticker
@@ -186,12 +264,21 @@ def validate_csp_writes(
             continue
 
         per_contract = cp.strike * 100.0
-        fit = int(min(cand.max_csp_cash, total_room) // per_contract)
-        contracts = min(cp.contracts, fit)
+        account = cp.account
+        if room:
+            if room.get(account, 0.0) < per_contract:
+                best = max(room, key=lambda a: room[a])
+                if account and best != account:
+                    _warn(f"put on {t} moved from {account!r} to {best!r}: not enough cash there")
+                account = best
+            allowed = min(cand.max_csp_cash, total_room, room[account])
+        else:
+            allowed = min(cand.max_csp_cash, total_room)
+        contracts = min(cp.contracts, int(allowed // per_contract))
         if contracts <= 0:
             _warn(
                 f"put on {t} dropped: one contract needs ${per_contract:,.0f} of cash, "
-                f"only ${min(cand.max_csp_cash, total_room):,.0f} is allowed"
+                f"only ${allowed:,.0f} is allowed"
             )
             continue
         if contracts < cp.contracts:
@@ -201,10 +288,17 @@ def validate_csp_writes(
             )
         premium = _mid(q) or cp.est_premium_per_share
         fixed = cp.model_copy(
-            update={"contracts": contracts, "delta": -abs(delta), "est_premium_per_share": premium}
+            update={
+                "contracts": contracts,
+                "delta": -abs(delta),
+                "est_premium_per_share": premium,
+                "account": account,
+            }
         )
         kept[t] = fixed
         total_room -= fixed.cash_reserved
+        if room:
+            room[account] -= fixed.cash_reserved
 
     actions: list[RebalanceAction] = []
     for a in plan.actions:

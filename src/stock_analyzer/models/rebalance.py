@@ -70,6 +70,9 @@ class CashSecuredPut(BaseModel):
         description="Mid of bid/ask in dollars per share. ×100 = per contract.",
     )
     delta: float = Field(..., ge=-1.0, le=1.0, description="Put delta, e.g. -0.15.")
+    account: str = Field(
+        default="", description="Account whose cash secures it; from the put context block."
+    )
     notes: str = ""
 
     @field_validator("delta")

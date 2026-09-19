@@ -56,6 +56,7 @@ def eligible_csp_tickers(
     max_pct_total: float = 0.80,
     max_candidates: int = 8,
     covered_call_tickers: set[str] | None = None,
+    max_account_room: float | None = None,
 ) -> dict[str, CspCandidate]:
     """Filter recent picks down to tickers you could sell a put on.
 
@@ -88,6 +89,10 @@ def eligible_csp_tickers(
 
     per_put_cap = cash_budget * max_pct_per_put
     total_cap = cash_budget * max_pct_total
+    # One put's collateral sits in one account: it can't exceed the
+    # roomiest account's cash, however large the total.
+    if max_account_room is not None:
+        per_put_cap = min(per_put_cap, max_account_room)
     ordered = sorted(latest.items(), key=lambda kv: (kv[1][0], -kv[1][1]), reverse=True)
     out: dict[str, CspCandidate] = {}
     for ticker, (run_at, rank) in ordered:
@@ -213,6 +218,7 @@ def build_csp_context_block(
     earnings: dict[str, date],
     cash_budget: float,
     open_put_collateral: float,
+    account_room: dict[str, float] | None = None,
     delta_min: float,
     delta_max: float,
     max_pct_per_put: float,
@@ -254,4 +260,8 @@ def build_csp_context_block(
         + f"  Total collateral cap:    ${cash_budget * max_pct_total:,.0f} "
         f"({max_pct_total:.0%})"
     )
+    if account_room:
+        header += "\n  Cash per account that can secure puts (collateral stays in ONE account):"
+        for name, room in sorted(account_room.items(), key=lambda kv: -kv[1]):
+            header += f"\n    {name}: ${room:,.0f}"
     return header + "\n\n" + "\n\n".join(blocks)

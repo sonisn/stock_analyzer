@@ -423,7 +423,11 @@ def test_fetch_open_short_puts_sums_collateral(monkeypatch):
     ]
     monkeypatch.setattr(brokerage, "_client", lambda: client)
     assert brokerage.fetch_open_short_puts() == {
-        "NVDA": {"contracts": 3, "collateral_usd": 43_000.0}
+        "NVDA": {
+            "contracts": 3,
+            "collateral_usd": 43_000.0,
+            "by_account": {"IRA": 29_000.0, "Taxable": 14_000.0},
+        }
     }
 
 
@@ -512,3 +516,67 @@ def test_split_shares_stay_put_candidates_when_cc_side_known():
     assert list(out) == ["SPLT"]
     # Without the covered-call set, 100+ shares in total still routes away.
     assert eligible_csp_tickers(picks, positions=positions, cash_budget=1e5, denylist=()) == {}
+
+
+def test_estimate_action_dollars():
+    from stock_analyzer.discover.csp_validation import estimate_action_dollars
+
+    def est(action, sizing, units=100.0, price=50.0):
+        a = RebalanceAction(action=action, ticker="X", sizing=sizing)
+        return estimate_action_dollars(a, units=units, price=price)
+
+    assert est("BUY", "~$3,400 in Traditional IRA") == 3400
+    assert est("ADD", "$2.5k") == 2500
+    assert est("BUY", "100 shares (1 lot)") == 5000
+    assert est("SELL", "full position") == 5000
+    assert est("TRIM", "25%") == 1250
+    assert est("TRIM", "full position") == 5000
+    assert est("SELL", "50 shares") == 2500
+    assert est("SELL", "") == 5000
+    assert est("BUY", "starter position") is None
+
+
+def test_puts_fit_the_cash_left_after_the_plans_buys():
+    from stock_analyzer.discover.csp_validation import cash_left_for_puts
+
+    plan = RebalancePlan(
+        status="ACTION",
+        aggressiveness_applied="balanced",
+        actions=[
+            RebalanceAction(action="BUY", ticker="A", sizing="~$10,000 in IRA"),
+            RebalanceAction(action="ADD", ticker="B", sizing="some more"),
+            RebalanceAction(action="SELL", ticker="C", sizing="full position"),
+            RebalanceAction(action="SELL_PUT", ticker="NVDA", sizing="x"),
+        ],
+        full_text="x",
+        csp_writes=[_put(contracts=2)],
+    )
+    budget, room, notes = cash_left_for_puts(
+        plan,
+        cash_budget=40_000.0,
+        account_room={"IRA": 30_000.0, "Taxable": 10_000.0},
+        units={"C": 10.0},
+        prices={"C": 100.0},
+    )
+    assert budget == 40_000 - 10_000 + 1_000
+    assert room == {"IRA": 20_000.0, "Taxable": 10_000.0}
+    assert notes == ["couldn't size ADD B ('some more')"]
+
+    # $20k left in the IRA holds one $14.5k contract; the put moves there.
+    cleaned, warnings = validate_csp_writes(
+        plan,
+        eligible={"NVDA": _cand(max_cash=40_000.0)},
+        chains={"NVDA": _chain()},
+        cash_budget=budget,
+        delta_min=0.10,
+        delta_max=0.25,
+        dte_min=30,
+        dte_max=45,
+        max_pct_total=0.80,
+        account_room=room,
+        today=TODAY,
+    )
+    (cp,) = cleaned.csp_writes
+    assert (cp.account, cp.contracts) == ("IRA", 1)
+    assert cleaned.actions[-1].sizing.endswith(" in IRA")
+    assert any("cut from 2 to 1" in w for w in warnings)
