@@ -92,8 +92,19 @@ def _get(path: str, params: dict[str, Any]) -> dict[str, Any] | None:
             headers={"Authorization": f"Bearer {key}"},
         )
     except HttpClientError as e:
-        # A missing provider must never be what takes a run down: the
-        # caller keeps whatever yfinance gave it.
+        # The plan's history window comes back as a flat 403 POLICY_DENIED
+        # with no explanation: on the free plan, an `asof:` date before
+        # 2022-01 (five years back) is refused. Say so, rather than
+        # leaving it looking like an outage or a bad key.
+        if "POLICY_DENIED" in str(e):
+            logger.info(
+                "Wisesheets declined %s — usually a date outside the plan's %s-year history window",
+                params.get("period") or path,
+                5,
+            )
+            return None
+        # Otherwise: a missing provider must never be what takes a run
+        # down, so the caller keeps whatever yfinance gave it.
         logger.warning("Wisesheets %s failed (%s) — falling back to yfinance", path, e)
         return None
 
