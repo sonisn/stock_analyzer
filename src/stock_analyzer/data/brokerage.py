@@ -577,6 +577,44 @@ def fetch_open_short_puts() -> dict[str, dict[str, Any]]:
     return out
 
 
+def fetch_covered_call_obligations() -> dict[str, dict[str, Any]]:
+    """{ticker: what the short calls on it oblige you to}, with strikes.
+
+    `fetch_open_option_positions` answers "how much capacity is used",
+    which is what the rebalancer needs before writing more calls. This
+    answers the question every *sell* decision has to ask: how many of
+    these shares are already promised to someone else, at what price, and
+    until when. Selling shares that back a short call turns it naked, so
+    a sale means buying the call back or waiting for assignment.
+
+    Returns {} when SnapTrade is unavailable.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for account, parsed, contracts in _short_option_positions("C"):
+        rec = out.setdefault(
+            parsed.ticker,
+            {"contracts": 0, "shares_committed": 0.0, "by_account": {}, "legs": []},
+        )
+        rec["contracts"] += contracts
+        rec["shares_committed"] += contracts * 100.0
+        rec["by_account"][account] = rec["by_account"].get(account, 0) + contracts
+        rec["legs"].append(
+            {
+                "account": account,
+                "contracts": contracts,
+                "strike": parsed.strike,
+                "expiry": parsed.expiry.isoformat(),
+            }
+        )
+    for rec in out.values():
+        # Soonest first: the leg that decides the position is the one
+        # expiring next, not the largest.
+        rec["legs"].sort(key=lambda leg: (leg["expiry"], leg["strike"]))
+        rec["next_expiry"] = rec["legs"][0]["expiry"] if rec["legs"] else None
+        rec["lowest_strike"] = min((leg["strike"] for leg in rec["legs"]), default=None)
+    return out
+
+
 def _usd_cash(balances: Any) -> float | None:
     """USD cash from SnapTrade's per-currency balance list. Non-USD
     entries are skipped (no FX conversion) rather than summed as dollars."""

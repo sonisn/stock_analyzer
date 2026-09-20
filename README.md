@@ -319,6 +319,32 @@ glance" flags with the date it went dark and the one fix for it:
 reconnect it in SnapTrade. Until then, every number for that account
 describes the day it stopped syncing.
 
+## Covered calls are part of every decision
+
+Twelve short calls were open on 2026-09-20 and only the rebalancer knew:
+`fetch_open_option_positions` answers "how much call capacity is left",
+which is the writer's question. Every *sell* decision has a different
+one — how many of these shares are already promised, at what price, and
+until when — and nothing was asking it. Three positions (GOOGL, NVDA,
+TSLA) were 100% committed while the holdings table showed them as freely
+owned.
+
+`fetch_covered_call_obligations` answers the seller's question, and the
+daily email now carries it two ways. Every sale-shaped suggestion —
+broken thesis, drawdown re-check, tax-loss harvest, past-its-target trim
+— gains a clause naming the contracts, the share of the position they
+cover and the strike, because selling shares that back a call turns it
+naked: the position has to be bought back first, or assignment has to run
+its course. And a "Covered calls written" table shows what is promised
+with its distance to each strike.
+
+A position within `ASSIGNMENT_WATCH_PCT` (15%) of its lowest strike also
+becomes its own decision line, since for a 3-5 year holder assignment is
+not a loss but the end of the compounding — and in a taxable account it
+realizes the gain on someone else's schedule. On 2026-09-20 that was TSLA
+at 10% below a $400 strike, with all 200 shares committed. It is graded
+as a REVIEW in the suggestions ledger, not as a trade.
+
 ## Point-in-time fundamentals
 
 The forward-return model is price-only on purpose: a historical close is

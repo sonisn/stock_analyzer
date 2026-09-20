@@ -67,6 +67,11 @@ class PortfolioHealth:
     # Data-quality notes (a stale account price, a missing cost basis):
     # things that make the numbers above worth a second look.
     data_notes: list[str] = field(default_factory=list)
+    # Short calls already written against these holdings
+    # (data/brokerage.fetch_covered_call_obligations). Shares backing a
+    # call are promised: selling them turns the call naked, so no sale
+    # suggestion here is free.
+    covered_calls: dict[str, dict[str, Any]] = field(default_factory=dict)
     # Overnight and trailing moves on the exchanges that price this
     # portfolio's demand (data/world_markets.py). Context, never a
     # decision: these are 3-5 year holdings.
@@ -110,6 +115,7 @@ def build_portfolio_health(
     prices: dict[str, float] | None = None,
     data_notes: list[str] | None = None,
     stale_accounts: list[str] | None = None,
+    covered_calls: dict[str, dict[str, Any]] | None = None,
     world_markets: list[dict[str, Any]] | None = None,
     max_sector_pct: float = 30.0,
     sector_of: Callable[[list[str]], dict[str, str]] | None = None,
@@ -127,6 +133,7 @@ def build_portfolio_health(
     health.data_notes.extend(data_notes or [])
     health.stale_accounts.extend(stale_accounts or [])
     health.world_markets.extend(world_markets or [])
+    health.covered_calls.update(covered_calls or {})
     positions = aggregate_positions(holdings, prices)
     tickers = sorted(positions)
 
@@ -455,6 +462,7 @@ def render_health_html(h: PortfolioHealth) -> str:
             + ", ".join(f"{html.escape(r['sector'])} {r['pct']:.0f}%" for r in top)
             + "</p>"
         )
+    parts.append(render_covered_calls_html(h))
     parts.append(render_world_markets_html(h))
     if h.stale_accounts:
         parts.append(
@@ -475,6 +483,50 @@ def render_health_html(h: PortfolioHealth) -> str:
             + "</p>"
         )
     parts.append("</section>")
+    return "".join(parts)
+
+
+def render_covered_calls_html(h: PortfolioHealth) -> str:
+    """What is already promised, and how close it is to being taken.
+
+    A covered call is not visible anywhere in a holdings table — the
+    shares still show as owned — so without this the report implies a
+    freedom of action the position does not have."""
+    if not h.covered_calls:
+        return ""
+    rows = []
+    for ticker, rec in sorted(h.covered_calls.items()):
+        units = h.units.get(ticker) or 0
+        value = h.values.get(ticker)
+        committed = float(rec.get("shares_committed") or 0)
+        strike = rec.get("lowest_strike")
+        price = (value / units) if value and units else None
+        to_strike = (strike / price - 1) * 100 if strike and price else None
+        share = min(committed / units, 1.0) * 100 if units else None
+        colour = "#9c1010" if (to_strike is not None and to_strike <= ASSIGNMENT_WATCH_PCT) else ""
+        rows.append(
+            [
+                html.escape(ticker),
+                f"{rec['contracts']}",
+                f"{committed:,.0f}" + (f" ({share:.0f}%)" if share is not None else ""),
+                f"${strike:,.0f}" if strike else "—",
+                (
+                    f'<span style="color:{colour}">{to_strike:+.0f}%</span>'
+                    if to_strike is not None
+                    else "—"
+                ),
+                html.escape(str(rec.get("next_expiry") or "—")),
+            ]
+        )
+    parts = ["<h3>Covered calls written</h3>"]
+    parts.append(
+        _table(["Ticker", "Calls", "Shares promised", "Strike", "To strike", "Expiry"], rows)
+    )
+    parts.append(
+        '<p style="font-size:13px;color:#6b7280">Shares backing a call cannot be sold '
+        "without buying it back first. A position at or above its strike gets called "
+        "away at expiry.</p>"
+    )
     return "".join(parts)
 
 
@@ -528,6 +580,69 @@ def render_world_markets_html(h: PortfolioHealth) -> str:
 MAX_DECISIONS = 6
 
 
+# Within this much of the strike, assignment stops being hypothetical
+# and the shares are likely to be called away at expiry.
+ASSIGNMENT_WATCH_PCT = 15.0
+
+
+def covered_call_clause(h: PortfolioHealth, ticker: str) -> str:
+    """What an open short call adds to a decision to sell `ticker`.
+
+    Empty when nothing is written against it. Otherwise it says how much
+    of the position is promised and what closing it would take, because
+    "sell NVDA" is a different instruction when all 401 shares back four
+    calls.
+    """
+    rec = h.covered_calls.get(ticker)
+    if not rec or not rec.get("contracts"):
+        return ""
+    committed = float(rec.get("shares_committed") or 0)
+    held = float(h.units.get(ticker) or 0)
+    share = f"{min(committed / held, 1.0) * 100:.0f}% of" if held else ""
+    strike = rec.get("lowest_strike")
+    where = f" at ${strike:,.0f}" if strike else ""
+    expiry = rec.get("next_expiry")
+    until = f" through {expiry}" if expiry else ""
+    return (
+        f" Note {rec['contracts']} covered call(s) on {ticker}: {committed:,.0f} shares "
+        f"({share} the position){where}{until} are already promised, so selling means "
+        f"buying those back first or waiting for assignment."
+    )
+
+
+def assignment_items(h: PortfolioHealth) -> list[dict[str, Any]]:
+    """Positions close enough to a written strike to be called away.
+
+    A 3-5 year holder's risk here is not a loss, it is losing the
+    position: assignment ends the compounding and, in a taxable account,
+    realizes the gain on someone else's schedule.
+    """
+    out = []
+    for ticker, rec in sorted(h.covered_calls.items()):
+        strike = rec.get("lowest_strike")
+        units = h.units.get(ticker) or 0
+        value = h.values.get(ticker)
+        if not strike or not units or not value:
+            continue
+        price = value / units
+        to_strike = (strike / price - 1) * 100
+        if to_strike > ASSIGNMENT_WATCH_PCT or to_strike < 0:
+            continue
+        committed = float(rec.get("shares_committed") or 0)
+        out.append(
+            {
+                "ticker": ticker,
+                "to_strike_pct": to_strike,
+                "text": (
+                    f"{ticker} is {to_strike:.0f}% below your ${strike:,.0f} strike expiring "
+                    f"{rec.get('next_expiry')}: a rally through it calls away {committed:,.0f} "
+                    f"shares. Roll the call up or out if you mean to keep them."
+                ),
+            }
+        )
+    return out
+
+
 def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
     """Everything above, reduced to one line per decision, most urgent first
     (priority 1 = act today). The email leads with the top MAX_DECISIONS.
@@ -574,6 +689,8 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
 
     for note in h.stale_accounts:
         add(1, None, "STALE DATA", f"Reconnect the account: {note}.")
+    for item in assignment_items(h):
+        add(3, item["ticker"], "CALL ASSIGNMENT", item["text"])
     for r in h.drawdowns:
         add(
             2,
@@ -581,7 +698,9 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             "DRAWDOWN",
             f"Re-check the long-term thesis for {r['ticker']}: {r['pnl_pct']:+.1f}% from cost. "
             f"A lower price alone isn't a reason to sell — sell only if the business case "
-            f"has broken." + proceeds(r["ticker"], r.get("value"), conditional=True),
+            f"has broken."
+            + covered_call_clause(h, r["ticker"])
+            + proceeds(r["ticker"], r.get("value"), conditional=True),
             dest_ticker(r["ticker"]),
         )
     for c in h.thesis:
@@ -592,6 +711,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
                 c["ticker"],
                 "BROKEN",
                 f"Consider selling {c['ticker']}: long-term thesis broken — {reason}."
+                + covered_call_clause(h, c["ticker"])
                 + proceeds(c["ticker"], h.values.get(c["ticker"])),
                 dest_ticker(c["ticker"]),
             )
@@ -601,7 +721,8 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
                 c["ticker"],
                 "TARGET HIT",
                 f"{c['ticker']} is {c['return_pct']:+.1f}% since the pick, past its bull case — "
-                f"re-check the valuation; trim only if it has grown too large a share.",
+                f"re-check the valuation; trim only if it has grown too large a share."
+                + covered_call_clause(h, c["ticker"]),
             )
         else:
             add(4, c["ticker"], "WATCH", f"Keep an eye on {c['ticker']}: {reason}.")
@@ -644,6 +765,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             "TAX LOSS",
             f"Tax-loss option: selling {c['ticker']} in {c['account']} realizes "
             f"{_money(c['loss_usd'])} (~{_money(c['est_tax_saving_usd'])} tax saved){wash}."
+            + covered_call_clause(h, c["ticker"])
             + where,
             swaps[0] if swaps else dest_ticker(c["ticker"]),
         )
@@ -671,6 +793,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
 # Decision labels that are advice worth grading later, as ledger actions.
 _LEDGER_ACTIONS = {
     "BROKEN": "SELL",
+    "CALL ASSIGNMENT": "REVIEW",
     "DRAWDOWN": "REVIEW",
     "TAX LOSS": "TAX_LOSS",
     "EARNINGS CUT": "REVIEW",

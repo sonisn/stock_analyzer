@@ -11,6 +11,7 @@ from ..config import Settings
 from ..data import finnhub, yf_gateway
 from ..data.brokerage import (
     fetch_account_sync_status,
+    fetch_covered_call_obligations,
     fetch_portfolio_holdings,
     listed_tickers,
     stale_account_notes,
@@ -56,6 +57,7 @@ def portfolio_health(
     prices: dict[str, float] | None = None,
     data_notes: list[str] | None = None,
     stale_accounts: list[str] | None = None,
+    covered_calls: dict[str, dict] | None = None,
     world_markets: list[dict] | None = None,
 ):
     """The deterministic PortfolioHealth (reporting/health.py) with the live
@@ -158,6 +160,7 @@ def portfolio_health(
             prices=prices,
             data_notes=data_notes,
             stale_accounts=stale_accounts,
+            covered_calls=covered_calls,
             world_markets=world_markets,
             max_sector_pct=settings.discover_max_sector_pct,
             sector_of=sector_of,
@@ -315,6 +318,13 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001
         logger.warning("World markets unavailable (%s)", e)
         world = []
+    # Shares backing a written call are already promised, so every sale
+    # suggestion below has to say what closing the position would take.
+    try:
+        covered_calls = fetch_covered_call_obligations()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Covered-call positions unavailable (%s)", e)
+        covered_calls = {}
     _, unlisted = listed_tickers(holdings)
     if unlisted:
         price_notes.append(
@@ -327,6 +337,7 @@ def main() -> None:
         prices=prices,
         data_notes=price_notes,
         stale_accounts=stale,
+        covered_calls=covered_calls,
         world_markets=world,
     )
     record_daily_suggestions(settings, health)
