@@ -125,7 +125,7 @@ def fetch_history(
 
     missing = sorted(todo)
     widest = max(len(v) for v in todo.values())
-    chunks = max(1, -(-widest // wisesheets.MAX_TICKERS_PER_REQUEST))
+    chunks = max(1, -(-widest // wisesheets.AS_REPORTED_MAX_TICKERS))
     quota = wisesheets.quota() or {}
     remaining = quota.get("monthly_remaining")
     if remaining is not None:
@@ -142,21 +142,24 @@ def fetch_history(
 
     for as_of in missing:
         outstanding = todo[as_of]
-        values = wisesheets.fetch_point_in_time_ratios(outstanding, as_of)
-        if not values:
-            # Nothing came back (a denied date, or an outage): don't
-            # record these names as asked, so the next run retries them.
+        values, answered = wisesheets.fetch_point_in_time_ratios(outstanding, as_of)
+        if not answered:
+            # Nothing came back at all (a denied date, or an outage):
+            # record nothing, so the next run retries these names.
             logger.info("Point-in-time fundamentals %s: nothing returned", as_of)
             continue
         merged = {**out.get(as_of, {}), **values}
         _, asked = _load_cached(cache_dir, as_of)
-        _store(cache_dir, as_of, merged, asked | set(outstanding))
+        # Only the names whose request was answered count as asked. A
+        # chunk lost to a 503 must come back next run, or half a date
+        # quietly becomes a cross-section of medians.
+        _store(cache_dir, as_of, merged, asked | set(answered))
         out[as_of] = merged
         logger.info(
-            "Point-in-time fundamentals %s: %d of %d tickers (%d cached)",
+            "Point-in-time fundamentals %s: %d with data of %d answered (%d already cached)",
             as_of,
             len(values),
-            len(outstanding),
+            len(answered),
             len(merged) - len(values),
         )
     return {d: v for d, v in out.items() if v}

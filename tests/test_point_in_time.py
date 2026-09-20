@@ -83,7 +83,8 @@ def test_ratios_come_from_one_filing(monkeypatch):
             ]
         },
     )
-    out = wisesheets.fetch_point_in_time_ratios(["NVDA", "GOOGL"], date(2025, 5, 1))
+    out, answered = wisesheets.fetch_point_in_time_ratios(["NVDA", "GOOGL"], date(2025, 5, 1))
+    assert answered == ["NVDA", "GOOGL"]
     assert out["NVDA"]["gross_margin_pit"] == pytest.approx(0.7499, abs=1e-3)
     assert out["NVDA"]["net_margin_pit"] == pytest.approx(0.5584, abs=1e-3)
     assert "gross_margin_pit" not in out["GOOGL"]
@@ -107,7 +108,8 @@ def test_the_cache_is_used_before_the_api(tmp_path, monkeypatch):
         "fetch_point_in_time_ratios",
         lambda tickers, as_of: (
             calls.append((as_of, tuple(tickers)))
-            or {t: {"return_on_equity_pit": 0.7} for t in tickers}
+            or {t: {"return_on_equity_pit": 0.7} for t in tickers},
+            list(tickers),
         ),
     )
     dates = [date(2025, 1, 31), date(2025, 2, 28)]
@@ -131,7 +133,8 @@ def test_a_wider_universe_fetches_only_the_names_the_cache_lacks(tmp_path, monke
         wisesheets,
         "fetch_point_in_time_ratios",
         lambda tickers, as_of: (
-            calls.append(tuple(tickers)) or {t: {"return_on_equity_pit": 0.5} for t in tickers}
+            calls.append(tuple(tickers)) or {t: {"return_on_equity_pit": 0.5} for t in tickers},
+            list(tickers),
         ),
     )
     dates = [date(2025, 1, 31)]
@@ -158,7 +161,8 @@ def test_a_ticker_the_api_does_not_cover_is_not_re_requested(tmp_path, monkeypat
         "fetch_point_in_time_ratios",
         lambda tickers, as_of: (
             calls.append(tuple(tickers))
-            or {t: {"return_on_equity_pit": 0.5} for t in tickers if t != "TSM"}
+            or {t: {"return_on_equity_pit": 0.5} for t in tickers if t != "TSM"},
+            list(tickers),
         ),
     )
     dates = [date(2025, 1, 31)]
@@ -177,7 +181,9 @@ def test_a_date_that_returns_nothing_is_retried_next_run(tmp_path, monkeypatch):
     monkeypatch.setattr(wisesheets, "is_configured", lambda: True)
     monkeypatch.setattr(wisesheets, "quota", lambda: {"monthly_remaining": 5000})
     monkeypatch.setattr(
-        wisesheets, "fetch_point_in_time_ratios", lambda tickers, as_of: calls.append(as_of) or {}
+        wisesheets,
+        "fetch_point_in_time_ratios",
+        lambda tickers, as_of: (calls.append(as_of) or {}, []),
     )
     dates = [date(2021, 10, 31)]
     assert fetch_history(["NVDA"], dates, cache_dir=str(tmp_path)) == {}
@@ -195,7 +201,10 @@ def test_a_thin_quota_stops_early_instead_of_draining_it(tmp_path, monkeypatch, 
     monkeypatch.setattr(
         wisesheets,
         "fetch_point_in_time_ratios",
-        lambda tickers, as_of: calls.append(as_of) or {"NVDA": {"return_on_equity_pit": 0.7}},
+        lambda tickers, as_of: (
+            calls.append(as_of) or {"NVDA": {"return_on_equity_pit": 0.7}},
+            list(tickers),
+        ),
     )
     dates = [date(2025, m, 28) for m in range(1, 7)]
     fetch_history(["NVDA"], dates, cache_dir=str(tmp_path))
@@ -269,7 +278,7 @@ def test_leverage_and_equity_come_from_assets_when_equity_is_untagged(monkeypatc
             ]
         },
     )
-    out = wisesheets.fetch_point_in_time_ratios(["NVDA"], date(2025, 12, 31))["NVDA"]
+    out = wisesheets.fetch_point_in_time_ratios(["NVDA"], date(2025, 12, 31))[0]["NVDA"]
     assert out["leverage_pit"] == pytest.approx(49 / 187, abs=1e-4)
     # equity = assets - liabilities when the filing never tagged equity
     assert out["return_on_equity_pit"] == pytest.approx(31.91 / (187 - 49), abs=1e-3)
@@ -280,3 +289,43 @@ def test_the_feature_names_are_the_ones_the_model_asks_for():
 
     assert tuple(FUNDAMENTAL_FEATURES) == POINT_IN_TIME_RATIOS
     assert "leverage_pit" in FUNDAMENTAL_FEATURES
+
+
+def test_a_chunk_lost_to_a_server_error_is_retried_not_cached_as_covered(tmp_path, monkeypatch):
+    # 100 tickers x 6 metrics returns 503 in as-reported mode; 50 works.
+    # A failed chunk must not be recorded as asked, or half a date
+    # silently becomes a cross-section of medians.
+    from stock_analyzer.data import wisesheets
+
+    calls = []
+    monkeypatch.setattr(wisesheets, "is_configured", lambda: True)
+    monkeypatch.setattr(wisesheets, "quota", lambda: {"monthly_remaining": 5000})
+
+    def half_fails(tickers, as_of):
+        calls.append(tuple(tickers))
+        answered = [t for t in tickers if t != "BBB"]  # BBB's chunk 503'd
+        return {t: {"return_on_equity_pit": 0.5} for t in answered}, answered
+
+    monkeypatch.setattr(wisesheets, "fetch_point_in_time_ratios", half_fails)
+    dates = [date(2025, 1, 31)]
+    fetch_history(["AAA", "BBB"], dates, cache_dir=str(tmp_path))
+    fetch_history(["AAA", "BBB"], dates, cache_dir=str(tmp_path))
+    assert calls[-1] == ("BBB",)  # asked again; AAA was not
+
+
+def test_as_reported_requests_are_chunked_smaller(monkeypatch):
+    from stock_analyzer.data import wisesheets
+
+    sizes = []
+    monkeypatch.setattr(wisesheets, "api_key", lambda: "wsh_test")
+    monkeypatch.setattr(
+        wisesheets,
+        "_get",
+        lambda path, params: sizes.append(len(params["tickers"].split(","))) or {"data": []},
+    )
+    many = [f"T{i:03d}" for i in range(120)]
+    wisesheets.fetch_metrics(many, ["revenue"], period="asof:2025-01-31", as_reported=True)
+    assert max(sizes) <= wisesheets.AS_REPORTED_MAX_TICKERS == 50
+    sizes.clear()
+    wisesheets.fetch_metrics(many, ["revenue"])  # the normal path keeps the full cap
+    assert max(sizes) == 100

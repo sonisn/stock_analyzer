@@ -44,6 +44,11 @@ _BASE_URL = "https://api.wisesheets.io/v1"
 _RATE_LIMIT_PER_MIN = 150
 # The API rejects a request resolving more than 100 identifiers.
 MAX_TICKERS_PER_REQUEST = 100
+# As-reported queries are far heavier server-side, and the cap is not
+# reachable there: 100 tickers x 6 metrics returns 503 in 1.7s, while 50
+# returns 188 rows in 0.4s. Measured 2026-09-20, after a training run
+# spent an hour retrying 503s and fetched nothing.
+AS_REPORTED_MAX_TICKERS = 50
 
 # Metrics that are flows (summed across quarters for a trailing figure)
 # rather than balances (read at a point in time).
@@ -131,6 +136,8 @@ def fetch_metrics(
     period: str = "latest",
     frequency: str = "quarterly",
     as_reported: bool = False,
+    chunk_size: int | None = None,
+    failed: list[str] | None = None,
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
     """{ticker: {metric: [observation, ...]}}, newest period first.
 
@@ -147,8 +154,9 @@ def fetch_metrics(
     """
     if not tickers or not metrics or not is_configured():
         return {}
+    size = chunk_size or (AS_REPORTED_MAX_TICKERS if as_reported else MAX_TICKERS_PER_REQUEST)
     out: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
-    for chunk in _chunks(sorted({t.upper() for t in tickers})):
+    for chunk in _chunks(sorted({t.upper() for t in tickers}), size):
         params: dict[str, Any] = {
             "tickers": ",".join(chunk),
             "metrics": ",".join(metrics),
@@ -159,6 +167,11 @@ def fetch_metrics(
             params["asReported"] = "true"
         body = _get("/financials/", params)
         if not body:
+            # Which names went unanswered matters to a caller that caches
+            # "already asked": without it, a failed chunk is indistinguishable
+            # from fifty companies the API does not cover.
+            if failed is not None:
+                failed.extend(chunk)
             continue
         for row in body.get("data") or []:
             try:
@@ -267,20 +280,29 @@ _PIT_METRICS = (
 )
 
 
-def fetch_point_in_time_ratios(tickers: list[str], as_of: date) -> dict[str, dict[str, float]]:
-    """{ticker: ratios known on `as_of`} — one request per 100 tickers.
+def fetch_point_in_time_ratios(
+    tickers: list[str], as_of: date
+) -> tuple[dict[str, dict[str, float]], list[str]]:
+    """({ticker: ratios known on `as_of`}, tickers actually answered for).
 
     Only what the filings said by that date: no restatement, no figure
-    from a filing that had not been published yet.
+    from a filing that had not been published yet. One request per
+    `AS_REPORTED_MAX_TICKERS`.
+
+    The second half of the pair is every ticker whose request came back —
+    with or without data. A company the API does not cover belongs there
+    (asked and answered: nothing); fifty companies lost to a 503 do not.
     """
     if not tickers or not is_configured():
-        return {}
+        return {}, []
+    unanswered: list[str] = []
     raw = fetch_metrics(
         tickers,
         list(_PIT_METRICS),
         period=f"asof:{as_of.isoformat()}",
         frequency="quarterly",
         as_reported=True,
+        failed=unanswered,
     )
     out: dict[str, dict[str, float]] = {}
     for ticker, by_metric in raw.items():
@@ -307,10 +329,12 @@ def fetch_point_in_time_ratios(tickers: list[str], as_of: date) -> dict[str, dic
         kept = {k: v for k, v in ratios.items() if v is not None}
         if kept:
             out[ticker] = kept
-    return out
+    lost = set(unanswered)
+    return out, [t.upper() for t in tickers if t.upper() not in lost]
 
 
 __all__ = [
+    "AS_REPORTED_MAX_TICKERS",
     "MAX_TICKERS_PER_REQUEST",
     "POINT_IN_TIME_RATIOS",
     "fetch_point_in_time_ratios",
