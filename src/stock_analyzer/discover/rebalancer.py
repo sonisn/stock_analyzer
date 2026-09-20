@@ -708,6 +708,14 @@ def format_accounts_block(
     return "\n".join(lines)
 
 
+# The Anthropic SDK raises rather than risk a silent HTTP timeout on a
+# long non-streaming request: `3600 * max_tokens / 128_000 > 600` seconds.
+# Anything at or above this must stream instead.
+MAX_NONSTREAMING_OUTPUT_TOKENS = 128_000 * 600 // 3600  # 21,333
+# What the rebalancer actually asks for: just under that ceiling.
+REBALANCER_MAX_OUTPUT_TOKENS = 21_000
+
+
 class RebalancePlanUnparseable(RuntimeError):
     """The model answered but the JSON did not survive.
 
@@ -791,11 +799,22 @@ class Rebalancer:
                 # on plans with WRITE_CALLs. 16000 then did the same on
                 # 2026-09-20 — a 16-holding book with CC and CSP context
                 # ran the JSON out at exactly 16,000 output tokens, and the
-                # whole plan was lost. Opus 5 allows 128k; 32000 is the
-                # ceiling that still returns inside the SDK's non-streaming
-                # timeout. `decide` now also detects the truncation rather
-                # than letting it read as "no plan".
-                "max_tokens": 32000,
+                # whole plan was lost.
+                #
+                # This call is NOT streamed, and the Anthropic SDK refuses a
+                # non-streaming request whose max_tokens implies more than
+                # ten minutes of generation:
+                #
+                #     3600 * max_tokens / 128_000 > 600   ->   ValueError
+                #
+                # which puts a hard ceiling at 21,333 tokens (see
+                # MAX_NONSTREAMING_OUTPUT_TOKENS). 32000 was tried on
+                # 2026-09-20 and the SDK rejected the request before it was
+                # sent. So this sits just under the ceiling; the real
+                # headroom above it needs `stream=True`, and until then
+                # `decide` detects truncation rather than letting a cut-off
+                # plan read as "no plan".
+                "max_tokens": REBALANCER_MAX_OUTPUT_TOKENS,
                 # Adaptive thinking requires temperature=1; the API rejects
                 # anything else with a 400.
                 "temperature": 1,

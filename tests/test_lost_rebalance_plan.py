@@ -175,3 +175,18 @@ def test_the_rebalance_appendix_keeps_its_at_a_glance_numbers():
     assert glance[3] == "3/3"
     assert "contracted book" in glance[4]
     assert "—" not in glance[1:4]
+
+
+def test_the_output_ceiling_stays_inside_what_the_sdk_will_send():
+    """32,000 was tried on 2026-09-20 and the SDK refused the request
+    outright — it rejects a non-streaming call whose max_tokens implies
+    more than ten minutes. Raising this again means streaming first."""
+    from stock_analyzer.discover import rebalancer as r
+
+    configured = r.REBALANCER_MAX_OUTPUT_TOKENS
+    assert configured <= r.MAX_NONSTREAMING_OUTPUT_TOKENS, (
+        f"max_tokens={configured} exceeds the SDK's non-streaming ceiling "
+        f"({r.MAX_NONSTREAMING_OUTPUT_TOKENS}); the request will be refused before it is sent"
+    )
+    # And it must still be above the value that demonstrably truncated.
+    assert configured > 16000

@@ -610,28 +610,38 @@ class RebalancePipeline(DiscoverPipeline):
                 ),
                 add_on_block=self._add_on_block(),
             )
-        except RebalancePlanUnparseable as e:
+        except Exception as e:  # noqa: BLE001 — see below
+            # Every way this call can fail has to land here, not just bad
+            # JSON. On 2026-09-20 the second attempt died on a ValueError
+            # from the SDK (max_tokens too high to run unstreamed), which
+            # the narrower `except RebalancePlanUnparseable` missed — so
+            # the run reported the failure internally and still sent an
+            # ordinary-looking email with an ordinary subject line.
+            unparseable = e if isinstance(e, RebalancePlanUnparseable) else None
             # Do NOT let this pass as "no plan". Everything downstream —
             # the premortem, the report, the database — reads an absent
             # plan as a decision not to trade, which is the opposite of
             # what happened.
             logger.error(
-                "Rebalance plan could not be parsed%s. The plan text is kept "
-                "and the report will say so. (%s)",
-                " — the model hit its output-token ceiling" if e.truncated else "",
+                "The rebalance plan was not produced (%s: %s). The report will "
+                "say so rather than render an empty action list.",
+                type(e).__name__,
                 e,
+                exc_info=unparseable is None,
             )
             self.state["rebalance_plan"] = None
-            self.state["rebalance_text"] = e.raw_text
-            self.state["rebalance_failed"] = (
-                "The rebalancer's plan was cut off before it finished"
-                if e.truncated
-                else "The rebalancer's plan could not be read"
-            )
+            self.state["rebalance_text"] = unparseable.raw_text if unparseable else ""
+            if unparseable is None:
+                note = f"The rebalancer did not return a plan ({type(e).__name__})"
+            elif unparseable.truncated:
+                note = "The rebalancer's plan was cut off before it finished"
+            else:
+                note = "The rebalancer's plan could not be read"
+            self.state["rebalance_failed"] = note
             self.state["harvest_candidates"] = harvest_report_data(
                 self.state.get("harvest_candidates_obj") or []
             )
-            return StepOutput(content=f"rebalance: PLAN LOST ({e})")
+            return StepOutput(content=f"rebalance: PLAN LOST ({type(e).__name__}: {e})")
         try:
             plan, cc_warnings = apply_cc_plan_validation(
                 plan,
