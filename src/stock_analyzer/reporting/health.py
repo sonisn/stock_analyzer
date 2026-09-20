@@ -72,6 +72,8 @@ class PortfolioHealth:
     # call are promised: selling them turns the call naked, so no sale
     # suggestion here is free.
     covered_calls: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # {ticker: a costed roll that keeps the shares} — see discover/cc_roll.
+    roll_ideas: dict[str, str] = field(default_factory=dict)
     # {ticker: {account: units}} — a call can only be written against
     # shares sitting in one account, so coverage is an per-account fact.
     units_by_account: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -124,6 +126,7 @@ def build_portfolio_health(
     data_notes: list[str] | None = None,
     stale_accounts: list[str] | None = None,
     covered_calls: dict[str, dict[str, Any]] | None = None,
+    roll_ideas: dict[str, str] | None = None,
     optionable: set[str] | None = None,
     options_accounts: tuple[str, ...] = (),
     world_markets: list[dict[str, Any]] | None = None,
@@ -145,6 +148,7 @@ def build_portfolio_health(
     health.world_markets.extend(world_markets or [])
     health.covered_calls.update(covered_calls or {})
     health.options_accounts = tuple(options_accounts or ())
+    health.roll_ideas.update(roll_ideas or {})
     # Only things a call can actually be written against. Without this,
     # SPAXX showed 208 writable contracts, a 401(k) commingled pool
     # showed 40 shares of headroom, and Taronis Technologies — whose
@@ -780,7 +784,14 @@ def assignment_items(h: PortfolioHealth) -> list[dict[str, Any]]:
                 "text": (
                     f"{ticker} is {to_strike:.0f}% below your ${strike:,.0f} strike expiring "
                     f"{rec.get('next_expiry')}: a rally through it calls away {committed:,.0f} "
-                    f"shares. Roll the call up or out if you mean to keep them."
+                    f"shares."
+                    # A costed roll when one was found, so "roll it up and
+                    # out" is an instruction rather than a direction.
+                    + (
+                        f" {h.roll_ideas[ticker]}"
+                        if h.roll_ideas.get(ticker)
+                        else " Roll the call up or out if you mean to keep them."
+                    )
                 ),
             }
         )

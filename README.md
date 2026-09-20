@@ -412,6 +412,34 @@ for a year. Chain rows carry **premium per day** beside the quote, since
 "further out pays more" is true per contract and false per day — $400
 over 30 days is $13.33/day, while $1,000 over 120 days is $8.33/day.
 
+### Rolling one the stock has caught up with
+
+"Roll it up and out" is the right instruction and a useless one alone: at
+which strike, into which expiry, and does it still pay after buying the
+near call back? `discover/cc_roll.py` computes it — buy-back priced at
+the **ask** and the replacement sold at the **bid**, the sides actually
+available, so nothing that only works at mid prices survives. The
+replacement must clear the same 15% floor and delta ceiling a new write
+would, and lift the strike at least 5%, since raising a cap by a couple
+of percent is churn dressed up as risk management.
+
+Among rolls that pay for themselves it picks the **soonest**, not the
+largest credit. Credit grows with time to expiry, so ranking on it alone
+always answers "sell a 2028 call" — the most money and the longest
+surrender of decisions. When nothing inside the writing window covers the
+buy-back, the longer-dated one that does is offered with the lock-in
+stated rather than buried, and if nothing pays at all it says so instead
+of inventing a trade.
+
+The assignment warning in the daily email carries the costed roll, so
+today it reads: *"TSLA is 10% below your $400 strike expiring 2026-12-18:
+a rally through it calls away 200 shares. Nothing in the usual 120-day
+window pays for buying the TSLA $400 call back. Roll the 2 TSLA $400
+call(s) up to $600 2027-09-17, 273 days further out for a net credit of
+$110. That lifts the cap from +10% to +65% above today's $364.27 and
+keeps the shares, capped until 2027-09-17."* Chains are fetched only for
+positions already near their strike.
+
 ## Where new money buys a second payoff
 
 A part-lot earns nothing: 62 uncovered AVGO shares are 62 shares of

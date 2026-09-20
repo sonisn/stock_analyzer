@@ -59,6 +59,7 @@ def portfolio_health(
     data_notes: list[str] | None = None,
     stale_accounts: list[str] | None = None,
     covered_calls: dict[str, dict] | None = None,
+    roll_ideas: dict[str, str] | None = None,
     optionable: set[str] | None = None,
     world_markets: list[dict] | None = None,
 ):
@@ -166,6 +167,7 @@ def portfolio_health(
             data_notes=data_notes,
             stale_accounts=stale_accounts,
             covered_calls=covered_calls,
+            roll_ideas=roll_ideas,
             optionable=optionable,
             options_accounts=settings.options_accounts,
             world_markets=world_markets,
@@ -182,6 +184,60 @@ def portfolio_health(
     except Exception as e:  # noqa: BLE001
         logger.warning("Portfolio health block failed (%s) — sending the email without it", e)
         return None
+
+
+def roll_ideas_for(
+    settings: Settings,
+    covered_calls: dict[str, dict],
+    prices: dict[str, float],
+) -> dict[str, str]:
+    """A costed roll for every written call the stock has run at.
+
+    Only for positions close to their strike — a chain fetch per holding
+    would be a lot of requests to tell you that a call 40% out of the
+    money is fine. Never raises: a missing chain costs the suggestion,
+    not the email.
+    """
+    from ..data.options_chain import fetch_chains
+    from ..discover.cc_roll import roll_suggestion
+    from ..reporting.health import ASSIGNMENT_WATCH_PCT
+
+    at_risk = []
+    for ticker, rec in (covered_calls or {}).items():
+        strike, price = rec.get("lowest_strike"), prices.get(ticker.upper())
+        if not strike or not price:
+            continue
+        if 0 <= (strike / price - 1) * 100 <= ASSIGNMENT_WATCH_PCT:
+            at_risk.append(ticker)
+    if not at_risk:
+        return {}
+    try:
+        # Wide window: a roll that pays often sits past the band new
+        # calls are written in, and the suggestion says so when it does.
+        chains = fetch_chains(at_risk, dte_min=30, dte_max=500)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Could not fetch chains for a roll suggestion (%s)", e)
+        return {}
+    out = {}
+    for ticker in at_risk:
+        chain = chains.get(ticker)
+        if chain is None or chain.source == "missing":
+            continue
+        try:
+            idea = roll_suggestion(
+                ticker=ticker,
+                obligation=covered_calls[ticker],
+                chain=chain,
+                min_upside_pct=settings.cc_min_upside_pct,
+                delta_max=settings.cc_target_delta_max,
+                dte_max=settings.cc_dte_max,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Roll suggestion for %s failed (%s)", ticker, e)
+            continue
+        if idea:
+            out[ticker] = idea
+    return out
 
 
 def record_portfolio_snapshot(
@@ -342,6 +398,7 @@ def main() -> None:
         holdings,
         ticker_data=agent.ticker_data,
         prices=prices,
+        roll_ideas=roll_ideas_for(settings, covered_calls, prices),
         data_notes=price_notes,
         stale_accounts=stale,
         covered_calls=covered_calls,
