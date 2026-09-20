@@ -9,7 +9,11 @@ from dotenv import load_dotenv
 from ..agents.portfolio import PortfolioAgent
 from ..config import Settings
 from ..data import finnhub, yf_gateway
-from ..data.brokerage import fetch_portfolio_holdings
+from ..data.brokerage import (
+    fetch_account_sync_status,
+    fetch_portfolio_holdings,
+    stale_account_notes,
+)
 from ..data.chart_img import fetch_charts
 from ..data.pricing import quotes_from_ticker_data, reconcile_prices
 from ..logging import get_logger
@@ -50,6 +54,7 @@ def portfolio_health(
     ticker_data: dict[str, dict] | None = None,
     prices: dict[str, float] | None = None,
     data_notes: list[str] | None = None,
+    stale_accounts: list[str] | None = None,
 ):
     """The deterministic PortfolioHealth (reporting/health.py) with the live
     data sources wired in. None when disabled or on any failure — the daily
@@ -150,6 +155,7 @@ def portfolio_health(
             holdings,
             prices=prices,
             data_notes=data_notes,
+            stale_accounts=stale_accounts,
             max_sector_pct=settings.discover_max_sector_pct,
             sector_of=sector_of,
             held_thesis_checks=held_thesis_checks,
@@ -288,12 +294,17 @@ def main() -> None:
     # stale brokerage feed can't inflate the value, the sector weights or
     # the snapshot the quarterly vs-SPY return is built from.
     prices, price_notes = reconcile_prices(holdings, quotes_from_ticker_data(agent.ticker_data))
+    # A broker that has stopped syncing reports July's shares, cash and
+    # prices as if they were today's, so name the account instead of
+    # quietly valuing stale data.
+    stale = stale_account_notes(fetch_account_sync_status())
     health = portfolio_health(
         settings,
         holdings,
         ticker_data=agent.ticker_data,
         prices=prices,
         data_notes=price_notes,
+        stale_accounts=stale,
     )
     record_daily_suggestions(settings, health)
     record_portfolio_snapshot(settings, holdings, prices=prices)

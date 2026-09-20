@@ -308,6 +308,17 @@ Unrealized P/L is measured only over positions that have both a value and
 a cost basis, so a holding transferred in without one is no longer
 counted as pure profit.
 
+A price that far off the market is usually the symptom, not the problem.
+SnapTrade reports when each broker last refreshed an account, and on
+2026-09-20 the HSA's last successful holdings sync was 2026-07-06 — 75
+days earlier — so its share counts, cash and transaction history were
+frozen at July's values too, not just its prices. Any account that has
+not synced in `STALE_SYNC_DAYS` (4, so a long weekend passes quietly) now
+leads the daily email's "Decide today" list and the rebalance "At a
+glance" flags with the date it went dark and the one fix for it:
+reconnect it in SnapTrade. Until then, every number for that account
+describes the day it stopped syncing.
+
 ## Accounts
 
 Cash only funds buys (and put collateral) in its own account, so the

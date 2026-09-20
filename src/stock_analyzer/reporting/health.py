@@ -67,6 +67,10 @@ class PortfolioHealth:
     # Data-quality notes (a stale account price, a missing cost basis):
     # things that make the numbers above worth a second look.
     data_notes: list[str] = field(default_factory=list)
+    # Accounts the broker has stopped syncing. Not a footnote like the
+    # notes above — until the connection is restored every number for
+    # that account describes the day it went dark, so it leads the email.
+    stale_accounts: list[str] = field(default_factory=list)
 
 
 def aggregate_positions(
@@ -101,6 +105,7 @@ def build_portfolio_health(
     *,
     prices: dict[str, float] | None = None,
     data_notes: list[str] | None = None,
+    stale_accounts: list[str] | None = None,
     max_sector_pct: float = 30.0,
     sector_of: Callable[[list[str]], dict[str, str]] | None = None,
     held_thesis_checks: Callable[[set[str]], list[dict[str, Any]]] | None = None,
@@ -115,6 +120,7 @@ def build_portfolio_health(
     for sale proceeds; it is only called when something suggests a sale."""
     health = PortfolioHealth(max_sector_pct=max_sector_pct)
     health.data_notes.extend(data_notes or [])
+    health.stale_accounts.extend(stale_accounts or [])
     positions = aggregate_positions(holdings, prices)
     tickers = sorted(positions)
 
@@ -443,6 +449,12 @@ def render_health_html(h: PortfolioHealth) -> str:
             + ", ".join(f"{html.escape(r['sector'])} {r['pct']:.0f}%" for r in top)
             + "</p>"
         )
+    if h.stale_accounts:
+        parts.append(
+            '<p style="font-size:13px;color:#9c1010"><b>Stale account data:</b> '
+            + html.escape("; ".join(h.stale_accounts))
+            + "</p>"
+        )
     if h.data_notes:
         parts.append(
             '<p style="font-size:13px;color:#9c1010">Check the data: '
@@ -508,6 +520,8 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
         lead = " If you do sell, reinvest" if conditional else " Reinvest"
         return f"{lead} {money} in {format_idea(idea)}."
 
+    for note in h.stale_accounts:
+        add(1, None, "STALE DATA", f"Reconnect the account: {note}.")
     for r in h.drawdowns:
         add(
             2,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
 from snaptrade_client import SnapTrade
@@ -215,6 +216,105 @@ def account_labels(accounts: list[Any]) -> dict[str, str]:
                 label = f"{label} {str(account_id)[-4:]}"
         out[str(account_id)] = label
     return out
+
+
+# How long a broker connection may go without a successful holdings sync
+# before the reports call it out. A long weekend is normal; four days is
+# not. On 2026-09-20 the Schwab HSA had last synced 2026-07-06 — 75 days
+# — so its share counts, cash and prices were all frozen at July values
+# while the other two accounts updated nightly.
+STALE_SYNC_DAYS = 4
+
+
+def _parse_sync_time(value: Any) -> datetime | None:
+    """SnapTrade dates holdings syncs to the second and transaction syncs
+    to the day; both arrive as strings. Everything is UTC."""
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=UTC)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def account_sync_status(
+    accounts: list[Any], *, now: datetime | None = None
+) -> dict[str, dict[str, Any]]:
+    """{label: {holdings_synced_at, transactions_synced_at, days_stale}}.
+
+    `days_stale` is how long ago the broker last refreshed the holdings,
+    or None when SnapTrade reports no sync time at all — an unknown sync
+    is not evidence of a stale one, so it is never flagged.
+    """
+    now = now or datetime.now(UTC)
+    labels = account_labels(accounts)
+    out: dict[str, dict[str, Any]] = {}
+    for account in accounts:
+        account_id = _field(account, "id")
+        if not account_id:
+            continue
+        sync = _field(account, "sync_status") or {}
+        holdings_sync = _parse_sync_time(
+            _field(_field(sync, "holdings") or {}, "last_successful_sync")
+        )
+        txn_sync = _parse_sync_time(
+            _field(_field(sync, "transactions") or {}, "last_successful_sync")
+        )
+        out[labels[str(account_id)]] = {
+            "holdings_synced_at": holdings_sync,
+            "transactions_synced_at": txn_sync,
+            "days_stale": (now - holdings_sync) / timedelta(days=1) if holdings_sync else None,
+        }
+    return out
+
+
+def stale_account_notes(
+    sync_status: dict[str, dict[str, Any]], *, max_days: float = STALE_SYNC_DAYS
+) -> list[str]:
+    """One line per account the broker has stopped refreshing.
+
+    A dead connection is not a stale price — the share counts, the cash
+    and the transaction history are frozen too, so anything the run
+    reports for that account describes the day it stopped syncing.
+    """
+    notes = []
+    for label, status in sorted(sync_status.items()):
+        days = status.get("days_stale")
+        if days is None or days < max_days:
+            continue
+        when = status["holdings_synced_at"].date().isoformat()
+        notes.append(
+            f"{label} last synced {when}, {days:.0f} days ago — its holdings, "
+            "cash and prices are frozen; reconnect it in SnapTrade"
+        )
+    return notes
+
+
+def fetch_account_sync_status() -> dict[str, dict[str, Any]]:
+    """`account_sync_status` for the connected accounts. Never raises — a
+    freshness check must not be what takes the daily report down."""
+    try:
+        user_id, user_secret = _credentials()
+        accounts = (
+            _unwrap(
+                _client().account_information.list_user_accounts(
+                    user_id=user_id, user_secret=user_secret
+                )
+            )
+            or []
+        )
+    except Exception as e:
+        logger.warning("Could not check how fresh the brokerage data is: %s", e)
+        return {}
+    status = account_sync_status(accounts)
+    for note in stale_account_notes(status):
+        logger.warning("%s", note)
+    return status
 
 
 def fetch_account_meta() -> dict[str, dict[str, Any]]:

@@ -67,6 +67,7 @@ def append_rebalance_glance(
     thesis_checks: list[dict[str, Any]] | None,
     harvest_candidates: list[dict[str, Any]] | None,
     stop_loss_warnings: list[str] | None,
+    stale_accounts: list[str] | None = None,
 ) -> None:
     """'At a glance' under the status banner: the plan's actions in order,
     then what else needs a decision. The full plan, reviews and history
@@ -74,6 +75,10 @@ def append_rebalance_glance(
     plan = rebalance_plan if isinstance(rebalance_plan, RebalancePlan) else None
     rows = [[a.action, a.ticker, a.sizing] for a in (plan.actions if plan else [])]
     flags: list[str] = []
+    # First, because a frozen connection means the shares, cash and
+    # collateral the plan below was sized against are out of date.
+    for note in stale_accounts or []:
+        flags.append(f"Stale account data — {note}.")
     for c in thesis_checks or []:
         if c["status"] == "BROKEN":
             flags.append(
@@ -126,6 +131,7 @@ def append_rebalance_overview(
     rebalance_plan: object = None,
     harvest_candidates: list[dict[str, Any]] | None = None,
     stop_loss_warnings: list[str] | None = None,
+    stale_accounts: list[str] | None = None,
     macro_summary: str,
 ) -> None:
     sections.extend(
@@ -147,6 +153,7 @@ def append_rebalance_overview(
         thesis_checks=thesis_checks,
         harvest_candidates=harvest_candidates,
         stop_loss_warnings=stop_loss_warnings,
+        stale_accounts=stale_accounts,
     )
 
     if dashboard_rows:
@@ -600,6 +607,7 @@ def build_rebalance_sections(
     cc_warnings: list[str] | None = None,
     cc_slippage_buffer: float = 0.10,
     stop_loss_warnings: list[str] | None = None,
+    stale_accounts: list[str] | None = None,
     csp_summary: dict[str, Any] | None = None,
     csp_warnings: list[str] | None = None,
     reinvest: dict[str, Any] | None = None,
@@ -649,6 +657,7 @@ def build_rebalance_sections(
         rebalance_plan=rebalance_plan,
         harvest_candidates=harvest_candidates,
         stop_loss_warnings=stop_loss_warnings,
+        stale_accounts=stale_accounts,
         macro_summary=macro_summary,
     )
     append_rebalance_plan_body(

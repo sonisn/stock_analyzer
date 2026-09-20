@@ -32,7 +32,13 @@ from dotenv import load_dotenv
 
 from ..config import Settings
 from ..data import finnhub, yf_gateway
-from ..data.brokerage import fetch_account_cash, fetch_account_meta, fetch_portfolio_holdings
+from ..data.brokerage import (
+    fetch_account_cash,
+    fetch_account_meta,
+    fetch_account_sync_status,
+    fetch_portfolio_holdings,
+    stale_account_notes,
+)
 from ..data.finnhub import batch_finnhub_signals
 from ..data.fundamentals import batch_fundamentals
 from ..data.insider_selling import insider_selling_mentions
@@ -263,6 +269,10 @@ class RebalancePipeline(DiscoverPipeline):
         position_splits = _build_position_splits(holdings, account_meta)
         account_cash = fetch_account_cash()
         cash = sum(account_cash.values()) if account_cash else None
+        # Cash and share counts from a broker that has stopped syncing are
+        # as old as the connection: the plan's buys and put collateral
+        # would be sized against numbers from that day.
+        self.state["stale_accounts"] = stale_account_notes(fetch_account_sync_status())
         self.state["account_cash"] = account_cash
         self.state["holdings_positions"] = positions
         self.state["account_meta"] = account_meta
@@ -801,6 +811,7 @@ class RebalancePipeline(DiscoverPipeline):
             csp_warnings=self.state.get("csp_warnings") or [],
             reinvest=reinvest,
             stop_loss_warnings=self.state.get("stop_loss_warnings") or [],
+            stale_accounts=self.state.get("stale_accounts") or [],
             usage=TRACKER.report_data(),
         )
         html_body = render_html_email(sections, chart_cids)
