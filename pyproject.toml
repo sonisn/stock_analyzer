@@ -64,6 +64,7 @@ train-model = "stock_analyzer.cli.train_model:main"
 model-review = "stock_analyzer.cli.model_review:main"
 quarterly-review = "stock_analyzer.cli.quarterly_review:main"
 tax-planner = "stock_analyzer.cli.tax_planner:main"
+replay-rebalance = "stock_analyzer.cli.replay_rebalance:main"
 
 [build-system]
 requires = ["hatchling"]

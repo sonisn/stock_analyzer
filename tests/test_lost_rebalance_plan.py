@@ -205,3 +205,40 @@ def test_the_timeout_actually_reaches_the_model():
     source = inspect.getsource(r.Rebalancer.__init__)
     assert '"timeout": REBALANCER_TIMEOUT_S' in source
     assert '"max_tokens": REBALANCER_MAX_OUTPUT_TOKENS' in source
+
+
+def test_replay_reads_a_stored_run_back(tmp_path):
+    """The replay tool exists so a change to this one call costs $0.41
+    instead of a full pipeline — it has to find the stored inputs."""
+    from stock_analyzer.cli.replay_rebalance import load_inputs
+    from stock_analyzer.db.repository import insert_run, insert_run_outputs
+    from stock_analyzer.db.session import get_session
+    from stock_analyzer.db.tables import HoldingReviewRow
+
+    db = str(tmp_path / "r.db")
+    with get_session(db) as s:
+        run_id = insert_run(
+            s,
+            universe_size=1,
+            survivors=1,
+            picks=1,
+            opus_model="o",
+            sonnet_model="s",
+            cash_budget=None,
+            kind="rebalance",
+        )
+        s.add(HoldingReviewRow(run_id=run_id, ticker="NVDA", verdict="HOLD", review_text="keep"))
+        insert_run_outputs(
+            s,
+            run_id,
+            ranker_full="PICK 1: LLY",
+            redteam_full="",
+            sizer_full="",
+            holdings_summary="",
+        )
+        s.commit()
+
+    found_id, reviews, ranker = load_inputs(db, None)
+    assert found_id == run_id
+    assert reviews == {"NVDA": "keep"}
+    assert ranker == "PICK 1: LLY"
