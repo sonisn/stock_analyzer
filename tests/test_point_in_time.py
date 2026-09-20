@@ -105,7 +105,10 @@ def test_the_cache_is_used_before_the_api(tmp_path, monkeypatch):
     monkeypatch.setattr(
         wisesheets,
         "fetch_point_in_time_ratios",
-        lambda tickers, as_of: calls.append(as_of) or {"NVDA": {"return_on_equity_pit": 0.7}},
+        lambda tickers, as_of: (
+            calls.append((as_of, tuple(tickers)))
+            or {t: {"return_on_equity_pit": 0.7} for t in tickers}
+        ),
     )
     dates = [date(2025, 1, 31), date(2025, 2, 28)]
     first = fetch_history(["NVDA"], dates, cache_dir=str(tmp_path))
@@ -113,6 +116,73 @@ def test_the_cache_is_used_before_the_api(tmp_path, monkeypatch):
     second = fetch_history(["NVDA"], dates, cache_dir=str(tmp_path))
     assert len(calls) == 2  # nothing re-fetched
     assert second == first
+
+
+def test_a_wider_universe_fetches_only_the_names_the_cache_lacks(tmp_path, monkeypatch):
+    # The defect this pins: keyed on the date alone, a file written for 20
+    # tickers was served whole to a 500-ticker run, which then
+    # median-filled 96% of its rows and measured nothing.
+    from stock_analyzer.data import wisesheets
+
+    calls = []
+    monkeypatch.setattr(wisesheets, "is_configured", lambda: True)
+    monkeypatch.setattr(wisesheets, "quota", lambda: {"monthly_remaining": 5000})
+    monkeypatch.setattr(
+        wisesheets,
+        "fetch_point_in_time_ratios",
+        lambda tickers, as_of: (
+            calls.append(tuple(tickers)) or {t: {"return_on_equity_pit": 0.5} for t in tickers}
+        ),
+    )
+    dates = [date(2025, 1, 31)]
+    fetch_history(["AAA", "BBB"], dates, cache_dir=str(tmp_path))
+    assert calls == [("AAA", "BBB")]
+
+    out = fetch_history(["AAA", "BBB", "CCC", "DDD"], dates, cache_dir=str(tmp_path))
+    assert calls[-1] == ("CCC", "DDD")  # only the new names
+    assert sorted(out[date(2025, 1, 31)]) == ["AAA", "BBB", "CCC", "DDD"]
+
+    fetch_history(["AAA", "CCC"], dates, cache_dir=str(tmp_path))
+    assert len(calls) == 2  # everything already known
+
+
+def test_a_ticker_the_api_does_not_cover_is_not_re_requested(tmp_path, monkeypatch):
+    from stock_analyzer.data import wisesheets
+
+    calls = []
+    monkeypatch.setattr(wisesheets, "is_configured", lambda: True)
+    monkeypatch.setattr(wisesheets, "quota", lambda: {"monthly_remaining": 5000})
+    # TSM is a foreign private issuer: asked for, never returned.
+    monkeypatch.setattr(
+        wisesheets,
+        "fetch_point_in_time_ratios",
+        lambda tickers, as_of: (
+            calls.append(tuple(tickers))
+            or {t: {"return_on_equity_pit": 0.5} for t in tickers if t != "TSM"}
+        ),
+    )
+    dates = [date(2025, 1, 31)]
+    fetch_history(["NVDA", "TSM"], dates, cache_dir=str(tmp_path))
+    out = fetch_history(["NVDA", "TSM"], dates, cache_dir=str(tmp_path))
+    assert len(calls) == 1  # the absence is cached too
+    assert "TSM" not in out[date(2025, 1, 31)]
+
+
+def test_a_date_that_returns_nothing_is_retried_next_run(tmp_path, monkeypatch):
+    # A denied date (the plan's 5-year window) or an outage must not be
+    # cached as "asked and answered".
+    from stock_analyzer.data import wisesheets
+
+    calls = []
+    monkeypatch.setattr(wisesheets, "is_configured", lambda: True)
+    monkeypatch.setattr(wisesheets, "quota", lambda: {"monthly_remaining": 5000})
+    monkeypatch.setattr(
+        wisesheets, "fetch_point_in_time_ratios", lambda tickers, as_of: calls.append(as_of) or {}
+    )
+    dates = [date(2021, 10, 31)]
+    assert fetch_history(["NVDA"], dates, cache_dir=str(tmp_path)) == {}
+    fetch_history(["NVDA"], dates, cache_dir=str(tmp_path))
+    assert len(calls) == 2
 
 
 def test_a_thin_quota_stops_early_instead_of_draining_it(tmp_path, monkeypatch, caplog):

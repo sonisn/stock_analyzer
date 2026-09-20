@@ -51,22 +51,41 @@ def _cache_path(cache_dir: str, as_of: date) -> Path:
     return Path(cache_dir).expanduser() / "pit_fundamentals" / f"{as_of.isoformat()}.json"
 
 
-def _load_cached(cache_dir: str, as_of: date) -> dict[str, dict[str, float]] | None:
+def _load_cached(cache_dir: str, as_of: date) -> tuple[dict[str, dict[str, float]], set[str]]:
+    """({ticker: ratios}, tickers already asked about) for one as-of date.
+
+    The second half is what makes the cache safe to reuse across
+    universes. Keyed on the date alone, a file written while testing 20
+    tickers was served whole to a 500-ticker run, which then median-filled
+    96% of its rows and measured nothing. `asked` records who was
+    requested, so a later run fetches only the names it is missing — and
+    a ticker Wisesheets does not cover stays cached as a known absence
+    rather than being re-requested every time.
+    """
     path = _cache_path(cache_dir, as_of)
     if not path.exists():
-        return None
+        return {}, set()
     try:
-        return json.loads(path.read_text())
+        body = json.loads(path.read_text())
     except (OSError, ValueError) as e:
         logger.warning("Ignoring unreadable point-in-time cache %s (%s)", path, e)
-        return None
+        return {}, set()
+    if isinstance(body, dict) and "values" in body:
+        values = body.get("values") or {}
+        return values, set(body.get("tickers") or values)
+    # Files written before the universe was recorded: only the tickers
+    # they contain can be trusted as asked-about.
+    values = body if isinstance(body, dict) else {}
+    return values, set(values)
 
 
-def _store(cache_dir: str, as_of: date, values: dict[str, dict[str, float]]) -> None:
+def _store(
+    cache_dir: str, as_of: date, values: dict[str, dict[str, float]], asked: set[str]
+) -> None:
     path = _cache_path(cache_dir, as_of)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(values))
+        path.write_text(json.dumps({"tickers": sorted(asked), "values": values}))
     except OSError as e:
         logger.warning("Could not cache point-in-time fundamentals (%s)", e)
 
@@ -89,21 +108,24 @@ def fetch_history(
     Stops early — with what it has — rather than spending the month's
     remaining quota down to zero.
     """
+    wanted = sorted({t.upper() for t in tickers})
     out: dict[date, dict[str, dict[str, float]]] = {}
-    missing = []
+    todo: dict[date, list[str]] = {}
     for as_of in as_of_dates:
-        cached = _load_cached(cache_dir, as_of)
-        if cached is not None:
-            out[as_of] = cached
-        else:
-            missing.append(as_of)
-    if not missing:
-        return out
+        cached, asked = _load_cached(cache_dir, as_of)
+        out[as_of] = cached
+        outstanding = [t for t in wanted if t not in asked]
+        if outstanding:
+            todo[as_of] = outstanding
+    if not todo:
+        return {d: v for d, v in out.items() if v}
     if not wisesheets.is_configured():
         logger.warning("WISESHEETS_API_KEY not set — no point-in-time fundamentals")
-        return out
+        return {d: v for d, v in out.items() if v}
 
-    chunks = max(1, -(-len(tickers) // wisesheets.MAX_TICKERS_PER_REQUEST))
+    missing = sorted(todo)
+    widest = max(len(v) for v in todo.values())
+    chunks = max(1, -(-widest // wisesheets.MAX_TICKERS_PER_REQUEST))
     quota = wisesheets.quota() or {}
     remaining = quota.get("monthly_remaining")
     if remaining is not None:
@@ -119,12 +141,25 @@ def fetch_history(
             missing = missing[-affordable:] if affordable else []
 
     for as_of in missing:
-        values = wisesheets.fetch_point_in_time_ratios(tickers, as_of)
-        if values:
-            _store(cache_dir, as_of, values)
-            out[as_of] = values
-        logger.info("Point-in-time fundamentals %s: %d tickers", as_of, len(values))
-    return out
+        outstanding = todo[as_of]
+        values = wisesheets.fetch_point_in_time_ratios(outstanding, as_of)
+        if not values:
+            # Nothing came back (a denied date, or an outage): don't
+            # record these names as asked, so the next run retries them.
+            logger.info("Point-in-time fundamentals %s: nothing returned", as_of)
+            continue
+        merged = {**out.get(as_of, {}), **values}
+        _, asked = _load_cached(cache_dir, as_of)
+        _store(cache_dir, as_of, merged, asked | set(outstanding))
+        out[as_of] = merged
+        logger.info(
+            "Point-in-time fundamentals %s: %d of %d tickers (%d cached)",
+            as_of,
+            len(values),
+            len(outstanding),
+            len(merged) - len(values),
+        )
+    return {d: v for d, v in out.items() if v}
 
 
 def to_frame(history: dict[date, dict[str, dict[str, float]]]) -> pd.DataFrame:
