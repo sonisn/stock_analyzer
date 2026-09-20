@@ -437,6 +437,13 @@ confirmation a sale can have, and leaving that out would make it a
 bull-only footnote. A "Contracted book" table lists the holdings that tag
 it, fastest-growing first.
 
+Discovery sees it too: a `contracted_book` step runs in the enrichment
+block on the screen's survivors, and the figure goes into the Analyst
+payload with an instruction to weigh it above analyst targets when the
+two disagree — while treating `null` as "not disclosed" rather than
+evidence against a name. On a 25-name survivor sample, 10 tagged a book,
+led by DELL +200% and CRWD +49% over a year.
+
 Every fact carries the date it was **filed**, so `as_of` gives the book
 as it was known on a past date — point-in-time by construction, which
 yfinance's forward estimates are not. Coverage is partial by nature:

@@ -1149,6 +1149,38 @@ class DiscoverPipeline:
             )
         )
 
+    def step_contracted_book(self, step_input: StepInput) -> StepOutput:
+        """Signed orders each survivor has not delivered yet (data/backlog).
+
+        The only forward number in the payload that is not a forecast:
+        analyst targets, forward P/E and EPS revisions are all opinions
+        about the future, while remaining performance obligations are
+        contracts already signed. Free, from the SEC's XBRL API.
+
+        Roughly half of any universe never tags the concept, so this is
+        evidence where present and never a filter — a name without a book
+        is not penalized for it.
+        """
+        survivors = [c["ticker"] for c in (self.state.get("survivors") or [])]
+        if not survivors:
+            self.state["contracted_book"] = {}
+            return StepOutput(content="contracted_book: no survivors")
+        try:
+            from ..data.backlog import batch_rpo
+
+            books = batch_rpo(survivors)
+        except Exception as e:  # noqa: BLE001 — context, not a dependency
+            logger.warning("Contracted-book fetch failed (%s) — continuing without it", e)
+            books = {}
+        self.state["contracted_book"] = books
+        growing = sum(1 for b in books.values() if (b.get("yoy_pct") or 0) > 0)
+        return StepOutput(
+            content=(
+                f"contracted_book: {len(books)}/{len(survivors)} tag one, "
+                f"{growing} growing year-on-year"
+            )
+        )
+
     def step_analyst(self, step_input: StepInput) -> StepOutput:
         survivors = self.state.get("survivors") or []
         if not survivors:
@@ -1202,6 +1234,8 @@ class DiscoverPipeline:
                 "recommendation_trend": fh.get("recommendation_trend") or [],
                 "analyst_price_targets": fh.get("price_targets") or {},
                 "eps_revisions": eps_revisions.get(ticker) or {},
+                # Contracted, not forecast: revenue already under order.
+                "contracted_book": (self.state.get("contracted_book") or {}).get(ticker),
                 "share_trades": share_trades.get(ticker),
                 "risk_factors_10k": _trim(
                     (risk_factors.get(ticker) or {}).get("risk_factors"),
@@ -1843,6 +1877,7 @@ class DiscoverPipeline:
                         Step(name="peer_comparison", executor=self.step_peer_comparison),
                         Step(name="earnings_transcripts", executor=self.step_earnings_transcripts),
                         Step(name="finnhub_signals", executor=self.step_finnhub_signals),
+                        Step(name="contracted_book", executor=self.step_contracted_book),
                         name="enrichment",
                     ),
                     Step(name="analyst", executor=self.step_analyst),

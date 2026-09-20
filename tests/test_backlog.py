@@ -216,3 +216,62 @@ def test_the_table_ranks_by_the_fastest_growing_book():
     assert "Contracted book (order backlog)" in html
     assert html.index("AVGO") < html.index("POWL")
     assert "$179.2B" in html and "+552%" in html
+
+
+# --- the discover pipeline sees it too --------------------------------------------
+
+
+class _FakeWorkflow:
+    """Just enough of the discover workflow to exercise the step."""
+
+    def __init__(self, survivors):
+        self.state = {"survivors": [{"ticker": t} for t in survivors]}
+
+    step_contracted_book = None  # bound below
+
+
+def _step(monkeypatch, survivors, books, *, boom=False):
+    from stock_analyzer.cli.discover import DiscoverPipeline
+    from stock_analyzer.data import backlog
+
+    def fake_batch(tickers, as_of=None):
+        if boom:
+            raise RuntimeError("SEC down")
+        return {t: books[t] for t in tickers if t in books}
+
+    monkeypatch.setattr(backlog, "batch_rpo", fake_batch)
+    wf = _FakeWorkflow(survivors)
+    return DiscoverPipeline.step_contracted_book(wf, None), wf
+
+
+def test_the_step_fetches_books_for_survivors(monkeypatch):
+    books = {
+        "AVGO": {"value": 179.2e9, "yoy_pct": 552.0},
+        "TSLA": {"value": 10.1e9, "yoy_pct": -3.0},
+    }
+    out, wf = _step(monkeypatch, ["AVGO", "TSLA", "BE"], books)
+    assert set(wf.state["contracted_book"]) == {"AVGO", "TSLA"}
+    assert "2/3 tag one" in out.content
+    assert "1 growing" in out.content  # TSLA's is shrinking
+
+
+def test_no_survivors_needs_no_request(monkeypatch):
+    out, wf = _step(monkeypatch, [], {})
+    assert wf.state["contracted_book"] == {}
+    assert "no survivors" in out.content
+
+
+def test_a_failed_fetch_does_not_stop_the_run(monkeypatch):
+    out, wf = _step(monkeypatch, ["AVGO"], {}, boom=True)
+    assert wf.state["contracted_book"] == {}
+    assert "0/1" in out.content
+
+
+def test_the_analyst_is_told_what_a_missing_book_means():
+    from stock_analyzer.discover.analyst import ANALYST_INSTRUCTIONS
+
+    text = ANALYST_INSTRUCTIONS
+    assert "contracted_book" in text
+    assert "not a forecast" in text
+    # the trap: absence must never read as bad news
+    assert "never evidence against" in text

@@ -155,6 +155,16 @@ specific (22% concentration, 180bps margin slip), not boilerplate
 ("regulatory risk", "competition", "macro headwinds"). Score 7 — not 9 —
 because real risks remain unresolved.
 
+`contracted_book` is revenue already under signed order and not yet
+delivered, taken from the company's own SEC filing (remaining performance
+obligations), with the quarter it describes and the date it was filed.
+It is the only forward figure in the payload that is not a forecast, so
+weigh it above analyst targets when the two disagree, and say so when a
+growing book contradicts a falling price. Two cautions: it is a quarterly
+disclosure, so it lags; and roughly half of all companies never tag the
+concept, so `null` means "not disclosed" and is never evidence against a
+name.
+
 COMMON FAILURE MODES TO AVOID:
 - "Faces competition in a rapidly evolving market" — boilerplate, no signal.
   Better: "Competitor X disclosed a 30% price cut in Q4 transcript."
