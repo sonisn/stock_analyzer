@@ -40,6 +40,11 @@ class CspDataResult:
     cash_budget: float = 0.0
     account_room: dict[str, float] = field(default_factory=dict)
     content: str = ""
+    # Why no put is on offer, when candidates existed but none fit. An
+    # empty block used to reach the report as silence, which reads as
+    # "there was nothing to say" rather than "a cap ruled everything out".
+    blocked_note: str = ""
+    cheap_premium: dict[str, str] = field(default_factory=dict)
 
 
 def _earnings_dates(
@@ -161,6 +166,39 @@ def run_csp_data_pipeline(
         filtered, _ = apply_earnings_filter(chain, earnings_date=earnings.get(t))
         ready[t] = fill_put_deltas(filtered)
 
+    # The put side had no volatility test while the call side did, so a
+    # put could be offered at an implied vol below what the stock actually
+    # realizes — selling insurance under cost. Same floor, same reasoning.
+    from .rebalance_cc import compute_iv_hv_regimes, drop_cheap_premium
+
+    cheap: dict[str, str] = {}
+    if settings.csp_min_iv_hv_ratio > 0:
+        regimes = compute_iv_hv_regimes({t: [] for t in eligible}, ready)
+        kept, cheap = drop_cheap_premium(
+            dict.fromkeys(eligible, []), regimes, min_ratio=settings.csp_min_iv_hv_ratio
+        )
+        if cheap:
+            logger.info(
+                "CSP: %d candidate(s) dropped for cheap premium: %s",
+                len(cheap),
+                ", ".join(sorted(cheap)),
+            )
+        eligible = {t: c for t, c in eligible.items() if t in kept}
+        ready = {t: c for t, c in ready.items() if t in kept}
+    if not eligible:
+        return CspDataResult(
+            cash_budget=budget,
+            account_room=account_room,
+            cheap_premium=cheap,
+            blocked_note=(
+                "No cash-secured put is worth writing: every candidate's implied "
+                f"volatility is below its realized volatility (floor "
+                f"{settings.csp_min_iv_hv_ratio:.2f}x), so the premium does not pay "
+                "for the risk."
+            ),
+            content=f"csp_data: all {len(cheap)} candidate(s) dropped as cheap premium",
+        )
+
     block = build_csp_context_block(
         candidates=eligible,
         chains=ready,
@@ -175,16 +213,66 @@ def run_csp_data_pipeline(
     )
     sources = sorted({c.source for c in chains.values()})
     logger.info("CSP context block built: %d chars; chain sources %s", len(block), sources)
+    blocked_note = "" if block else _blocked_note(eligible, ready, budget, settings)
+    if blocked_note:
+        logger.info("CSP: %s", blocked_note)
     return CspDataResult(
         context_block=block,
         eligibility=eligible,
         chains=ready,
         cash_budget=budget,
         account_room=account_room,
+        blocked_note=blocked_note,
+        cheap_premium=cheap,
         content=(
             f"csp_data: {len(eligible)} candidate(s); chain sources {sources}; "
             f"budget ${budget:,.0f}; context block {len(block)} chars"
         ),
+    )
+
+
+def _blocked_note(
+    eligible: dict[str, CspCandidate],
+    chains: dict[str, OptionChain],
+    budget: float,
+    settings: Settings,
+) -> str:
+    """Name the binding constraint when candidates existed but none fit.
+
+    Nearly always the per-put collateral cap: a put needs 100 x strike in
+    cash, so a 25% cap on a $20k budget only reaches a $52 strike, and
+    every liquid name is priced far above that. Saying so is the
+    difference between a setting the user can change and silence they
+    cannot interpret.
+    """
+    cap = budget * settings.csp_max_pct_per_put
+    cheapest: tuple[str, float] | None = None
+    for ticker, chain in chains.items():
+        strikes = [q.strike for q in getattr(chain, "puts", []) if q.strike and q.strike > 0]
+        if not strikes:
+            continue
+        need = min(strikes) * 100
+        if cheapest is None or need < cheapest[1]:
+            cheapest = (ticker, need)
+    if cheapest is None:
+        return (
+            f"No put chain came back for any of the {len(eligible)} candidate(s), so "
+            "none could be priced."
+        )
+    ticker, need = cheapest
+    if need > cap:
+        return (
+            f"No cash-secured put fits. One contract must be fully secured, so the "
+            f"{settings.csp_max_pct_per_put:.0%} per-put cap on ${budget:,.0f} allows "
+            f"${cap:,.0f} of collateral — a strike of ${cap / 100:,.2f} or less. The "
+            f"cheapest put on offer is {ticker} at ${need:,.0f}. Raise "
+            f"CSP_MAX_PCT_PER_PUT, or add lower-priced candidates."
+        )
+    return (
+        f"No put sat inside the {settings.csp_target_delta_min:.2f}-"
+        f"{settings.csp_target_delta_max:.2f} delta band at "
+        f"{settings.csp_dte_min}-{settings.csp_dte_max} days for any of the "
+        f"{len(eligible)} candidate(s)."
     )
 
 

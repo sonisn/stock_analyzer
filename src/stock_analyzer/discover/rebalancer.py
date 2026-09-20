@@ -708,6 +708,30 @@ def format_accounts_block(
     return "\n".join(lines)
 
 
+class RebalancePlanUnparseable(RuntimeError):
+    """The model answered but the JSON did not survive.
+
+    Carries the raw text so the caller can persist and show it: a plan
+    that cost real money is worth more half-read than discarded, and a
+    run that loses it must say so rather than render an empty action
+    list.
+    """
+
+    def __init__(self, message: str, *, raw_text: str = "", truncated: bool = False) -> None:
+        super().__init__(message)
+        self.raw_text = raw_text
+        self.truncated = truncated
+
+
+def _looks_truncated(run_output: object) -> bool:
+    """True when the provider stopped because it hit the output ceiling."""
+    metrics = getattr(run_output, "metrics", None)
+    for attr in ("stop_reason", "finish_reason"):
+        if str(getattr(metrics, attr, "") or "").lower() in {"max_tokens", "length"}:
+            return True
+    return False
+
+
 class Rebalancer:
     def __init__(
         self,
@@ -764,9 +788,14 @@ class Rebalancer:
                 # wash-sale audit, per-holding reasoning, CC premium
                 # reinvestment math, stub-consolidation narrative).
                 # 8000 was the pre-CC value and caused mid-JSON truncation
-                # on plans with WRITE_CALLs. 16000 gives comfortable
-                # headroom; Opus 4.7 supports significantly more.
-                "max_tokens": 16000,
+                # on plans with WRITE_CALLs. 16000 then did the same on
+                # 2026-09-20 — a 16-holding book with CC and CSP context
+                # ran the JSON out at exactly 16,000 output tokens, and the
+                # whole plan was lost. Opus 5 allows 128k; 32000 is the
+                # ceiling that still returns inside the SDK's non-streaming
+                # timeout. `decide` now also detects the truncation rather
+                # than letting it read as "no plan".
+                "max_tokens": 32000,
                 # Adaptive thinking requires temperature=1; the API rejects
                 # anything else with a 400.
                 "temperature": 1,
@@ -863,7 +892,8 @@ class Rebalancer:
             f"${cash_available:,.0f}" if cash_available is not None else "unknown",
             agg,
         )
-        result = self.agent.run(prompt).content
+        raw = self.agent.run(prompt)
+        result = raw.content
         if result is None:
             raise RuntimeError(
                 "Rebalancer LLM returned no content — the rebalance plan "
@@ -876,8 +906,14 @@ class Rebalancer:
                 try:
                     result = RebalancePlan.model_validate_json(result)
                 except Exception as e:
-                    raise RuntimeError(
-                        f"Rebalancer returned a string that wasn't valid RebalancePlan JSON: {e}"
+                    # The usual cause is the output-token ceiling cutting the
+                    # JSON mid-string. The prose in it is still the only copy
+                    # of reasoning the run paid for, so it travels with the
+                    # error instead of dying in a log line.
+                    raise RebalancePlanUnparseable(
+                        f"Rebalancer returned a string that wasn't valid RebalancePlan JSON: {e}",
+                        raw_text=result,
+                        truncated=_looks_truncated(raw),
                     ) from e
             else:
                 raise RuntimeError(

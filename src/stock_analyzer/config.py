@@ -247,6 +247,14 @@ class Settings(BaseSettings):
     # puts together (the rest stays free for BUYs and dry powder).
     csp_max_pct_per_put: float = 0.25
     csp_max_pct_total: float = 0.80
+    # Only sell a put when its implied vol is at least this multiple of the
+    # stock's realized vol — the same floor CC_MIN_IV_HV_RATIO applies to
+    # written calls. Without it the put side would offer premium priced
+    # below what the underlying actually moves, which is selling insurance
+    # under cost; on a put that matters more than on a call, because the
+    # premium is the entire return. A missing vol reading keeps the
+    # candidate: an unknown IV is not evidence of a cheap one.
+    csp_min_iv_hv_ratio: float = 1.0
     # How many past runs' picks are put candidates (plus this run's).
     csp_pick_lookback_runs: int = 3
     # Accounts approved to sell puts (comma-separated labels as the

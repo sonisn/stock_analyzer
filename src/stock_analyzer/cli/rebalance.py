@@ -78,7 +78,11 @@ from ..discover.rebalance_persist import (
     persist_rebalance_run,
     print_rebalance_terminal,
 )
-from ..discover.rebalancer import Rebalancer, format_accounts_block
+from ..discover.rebalancer import (
+    RebalancePlanUnparseable,
+    Rebalancer,
+    format_accounts_block,
+)
 from ..discover.report import (
     build_rebalance_sections,
     render_html_email,
@@ -167,11 +171,19 @@ def _aggregate_positions(
     return out
 
 
-def build_email_subject(*, action_count: int, gross_premium_usd: float) -> str:
+def build_email_subject(
+    *, action_count: int, gross_premium_usd: float, plan_failed: bool = False
+) -> str:
     """Subject line for the rebalance email. Annotates premium total
-    only when WRITE_CALL / SELL_PUT actions produced a non-trivial credit."""
+    only when WRITE_CALL / SELL_PUT actions produced a non-trivial credit.
+
+    A run whose plan was lost says so in the subject: the body of a failed
+    run and the body of a genuine "hold everything" run look the same from
+    the inbox, and only one of them is safe to skim past."""
     today = date.today()
     base = f"Portfolio Rebalance — {today.strftime('%b-%d')}"
+    if plan_failed:
+        return f"{base} — PLAN INCOMPLETE, re-run needed"
     if gross_premium_usd >= 1.0:
         return f"{base} ({action_count} actions + ${gross_premium_usd:,.0f} premium)"
     return base
@@ -511,6 +523,9 @@ class RebalancePipeline(DiscoverPipeline):
         self.state["csp_chains"] = result.chains
         self.state["csp_cash_budget"] = result.cash_budget
         self.state["csp_account_room"] = result.account_room
+        # A put that isn't offered still owes the reader a reason.
+        self.state["csp_blocked_note"] = result.blocked_note
+        self.state["csp_cheap_premium"] = result.cheap_premium
         return StepOutput(content=result.content)
 
     def step_tax_harvest(self, step_input: StepInput) -> StepOutput:
@@ -578,22 +593,45 @@ class RebalancePipeline(DiscoverPipeline):
             ranker_text=ranker_text,
             history_block=history_block,
         )
-        plan = rebalancer.decide(
-            self.state.get("holdings_reviews", {}),
-            ranker_text,
-            self.state.get("cash_balance"),
-            self.state.get("macro_summary", ""),
-            aggressiveness=self.settings.discover_rebalance_aggressiveness,
-            history_block=history_block,
-            market_themes_block=self.state.get("market_themes_block", ""),
-            cc_context_block=self.state.get("cc_context_block", ""),
-            harvest_block=self.state.get("harvest_block", ""),
-            csp_context_block=self.state.get("csp_context_block", ""),
-            accounts_block=format_accounts_block(
-                self.state.get("account_cash") or {}, self.state.get("account_meta") or {}
-            ),
-            add_on_block=self._add_on_block(),
-        )
+        try:
+            plan = rebalancer.decide(
+                self.state.get("holdings_reviews", {}),
+                ranker_text,
+                self.state.get("cash_balance"),
+                self.state.get("macro_summary", ""),
+                aggressiveness=self.settings.discover_rebalance_aggressiveness,
+                history_block=history_block,
+                market_themes_block=self.state.get("market_themes_block", ""),
+                cc_context_block=self.state.get("cc_context_block", ""),
+                harvest_block=self.state.get("harvest_block", ""),
+                csp_context_block=self.state.get("csp_context_block", ""),
+                accounts_block=format_accounts_block(
+                    self.state.get("account_cash") or {}, self.state.get("account_meta") or {}
+                ),
+                add_on_block=self._add_on_block(),
+            )
+        except RebalancePlanUnparseable as e:
+            # Do NOT let this pass as "no plan". Everything downstream —
+            # the premortem, the report, the database — reads an absent
+            # plan as a decision not to trade, which is the opposite of
+            # what happened.
+            logger.error(
+                "Rebalance plan could not be parsed%s. The plan text is kept "
+                "and the report will say so. (%s)",
+                " — the model hit its output-token ceiling" if e.truncated else "",
+                e,
+            )
+            self.state["rebalance_plan"] = None
+            self.state["rebalance_text"] = e.raw_text
+            self.state["rebalance_failed"] = (
+                "The rebalancer's plan was cut off before it finished"
+                if e.truncated
+                else "The rebalancer's plan could not be read"
+            )
+            self.state["harvest_candidates"] = harvest_report_data(
+                self.state.get("harvest_candidates_obj") or []
+            )
+            return StepOutput(content=f"rebalance: PLAN LOST ({e})")
         try:
             plan, cc_warnings = apply_cc_plan_validation(
                 plan,
@@ -672,9 +710,14 @@ class RebalancePipeline(DiscoverPipeline):
         post-mortem from that future. Skips on NO_ACTION (nothing to
         pre-mortem)."""
         plan = self.state.get("rebalance_plan")
-        if plan is None or getattr(plan, "status", None) != "ACTION":
+        if plan is None:
+            # An absent plan is a failure, not a decision. Saying
+            # "NO_ACTION" here is what hid a lost plan for a whole run.
             self.state["premortem"] = None
-            return StepOutput(content="premortem: skipped (NO_ACTION plan)")
+            return StepOutput(content="premortem: skipped (no plan — the rebalance step failed)")
+        if getattr(plan, "status", None) != "ACTION":
+            self.state["premortem"] = None
+            return StepOutput(content="premortem: skipped (plan recommends no action)")
         # Format the holdings_reviews into a single text blob for the agent.
         from ..models.llm import HoldingReview
 
@@ -828,11 +871,19 @@ class RebalancePipeline(DiscoverPipeline):
                 self.state.get("rebalance_plan"),
                 cash_budget=self.state.get("csp_cash_budget") or 0.0,
             ),
-            csp_warnings=self.state.get("csp_warnings") or [],
+            csp_warnings=(
+                ([self.state["csp_blocked_note"]] if self.state.get("csp_blocked_note") else [])
+                + sorted((self.state.get("csp_cheap_premium") or {}).values())
+                + (self.state.get("csp_warnings") or [])
+            ),
             reinvest=reinvest,
             stop_loss_warnings=self.state.get("stop_loss_warnings") or [],
             stale_accounts=self.state.get("stale_accounts") or [],
             usage=TRACKER.report_data(),
+            plan_failure=self.state.get("rebalance_failed"),
+            ranker_output=self.state.get("ranker_output"),
+            redteam_output=self.state.get("redteam_output"),
+            sizer_output=self.state.get("sizer_output"),
         )
         html_body = render_html_email(sections, chart_cids)
         pdf_bytes = render_pdf(sections, charts)
@@ -852,6 +903,7 @@ class RebalancePipeline(DiscoverPipeline):
         subject = build_email_subject(
             action_count=action_count,
             gross_premium_usd=gross_premium,
+            plan_failed=bool(self.state.get("rebalance_failed")),
         )
         pdf_filename = f"rebalance-{today.isoformat()}.pdf"
         delivered, delivery_error, local_pdf_path = deliver_rebalance_email(

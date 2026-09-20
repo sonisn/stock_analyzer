@@ -316,9 +316,27 @@ def append_rebalance_plan_body(
     csp_summary: dict[str, Any] | None = None,
     csp_warnings: list[str] | None = None,
     reinvest: dict[str, Any] | None = None,
+    plan_failure: str | None = None,
 ) -> None:
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Rebalance plan (action list)", level=1))
+
+    if plan_failure:
+        sections.append(
+            Section(
+                kind="para",
+                text=(
+                    f"<b>{plan_failure}.</b> There is no action list below because the "
+                    "plan could not be read back, not because the rebalancer decided to "
+                    "hold. Whatever of it survived is printed underneath, unedited — read "
+                    "it as notes, not as instructions — and the run should be repeated "
+                    "before you act."
+                ),
+            )
+        )
+        if rebalance_text:
+            sections.append(Section(kind="heading", text="Plan text as far as it got", level=2))
+            sections.append(Section(kind="preformatted", text=rebalance_text))
 
     plan = rebalance_plan if isinstance(rebalance_plan, RebalancePlan) else None
     if plan and plan.actions:
@@ -563,7 +581,15 @@ def append_discover_appendix(
     sizer_text: str,
     candidates: list[dict[str, Any]],
     sector_rotation: dict[str, Any] | None,
+    ranker_output: object = None,
+    redteam_output: object = None,
+    sizer_output: object = None,
 ) -> None:
+    # The structured objects have to travel with the text. Without them
+    # `build_sections` falls back to re-parsing prose: "At a glance" reads
+    # the objects directly and renders an em dash in every column, and the
+    # per-pick bear case comes back "(missing)" even though the critique
+    # ran and is sitting in the database.
     discover_sections = build_sections(
         ranker_text=ranker_text,
         redteam_text=redteam_text,
@@ -573,6 +599,9 @@ def append_discover_appendix(
         holdings_summary="",
         macro_summary="",
         sector_rotation=sector_rotation,
+        ranker_output=ranker_output,
+        redteam_output=redteam_output,
+        sizer_output=sizer_output,
     )
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Discover picks (input to rebalancer)", level=1))
@@ -612,6 +641,10 @@ def build_rebalance_sections(
     csp_warnings: list[str] | None = None,
     reinvest: dict[str, Any] | None = None,
     usage: dict[str, Any] | None = None,
+    plan_failure: str | None = None,
+    ranker_output: object = None,
+    redteam_output: object = None,
+    sizer_output: object = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -619,14 +652,20 @@ def build_rebalance_sections(
     del cc_eligibility, cc_stub_pool_total_usd  # reserved for future section use
 
     today = date.today().isoformat()
-    status = parse_rebalance_status(rebalance_plan or rebalance_text)
-    status_label = (
-        "STATUS: NO ACTION RECOMMENDED"
-        if status == "NO_ACTION"
-        else "STATUS: ACTION RECOMMENDED"
-        if status == "ACTION"
-        else "STATUS: REVIEW REQUIRED"
-    )
+    if plan_failure:
+        # A plan that never arrived is not a plan that said "do nothing".
+        # The banner has to carry that, because every other part of this
+        # report looks identical in both cases.
+        status, status_label = "FAILED", "STATUS: PLAN INCOMPLETE — DO NOT READ AS 'NO TRADES'"
+    else:
+        status = parse_rebalance_status(rebalance_plan or rebalance_text)
+        status_label = (
+            "STATUS: NO ACTION RECOMMENDED"
+            if status == "NO_ACTION"
+            else "STATUS: ACTION RECOMMENDED"
+            if status == "ACTION"
+            else "STATUS: REVIEW REQUIRED"
+        )
 
     dashboard_rows, total_value, _total_cost, sector_value, total_pnl_pct = (
         build_holdings_dashboard_rows(
@@ -673,6 +712,7 @@ def build_rebalance_sections(
         csp_summary=csp_summary,
         csp_warnings=csp_warnings,
         reinvest=reinvest,
+        plan_failure=plan_failure,
     )
     append_harvest_section(sections, harvest_candidates)
     append_holding_review_sections(sections, holdings_reviews)
@@ -683,6 +723,9 @@ def build_rebalance_sections(
         sizer_text=sizer_text,
         candidates=candidates,
         sector_rotation=sector_rotation,
+        ranker_output=ranker_output,
+        redteam_output=redteam_output,
+        sizer_output=sizer_output,
     )
     append_usage_section(sections, usage)
     return sections
