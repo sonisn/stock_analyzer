@@ -707,3 +707,32 @@ def test_build_cc_context_block_empty_eligibility_returns_empty_string():
         stub_pool_total_usd=0.0,
     )
     assert out == ""
+
+
+def test_call_writing_honours_the_options_account_allowlist():
+    # OPTIONS_ACCOUNTS gated cash-secured puts but not covered calls, so
+    # there was no way to keep call-writing out of an account that cannot
+    # trade options.
+    from stock_analyzer.discover.cc_eligibility import eligible_holdings_per_account
+
+    splits = {
+        "BE": {
+            "splits": [
+                {"account": "Traditional IRA", "tax_status": "tax_advantaged", "units": 300},
+                {"account": "HSA Brokerage ...263", "tax_status": "tax_advantaged", "units": 100},
+            ]
+        }
+    }
+    everywhere = eligible_holdings_per_account(splits, open_short_calls_by_account={}, denylist=())
+    assert {e.account for e in everywhere["BE"]} == {
+        "Traditional IRA",
+        "HSA Brokerage ...263",
+    }
+
+    restricted = eligible_holdings_per_account(
+        splits,
+        open_short_calls_by_account={},
+        denylist=(),
+        options_accounts=("Traditional IRA",),
+    )
+    assert [e.account for e in restricted["BE"]] == ["Traditional IRA"]

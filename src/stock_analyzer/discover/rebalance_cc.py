@@ -161,6 +161,7 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
         position_splits,
         open_short_calls_by_account=open_short_calls,
         denylist=denylist,
+        options_accounts=settings.options_accounts,
     )
     eligible = resolve_eligible_holdings(
         eligible=eligible,

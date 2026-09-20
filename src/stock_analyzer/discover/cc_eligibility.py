@@ -38,12 +38,19 @@ def eligible_holdings_per_account(
     *,
     open_short_calls_by_account: dict[str, dict[str, int]],
     denylist: tuple[str, ...],
+    options_accounts: tuple[str, ...] = (),
 ) -> dict[str, list[EligibleHolding]]:
     """Return {ticker: [EligibleHolding, ...]} keyed by ticker, with one
     EligibleHolding entry per (ticker, account) pair where:
+      - the account is allowed to trade options
       - the account holds >= 100 shares
       - the account has >= 100 shares NOT collateralizing an open short call
       - the ticker is not in `denylist`
+
+    `options_accounts` is the same OPTIONS_ACCOUNTS allowlist the
+    cash-secured-put path honours (empty = every account). Puts respected
+    it and calls did not, so there was no way to keep call-writing out of
+    an account that cannot trade options — a 401(k) plan account, say.
 
     `position_splits` matches the shape produced by `_build_position_splits`
     in `cli/rebalance.py` — `{ticker: {"splits": [{"account": str,
@@ -56,6 +63,7 @@ def eligible_holdings_per_account(
     (no empty-list value).
     """
     denyset = {t.upper() for t in denylist}
+    allowed = set(options_accounts)
     out: dict[str, list[EligibleHolding]] = {}
     for ticker, info in position_splits.items():
         if ticker.upper() in denyset:
@@ -70,6 +78,8 @@ def eligible_holdings_per_account(
                 continue
             account = s.get("account")
             if not isinstance(account, str) or not account:
+                continue
+            if allowed and account not in allowed:
                 continue
             shares = int(s.get("units") or 0)
             if shares < 100:

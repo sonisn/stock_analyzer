@@ -371,6 +371,11 @@ that back a call turns it naked, so only the free shares above the
 committed ones are harvestable, counted per account — a call written in
 one account promises nothing in another.
 
+`OPTIONS_ACCOUNTS` now gates covered calls as well as cash-secured puts.
+It gated only puts before, so there was no way to keep call-writing out
+of an account that cannot trade options. Empty still means every account,
+so the default is unchanged.
+
 ## Where new money buys a second payoff
 
 A part-lot earns nothing: 62 uncovered AVGO shares are 62 shares of
