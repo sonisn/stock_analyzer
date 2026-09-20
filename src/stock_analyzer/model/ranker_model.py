@@ -33,6 +33,7 @@ from ..db.session import get_session
 from ..db.tables import ModelVersion
 from ..discover.screen import _score_trend
 from .features import FEATURES
+from .fundamental_features import FUNDAMENTAL_FEATURES
 
 RIDGE_ALPHA = 0.1  # shrinkage relative to a rank feature's variance (1/12)
 TEST_MONTHS = 6
@@ -130,7 +131,9 @@ def walk_forward(
 ) -> ModelResult:
     label = f"fwd_{horizon}" if label_kind == "excess" else f"fwd_{horizon}_badj"
     frame = data[data["gated"]] if population == "gated" else data
-    features = list(FEATURES)
+    # Fundamentals join the feature set only when the dataset carries
+    # them, so a price-only run behaves exactly as it did before.
+    features = [*FEATURES, *(c for c in FUNDAMENTAL_FEATURES if c in data.columns)]
     x_all = rank_center(frame, features)
     labeled = frame[label].notna()
     y_all = (frame[label].groupby(level="date").rank(pct=True) - 0.5).where(labeled)

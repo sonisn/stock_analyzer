@@ -1,6 +1,10 @@
 """Historical training set: weekly cross-sections of price features with
 forward excess-return labels.
 
+Fundamentals are optional and, when present, strictly point-in-time: see
+`model/fundamental_features.py`, which reads each filing as of the date
+it was published rather than as it reads today.
+
 The universe is today's S&P 500 list (`data/universe_base.py`), which is
 the main known bias: names that were dropped from the index — often after
 falling hard — are missing, so absolute returns in the backtest look
@@ -115,7 +119,12 @@ def forward_excess(panel: PricePanel, horizon: int) -> pd.DataFrame:
     return ret.sub(spy_ret, axis=0)
 
 
-def build_dataset(panel: PricePanel, *, freq: str = "W-FRI") -> pd.DataFrame:
+def build_dataset(
+    panel: PricePanel,
+    *,
+    freq: str = "W-FRI",
+    fundamentals: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     """Long frame: one row per (date, ticker) on the last trading day of
     each week, with every feature, the trend-gate flag and two labels per
     horizon: `fwd_{h}` (excess over SPY) and `fwd_{h}_badj` (beta-neutral). Rows missing any feature are dropped; rows whose
@@ -140,6 +149,10 @@ def build_dataset(panel: PricePanel, *, freq: str = "W-FRI") -> pd.DataFrame:
     frame = pd.DataFrame(parts)
     frame.index.names = ["date", "ticker"]
     frame = frame.dropna(subset=list(FEATURES))
+    if fundamentals is not None and not fundamentals.empty:
+        # Point-in-time only: `fundamentals` holds what each filing said
+        # by its own as-of date, carried forward (model/fundamental_features).
+        frame = frame.join(fundamentals, how="left")
     frame["gated"] = (
         (frame["px_vs_sma200"] > 0)
         & (frame["sma50_vs_sma200"] > 0)

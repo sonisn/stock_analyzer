@@ -119,26 +119,34 @@ def fetch_metrics(
     *,
     period: str = "latest",
     frequency: str = "quarterly",
+    as_reported: bool = False,
 ) -> dict[str, dict[str, list[dict[str, Any]]]]:
     """{ticker: {metric: [observation, ...]}}, newest period first.
 
     An observation is {value, period_end, fiscal_year, fiscal_period,
     source}. Tickers the API doesn't cover are simply absent — callers
     fall back rather than treat that as an error.
+
+    `as_reported` returns the figures from the newest filing that existed
+    on the `asof:` date, rather than today's view of that period. It is
+    what makes a backtest honest and it is not optional for one: with it
+    off, `asof:2025-05-01` hands back NVDA's quarter ending 2025-04-27,
+    which was not filed until 2025-05-28. Rolling windows (lastNq/lastNy)
+    are rejected in this mode, so pass an explicit `asof:` date.
     """
     if not tickers or not metrics or not is_configured():
         return {}
     out: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
     for chunk in _chunks(sorted({t.upper() for t in tickers})):
-        body = _get(
-            "/financials/",
-            {
-                "tickers": ",".join(chunk),
-                "metrics": ",".join(metrics),
-                "period": period,
-                "frequency": frequency,
-            },
-        )
+        params: dict[str, Any] = {
+            "tickers": ",".join(chunk),
+            "metrics": ",".join(metrics),
+            "period": period,
+            "frequency": frequency,
+        }
+        if as_reported:
+            params["asReported"] = "true"
+        body = _get("/financials/", params)
         if not body:
             continue
         for row in body.get("data") or []:
@@ -221,8 +229,80 @@ def fetch_trailing_fundamentals(
     return out
 
 
+# Ratios, deliberately. In as-reported mode the newest filing on a date
+# may be a 10-Q or a 10-K, so the amounts cover a quarter for one company
+# and a year for another and are not comparable across a cross-section.
+# A margin taken from inside one filing is.
+POINT_IN_TIME_RATIOS: tuple[str, ...] = (
+    "gross_margin_pit",
+    "net_margin_pit",
+    "leverage_pit",
+    "return_on_equity_pit",
+)
+
+# As-reported mode serves only the tags a filing actually carries, so the
+# API's own `debt_to_equity` and `roe` — both `isCalculated` — are empty
+# there, and so is `total_debt`. Measured across ten holdings at
+# asof:2025-12-31: total_assets 10/10, total_liabilities 9/10,
+# long_term_debt 9/10, but total_equity only 3/10. Leverage is therefore
+# liabilities over assets, and equity is what is left of the assets.
+_PIT_METRICS = (
+    "revenue",
+    "gross_profit",
+    "net_income",
+    "total_assets",
+    "total_liabilities",
+    "total_equity",
+)
+
+
+def fetch_point_in_time_ratios(tickers: list[str], as_of: date) -> dict[str, dict[str, float]]:
+    """{ticker: ratios known on `as_of`} — one request per 100 tickers.
+
+    Only what the filings said by that date: no restatement, no figure
+    from a filing that had not been published yet.
+    """
+    if not tickers or not is_configured():
+        return {}
+    raw = fetch_metrics(
+        tickers,
+        list(_PIT_METRICS),
+        period=f"asof:{as_of.isoformat()}",
+        frequency="quarterly",
+        as_reported=True,
+    )
+    out: dict[str, dict[str, float]] = {}
+    for ticker, by_metric in raw.items():
+
+        def newest(metric: str, m: dict = by_metric) -> float | None:
+            observations = m.get(metric) or []
+            return observations[0]["value"] if observations else None
+
+        revenue = newest("revenue")
+        gross, net = newest("gross_profit"), newest("net_income")
+        assets, liabilities = newest("total_assets"), newest("total_liabilities")
+        equity = newest("total_equity")
+        if equity is None and assets is not None and liabilities is not None:
+            equity = assets - liabilities
+        ratios = {
+            "gross_margin_pit": gross / revenue if revenue and gross is not None else None,
+            "net_margin_pit": net / revenue if revenue and net is not None else None,
+            "leverage_pit": (liabilities / assets if assets and liabilities is not None else None),
+            # Equity is a balance and income is a flow over whatever period
+            # the filing covered, so this is the return on equity for that
+            # period — comparable across the cross-section, not annualized.
+            "return_on_equity_pit": net / equity if equity and net is not None else None,
+        }
+        kept = {k: v for k, v in ratios.items() if v is not None}
+        if kept:
+            out[ticker] = kept
+    return out
+
+
 __all__ = [
     "MAX_TICKERS_PER_REQUEST",
+    "POINT_IN_TIME_RATIOS",
+    "fetch_point_in_time_ratios",
     "fetch_metrics",
     "fetch_trailing_fundamentals",
     "is_configured",

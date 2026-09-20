@@ -319,6 +319,43 @@ glance" flags with the date it went dark and the one fix for it:
 reconnect it in SnapTrade. Until then, every number for that account
 describes the day it stopped syncing.
 
+## Point-in-time fundamentals
+
+The forward-return model is price-only on purpose: a historical close is
+the same number today as it was then, while yfinance's fundamentals are a
+live snapshot with no history, so training on them teaches the model
+figures that had not been filed yet.
+
+Wisesheets' `asof:` selector with `asReported=true` removes that. The
+check that matters: with as-reported off, `asof:2025-05-01` returns
+NVDA's quarter ending 2025-04-27 — filed 2025-05-28, four weeks after the
+as-of date. With it on, the same request returns the quarter ending
+2025-01-26, filed 2025-02-26, which is what an investor could have read.
+
+`uv run train-model --fundamentals` adds four ratios (gross margin, net
+margin, leverage, return on equity) to the weekly training set. Three
+details make them usable:
+
+- **Ratios only.** In as-reported mode the newest filing on a date is a
+  10-Q for one company and a 10-K for another, so revenue means a quarter
+  here and a year there. A margin from inside one filing is comparable.
+- **Reported tags only.** The API's own `debt_to_equity` and `roe` are
+  calculated fields and come back empty in this mode, as does
+  `total_debt`. Across ten holdings, `total_assets` covered 10/10 and
+  `total_liabilities` 9/10 while `total_equity` covered 3/10 — so
+  leverage is liabilities over assets, and equity is what is left of the
+  assets when the filing never tagged it.
+- **Monthly sampling, carried forward.** Filings land quarterly, so
+  twelve as-of dates a year carry the signal at a twelfth of the request
+  budget, and each value is held forward until the next filing — never
+  interpolated, never pulled back from a month that had not happened.
+
+Each as-of date costs one request per 100 tickers, so the S&P 500 over
+five years is ~300 requests; results are cached per date, so a retrain
+spends nothing, and the fetch stops early rather than draining the
+month's quota. A ratio a company never tagged becomes that date's median
+rather than dropping the company from the training set.
+
 ## World markets
 
 The macro context was US-only — FRED's yield curve, VIX and jobs, plus

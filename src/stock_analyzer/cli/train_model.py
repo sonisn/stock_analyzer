@@ -16,16 +16,54 @@ from __future__ import annotations
 
 import argparse
 
+import pandas as pd
 from dotenv import load_dotenv
 
 from ..config import Settings
 from ..data.universe_base import load_base_universe
 from ..logging import get_logger
 from ..model.dataset import HORIZONS, build_dataset, load_panel
+from ..model.fundamental_features import FUNDAMENTAL_FEATURES
 from ..model.labels import label_candidates
 from ..model.ranker_model import format_model_report, save_model, walk_forward
 
 logger = get_logger(__name__)
+
+
+def _point_in_time(args, universe: list[str], panel, settings):
+    """Point-in-time fundamentals for the training dates, or None.
+
+    Sampled monthly and carried forward: a filing is the latest known
+    fact until the next one lands. The free plan holds five years, so a
+    longer `--years` still trains on prices alone before that.
+    """
+    if not args.fundamentals:
+        return None
+    from datetime import timedelta
+
+    from ..model.fundamental_features import (
+        align_to_dates,
+        fetch_history,
+        fill_cross_section,
+        month_ends,
+        to_frame,
+    )
+
+    calendar = panel.close.index
+    dates = pd.DatetimeIndex(sorted({d for d in calendar}))
+    # Five years back from the end of the price panel, or its start.
+    start = max(dates.min().date(), (dates.max() - timedelta(days=365 * 5)).date())
+    as_of_dates = month_ends(start, dates.max().date())
+    print(f"Point-in-time fundamentals: {len(as_of_dates)} monthly as-of dates from {start}")
+    history = fetch_history(universe, as_of_dates, cache_dir=settings.model_cache_dir)
+    if not history:
+        print("No point-in-time fundamentals available — training on prices alone")
+        return None
+    frame = to_frame(history)
+    aligned = align_to_dates(frame, dates, sorted(panel.close.columns))
+    covered = aligned.notna().any(axis=1).mean() * 100
+    print(f"  {len(history)} dates fetched, {covered:.0f}% of rows covered before median fill")
+    return fill_cross_section(aligned)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -43,6 +81,12 @@ def main(argv: list[str] | None = None) -> None:
         choices=("excess", "beta_adj"),
         help="excess = return minus SPY; beta_adj = return minus trailing beta x SPY",
     )
+    parser.add_argument(
+        "--fundamentals",
+        action="store_true",
+        help="add point-in-time margins and leverage as filed on each date "
+        "(needs WISESHEETS_API_KEY; the free plan holds 5 years of history)",
+    )
     parser.add_argument("--no-save", action="store_true")
     parser.add_argument("--skip-labels", action="store_true")
     args = parser.parse_args(argv)
@@ -52,11 +96,14 @@ def main(argv: list[str] | None = None) -> None:
         n = label_candidates(settings.discover_db_path)
         print(f"Candidate outcomes labeled this run: {n}")
 
-    panel = load_panel(list(load_base_universe()), settings.model_cache_dir, years=args.years)
-    data = build_dataset(panel)
+    universe = list(load_base_universe())
+    panel = load_panel(universe, settings.model_cache_dir, years=args.years)
+    data = build_dataset(panel, fundamentals=_point_in_time(args, universe, panel, settings))
+    extra = [c for c in FUNDAMENTAL_FEATURES if c in data.columns]
     print(
         f"Training set: {len(data):,} weekly rows, {data.index.get_level_values('ticker').nunique()} "
         f"tickers, {int(data['gated'].sum()):,} passing the trend gate"
+        + (f", {len(extra)} point-in-time fundamental feature(s)" if extra else "")
     )
     result = walk_forward(
         data,
