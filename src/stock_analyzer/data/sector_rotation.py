@@ -36,7 +36,11 @@ SECTOR_ETFS: dict[str, str] = {
 
 
 def fetch_sector_returns(months: int = 6) -> dict[str, float]:
-    """Return {canonical_sector_name: pct_return_over_N_months}."""
+    """Return {canonical_sector_name: return over N months as a FRACTION}.
+
+    0.214 means +21.4%. The name says "pct" and the value is not one,
+    which is how a report came to show "+0.2%" for a sector up a fifth.
+    """
     unique_etfs = sorted(set(SECTOR_ETFS.values()))
     data = yf_gateway.download(
         unique_etfs,

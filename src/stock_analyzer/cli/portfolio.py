@@ -60,6 +60,7 @@ def portfolio_health(
     stale_accounts: list[str] | None = None,
     covered_calls: dict[str, dict] | None = None,
     roll_ideas: dict[str, str] | None = None,
+    sector_rotation: dict | None = None,
     optionable: set[str] | None = None,
     world_markets: list[dict] | None = None,
 ):
@@ -159,17 +160,9 @@ def portfolio_health(
         from ..discover.reinvest import load_pick_pool, reinvest_ideas, with_sector_bias
 
         ideas = reinvest_ideas(load_pick_pool(db), held=held, avoid_sectors=over_cap, n=n)
-        # Whether the idea's sector is what the market is rewarding right
-        # now. Deterministic and free; a failure costs the tag, not the
-        # suggestion.
-        summary = None
-        try:
-            from ..data.sector_rotation import sector_rotation_summary
-
-            summary = sector_rotation_summary()
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Sector rotation unavailable (%s)", e)
-        return with_sector_bias(ideas, summary)
+        # The same rotation the report shows, so the tag on an idea and
+        # the table above it can never disagree — and it is fetched once.
+        return with_sector_bias(ideas, sector_rotation)
 
     try:
         return build_portfolio_health(
@@ -179,6 +172,7 @@ def portfolio_health(
             stale_accounts=stale_accounts,
             covered_calls=covered_calls,
             roll_ideas=roll_ideas,
+            sector_rotation=sector_rotation,
             optionable=optionable,
             options_accounts=settings.options_accounts,
             world_markets=world_markets,
@@ -195,6 +189,20 @@ def portfolio_health(
     except Exception as e:  # noqa: BLE001
         logger.warning("Portfolio health block failed (%s) — sending the email without it", e)
         return None
+
+
+def market_rotation() -> dict:
+    """Six-month sector returns, or {} — one batch call, no LLM.
+
+    Guarded: the report loses a table when it fails, not the email.
+    """
+    try:
+        from ..data.sector_rotation import sector_rotation_summary
+
+        return sector_rotation_summary()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Sector rotation unavailable (%s)", e)
+        return {}
 
 
 def roll_ideas_for(
@@ -410,6 +418,7 @@ def main() -> None:
         ticker_data=agent.ticker_data,
         prices=prices,
         roll_ideas=roll_ideas_for(settings, covered_calls, prices),
+        sector_rotation=market_rotation(),
         data_notes=price_notes,
         stale_accounts=stale,
         covered_calls=covered_calls,

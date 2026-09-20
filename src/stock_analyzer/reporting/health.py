@@ -74,6 +74,11 @@ class PortfolioHealth:
     covered_calls: dict[str, dict[str, Any]] = field(default_factory=dict)
     # {ticker: a costed roll that keeps the shares} — see discover/cc_roll.
     roll_ideas: dict[str, str] = field(default_factory=dict)
+    # Six-month sector returns with leaders and laggards
+    # (data/sector_rotation). The report showed which sectors the
+    # PORTFOLIO is heavy in and never which ones the MARKET is rewarding,
+    # so a pick outside the leadership looked like an oversight.
+    sector_rotation: dict[str, Any] = field(default_factory=dict)
     # {ticker: {account: units}} — a call can only be written against
     # shares sitting in one account, so coverage is an per-account fact.
     units_by_account: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -127,6 +132,7 @@ def build_portfolio_health(
     stale_accounts: list[str] | None = None,
     covered_calls: dict[str, dict[str, Any]] | None = None,
     roll_ideas: dict[str, str] | None = None,
+    sector_rotation: dict[str, Any] | None = None,
     optionable: set[str] | None = None,
     options_accounts: tuple[str, ...] = (),
     world_markets: list[dict[str, Any]] | None = None,
@@ -149,6 +155,7 @@ def build_portfolio_health(
     health.covered_calls.update(covered_calls or {})
     health.options_accounts = tuple(options_accounts or ())
     health.roll_ideas.update(roll_ideas or {})
+    health.sector_rotation.update(sector_rotation or {})
     # Only things a call can actually be written against. Without this,
     # SPAXX showed 208 writable contracts, a 401(k) commingled pool
     # showed 40 shares of headroom, and Taronis Technologies — whose
@@ -495,6 +502,7 @@ def render_health_html(h: PortfolioHealth) -> str:
             + ", ".join(f"{html.escape(r['sector'])} {r['pct']:.0f}%" for r in top)
             + "</p>"
         )
+    parts.append(render_sector_rotation_html(h))
     parts.append(render_covered_calls_html(h))
     parts.append(render_world_markets_html(h))
     if h.stale_accounts:
@@ -516,6 +524,52 @@ def render_health_html(h: PortfolioHealth) -> str:
             + "</p>"
         )
     parts.append("</section>")
+    return "".join(parts)
+
+
+def render_sector_rotation_html(h: PortfolioHealth) -> str:
+    """What the market has rewarded over six months, and where you sit.
+
+    The health block already says which sectors the portfolio is heavy
+    in; this says which ones are working. Holdings are marked, so a
+    concentration in a leading sector and one in a lagging sector are
+    told apart at a glance.
+    """
+    returns = (h.sector_rotation or {}).get("returns_by_sector") or {}
+    if not returns:
+        return ""
+    leaders = set((h.sector_rotation or {}).get("leaders") or [])
+    laggards = set((h.sector_rotation or {}).get("laggards") or [])
+    held_sectors = {s for s in h.sector_by_ticker.values() if s and s != "Unknown"}
+    months = (h.sector_rotation or {}).get("lookback_months") or 6
+
+    rows = []
+    # `fetch_sector_returns` returns a FRACTION (0.214 = +21.4%) despite
+    # its docstring saying "pct_return" — printing it raw read "+0.2%"
+    # for a sector up a fifth.
+    for sector, fraction in sorted(returns.items(), key=lambda kv: -kv[1]):
+        pct = fraction * 100
+        if sector in leaders:
+            standing, colour = "leading", "#166534"
+        elif sector in laggards:
+            standing, colour = "lagging", "#9c1010"
+        else:
+            standing, colour = "middle", "#6b7280"
+        rows.append(
+            [
+                html.escape(sector),
+                f'<span style="color:{"#166534" if pct > 0 else "#9c1010"}">{pct:+.1f}%</span>',
+                f'<span style="color:{colour}">{standing}</span>',
+                "yes" if sector in held_sectors else "—",
+            ]
+        )
+    parts = [f"<h3>Sector rotation ({months} months)</h3>"]
+    parts.append(_table(["Sector", f"{months}mo", "Standing", "You hold it"], rows))
+    parts.append(
+        '<p style="font-size:13px;color:#6b7280">New money is steered away from a '
+        "sector already at the concentration cap, so an idea outside the leadership "
+        "can be a deliberate trade-off rather than a miss.</p>"
+    )
     return "".join(parts)
 
 

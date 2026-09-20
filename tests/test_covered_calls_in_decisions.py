@@ -276,3 +276,56 @@ def test_no_allowlist_means_every_account_is_approved():
     )
     assert call_headroom(health)[0]["options_approved"] is True
     assert blocked_headroom(health) == []
+
+
+# --- what the market is rewarding --------------------------------------------------
+
+
+ROTATION = {
+    "lookback_months": 6,
+    # Fractions, the way fetch_sector_returns actually returns them —
+    # the first version of this fixture used percents and let a renderer
+    # that printed "+0.2%" for a sector up a fifth pass.
+    "returns_by_sector": {
+        "Technology": 0.214,
+        "Healthcare": 0.128,
+        "Financial Services": 0.096,
+        "Industrials": 0.041,
+        "Utilities": -0.062,
+    },
+    "leaders": ["Technology", "Healthcare", "Financial Services"],
+    "laggards": ["Utilities", "Communication Services", "Consumer Cyclical"],
+}
+
+
+def test_the_email_shows_leaders_laggards_and_where_you_sit():
+    from stock_analyzer.reporting.health import (
+        build_portfolio_health,
+        render_sector_rotation_html,
+    )
+
+    health = build_portfolio_health(
+        {"IRA": [{"ticker": "NVDA", "units": 10, "price": 222.27}]},
+        sector_rotation=ROTATION,
+        sector_of=lambda tickers: {"NVDA": "Technology"},
+    )
+    html = render_sector_rotation_html(health)
+    assert "Sector rotation (6 months)" in html
+    # ordered by return, best first
+    assert html.index("Technology") < html.index("Healthcare") < html.index("Utilities")
+    assert "+21.4%" in html and "-6.2%" in html
+    assert "leading" in html and "lagging" in html
+    # the sector actually held is marked
+    tech_row = html[html.index("Technology") : html.index("Healthcare")]
+    assert "yes" in tech_row
+    utilities_row = html[html.index("Utilities") :]
+    assert "yes" not in utilities_row
+
+
+def test_no_rotation_data_renders_nothing():
+    from stock_analyzer.reporting.health import (
+        build_portfolio_health,
+        render_sector_rotation_html,
+    )
+
+    assert render_sector_rotation_html(build_portfolio_health({})) == ""
