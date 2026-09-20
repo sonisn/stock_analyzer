@@ -13,6 +13,7 @@ from what the pipeline already stands behind:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from sqlalchemy import text
@@ -25,13 +26,24 @@ logger = get_logger(__name__)
 
 def load_pick_pool(db_path: str, *, n_runs: int = 3) -> list[dict[str, Any]]:
     """Picks from the last `n_runs` runs that made picks, newest first,
-    one row per ticker (its latest pick), with sector and screen price."""
+    one row per ticker (its latest pick), with sector, screen price and
+    the one-line reason the ranker gave for it.
+
+    That reason was written at pick time and stored in
+    `run_outputs.ranker_full`, then never shown: a reinvestment line read
+    "reinvest the ~$57,770 in A (pick #2, 2026-09-17, Healthcare)", which
+    names a ticker and argues nothing. `A` was Agilent, chosen for
+    accelerating estimates and as defensive balance to a tech-heavy
+    portfolio — worth knowing before moving $57,770.
+    """
     with get_session(db_path) as session:
         rows = session.exec(
             text(
-                "SELECT p.ticker, p.rank, r.run_at, c.sector, c.price, p.conviction "
+                "SELECT p.ticker, p.rank, r.run_at, c.sector, c.price, p.conviction, "
+                "       o.ranker_full "
                 "FROM picks p JOIN runs r ON r.id = p.run_id "
                 "LEFT JOIN candidates c ON c.run_id = p.run_id AND c.ticker = p.ticker "
+                "LEFT JOIN run_outputs o ON o.run_id = p.run_id "
                 "WHERE p.run_id IN (SELECT DISTINCT run_id FROM picks "
                 "                   ORDER BY run_id DESC LIMIT :n) "
                 "ORDER BY p.run_id DESC, p.rank ASC"
@@ -39,7 +51,7 @@ def load_pick_pool(db_path: str, *, n_runs: int = 3) -> list[dict[str, Any]]:
             params={"n": n_runs},
         ).all()
     out: dict[str, dict[str, Any]] = {}
-    for ticker, rank, run_at, sector, price, conviction in rows:
+    for ticker, rank, run_at, sector, price, conviction, ranker_full in rows:
         out.setdefault(
             ticker,
             {
@@ -49,9 +61,32 @@ def load_pick_pool(db_path: str, *, n_runs: int = 3) -> list[dict[str, Any]]:
                 "sector": sector,
                 "price": price,
                 "conviction": conviction,
+                "reason": pick_headline(ranker_full, ticker),
             },
         )
     return list(out.values())
+
+
+# "PICK 2: A — Agilent provides defensive life-sciences exposure ..."
+_PICK_HEADLINE = re.compile(
+    r"^PICK\s+\d+:\s*(?P<ticker>[A-Z.\-]{1,6})\s*[—-]\s*(?P<reason>.+?)\s*$",
+    re.MULTILINE,
+)
+
+
+def pick_headline(ranker_full: str | None, ticker: str) -> str:
+    """The ranker's own one-line case for `ticker`, or "".
+
+    Read from the stored prose rather than re-derived: this is the
+    sentence the model wrote when it chose the name, and paraphrasing it
+    later would be inventing a reason it did not give.
+    """
+    if not ranker_full:
+        return ""
+    for match in _PICK_HEADLINE.finditer(ranker_full):
+        if match.group("ticker").upper() == ticker.upper():
+            return match.group("reason").strip()
+    return ""
 
 
 def reinvest_ideas(
@@ -113,12 +148,45 @@ def sector_peers(
     return out
 
 
-def format_idea(idea: dict[str, Any]) -> str:
-    """'ANET (pick #1, 2026-09-17, Technology)'."""
+# How a sector's own six-month strength reads next to the pick.
+_BIAS_WORDS = {
+    "leader": "its sector is leading the market",
+    "laggard": "its sector is lagging the market",
+}
+
+
+def format_idea(idea: dict[str, Any], *, with_reason: bool = True) -> str:
+    """'ANET (pick #1, 2026-09-17, Technology, sector leading) — <why>'.
+
+    The sector's standing is stated because a pick chosen for balance is
+    often deliberately outside what is working: `A` was added as
+    defensive ballast to a tech-heavy portfolio while semiconductors were
+    the market's leadership. Both facts belong in the same sentence, so
+    the choice reads as a trade-off rather than an oversight.
+    """
     parts = [f"pick #{idea['rank']}", idea["pick_date"]]
     if idea.get("sector"):
         parts.append(idea["sector"])
-    return f"{idea['ticker']} ({', '.join(parts)})"
+    bias = idea.get("sector_bias")
+    if bias in ("leader", "laggard"):
+        parts.append("sector leading" if bias == "leader" else "sector lagging")
+    label = f"{idea['ticker']} ({', '.join(parts)})"
+    reason = (idea.get("reason") or "").strip() if with_reason else ""
+    return f"{label} — {reason}" if reason else label
+
+
+def with_sector_bias(
+    ideas: list[dict[str, Any]], summary: dict[str, Any] | None
+) -> list[dict[str, Any]]:
+    """Tag each idea with whether its sector leads or lags (no-op without
+    a rotation summary, which is a network call the caller may skip)."""
+    if not summary:
+        return ideas
+    from ..data.sector_rotation import sector_bias
+
+    for idea in ideas:
+        idea["sector_bias"] = sector_bias(idea.get("sector"), summary)
+    return ideas
 
 
 def unfunded_sales(plan: Any) -> list[str]:

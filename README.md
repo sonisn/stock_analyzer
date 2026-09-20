@@ -385,6 +385,24 @@ options, so BE is 27 shares (~$7,172) from a writable lot — the premium
 is behind an options application, not behind the market."* One line per
 account, since it is one form.
 
+## Why this stock, and what the market is rewarding
+
+A reinvestment line read "reinvest the ~$57,770 in A (pick #2,
+2026-09-17, Healthcare)" — a ticker and no argument. The argument existed
+the whole time: the ranker wrote one when it chose the name, and it was
+stored in `run_outputs.ranker_full` and never read back. `pick_headline`
+reads that sentence out, so the line now ends *"— Agilent provides
+defensive life-sciences exposure with accelerating estimates and a newly
+expanded diagnostics footprint via the Biocare acquisition."* It is the
+model's own sentence, not a paraphrase: inventing a reason later would be
+attributing one it never gave.
+
+Each idea also carries whether its sector is leading or lagging, from the
+same six-month rotation data the discover pipeline already computes. A
+pick chosen for balance is often deliberately outside what is working, so
+both facts belong in one sentence — the choice then reads as a trade-off
+rather than an oversight.
+
 ## Calls written to be kept
 
 The covered-call bands were 0.35-0.45 delta over 30-45 days: roughly a

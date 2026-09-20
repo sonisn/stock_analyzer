@@ -156,9 +156,20 @@ def portfolio_health(
         return with_revisions(recent, batch_eps_revisions([r["ticker"] for r in recent]))
 
     def reinvest(held: set[str], over_cap: set[str], n: int) -> list[dict]:
-        from ..discover.reinvest import load_pick_pool, reinvest_ideas
+        from ..discover.reinvest import load_pick_pool, reinvest_ideas, with_sector_bias
 
-        return reinvest_ideas(load_pick_pool(db), held=held, avoid_sectors=over_cap, n=n)
+        ideas = reinvest_ideas(load_pick_pool(db), held=held, avoid_sectors=over_cap, n=n)
+        # Whether the idea's sector is what the market is rewarding right
+        # now. Deterministic and free; a failure costs the tag, not the
+        # suggestion.
+        summary = None
+        try:
+            from ..data.sector_rotation import sector_rotation_summary
+
+            summary = sector_rotation_summary()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Sector rotation unavailable (%s)", e)
+        return with_sector_bias(ideas, summary)
 
     try:
         return build_portfolio_health(

@@ -169,3 +169,86 @@ def test_no_sales_means_no_reinvest_lookup():
         reinvest=lambda *a: calls.append(a) or [],
     )
     assert calls == [] and h.reinvest == []
+
+
+# --- why this stock ----------------------------------------------------------------
+
+
+RANKER_TEXT = """\
+PICK 1: ANET — Arista offers best-in-class 45.4% operating margins and a raised
+$3.25B AI-networking revenue target.
+
+Bull thesis:
+Something long here.
+---
+
+PICK 2: A — Agilent provides defensive life-sciences exposure with accelerating
+estimates and a newly expanded diagnostics footprint via the Biocare acquisition.
+
+Why this over alternatives:
+I chose this over DXCM.
+"""
+
+
+def test_the_rankers_own_sentence_is_read_back():
+    from stock_analyzer.discover.reinvest import pick_headline
+
+    reason = pick_headline(RANKER_TEXT, "A")
+    assert reason.startswith("Agilent provides defensive life-sciences exposure")
+    # not the neighbouring pick
+    assert "Arista" not in reason
+    assert pick_headline(RANKER_TEXT, "ANET").startswith("Arista offers best-in-class")
+
+
+def test_a_ticker_with_no_stored_reason_is_silent_not_invented():
+    from stock_analyzer.discover.reinvest import pick_headline
+
+    assert pick_headline(RANKER_TEXT, "NVDA") == ""
+    assert pick_headline(None, "A") == ""
+    assert pick_headline("", "A") == ""
+
+
+def test_the_idea_line_carries_the_reason_and_the_sector_standing():
+    from stock_analyzer.discover.reinvest import format_idea
+
+    idea = {
+        "ticker": "A",
+        "rank": 2,
+        "pick_date": "2026-09-17",
+        "sector": "Healthcare",
+        "reason": "Agilent provides defensive life-sciences exposure.",
+        "sector_bias": "leader",
+    }
+    line = format_idea(idea)
+    assert line.startswith("A (pick #2, 2026-09-17, Healthcare, sector leading)")
+    assert line.endswith("— Agilent provides defensive life-sciences exposure.")
+
+
+def test_the_old_bare_label_still_works_without_either():
+    from stock_analyzer.discover.reinvest import format_idea
+
+    idea = {"ticker": "ANET", "rank": 1, "pick_date": "2026-09-17", "sector": "Technology"}
+    assert format_idea(idea) == "ANET (pick #1, 2026-09-17, Technology)"
+
+
+def test_sector_bias_is_tagged_from_the_rotation_summary():
+    from stock_analyzer.discover.reinvest import with_sector_bias
+
+    summary = {
+        "leaders": ["Technology", "Healthcare", "Financial Services"],
+        "laggards": ["Utilities", "Communication Services", "Consumer Cyclical"],
+    }
+    ideas = [
+        {"ticker": "A", "sector": "Healthcare"},
+        {"ticker": "NEE", "sector": "Utilities"},
+        {"ticker": "XOM", "sector": "Energy"},
+    ]
+    tagged = {i["ticker"]: i["sector_bias"] for i in with_sector_bias(ideas, summary)}
+    assert tagged == {"A": "leader", "NEE": "laggard", "XOM": "neutral"}
+
+
+def test_without_a_rotation_summary_nothing_is_claimed():
+    from stock_analyzer.discover.reinvest import with_sector_bias
+
+    ideas = [{"ticker": "A", "sector": "Healthcare"}]
+    assert "sector_bias" not in with_sector_bias(ideas, None)[0]
