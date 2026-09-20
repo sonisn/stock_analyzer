@@ -841,6 +841,7 @@ class Rebalancer:
         csp_context_block: str = "",
         accounts_block: str = "",
         add_on_block: str = "",
+        obligations_block: str = "",
     ) -> RebalancePlan:
         # Accept either the new structured form ({ticker: HoldingReview})
         # or the legacy free-text form ({ticker: str}). For the LLM prompt
@@ -888,6 +889,10 @@ class Rebalancer:
                 f"when the reviews still support them):\n{add_on_block}\n\n"
             ) + cc_section
         csp_section = f"{csp_context_block}\n\n" if csp_context_block else ""
+        # Ahead of the other blocks: a sale that cannot be executed is
+        # worse than no sale, and this is the only input that says which
+        # shares are already spoken for.
+        obligations_section = f"{obligations_block}\n\n" if obligations_block else ""
         harvest_section = (
             f"TAX-LOSS HARVEST CANDIDATES (deterministic; see instructions):\n{harvest_block}\n\n"
             if harvest_block
@@ -898,6 +903,7 @@ class Rebalancer:
             f"(Apply the {agg} rule set from your instructions. The "
             f"'Tax-agnostic alternative' section is MANDATORY in any "
             f"NO ACTION output.)\n\n"
+            f"{obligations_section}"
             f"{macro_block}"
             f"{themes_section}"
             f"{cc_section}"

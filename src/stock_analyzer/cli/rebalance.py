@@ -89,6 +89,7 @@ from ..discover.report import (
     render_pdf,
 )
 from ..discover.reviewer import REVIEWER_INSTRUCTIONS, Reviewer, review_batch
+from ..discover.sale_validation import covered_call_block, validate_sales
 from ..discover.tax_harvest import (
     find_harvest_candidates,
     flag_plan_conflicts,
@@ -288,6 +289,14 @@ class RebalancePipeline(DiscoverPipeline):
         # would be sized against numbers from that day.
         self.state["stale_accounts"] = stale_account_notes(fetch_account_sync_status())
         self.state["account_cash"] = account_cash
+        # Which shares are already promised to a written call. Needed by
+        # the harvester, the rebalancer's prompt and the sale validator —
+        # fetched once here rather than three times.
+        try:
+            self.state["covered_call_obligations"] = fetch_covered_call_obligations()
+        except Exception as e:  # noqa: BLE001 — a sale plan is still better than none
+            logger.warning("Covered-call obligations unavailable (%s)", e)
+            self.state["covered_call_obligations"] = {}
         self.state["holdings_positions"] = positions
         self.state["account_meta"] = account_meta
         self.state["position_splits"] = position_splits
@@ -555,7 +564,7 @@ class RebalancePipeline(DiscoverPipeline):
                 min_loss_pct=self.settings.harvest_min_loss_pct,
                 # Shares backing a short call cannot be sold without
                 # buying it back, so they are not harvestable.
-                covered_calls=fetch_covered_call_obligations(),
+                covered_calls=self.state.get("covered_call_obligations") or {},
             )
         except Exception as e:
             logger.warning("tax-loss harvest scan failed (%s) — skipping", e)
@@ -619,6 +628,10 @@ class RebalancePipeline(DiscoverPipeline):
                     self.state.get("account_cash") or {}, self.state.get("account_meta") or {}
                 ),
                 add_on_block=self._add_on_block(),
+                obligations_block=covered_call_block(
+                    self.state.get("holdings_positions") or {},
+                    self.state.get("covered_call_obligations") or {},
+                ),
             )
         except Exception as e:  # noqa: BLE001 — see below
             # Every way this call can fail has to land here, not just bad
@@ -710,6 +723,16 @@ class RebalancePipeline(DiscoverPipeline):
             csp_warnings = [f"put validation crashed ({e}); all puts dropped"]
         if csp_warnings:
             self.state["csp_warnings"] = csp_warnings
+        # Last, and deterministic: the prompt block above asks the model to
+        # plan around promised shares; this checks that it did. A sale of
+        # shares backing a short call cannot be executed at all.
+        plan, sale_warnings = validate_sales(
+            plan,
+            positions=self.state.get("holdings_positions") or {},
+            obligations=self.state.get("covered_call_obligations") or {},
+        )
+        if sale_warnings:
+            self.state["sale_warnings"] = sale_warnings
         self.state["rebalance_plan"] = plan
         self.state["rebalance_text"] = plan.full_text
         self.state["harvest_candidates"] = harvest_report_data(
@@ -885,6 +908,7 @@ class RebalancePipeline(DiscoverPipeline):
             cc_round_lot_coverage=self.state.get("cc_round_lot_coverage") or {},
             cc_stub_pool_total_usd=self.state.get("cc_stub_pool_total_usd") or 0.0,
             cc_warnings=(self.state.get("cc_warnings") or [])
+            + (self.state.get("sale_warnings") or [])
             + sorted((self.state.get("cc_cheap_premium") or {}).values()),
             cc_slippage_buffer=self.settings.cc_slippage_buffer,
             csp_summary=csp_report_data(
