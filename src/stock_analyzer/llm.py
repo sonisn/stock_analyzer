@@ -103,6 +103,43 @@ class AgnoAgent:
             raise ModelProviderError(message=message, model_name=self.name, model_id=self.model_id)
         return result
 
+    def run_streamed(self, *args: Any, **kwargs: Any) -> Any:
+        """`run`, but over a streamed response.
+
+        The Anthropic SDK refuses a non-streaming request whose max_tokens
+        implies more than ten minutes of generation, which caps an
+        unstreamed call at ~21k output tokens. Streaming lifts that to the
+        model's real limit, so anything that needs a long structured answer
+        goes through here.
+
+        agno yields events and then, with `yield_run_output`, the same
+        RunOutput `run` would have returned. Only that final object is kept
+        — the events are the mechanism, not the result — and the budget,
+        usage and error handling stay identical to `run`.
+        """
+        from agno.run.agent import RunOutput
+
+        prompt_chars = self._instruction_chars + sum(
+            len(a) for a in (*args, *kwargs.values()) if isinstance(a, str)
+        )
+        result = None
+        with BUDGET.hold(self.name, self.model_id, prompt_chars, self._max_output_tokens):
+            for event in self.agent.run(*args, stream=True, yield_run_output=True, **kwargs):
+                if isinstance(event, RunOutput):
+                    result = event
+            TRACKER.record(self.name, self.model_id, getattr(result, "metrics", None))
+        if result is None:
+            raise ModelProviderError(
+                message="Streamed run produced no final output",
+                model_name=self.name,
+                model_id=self.model_id,
+            )
+        # Same swallowed-error unwrapping as `run` — see the note there.
+        if getattr(result, "status", None) == RunStatus.error:
+            message = str(getattr(result, "content", None) or "Agent.run() returned status=ERROR")
+            raise ModelProviderError(message=message, model_name=self.name, model_id=self.model_id)
+        return result
+
     def print_response(self, *args: Any, **kwargs: Any) -> Any:
         return self.agent.print_response(*args, **kwargs)
 

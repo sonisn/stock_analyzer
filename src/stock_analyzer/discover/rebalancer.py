@@ -710,10 +710,14 @@ def format_accounts_block(
 
 # The Anthropic SDK raises rather than risk a silent HTTP timeout on a
 # long non-streaming request: `3600 * max_tokens / 128_000 > 600` seconds.
-# Anything at or above this must stream instead.
+# Anything above this must stream instead — which is why this call does.
 MAX_NONSTREAMING_OUTPUT_TOKENS = 128_000 * 600 // 3600  # 21,333
-# What the rebalancer actually asks for: just under that ceiling.
-REBALANCER_MAX_OUTPUT_TOKENS = 21_000
+# What the rebalancer asks for. Two runs died at this step on 2026-09-20:
+# 16,000 cut the JSON off mid-string, and 21,333 is as far as an
+# unstreamed request is allowed to reach — neither is enough for a
+# sixteen-holding book with call and put context, so the call is streamed
+# and the budget is set where truncation stops being the constraint.
+REBALANCER_MAX_OUTPUT_TOKENS = 64_000
 
 
 class RebalancePlanUnparseable(RuntimeError):
@@ -801,19 +805,10 @@ class Rebalancer:
                 # ran the JSON out at exactly 16,000 output tokens, and the
                 # whole plan was lost.
                 #
-                # This call is NOT streamed, and the Anthropic SDK refuses a
-                # non-streaming request whose max_tokens implies more than
-                # ten minutes of generation:
-                #
-                #     3600 * max_tokens / 128_000 > 600   ->   ValueError
-                #
-                # which puts a hard ceiling at 21,333 tokens (see
-                # MAX_NONSTREAMING_OUTPUT_TOKENS). 32000 was tried on
-                # 2026-09-20 and the SDK rejected the request before it was
-                # sent. So this sits just under the ceiling; the real
-                # headroom above it needs `stream=True`, and until then
-                # `decide` detects truncation rather than letting a cut-off
-                # plan read as "no plan".
+                # `decide` streams this call (see run_streamed), which is
+                # what allows a budget above MAX_NONSTREAMING_OUTPUT_TOKENS.
+                # If it is ever un-streamed, this must come back down to
+                # 21,000 or the SDK refuses the request before sending it.
                 "max_tokens": REBALANCER_MAX_OUTPUT_TOKENS,
                 # Adaptive thinking requires temperature=1; the API rejects
                 # anything else with a 400.
@@ -911,7 +906,9 @@ class Rebalancer:
             f"${cash_available:,.0f}" if cash_available is not None else "unknown",
             agg,
         )
-        raw = self.agent.run(prompt)
+        # Streamed: the plan is long enough that an unstreamed request
+        # would be refused outright (MAX_NONSTREAMING_OUTPUT_TOKENS).
+        raw = self.agent.run_streamed(prompt)
         result = raw.content
         if result is None:
             raise RuntimeError(

@@ -177,16 +177,21 @@ def test_the_rebalance_appendix_keeps_its_at_a_glance_numbers():
     assert "—" not in glance[1:4]
 
 
-def test_the_output_ceiling_stays_inside_what_the_sdk_will_send():
-    """32,000 was tried on 2026-09-20 and the SDK refused the request
-    outright — it rejects a non-streaming call whose max_tokens implies
-    more than ten minutes. Raising this again means streaming first."""
+def test_a_budget_over_the_unstreamed_ceiling_requires_streaming():
+    """32,000 unstreamed was refused by the SDK before a token was sent.
+    The budget is only allowed above that ceiling because the call
+    streams — so if `decide` ever stops streaming, this must come down."""
+    import inspect
+
     from stock_analyzer.discover import rebalancer as r
 
     configured = r.REBALANCER_MAX_OUTPUT_TOKENS
-    assert configured <= r.MAX_NONSTREAMING_OUTPUT_TOKENS, (
-        f"max_tokens={configured} exceeds the SDK's non-streaming ceiling "
-        f"({r.MAX_NONSTREAMING_OUTPUT_TOKENS}); the request will be refused before it is sent"
-    )
-    # And it must still be above the value that demonstrably truncated.
-    assert configured > 16000
+    assert configured > 16000, "16,000 is the value that truncated a real plan"
+    source = inspect.getsource(r.Rebalancer.decide)
+    if configured > r.MAX_NONSTREAMING_OUTPUT_TOKENS:
+        assert "run_streamed" in source, (
+            f"max_tokens={configured} is above the SDK's non-streaming ceiling "
+            f"({r.MAX_NONSTREAMING_OUTPUT_TOKENS}) but the call is not streamed — "
+            "the request will be refused before it is sent"
+        )
+    assert configured <= 128_000, "128k is the model's own output limit"
