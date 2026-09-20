@@ -195,10 +195,26 @@ class Settings(BaseSettings):
 
     # ---- Covered-call writing (cli/rebalance.py extension) ---------------
     cc_enabled: bool = True
-    cc_target_delta_min: float = 0.35
-    cc_target_delta_max: float = 0.45
-    cc_dte_min: int = 30
-    cc_dte_max: int = 45
+    # Written to be kept, not to be exercised. A 0.40-delta call is
+    # roughly a 40% chance of losing the shares; these are 3-5 year
+    # holdings, so the band sits far out of the money and the premium is
+    # whatever that is worth.
+    cc_target_delta_min: float = 0.10
+    cc_target_delta_max: float = 0.25
+    # Longer expiries collect more total premium per contract. They also
+    # collect LESS per day (theta is slowest far out) and lock the cap in
+    # for longer, so the report shows premium per day beside the total.
+    cc_dte_min: int = 60
+    cc_dte_max: int = 120
+    # A hard floor under the strike, independent of delta: never write a
+    # call that caps the position less than this far above today's price,
+    # however rich the premium looks.
+    cc_min_upside_pct: float = 15.0
+    # Only write when the options market is paying more than the stock's
+    # own realized volatility (IV/HV >= this). Below it the premium is
+    # cheap and the right move is to wait, not to sell the upside
+    # anyway. 1.20+ is "elevated" in `_label_iv_hv_ratio`.
+    cc_min_iv_hv_ratio: float = 1.0
     cc_min_premium_usd: float = 500.0
     cc_slippage_buffer: float = 0.10
     cc_stub_optimization: bool = True

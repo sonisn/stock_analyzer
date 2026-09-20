@@ -16,10 +16,14 @@ from stock_analyzer.models.rebalance import (
 def test_cc_defaults():
     s = Settings()  # type: ignore[call-arg]
     assert s.cc_enabled is True
-    assert s.cc_target_delta_min == 0.35
-    assert s.cc_target_delta_max == 0.45
-    assert s.cc_dte_min == 30
-    assert s.cc_dte_max == 45
+    # Written to be kept: 0.10-0.25 delta, 60-120 days, 15% of room under
+    # the strike, and only when the market pays more than realized vol.
+    assert s.cc_target_delta_min == 0.10
+    assert s.cc_target_delta_max == 0.25
+    assert s.cc_dte_min == 60
+    assert s.cc_dte_max == 120
+    assert s.cc_min_upside_pct == 15.0
+    assert s.cc_min_iv_hv_ratio == 1.0
     assert s.options_denylist == ()
     assert s.cc_min_premium_usd == 500
     assert s.cc_slippage_buffer == 0.10

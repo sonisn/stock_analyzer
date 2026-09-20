@@ -215,8 +215,14 @@ _CHAIN_ROW_CAP_PER_TICKER = 8
 _CC_CONTEXT_BLOCK_MAX_CHARS = 50_000  # ~12.5K tokens — safe margin under 200K context.
 
 
-def _format_chain_row(q: OptionQuote) -> str:
+def _format_chain_row(q: OptionQuote, *, today: date | None = None) -> str:
     """Single-line chain row used inside the per-ticker context block.
+
+    Carries premium per day as well as the quote, because "further out
+    pays more" is true per contract and false per day: theta is slowest
+    far from expiry, and a longer contract also caps the position for
+    longer. Both numbers have to be visible for that trade-off to be
+    made rather than assumed.
 
     Coerces NaN/inf numeric fields to a "-" sentinel so the LLM sees
     clean text. yfinance occasionally returns NaN for low-volume strikes.
@@ -230,10 +236,16 @@ def _format_chain_row(q: OptionQuote) -> str:
     delta_str = f"Δ {_f(q.delta, '.2f')}"
     iv_str = f"IV {_f(q.iv, '.2f')}"
     oi_str = f"OI {q.open_interest}" if q.open_interest else "OI —"
+    dte = (q.expiry - (today or date.today())).days
+    mid = None
+    if q.bid is not None and q.ask is not None and q.bid >= 0 and q.ask > 0:
+        mid = (q.bid + q.ask) / 2
+    per_day = (mid * 100 / dte) if (mid and dte > 0) else None
+    pace = f"${_f(per_day, '.2f')}/day" if per_day else "—/day"
     return (
-        f"    {q.expiry.isoformat()} ${_f(q.strike, '>6.2f')} strike  "
+        f"    {q.expiry.isoformat()} ({dte}d) ${_f(q.strike, '>6.2f')} strike  "
         f"bid {_f(q.bid, '.2f')} / ask {_f(q.ask, '.2f')}  "
-        f"{delta_str}  {iv_str}  {oi_str}"
+        f"{delta_str}  {iv_str}  {oi_str}  {pace}"
     )
 
 

@@ -385,6 +385,33 @@ options, so BE is 27 shares (~$7,172) from a writable lot — the premium
 is behind an options application, not behind the market."* One line per
 account, since it is one form.
 
+## Calls written to be kept
+
+The covered-call bands were 0.35-0.45 delta over 30-45 days: roughly a
+40% chance of losing the shares, renewed every six weeks, on positions
+held for three to five years. They are now **0.10-0.25 delta over 60-120
+days**, with two rules the premium cannot argue with:
+
+- `CC_MIN_UPSIDE_PCT` (15%) is a hard floor under the strike, independent
+  of delta — never cap a position closer than that to today's price,
+  however rich the bid.
+- `CC_MIN_IV_HV_RATIO` (1.0) only writes when the options market is
+  paying more than the stock's own realized volatility. Below it the
+  upside is being underpaid and the report says so by name rather than
+  going quiet: *"NVDA: IV 31% is only 0.80x its realized 39% (depressed)
+  — below the 1.00x floor. Wait for a volatile session."*
+
+All of this is enforced in `validate_option_writes`, not asked for in the
+prompt. The put path already re-read every number from the chain while
+the call path checked eligibility alone, so a 0.60-delta write a month
+out would have passed validation untouched.
+
+Longer expiries are preferred but not unboundedly: a contract 400 days
+out is rejected the same as one 30 days out, because it caps the position
+for a year. Chain rows carry **premium per day** beside the quote, since
+"further out pays more" is true per contract and false per day — $400
+over 30 days is $13.33/day, while $1,000 over 120 days is $8.33/day.
+
 ## Where new money buys a second payoff
 
 A part-lot earns nothing: 62 uncovered AVGO shares are 62 shares of

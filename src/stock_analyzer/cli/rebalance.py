@@ -473,6 +473,9 @@ class RebalancePipeline(DiscoverPipeline):
             self.state["cc_stub_pool_total_usd"] = result.stub_pool
             self.state["cc_chains"] = result.chains
             self.state["cc_iv_hv_regimes"] = result.iv_hv_regimes
+            # Holdings where the premium is too cheap to be worth the cap:
+            # not silence, a reason.
+            self.state["cc_cheap_premium"] = result.cheap_premium
             return StepOutput(content=result.content)
         except Exception as e:
             logger.error(
@@ -597,6 +600,12 @@ class RebalancePipeline(DiscoverPipeline):
                 chains=self.state.get("cc_chains") or {},
                 eligibility=self.state.get("cc_eligibility") or {},
                 cc_context_block=self.state.get("cc_context_block") or "",
+                settings=self.settings,
+                spots={
+                    t: (v or {}).get("price")
+                    for t, v in (self.state.get("holdings_technicals") or {}).items()
+                    if (v or {}).get("price")
+                },
             )
             if cc_warnings:
                 self.state["cc_warnings"] = cc_warnings
@@ -812,7 +821,8 @@ class RebalancePipeline(DiscoverPipeline):
             cc_eligibility=self.state.get("cc_eligibility") or {},
             cc_round_lot_coverage=self.state.get("cc_round_lot_coverage") or {},
             cc_stub_pool_total_usd=self.state.get("cc_stub_pool_total_usd") or 0.0,
-            cc_warnings=self.state.get("cc_warnings") or [],
+            cc_warnings=(self.state.get("cc_warnings") or [])
+            + sorted((self.state.get("cc_cheap_premium") or {}).values()),
             cc_slippage_buffer=self.settings.cc_slippage_buffer,
             csp_summary=csp_report_data(
                 self.state.get("rebalance_plan"),

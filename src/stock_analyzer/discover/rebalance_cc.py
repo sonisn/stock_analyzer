@@ -113,6 +113,8 @@ class CcDataResult:
     stub_pool: float = 0.0
     chains: dict[str, object] = field(default_factory=dict)
     iv_hv_regimes: dict[str, IvHvRegime] = field(default_factory=dict)
+    # {ticker: why no call was offered on it today}
+    cheap_premium: dict[str, str] = field(default_factory=dict)
     content: str = ""
 
 
@@ -237,6 +239,16 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
         {t: f"{r.iv_hv_ratio:.2f}x ({r.label})" for t, r in iv_hv_regimes.items()},
     )
 
+    # Write when the market is paying up, not merely because shares are
+    # free to cover. Below CC_MIN_IV_HV_RATIO the option market is asking
+    # less for the upside than the stock's own realized movement says it
+    # is worth, and waiting costs nothing but time.
+    eligible, cheap = drop_cheap_premium(
+        eligible, iv_hv_regimes, min_ratio=settings.cc_min_iv_hv_ratio
+    )
+    if cheap:
+        logger.info("CC: holding off on %s — premium is cheap", ", ".join(sorted(cheap)))
+
     block = build_cc_context_block(
         eligible=eligible,
         chains=filtered_chains,
@@ -254,6 +266,7 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
     return CcDataResult(
         context_block=block,
         eligibility=eligible,
+        cheap_premium=cheap,
         coverage=coverage,
         stub_pool=stub_pool,
         chains=filtered_chains,
@@ -313,18 +326,61 @@ def log_rebalancer_input_estimate(
         )
 
 
+def drop_cheap_premium(
+    eligible: dict[str, Any],
+    iv_hv_regimes: dict[str, IvHvRegime],
+    *,
+    min_ratio: float,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Keep only holdings whose options are paying above realized vol.
+
+    Returns (kept, {ticker: why it was held back}). A ticker with no
+    regime reading is kept: an unknown IV is not evidence of a cheap one,
+    and dropping it would quietly stop writing calls whenever the vol
+    data failed.
+    """
+    if min_ratio <= 0:
+        return eligible, {}
+    kept, cheap = {}, {}
+    for ticker, entries in eligible.items():
+        regime = iv_hv_regimes.get(ticker)
+        if regime is None or regime.iv_hv_ratio >= min_ratio:
+            kept[ticker] = entries
+            continue
+        cheap[ticker] = (
+            f"{ticker}: IV {regime.current_iv:.0%} is only {regime.iv_hv_ratio:.2f}x its "
+            f"realized {regime.hv_annualized:.0%} ({regime.label}) — below the "
+            f"{min_ratio:.2f}x floor, so the upside is being underpaid. Wait for a "
+            f"volatile session."
+        )
+    return kept, cheap
+
+
 def apply_cc_plan_validation(
     plan: RebalancePlan,
     *,
     chains: dict[str, object],
     eligibility: dict[str, Any],
     cc_context_block: str,
+    settings: Settings | None = None,
+    spots: dict[str, float] | None = None,
 ) -> tuple[RebalancePlan, list[str]]:
     from .cc_backfill import backfill_option_writes
     from .cc_validation import validate_option_writes
 
     plan = backfill_option_writes(plan, chains=chains)
-    plan, cc_warnings = validate_option_writes(plan, eligibility=eligibility)
+    plan, cc_warnings = validate_option_writes(
+        plan,
+        eligibility=eligibility,
+        spots=spots,
+        # The keep-the-shares rules are enforced, not suggested: a rich
+        # premium is not a reason to accept a strike that gives the
+        # position no room.
+        delta_max=settings.cc_target_delta_max if settings else None,
+        min_upside_pct=settings.cc_min_upside_pct if settings else None,
+        dte_min=settings.cc_dte_min if settings else None,
+        dte_max=settings.cc_dte_max if settings else None,
+    )
     for w in cc_warnings:
         logger.warning("CC plan validation: %s", w)
 
