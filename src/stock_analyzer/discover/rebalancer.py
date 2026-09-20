@@ -842,6 +842,8 @@ class Rebalancer:
         accounts_block: str = "",
         add_on_block: str = "",
         obligations_block: str = "",
+        backlog_block: str = "",
+        stub_income_block: str = "",
     ) -> RebalancePlan:
         # Accept either the new structured form ({ticker: HoldingReview})
         # or the legacy free-text form ({ticker: str}). For the LLM prompt
@@ -893,6 +895,11 @@ class Rebalancer:
         # worse than no sale, and this is the only input that says which
         # shares are already spoken for.
         obligations_section = f"{obligations_block}\n\n" if obligations_block else ""
+        # Signed orders behind a holding, and the premium a part-lot is
+        # one purchase away from earning. Both bear on trims, and neither
+        # was visible to this agent before 2026-09-20.
+        backlog_section = f"{backlog_block}\n\n" if backlog_block else ""
+        stub_income_section = f"{stub_income_block}\n\n" if stub_income_block else ""
         harvest_section = (
             f"TAX-LOSS HARVEST CANDIDATES (deterministic; see instructions):\n{harvest_block}\n\n"
             if harvest_block
@@ -904,6 +911,8 @@ class Rebalancer:
             f"'Tax-agnostic alternative' section is MANDATORY in any "
             f"NO ACTION output.)\n\n"
             f"{obligations_section}"
+            f"{backlog_section}"
+            f"{stub_income_section}"
             f"{macro_block}"
             f"{themes_section}"
             f"{cc_section}"

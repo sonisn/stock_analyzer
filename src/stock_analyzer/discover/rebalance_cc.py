@@ -86,6 +86,95 @@ def filter_chains_by_earnings(
     return filtered
 
 
+def _best_in_band_premiums(
+    coverage: dict[str, Any],
+    spots: dict[str, float],
+    settings: Any,
+) -> dict[str, tuple[float, float, str]]:
+    """{ticker: (premium, strike, expiry)} for the best policy-compliant
+    call on each part-lot worth completing. Chains are free to fetch and
+    the answer is what makes the trade-off legible, but a failure here
+    must never cost the run its plan."""
+    from ..data.options_chain import fetch_chains
+
+    wanted = [
+        t
+        for t, rec in coverage.items()
+        if rec.to_next_lot_shares and rec.stub_dollar_value >= settings.cc_min_stub_usd
+    ]
+    if not wanted:
+        return {}
+    try:
+        chains = fetch_chains(
+            wanted, dte_min=settings.cc_dte_min, dte_max=settings.cc_dte_max, kind="calls"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Stub premium lookup failed (%s) — cost shown without income", e)
+        return {}
+    out: dict[str, tuple[float, float, str]] = {}
+    for ticker, chain in chains.items():
+        spot = spots.get(ticker) or 0.0
+        best = None
+        for q in getattr(chain, "calls", []):
+            delta = abs(q.delta) if q.delta is not None else None
+            if delta is None or not (
+                settings.cc_target_delta_min <= delta <= settings.cc_target_delta_max
+            ):
+                continue
+            if not q.bid or q.bid <= 0 or not spot:
+                continue
+            if q.strike < spot * (1 + settings.cc_min_upside_pct / 100):
+                continue
+            if best is None or q.bid > best.bid:
+                best = q
+        if best is not None:
+            out[ticker] = (best.bid * 100, best.strike, str(best.expiry))
+    return out
+
+
+def stub_income_block(
+    coverage: dict[str, Any],
+    premiums: dict[str, tuple[float, float, str]],
+    *,
+    min_stub_usd: float,
+) -> str:
+    """What completing each part-lot would cost, and what it would pay.
+
+    The round-lot table already says a stub is 15 shares short of a
+    writable lot. What it never said is that those 15 shares buy a
+    contract worth $1,325 — so "sell the stub" was the only option ever
+    priced, and on 2026-09-20 a plan trimmed the exact 61 AVGO shares
+    that sat 38 short of a second lot. `premiums` maps ticker ->
+    (premium_usd, strike, expiry) for the best in-band call.
+    """
+    rows = []
+    for ticker in sorted(coverage):
+        rec = coverage[ticker]
+        shares = getattr(rec, "to_next_lot_shares", 0) or 0
+        cost = getattr(rec, "to_next_lot_cost", 0.0) or 0.0
+        if not shares or getattr(rec, "stub_dollar_value", 0.0) < min_stub_usd:
+            continue
+        line = (
+            f"  {ticker}: {shares:,.0f} more share(s) (~${cost:,.0f}) completes a "
+            f"writable lot from the {getattr(rec, 'stub_shares', 0):,.0f}-share stub"
+        )
+        if quote := premiums.get(ticker):
+            premium, strike, expiry = quote
+            line += f" — one call at ${strike:,.0f} expiring {expiry} pays ~${premium:,.0f}" + (
+                f" ({premium / cost:.0%} of the cost)" if cost > 0 else ""
+            )
+        rows.append(line)
+    if not rows:
+        return ""
+    return (
+        "COMPLETING A PART-LOT (premium the stub cannot earn as it stands)\n"
+        "A covered call needs 100 shares in ONE account. These holdings are\n"
+        "close. Weigh buying the shortfall against selling the stub: selling it\n"
+        "ends the premium permanently, and the figures below are what that\n"
+        "premium is worth today.\n" + "\n".join(rows)
+    )
+
+
 def writable_positions(positions: dict[str, Any], spots: dict[str, float]) -> dict[str, Any]:
     """The holdings a covered call could actually be written on.
 
@@ -141,6 +230,8 @@ class CcDataResult:
     iv_hv_regimes: dict[str, IvHvRegime] = field(default_factory=dict)
     # {ticker: why no call was offered on it today}
     cheap_premium: dict[str, str] = field(default_factory=dict)
+    # What completing each part-lot costs and earns.
+    stub_income_block: str = ""
     content: str = ""
 
 
@@ -219,6 +310,7 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
         logger.info("Round-lot coverage skips %s — not writable", ", ".join(skipped))
     coverage = round_lot_coverage(writable, spots=spots)
     stub_pool = sum(rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares)
+    stub_premiums = _best_in_band_premiums(coverage, spots, settings)
 
     stub_eligible = sum(
         1 for rec in coverage.values() if rec.stub_dollar_value >= settings.cc_min_stub_usd
@@ -298,6 +390,9 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
         cheap_premium=cheap,
         coverage=coverage,
         stub_pool=stub_pool,
+        stub_income_block=stub_income_block(
+            coverage, stub_premiums, min_stub_usd=settings.cc_min_stub_usd
+        ),
         chains=filtered_chains,
         iv_hv_regimes=iv_hv_regimes,
         content=(

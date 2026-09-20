@@ -187,3 +187,41 @@ __all__ = [
     "coverage_years",
     "fetch_rpo",
 ]
+
+
+def backlog_block(books: dict[str, dict[str, Any]]) -> str:
+    """The order book behind each holding, for the rebalancer's prompt.
+
+    A sale decision reads price, trend and estimates — all of which are
+    opinions about the future. Remaining performance obligations are the
+    one forward-looking number that is already signed, and they can point
+    the other way: AVGO's thesis was called broken while its book grew
+    552%. Absence means the company does not tag the concept, never that
+    the book is empty, so a name without a row must not be penalised.
+    """
+    rows = []
+    for ticker in sorted(books):
+        rec = books[ticker] or {}
+        value = rec.get("value")
+        if not value:
+            continue
+        yoy, qoq = rec.get("yoy_pct"), rec.get("qoq_pct")
+        parts = [f"  {ticker}: {_money(float(value))} contracted"]
+        if yoy is not None:
+            parts.append(f"{yoy:+.0f}% YoY")
+        if qoq is not None:
+            parts.append(f"{qoq:+.0f}% QoQ")
+        if rec.get("period_end"):
+            parts.append(f"as of {rec['period_end']}")
+        rows.append(", ".join(parts))
+    if not rows:
+        return ""
+    return (
+        "CONTRACTED BOOK (SEC-filed remaining performance obligations)\n"
+        "Revenue already under contract and not yet delivered — signed orders,\n"
+        "not an analyst forecast. A book growing fast argues against trimming\n"
+        "the name; a shrinking one supports a sale. Holdings with no row do not\n"
+        "tag the concept and must NOT be treated as having no backlog.\n"
+        + "\n".join(rows)
+    )
+

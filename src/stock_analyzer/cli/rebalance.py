@@ -415,6 +415,39 @@ class RebalancePipeline(DiscoverPipeline):
         n = sum(1 for v in self.state["finnhub_signals"].values() if v)
         return StepOutput(content=f"Finnhub signals: {n}/{len(tickers)} tickers covered")
 
+    def step_contracted_book(self, step_input: StepInput) -> StepOutput:
+        """SEC-filed order books for the holdings, for the sell decisions.
+
+        Free (SEC XBRL), deterministic, and the one forward-looking number
+        in the prompt that is signed rather than forecast. Never blocks the
+        run: a name with no book is normal, and so is the API being down.
+        """
+        from ..data.backlog import backlog_block, batch_rpo
+
+        tickers = self.state.get("holdings_tickers") or []
+        if not tickers:
+            return StepOutput(content="contracted_book: no analyzable holdings")
+        try:
+            books = batch_rpo(list(tickers))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Contracted-book fetch failed (%s) — continuing without it", e)
+            books = {}
+        self.state["contracted_book"] = books
+        self.state["backlog_block"] = backlog_block(books)
+        if books:
+            logger.info(
+                "Contracted book: %d of %d holding(s) tag one (%s)",
+                len(books),
+                len(tickers),
+                ", ".join(
+                    f"{t} {books[t]['yoy_pct']:+.0f}%"
+                    for t in sorted(books)
+                    if books[t].get("yoy_pct") is not None
+                )
+                or "no YoY comparison yet",
+            )
+        return StepOutput(content=f"contracted_book: {len(books)}/{len(tickers)} tagged")
+
     def step_review_holdings(self, step_input: StepInput) -> StepOutput:
         # `holdings_positions` deliberately carries everything, including
         # symbols no market data exists for — they are still valued and
@@ -504,6 +537,7 @@ class RebalancePipeline(DiscoverPipeline):
             self.state["cc_stub_pool_total_usd"] = result.stub_pool
             self.state["cc_chains"] = result.chains
             self.state["cc_iv_hv_regimes"] = result.iv_hv_regimes
+            self.state["stub_income_block"] = result.stub_income_block
             # Holdings where the premium is too cheap to be worth the cap:
             # not silence, a reason.
             self.state["cc_cheap_premium"] = result.cheap_premium
@@ -628,6 +662,8 @@ class RebalancePipeline(DiscoverPipeline):
                     self.state.get("account_cash") or {}, self.state.get("account_meta") or {}
                 ),
                 add_on_block=self._add_on_block(),
+                backlog_block=self.state.get("backlog_block") or "",
+                stub_income_block=self.state.get("stub_income_block") or "",
                 obligations_block=covered_call_block(
                     self.state.get("holdings_positions") or {},
                     self.state.get("covered_call_obligations") or {},
@@ -1041,6 +1077,7 @@ class RebalancePipeline(DiscoverPipeline):
                     Step(name="ranker", executor=self.step_ranker),
                     Step(name="redteam", executor=self.step_redteam),
                     Step(name="sizer", executor=self.step_sizer),
+                    Step(name="contracted_book", executor=self.step_contracted_book),
                     Step(name="review_holdings", executor=self.step_review_holdings),
                     Step(name="cc_data", executor=self.step_cc_data),
                     Step(name="csp_data", executor=self.step_csp_data),

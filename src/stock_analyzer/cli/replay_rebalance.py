@@ -85,19 +85,52 @@ def main(argv: list[str] | None = None) -> None:
         prompt_chars,
     )
 
+    # The deterministic blocks are cheap to rebuild live, so the replay
+    # carries them: they are exactly the facts a sale decision needs, and
+    # replaying without them reproduces the gap instead of the fix.
+    from ..data.backlog import backlog_block, batch_rpo
+    from ..data.brokerage import (
+        fetch_account_cash,
+        fetch_covered_call_obligations,
+        fetch_portfolio_holdings,
+    )
+    from ..discover.sale_validation import covered_call_block, validate_sales
+
+    holdings = fetch_portfolio_holdings()
+    positions: dict[str, dict[str, Any]] = {}
+    for items in holdings.values():
+        for h in items:
+            if t := h.get("ticker"):
+                positions.setdefault(t, {"units": 0.0})["units"] += float(h.get("units") or 0)
+    obligations = fetch_covered_call_obligations()
+    books = batch_rpo([t for t in reviews if t in positions])
+    cash = args.cash if args.cash is not None else sum(fetch_account_cash().values())
+    logger.info(
+        "Live context: %d position(s), %d with written calls, %d with a contracted book, cash $%s",
+        len(positions),
+        len(obligations),
+        len(books),
+        f"{cash:,.0f}",
+    )
+
     rebalancer = Rebalancer("claude", settings.discover_opus_model)
     plan: Any = rebalancer.decide(
         reviews,
         ranker_text,
-        args.cash if args.cash is not None else 20_878.0,
+        cash,
         aggressiveness=settings.discover_rebalance_aggressiveness,
+        obligations_block=covered_call_block(positions, obligations),
+        backlog_block=backlog_block(books),
     )
+    plan, sale_warnings = validate_sales(plan, positions=positions, obligations=obligations)
 
     print(f"\nstatus      : {plan.status}")
     print(f"actions     : {len(plan.actions)}")
     for a in plan.actions:
         print(f"  {a.action:<12} {a.ticker:<8} {a.sizing}")
     print(f"summary     : {plan.summary}")
+    for w in sale_warnings:
+        print(f"  ! {w}")
     print(f"full_text   : {len(plan.full_text):,} chars")
     if args.out:
         with open(args.out, "w") as fh:
