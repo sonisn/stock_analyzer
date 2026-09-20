@@ -487,7 +487,7 @@ def test_decide_includes_cc_context_in_prompt():
     captured: dict[str, str] = {}
 
     class _StubAgent:
-        def run_streamed(self, prompt):
+        def run(self, prompt):
             captured["prompt"] = prompt
             return MagicMock(
                 content=RebalancePlan(
@@ -519,7 +519,7 @@ def test_decide_omits_cc_block_when_empty():
     captured: dict[str, str] = {}
 
     class _StubAgent:
-        def run_streamed(self, prompt):
+        def run(self, prompt):
             captured["prompt"] = prompt
             return MagicMock(
                 content=RebalancePlan(

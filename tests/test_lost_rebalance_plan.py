@@ -177,21 +177,31 @@ def test_the_rebalance_appendix_keeps_its_at_a_glance_numbers():
     assert "—" not in glance[1:4]
 
 
-def test_a_budget_over_the_unstreamed_ceiling_requires_streaming():
-    """32,000 unstreamed was refused by the SDK before a token was sent.
-    The budget is only allowed above that ceiling because the call
-    streams — so if `decide` ever stops streaming, this must come down."""
-    import inspect
-
+def test_a_budget_over_the_unstreamed_ceiling_needs_an_explicit_timeout():
+    """32,000 was refused by the SDK before a token was sent. The budget is
+    only allowed above that ceiling because the model is given its own
+    timeout, which is the one condition that skips the guard — so dropping
+    the timeout must fail here rather than in the next run."""
     from stock_analyzer.discover import rebalancer as r
 
     configured = r.REBALANCER_MAX_OUTPUT_TOKENS
     assert configured > 16000, "16,000 is the value that truncated a real plan"
-    source = inspect.getsource(r.Rebalancer.decide)
-    if configured > r.MAX_NONSTREAMING_OUTPUT_TOKENS:
-        assert "run_streamed" in source, (
-            f"max_tokens={configured} is above the SDK's non-streaming ceiling "
-            f"({r.MAX_NONSTREAMING_OUTPUT_TOKENS}) but the call is not streamed — "
-            "the request will be refused before it is sent"
-        )
     assert configured <= 128_000, "128k is the model's own output limit"
+    if configured > r.MAX_NONSTREAMING_OUTPUT_TOKENS:
+        assert r.REBALANCER_TIMEOUT_S > 0, (
+            f"max_tokens={configured} is above the SDK's non-streaming ceiling "
+            f"({r.MAX_NONSTREAMING_OUTPUT_TOKENS}); without an explicit timeout "
+            "the request is refused before it is sent"
+        )
+
+
+def test_the_timeout_actually_reaches_the_model():
+    """The bypass only works if the timeout lands on the Anthropic client,
+    so assert it is in the kwargs the model is constructed with."""
+    import inspect
+
+    from stock_analyzer.discover import rebalancer as r
+
+    source = inspect.getsource(r.Rebalancer.__init__)
+    assert '"timeout": REBALANCER_TIMEOUT_S' in source
+    assert '"max_tokens": REBALANCER_MAX_OUTPUT_TOKENS' in source

@@ -708,15 +708,25 @@ def format_accounts_block(
     return "\n".join(lines)
 
 
-# The Anthropic SDK raises rather than risk a silent HTTP timeout on a
-# long non-streaming request: `3600 * max_tokens / 128_000 > 600` seconds.
-# Anything above this must stream instead — which is why this call does.
+# The Anthropic SDK refuses a long non-streaming request rather than risk
+# a silent HTTP timeout — `3600 * max_tokens / 128_000 > 600` seconds —
+# which caps an unstreamed call at 21,333 output tokens. The guard is
+# skipped when the caller sets its own timeout:
+#
+#     if not stream and not is_given(timeout) and client.timeout == DEFAULT
+#
+# so REBALANCER_TIMEOUT_S below is what buys the headroom, not streaming.
+# agno's `stream=True` was tried on 2026-09-20 and does not help: it
+# streams agno's own event iterator while the model layer still issues a
+# non-streaming HTTP call, so the guard fired anyway.
 MAX_NONSTREAMING_OUTPUT_TOKENS = 128_000 * 600 // 3600  # 21,333
-# What the rebalancer asks for. Two runs died at this step on 2026-09-20:
-# 16,000 cut the JSON off mid-string, and 21,333 is as far as an
-# unstreamed request is allowed to reach — neither is enough for a
-# sixteen-holding book with call and put context, so the call is streamed
-# and the budget is set where truncation stops being the constraint.
+# Long enough for the whole 64k budget to arrive at Opus's pace.
+REBALANCER_TIMEOUT_S = 1800.0
+# What the rebalancer asks for. Three runs died at this step on
+# 2026-09-20: 16,000 cut the JSON off mid-string, 32,000 was refused
+# before it was sent, and agno's stream flag did not reach the API. With
+# an explicit timeout the budget can finally sit where truncation stops
+# being the constraint.
 REBALANCER_MAX_OUTPUT_TOKENS = 64_000
 
 
@@ -805,11 +815,10 @@ class Rebalancer:
                 # ran the JSON out at exactly 16,000 output tokens, and the
                 # whole plan was lost.
                 #
-                # `decide` streams this call (see run_streamed), which is
-                # what allows a budget above MAX_NONSTREAMING_OUTPUT_TOKENS.
-                # If it is ever un-streamed, this must come back down to
-                # 21,000 or the SDK refuses the request before sending it.
+                # The timeout is load-bearing: without it the SDK refuses
+                # any budget over MAX_NONSTREAMING_OUTPUT_TOKENS outright.
                 "max_tokens": REBALANCER_MAX_OUTPUT_TOKENS,
+                "timeout": REBALANCER_TIMEOUT_S,
                 # Adaptive thinking requires temperature=1; the API rejects
                 # anything else with a 400.
                 "temperature": 1,
@@ -906,9 +915,7 @@ class Rebalancer:
             f"${cash_available:,.0f}" if cash_available is not None else "unknown",
             agg,
         )
-        # Streamed: the plan is long enough that an unstreamed request
-        # would be refused outright (MAX_NONSTREAMING_OUTPUT_TOKENS).
-        raw = self.agent.run_streamed(prompt)
+        raw = self.agent.run(prompt)
         result = raw.content
         if result is None:
             raise RuntimeError(
