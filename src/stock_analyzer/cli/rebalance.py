@@ -407,8 +407,18 @@ class RebalancePipeline(DiscoverPipeline):
         return StepOutput(content=f"Finnhub signals: {n}/{len(tickers)} tickers covered")
 
     def step_review_holdings(self, step_input: StepInput) -> StepOutput:
+        # `holdings_positions` deliberately carries everything, including
+        # symbols no market data exists for — they are still valued and
+        # taxed. Reviewing them is a different matter: a revoked CUSIP has
+        # no price, no fundamentals and no news, so the reviewer spends an
+        # LLM call to write "no data available" and the report prints it
+        # beside real holdings. step_holdings_fetch already worked out
+        # which tickers are analyzable; this is the list to review.
+        analyzable = set(self.state.get("holdings_tickers") or self.state["holdings_positions"])
         payloads = build_holding_review_payloads(
-            positions=self.state["holdings_positions"],
+            positions={
+                t: p for t, p in self.state["holdings_positions"].items() if t in analyzable
+            },
             fund=self.state["holdings_fundamentals"],
             tech=self.state["holdings_technicals"],
             rfs=self.state["holdings_risk_factors"],

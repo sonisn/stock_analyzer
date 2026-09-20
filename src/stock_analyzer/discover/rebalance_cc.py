@@ -86,6 +86,32 @@ def filter_chains_by_earnings(
     return filtered
 
 
+def writable_positions(positions: dict[str, Any], spots: dict[str, float]) -> dict[str, Any]:
+    """The holdings a covered call could actually be written on.
+
+    Round-lot coverage answers "how close is this to a writable lot", so
+    it may only contain tradable equity. Unfiltered, a money-market sweep
+    reported 20,845 units as 208 round lots and a revoked CUSIP offered
+    one more — `reporting.health.is_cash_like` was added for that exact
+    symptom in the daily email and never reached this path. Positions
+    dropped here are still held, valued and taxed everywhere else.
+    """
+    from ..data.brokerage import is_listed_symbol
+    from ..reporting.health import is_cash_like
+
+    return {
+        t: p
+        for t, p in positions.items()
+        if is_listed_symbol(t)
+        and not is_cash_like(t, spots.get(t))
+        # A price is required, not incidental: this table exists to say
+        # what the gap to the next lot COSTS. Without a quote it can only
+        # print $0 stub and $0 to-next-lot, which is what a 401(k)
+        # commingled pool and two revoked CUSIPs did on 2026-09-20.
+        and float(spots.get(t) or 0) > 0
+    }
+
+
 def compute_iv_hv_regimes(
     eligible: dict[str, list[Any]],
     filtered_chains: dict[str, object],
@@ -188,7 +214,10 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
         t: (state.get("holdings_technicals", {}).get(t) or {}).get("price") or 0.0
         for t in positions
     }
-    coverage = round_lot_coverage(positions, spots=spots)
+    writable = writable_positions(positions, spots)
+    if skipped := sorted(set(positions) - set(writable)):
+        logger.info("Round-lot coverage skips %s — not writable", ", ".join(skipped))
+    coverage = round_lot_coverage(writable, spots=spots)
     stub_pool = sum(rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares)
 
     stub_eligible = sum(
