@@ -143,3 +143,51 @@ def test_the_rebalance_glance_flags_it_before_the_plan():
     lines = [s.text for s in sections if s.kind == "para" and s.text.startswith("•")]
     assert lines[0] == f"• Stale account data — {STALE_NOTE}."
     assert "OK" in lines[1]
+
+
+# --- symbols no market data exists for ---------------------------------------------
+
+
+def test_cusips_and_commingled_funds_are_not_analyzable():
+    from stock_analyzer.data.brokerage import is_listed_symbol
+
+    # Taronis Technologies (SEC registration revoked) and Taronis Fuels
+    # (bankrupt) arrive as CUSIPs; the 401(k) pool as kind "other".
+    assert not is_listed_symbol("876214206", "stock")
+    assert not is_listed_symbol("87621P209", "stock")
+    assert not is_listed_symbol("FGCCPS", "other")
+    assert not is_listed_symbol("", None) and not is_listed_symbol(None, None)
+
+    assert is_listed_symbol("BE", "stock")
+    assert is_listed_symbol("GOOGL", "stock")
+    assert is_listed_symbol("BRK.B", "stock")  # class suffixes are real tickers
+    assert is_listed_symbol("SPAXX", None)  # a money-market fund still has a quote
+    assert is_listed_symbol("NVDA", "unrecognized_kind")  # a new kind is not a drop
+
+
+def test_unlisted_holdings_are_split_out_not_dropped():
+    from stock_analyzer.data.brokerage import listed_tickers
+    from stock_analyzer.reporting.health import aggregate_positions
+
+    holdings = {
+        "HSA Brokerage ...263": [{"ticker": "BE", "kind": "stock", "units": 73, "price": 265.63}],
+        "Broadcom U.S. 401(k) Plan": [
+            {"ticker": "FGCCPS", "kind": "other", "units": 40.244, "price": 111.71}
+        ],
+        "Individual ...004": [
+            {
+                "ticker": "876214206",
+                "kind": "stock",
+                "units": 144,
+                "price": 0,
+                "average_purchase_price": 12.294171,
+            }
+        ],
+    }
+    analyze, skipped = listed_tickers(holdings)
+    assert analyze == ["BE"]
+    assert skipped == ["876214206", "FGCCPS"]
+    # ...but the 401(k) money is still part of the portfolio's value.
+    positions = aggregate_positions(holdings)
+    assert round(positions["FGCCPS"]["value"], 2) == 4495.66
+    assert round(positions["876214206"]["cost"], 2) == 1770.36

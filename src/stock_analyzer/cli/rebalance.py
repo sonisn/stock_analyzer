@@ -37,6 +37,7 @@ from ..data.brokerage import (
     fetch_account_meta,
     fetch_account_sync_status,
     fetch_portfolio_holdings,
+    listed_tickers,
     stale_account_notes,
 )
 from ..data.finnhub import batch_finnhub_signals
@@ -278,7 +279,12 @@ class RebalancePipeline(DiscoverPipeline):
         self.state["account_meta"] = account_meta
         self.state["position_splits"] = position_splits
         self.state["cash_balance"] = cash
-        self.state["holdings_tickers"] = list(positions.keys())
+        # Every holding stays in `positions` for valuation and tax, but
+        # only the market-listed ones get fundamentals, chains and reviews.
+        analyzable, unlisted = listed_tickers(holdings)
+        if unlisted:
+            logger.info("No market data for %s — not reviewed", ", ".join(unlisted))
+        self.state["holdings_tickers"] = [t for t in positions if t in set(analyzable)]
         ta_count = sum(1 for v in position_splits.values() if v.get("has_tax_advantaged"))
         cash_str = f"${cash:,.0f}" if cash is not None else "unknown"
         return StepOutput(

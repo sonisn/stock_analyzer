@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
@@ -179,6 +180,44 @@ def _extract_ticker(position: dict) -> str | None:
             return sym["symbol"]
         sym = sym.get("symbol")
     return sym if isinstance(sym, str) else None
+
+
+# A listed US ticker is letters, at most six of them, with an optional
+# class suffix (BRK.B, BF-B). SnapTrade falls back to the CUSIP when a
+# holding has no live listing — after the Schwab reconnect on 2026-09-20
+# two dead positions arrived as "876214206" (Taronis Technologies, SEC
+# registration revoked) and "87621P209" (Taronis Fuels, bankrupt), and a
+# 401(k) commingled pool arrived as "FGCCPS" with kind "other". None of
+# them exists on any market-data feed, so looking them up wastes a fetch
+# and an LLM call and puts a symbol nobody can trade in the email.
+_TICKER_RE = re.compile(r"^[A-Z]{1,6}([.-][A-Z]{1,2})?$")
+# SnapTrade instrument kinds that trade on a market. Unknown kinds are
+# allowed through — a new kind should not silently drop a real holding.
+_UNLISTED_KINDS = {"other", "crypto"}
+
+
+def is_listed_symbol(symbol: str | None, kind: str | None = None) -> bool:
+    """Can market data be fetched for this holding's symbol?
+
+    Positions that fail this are still held, valued and taxed like any
+    other — they are only kept out of the data fetches and the LLM
+    analysis, which have nothing to say about them.
+    """
+    if not symbol or not _TICKER_RE.match(str(symbol).strip().upper()):
+        return False
+    return str(kind or "").strip().lower() not in _UNLISTED_KINDS
+
+
+def listed_tickers(holdings: dict[str, list[dict]]) -> tuple[list[str], list[str]]:
+    """(tickers to analyze, symbols skipped) across every account."""
+    keep, skip = set(), set()
+    for items in holdings.values():
+        for h in items:
+            ticker = h.get("ticker")
+            if not ticker:
+                continue
+            (keep if is_listed_symbol(ticker, h.get("kind")) else skip).add(str(ticker))
+    return sorted(keep), sorted(skip)
 
 
 def _field(account: Any, key: str) -> Any:
@@ -414,9 +453,13 @@ def fetch_portfolio_holdings() -> dict[str, list[dict]]:
             # returns units/price/cost_basis as strings, not numbers; cast
             # here so every downstream consumer keeps getting floats like
             # it always has, instead of hunting down every call site.
+            instrument = p.get("instrument")
             holdings.append(
                 {
                     "ticker": ticker,
+                    "kind": (instrument or {}).get("kind")
+                    if isinstance(instrument, dict)
+                    else None,
                     "units": _to_float(p.get("units")),
                     "price": _to_float(p.get("price")),
                     "average_purchase_price": _to_float(
@@ -606,10 +649,9 @@ def fetch_total_cash() -> float | None:
 
 
 def fetch_portfolio_tickers() -> list[str]:
-    """Return de-duplicated, sorted list of tickers across all connected accounts."""
-    holdings = fetch_portfolio_holdings()
-    tickers: set[str] = set()
-    for account_holdings in holdings.values():
-        for h in account_holdings:
-            tickers.add(h["ticker"])
-    return sorted(tickers)
+    """De-duplicated, sorted tickers across all connected accounts, minus
+    the ones no market data exists for (see `is_listed_symbol`)."""
+    tickers, skipped = listed_tickers(fetch_portfolio_holdings())
+    if skipped:
+        logger.info("Not market-listed, skipping data for: %s", ", ".join(skipped))
+    return tickers

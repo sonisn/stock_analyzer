@@ -12,6 +12,7 @@ from ..data import finnhub, yf_gateway
 from ..data.brokerage import (
     fetch_account_sync_status,
     fetch_portfolio_holdings,
+    listed_tickers,
     stale_account_notes,
 )
 from ..data.chart_img import fetch_charts
@@ -230,7 +231,12 @@ def run_analysis(
     per-ticker chart images for the email."""
     if holdings is None:
         holdings = fetch_portfolio_holdings()
-    tickers = sorted({h["ticker"] for items in holdings.values() for h in items if h.get("ticker")})
+    # A CUSIP for a revoked listing or a 401(k) commingled pool has no
+    # quote, no news and nothing for a model to say — analyzing it costs a
+    # fetch and an LLM call to produce an empty block.
+    tickers, unlisted = listed_tickers(holdings)
+    if unlisted:
+        logger.info("Skipping %s — no market data for these symbols", ", ".join(unlisted))
     if not tickers:
         raise RuntimeError("No tickers returned from SnapTrade — check connected accounts.")
     logger.info("Analyzing %d tickers: %s", len(tickers), ", ".join(tickers))
@@ -298,6 +304,11 @@ def main() -> None:
     # prices as if they were today's, so name the account instead of
     # quietly valuing stale data.
     stale = stale_account_notes(fetch_account_sync_status())
+    _, unlisted = listed_tickers(holdings)
+    if unlisted:
+        price_notes.append(
+            "no market data for " + ", ".join(unlisted) + " — held and valued, but not analyzed"
+        )
     health = portfolio_health(
         settings,
         holdings,
