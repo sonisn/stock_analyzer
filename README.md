@@ -319,6 +319,37 @@ glance" flags with the date it went dark and the one fix for it:
 reconnect it in SnapTrade. Until then, every number for that account
 describes the day it stopped syncing.
 
+## Fundamentals as filed
+
+yfinance's fundamentals are derived, undated, and sometimes wrong in ways
+the response gives no hint of: on 2026-09-20 it put NVDA's trailing free
+cash flow at $41.8B against $127.0B in the filings, and GOOGL's at
+$22.7B against $53.3B. Those numbers drive the screen's scoring.
+
+`data/wisesheets.py` fetches the same figures as filed with the SEC —
+every value carries its XBRL tag, accession number and a link to the
+filing — and `batch_fundamentals` overlays them on the yfinance row.
+Anything forward-looking (estimates, price targets, recommendations,
+short interest) has no counterpart there and is untouched.
+
+The filed figure wins, with two exceptions. When the two sources are too
+far apart to both describe the same company — ANET's 2025-12-31
+`NetIncomeLoss` arrives as -$2,556M, turning a 38% net margin into 5% —
+neither is trusted: yfinance's value is kept and the disagreement is
+reported. And when the newest filing is more than `FILED_MAX_AGE_DAYS`
+(150) old, yfinance's trailing figures are the more current answer.
+
+Coverage is US SEC filers, so a foreign private issuer like TSM has
+nothing to cross-check against. Those rows get a plausibility check
+instead: a debt/equity above 20 means the balance sheet is denominated in
+the company's own currency (TSM reads 42.16 because yfinance reports it
+in TWD), which is worth knowing before comparing it to a US peer.
+
+Set `WISESHEETS_API_KEY` to enable it. Without the key, or if the API
+fails, every number falls back to yfinance exactly as before. The free
+plan allows 5,000 requests/month and 100 tickers per request, so a full
+S&P 500 pull costs about six.
+
 ## Accounts
 
 Cash only funds buys (and put collateral) in its own account, so the
