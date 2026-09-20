@@ -313,6 +313,28 @@ def roll_ideas_for(
     return out
 
 
+def snapshot_account_values(
+    holdings: dict[str, list[dict]],
+    cash: dict[str, float],
+    *,
+    prices: dict[str, float] | None = None,
+) -> dict[str, dict[str, float]]:
+    """{account label: {"value", "cash"}} for every account in either feed.
+
+    Every account is listed, including the empty ones: an account worth
+    nothing today still has to be known to have been there, or the day it
+    is funded reads as a gain."""
+    from ..reporting.health import aggregate_positions
+
+    out: dict[str, dict[str, float]] = {}
+    for label, items in holdings.items():
+        value = sum(p["value"] for p in aggregate_positions({label: items}, prices).values())
+        out[label] = {"value": round(value, 2), "cash": 0.0}
+    for label, amount in cash.items():
+        out.setdefault(label, {"value": 0.0, "cash": 0.0})["cash"] = round(float(amount), 2)
+    return out
+
+
 def record_portfolio_snapshot(
     settings: Settings,
     holdings: dict[str, list[dict]],
@@ -338,6 +360,7 @@ def record_portfolio_snapshot(
                 day=date.today().isoformat(),
                 holdings_value=value,
                 cash=sum(cash.values()),
+                accounts=snapshot_account_values(holdings, cash, prices=prices),
             )
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not record today's portfolio snapshot (%s)", e)

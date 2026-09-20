@@ -355,17 +355,51 @@ def fetch_suggestions(session: Session, *, start: str, end: str) -> list[Suggest
 # --- portfolio snapshots --------------------------------------------------
 
 
-def record_snapshot(session: Session, *, day: str, holdings_value: float, cash: float) -> None:
-    """Store (or replace) the portfolio's value for `day`."""
+def record_snapshot(
+    session: Session,
+    *,
+    day: str,
+    holdings_value: float,
+    cash: float,
+    accounts: dict[str, dict[str, float]] | None = None,
+) -> None:
+    """Store (or replace) the portfolio's value for `day`.
+
+    `accounts` ({label: {"value", "cash"}}) records which accounts the
+    total covered, so a later comparison can tell a newly connected
+    account's balance apart from a gain."""
     row = session.get(PortfolioSnapshot, day)
     total = holdings_value + cash
+    blob = json.dumps(accounts, sort_keys=True) if accounts else None
     if row is None:
         session.add(
-            PortfolioSnapshot(day=day, holdings_value=holdings_value, cash=cash, total=total)
+            PortfolioSnapshot(
+                day=day,
+                holdings_value=holdings_value,
+                cash=cash,
+                total=total,
+                accounts=blob,
+            )
         )
     else:
         row.holdings_value, row.cash, row.total = holdings_value, cash, total
+        # An account map is only ever replaced by another one: a run that
+        # could not read the breakdown must not erase a good one.
+        if blob:
+            row.accounts = blob
     session.flush()
+
+
+def snapshot_accounts(row: PortfolioSnapshot) -> dict[str, dict[str, float]] | None:
+    """The stored account breakdown, or None when the row predates it (or
+    holds unreadable JSON)."""
+    if not row.accounts:
+        return None
+    try:
+        parsed = json.loads(row.accounts)
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def fetch_snapshots(session: Session, *, start: str | None = None) -> list[PortfolioSnapshot]:

@@ -265,6 +265,11 @@ class PortfolioSnapshot(SQLModel, table=True):
     holdings_value: float
     cash: float
     total: float
+    # JSON {account label: {"value": holdings, "cash": cash}} — which
+    # accounts this total covered. Connecting a new brokerage account adds
+    # its whole balance between two snapshots; without this the jump reads
+    # as a return. NULL on rows written before the column existed.
+    accounts: str | None = None
 
 
 class BrokerageActivity(SQLModel, table=True):

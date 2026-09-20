@@ -32,6 +32,7 @@ __all__ = [
     "to_tax_payloads",
     "fetch_cash_activity",
     "fetch_activities_by_account",
+    "implied_plan_flows",
 ]
 
 # Activity types that are purchases (lots): plain buys and dividend
@@ -40,6 +41,13 @@ _BUY_TYPES = {"BUY", "REI"}
 # Money or securities moving in/out of the portfolio — not investment
 # performance, so time-weighted returns take them out.
 _FLOW_TYPES = {"CONTRIBUTION", "WITHDRAWAL", "TRANSFER", "DEPOSIT"}
+# Trades, the only rows that move a plan account's cash. Dividends and
+# interest are return, not new money, so they are left out of the implied
+# flow below (see `implied_plan_flows`).
+_TRADE_TYPES = {"BUY", "SELL"}
+# Cash under this is "no cash" — a plan account that sweeps to zero can
+# still carry a few cents of residue.
+_NO_CASH_USD = 1.0
 
 
 def is_option_activity(activity: dict[str, Any]) -> bool:
@@ -308,6 +316,76 @@ def fetch_cash_activity(
     for d in dividends:
         d["reinvested"] = (d["account"], d["ticker"], d["date"]) in reinvested
     out["dividends"] = dividends
+    return out
+
+
+def implied_plan_flows(
+    days_back: int = 400,
+    *,
+    cash: dict[str, float] | None = None,
+    db_path: str | None = None,
+) -> list[dict[str, Any]]:
+    """Payroll contributions into a plan account, which report no flow row.
+
+    A 401(k) held through SnapTrade shows the purchase its payroll
+    deduction paid for and nothing else: no CONTRIBUTION, no cash balance
+    that could have funded it. Left alone that money arrives as shares out
+    of nowhere and reads as investment return — $730 a fortnight, in this
+    portfolio, against an index that got no such deposit.
+
+    For an account that holds no cash, every dollar its trades consume
+    came from outside, so the implied external flow over a window is the
+    negative of what its BUYs and SELLs netted. An in-plan rebalance (sell
+    one fund, buy another) nets to zero on its own, and dividends are
+    ignored, so only real contributions survive.
+
+    Only accounts whose WHOLE stored history has no explicit flow row
+    qualify: one CONTRIBUTION or TRANSFER anywhere means the brokerage
+    does report them, and its purchases must not be double-counted.
+
+    `cash` ({account label: USD}) is a second guard when available — an
+    account sitting on cash settles its own trades and is skipped.
+    """
+    by_account = activities_by_account(
+        start=None if db_path else date.today() - timedelta(days=days_back),
+        db_path=db_path,
+    )
+    start = date.today() - timedelta(days=days_back)
+    out: list[dict[str, Any]] = []
+    for label, rows in by_account.items():
+        kinds = {(a.get("type") or "").upper() for a in rows}
+        if kinds & _FLOW_TYPES or not kinds & _TRADE_TYPES:
+            continue
+        if cash and float(cash.get(label) or 0) >= _NO_CASH_USD:
+            continue
+        per_day: dict[date, float] = {}
+        for a in rows:
+            if (a.get("type") or "").upper() not in _TRADE_TYPES:
+                continue
+            day = _coerce_date(a.get("trade_date") or a.get("settlement_date"))
+            if day is None or day < start:
+                continue
+            try:
+                amount = float(a.get("amount") or 0)
+            except ValueError, TypeError:
+                continue
+            per_day[day] = per_day.get(day, 0.0) - amount
+        for day, amount in sorted(per_day.items()):
+            if round(amount, 2):
+                out.append(
+                    {
+                        "date": day,
+                        "amount": round(amount, 2),
+                        "account": label,
+                        "type": "PLAN_CONTRIBUTION",
+                    }
+                )
+    if out:
+        logger.info(
+            "Implied plan contributions: %d row(s) across %s",
+            len(out),
+            ", ".join(sorted({r["account"] for r in out})),
+        )
     return out
 
 

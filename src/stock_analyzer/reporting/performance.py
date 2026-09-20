@@ -10,6 +10,17 @@ where net_flows are deposits, withdrawals and transfers in that window
 performance. Chaining those gives the time-weighted return — the number
 comparable to an index. SPY is measured over the same dates (adjusted
 closes, so its dividends count too, as yours do).
+
+Two kinds of money arrive without a deposit row, and both are flows:
+
+  - **an account joining the feed.** Connecting a brokerage (or a
+    reconnect that reveals accounts it had never returned) adds its whole
+    balance between two snapshots. `account_change_flows` reads the
+    per-account breakdown stored with each snapshot and books a joining
+    account's value as an inflow, a departing one's as an outflow.
+  - **a payroll-funded plan.** A 401(k) shows the purchase but never the
+    contribution and never holds cash, so the money appears as shares out
+    of nowhere — see `data.transactions.implied_plan_flows`.
 """
 
 from __future__ import annotations
@@ -40,6 +51,43 @@ def time_weighted_return(
             continue
         growth *= (v1 - flow) / v0
     return (growth - 1) * 100
+
+
+def account_change_flows(
+    snapshots: list[tuple[date, dict[str, dict[str, float]] | None]],
+) -> list[tuple[date, float]]:
+    """Flows for accounts that join or leave the feed between two snapshots.
+
+    A newly connected account's balance was always the user's money — it
+    is an inflow on the day it first appears, not a return. An account
+    that stops being returned takes its last known value out with it,
+    which is not a loss either. Both are dated at the later snapshot, the
+    window the jump lands in.
+
+    A window with an unknown breakdown on either side yields nothing:
+    rows written before the breakdown existed can't be diffed, and
+    guessing one would invent a flow.
+    """
+    out: list[tuple[date, float]] = []
+    for (_, before), (day, after) in zip(snapshots, snapshots[1:], strict=False):
+        if not before or not after:
+            continue
+        amount = sum(_account_total(v) for k, v in after.items() if k not in before)
+        amount -= sum(_account_total(v) for k, v in before.items() if k not in after)
+        if round(amount, 2):
+            out.append((day, round(amount, 2)))
+    return out
+
+
+def _account_total(entry: Any) -> float:
+    """Holdings + cash for one stored account entry, tolerating a bare
+    number from an older writer."""
+    if isinstance(entry, dict):
+        return float(entry.get("value") or 0) + float(entry.get("cash") or 0)
+    try:
+        return float(entry)
+    except ValueError, TypeError:
+        return 0.0
 
 
 def spy_return(start: date, end: date, fetch: Callable = _fetch_history) -> float | None:

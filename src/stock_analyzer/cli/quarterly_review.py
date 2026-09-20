@@ -25,21 +25,33 @@ logger = get_logger(__name__)
 def performance_section(settings: Settings, *, start: date, today: date) -> str:
     """ "Your portfolio vs SPY" for last quarter, year to date and since the
     first snapshot. Never blocks the review."""
-    from ..data.transactions import fetch_cash_activity
-    from ..db.repository import fetch_snapshots
+    from ..data.transactions import fetch_cash_activity, implied_plan_flows
+    from ..db.repository import fetch_snapshots, snapshot_accounts
     from ..db.session import get_session
-    from ..reporting.performance import performance_vs_spy, render_performance_html
+    from ..reporting.performance import (
+        account_change_flows,
+        performance_vs_spy,
+        render_performance_html,
+    )
 
     try:
         with get_session(settings.discover_db_path) as session:
-            snaps = [(date.fromisoformat(s.day), s.total) for s in fetch_snapshots(session)]
+            stored = fetch_snapshots(session)
+            snaps = [(date.fromisoformat(s.day), s.total) for s in stored]
+            breakdown = [(date.fromisoformat(s.day), snapshot_accounts(s)) for s in stored]
         if not snaps:
             return render_performance_html([], first_day=None)
         first = snaps[0][0]
-        activity = fetch_cash_activity(
-            days_back=(today - first).days + 7, db_path=settings.discover_db_path
-        )
+        lookback = (today - first).days + 7
+        activity = fetch_cash_activity(days_back=lookback, db_path=settings.discover_db_path)
         flows = [(f["date"], f["amount"]) for f in activity["flows"]]
+        # Money that arrives without a deposit row: a payroll-funded plan's
+        # purchases, and an account joining (or leaving) the feed.
+        flows += [
+            (f["date"], f["amount"])
+            for f in implied_plan_flows(days_back=lookback, db_path=settings.discover_db_path)
+        ]
+        flows += account_change_flows(breakdown)
         rows = performance_vs_spy(
             snaps,
             flows,

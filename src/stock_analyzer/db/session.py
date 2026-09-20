@@ -59,6 +59,9 @@ _LEGACY_MIGRATIONS: tuple[tuple[str, str], ...] = (
     # Headlines already shown per stock, added after stock_views shipped.
     ("stock_views", "ALTER TABLE stock_views ADD COLUMN shown_links TEXT"),
     ("stock_views", "ALTER TABLE stock_views ADD COLUMN news_on TEXT"),
+    # Which accounts a snapshot's total covered, so connecting an account
+    # is read as money arriving rather than as performance.
+    ("portfolio_snapshots", "ALTER TABLE portfolio_snapshots ADD COLUMN accounts TEXT"),
 )
 
 
