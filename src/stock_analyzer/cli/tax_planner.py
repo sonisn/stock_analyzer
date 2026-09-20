@@ -47,6 +47,7 @@ def build_plan(settings: Settings, today: date) -> tuple[str, str]:
         plan_summary,
         realized_this_year,
     )
+    from ..discover.worthless import find_worthless_positions, worthless_report_data
     from ..reporting.tax_plan import render_tax_plan_html
     from .rebalance import _build_position_splits
 
@@ -71,6 +72,8 @@ def build_plan(settings: Settings, today: date) -> tuple[str, str]:
             covered_calls=fetch_covered_call_obligations(),
         )
     )
+    # Dead listings never reach the harvester: it needs a price to sell at.
+    worthless = worthless_report_data(find_worthless_positions(holdings, meta))
     soon = gains_turning_long_term(tax_lots, prices, set(taxable), today=today)
     summary = plan_summary(realized, harvest)
     body = render_tax_plan_html(
@@ -81,6 +84,7 @@ def build_plan(settings: Settings, today: date) -> tuple[str, str]:
         harvest=harvest,
         soon=soon,
         last_day=last_trading_day_of_year(today.year),
+        worthless=worthless,
     )
     subject = (
         f"Tax planner {today.year}: net realized ~${summary['net_gain']:,.0f}, "

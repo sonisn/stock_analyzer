@@ -12,6 +12,11 @@ from tavily import TavilyClient
 from ..logging import get_logger
 
 _TAVILY_MAX_WORKERS = 3
+# A plan that is out of calls says so on every query, every run, forever.
+# Three WARNINGs a day for a handled, permanent condition trains the eye
+# to skip warnings — so this one is reported once, as news about the
+# plan rather than a fault in the run.
+_QUOTA_MARKERS = ("usage limit", "exceeds your plan", "quota", "429")
 
 logger = get_logger(__name__)
 
@@ -79,6 +84,7 @@ def _tavily_market_news(*, max_results: int) -> list[dict]:
         "geopolitical news affecting US markets today",
     ]
     client = TavilyClient(api_key=api_key)
+    quota_hit: list[str] = []
 
     def _search(q: str) -> dict[str, Any] | None:
         try:
@@ -91,11 +97,20 @@ def _tavily_market_news(*, max_results: int) -> list[dict]:
                 include_domains=PREMIUM_NEWS_DOMAINS,
             )
         except Exception as e:
-            logger.warning("Tavily sentiment query failed (%r): %s", q, e)
+            if any(m in str(e).lower() for m in _QUOTA_MARKERS):
+                quota_hit.append(str(e))
+            else:
+                logger.warning("Tavily sentiment query failed (%r): %s", q, e)
             return None
 
     with ThreadPoolExecutor(max_workers=_TAVILY_MAX_WORKERS) as ex:
         responses = list(ex.map(_search, queries))
+    if quota_hit:
+        logger.info(
+            "Tavily is out of quota (%d/%d queries) — using the Finnhub market feed instead",
+            len(quota_hit),
+            len(queries),
+        )
 
     seen: set[str] = set()
     out: list[dict] = []

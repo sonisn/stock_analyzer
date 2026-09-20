@@ -18,6 +18,7 @@ def render_tax_plan_html(
     harvest: list[dict[str, Any]],
     soon: list[dict[str, Any]],
     last_day: date,
+    worthless: list[dict[str, Any]] | None = None,
 ) -> str:
     from .html import _wrap_html
 
@@ -102,6 +103,39 @@ def render_tax_plan_html(
             "stock (in any account, IRA included, dividend reinvestment included) within 30 "
             "days before or after the sale disallows the loss. Turn off dividend "
             "reinvestment on a stock you plan to harvest.</p>"
+        )
+
+    if worthless:
+        total = sum(-r["loss_usd"] for r in worthless)
+        parts.append("<h2>Possibly worthless — ask your preparer</h2>")
+        parts.append(
+            f"<p><b>{_money(total)}</b> of cost basis sits in holdings with no listing left. "
+            "These never show up above because a loss can only be harvested by selling, and "
+            "there is no bid to sell into.</p>"
+        )
+        parts.append(
+            _table(
+                ["Holding", "Account", "Shares", "Cost basis", "Now worth", "Why"],
+                [
+                    [
+                        esc(r["symbol"]),
+                        esc(r["account"]),
+                        f"{r['units']:g}",
+                        _money(r["cost_basis_usd"]),
+                        _money(r["value_usd"]),
+                        esc(r["reason"]),
+                    ]
+                    for r in worthless
+                ],
+            )
+        )
+        parts.append(
+            '<p style="font-size:13px;color:#6b7280">A security that has become <i>wholly</i> '
+            "worthless is treated as sold for $0 on the <b>last day of the tax year it became "
+            "worthless</b> (IRC §165(g)) — which is usually an earlier year than this one, so "
+            "the deduction may call for an amended return rather than anything done before "
+            "December 31. Establishing that year, and that the security is worthless rather "
+            "than merely unquoted, is your tax preparer's call, not this report's.</p>"
         )
 
     parts.append("<h2>Gains to leave alone for now</h2>")
