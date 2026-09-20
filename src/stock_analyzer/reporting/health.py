@@ -79,6 +79,10 @@ class PortfolioHealth:
     # PORTFOLIO is heavy in and never which ones the MARKET is rewarding,
     # so a pick outside the leadership looked like an oversight.
     sector_rotation: dict[str, Any] = field(default_factory=dict)
+    # {ticker: market data for a stock the report suggests buying}. A
+    # holding gets a chart, trends and a valuation; an idea got a ticker
+    # and a sentence, which is not enough to act on.
+    idea_details: dict[str, dict[str, Any]] = field(default_factory=dict)
     # {ticker: {account: units}} — a call can only be written against
     # shares sitting in one account, so coverage is an per-account fact.
     units_by_account: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -502,6 +506,7 @@ def render_health_html(h: PortfolioHealth) -> str:
             + ", ".join(f"{html.escape(r['sector'])} {r['pct']:.0f}%" for r in top)
             + "</p>"
         )
+    parts.append(render_idea_details_html(h))
     parts.append(render_sector_rotation_html(h))
     parts.append(render_covered_calls_html(h))
     parts.append(render_world_markets_html(h))
@@ -524,6 +529,72 @@ def render_health_html(h: PortfolioHealth) -> str:
             + "</p>"
         )
     parts.append("</section>")
+    return "".join(parts)
+
+
+def suggested_tickers(h: PortfolioHealth) -> list[str]:
+    """Every stock the report proposes buying, in the order it proposes
+    them: reinvestment destinations and tax-loss swaps alike."""
+    out: list[str] = []
+    for item in decision_items(h):
+        ticker = item.get("reinvest_into")
+        if ticker and ticker not in out and ticker not in h.values:
+            out.append(ticker)
+    for idea in h.reinvest:
+        ticker = idea.get("ticker")
+        if ticker and ticker not in out and ticker not in h.values:
+            out.append(ticker)
+    return out
+
+
+def render_idea_details_html(h: PortfolioHealth) -> str:
+    """The same look at a suggested stock that a holding gets.
+
+    A holding comes with a chart, trend labels, a 52-week range and a
+    valuation. An idea arrived as a ticker and one sentence — enough to
+    recognize, not enough to act on. Charts are referenced by the same
+    CID scheme the per-stock blocks use, so the image is inlined by the
+    mail step exactly as a holding's is.
+    """
+    if not h.idea_details:
+        return ""
+    parts = ["<h3>Ideas for new money</h3>"]
+    for ticker, data in h.idea_details.items():
+        name = data.get("name") or ticker
+        bits = []
+        for label, key in (
+            ("Price", "price"),
+            ("Today", "pct_today"),
+            ("52w range", "range_52w"),
+            ("P/E", "pe"),
+            ("Analyst target", "analyst_target"),
+            ("Dividend", "dividend_yield"),
+        ):
+            value = data.get(key)
+            if value:
+                bits.append(f"{label} {html.escape(str(value))}")
+        trends = [
+            f"{label} {html.escape(str(data[key]))}"
+            for label, key in (
+                ("1mo", "trend_1mo"),
+                ("3mo", "trend_3mo"),
+                ("6mo", "trend_6mo"),
+                ("1yr", "trend_1yr"),
+            )
+            if data.get(key)
+        ]
+        parts.append(f"<h4>{html.escape(ticker)} — {html.escape(str(name))}</h4>")
+        if data.get("reason"):
+            parts.append(f"<p>{html.escape(str(data['reason']))}</p>")
+        if bits:
+            parts.append(f'<p style="font-size:13px;color:#374151">{" · ".join(bits)}</p>')
+        if trends:
+            parts.append(f'<p style="font-size:13px;color:#6b7280">Trend: {" · ".join(trends)}</p>')
+        if data.get("chart_cid"):
+            parts.append(
+                f'<img src="cid:{html.escape(str(data["chart_cid"]))}" '
+                f'alt="{html.escape(ticker)} chart" style="max-width:100%">'
+            )
     return "".join(parts)
 
 

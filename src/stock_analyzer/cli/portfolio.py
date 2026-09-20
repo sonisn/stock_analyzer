@@ -191,6 +191,35 @@ def portfolio_health(
         return None
 
 
+def attach_idea_details(health) -> list[str]:
+    """Fetch market data for every stock the report suggests buying and
+    hang it on `health`. Returns the tickers, in suggestion order.
+
+    Deterministic — the same yfinance snapshot a holding's block is built
+    from, with no model call: an idea is worth a chart, not another
+    round of tokens.
+    """
+    from ..data.ticker import fetch_ticker_data
+    from ..reporting.health import suggested_tickers
+
+    if health is None:
+        return []
+    tickers = suggested_tickers(health)
+    if not tickers:
+        return []
+    reasons = {i["ticker"]: i.get("reason") for i in health.reinvest if i.get("ticker")}
+    for ticker in tickers:
+        try:
+            data = fetch_ticker_data(ticker)
+        except Exception as e:  # noqa: BLE001 — one idea's data is not the email
+            logger.warning("No market data for suggested %s (%s)", ticker, e)
+            continue
+        if not data:
+            continue
+        health.idea_details[ticker] = {**data, "reason": reasons.get(ticker)}
+    return [t for t in tickers if t in health.idea_details]
+
+
 def market_rotation() -> dict:
     """Six-month sector returns, or {} — one batch call, no LLM.
 
@@ -435,9 +464,16 @@ def main() -> None:
         print(result)
         return
 
-    charts = fetch_charts(tickers)
+    # A suggested stock gets the same look as a held one: its own chart,
+    # trends and valuation. Without it an idea is a ticker and a
+    # sentence, which is not enough to act on.
+    ideas = attach_idea_details(health)
+    charts = fetch_charts(tickers + [t for t in ideas if t not in tickers])
     chart_cids = {t: _chart_cid(t) for t in charts}
     inline_images = {_chart_cid(t): data for t, data in charts.items()}
+    for ticker in ideas:
+        if ticker in charts and health is not None:
+            health.idea_details[ticker]["chart_cid"] = _chart_cid(ticker)
 
     subject, body = build_email(result, health, chart_cids)
     SmtpServer().send_email(

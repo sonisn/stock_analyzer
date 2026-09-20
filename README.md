@@ -385,6 +385,21 @@ options, so BE is 27 shares (~$7,172) from a writable lot — the premium
 is behind an options application, not behind the market."* One line per
 account, since it is one form.
 
+## A suggested stock gets the same look as a held one
+
+A holding comes with a chart, trend labels, a 52-week range and a
+valuation. An idea arrived as a ticker and one sentence — enough to
+recognize, not enough to act on. `attach_idea_details` fetches the same
+yfinance snapshot a holding's block is built from for every stock the
+report proposes buying, and charts are requested for them alongside the
+holdings and referenced by the same CID scheme, so the image inlines the
+same way.
+
+No model call is involved: an idea is worth a chart, not another round of
+tokens. The reason the ranker gave for the pick heads the block, then
+price, today's move, the 52-week range, P/E, analyst target, dividend and
+the 1/3/6/12-month trends.
+
 ## Why this stock, and what the market is rewarding
 
 A reinvestment line read "reinvest the ~$57,770 in A (pick #2,

@@ -252,3 +252,66 @@ def test_without_a_rotation_summary_nothing_is_claimed():
 
     ideas = [{"ticker": "A", "sector": "Healthcare"}]
     assert "sector_bias" not in with_sector_bias(ideas, None)[0]
+
+
+# --- a suggested stock gets the same look as a held one ---------------------------
+
+
+def test_suggested_tickers_are_collected_in_suggestion_order():
+    from stock_analyzer.reporting.health import build_portfolio_health, suggested_tickers
+
+    health = build_portfolio_health(
+        {
+            "Brokerage": [
+                {"ticker": "HELD", "units": 10, "average_purchase_price": 100.0, "price": 70.0}
+            ]
+        },
+        reinvest=lambda held, over_cap, n: [
+            {"ticker": "A", "rank": 2, "pick_date": "2026-09-17", "sector": "Healthcare"},
+            {"ticker": "AMP", "rank": 3, "pick_date": "2026-09-17", "sector": "Financial"},
+        ],
+    )
+    out = suggested_tickers(health)
+    assert out[0] == "A"  # the drawdown line's destination comes first
+    assert "AMP" in out
+    assert "HELD" not in out  # never suggest what is already owned
+
+
+def test_the_idea_block_shows_a_chart_and_the_numbers():
+    from stock_analyzer.reporting.health import build_portfolio_health, render_idea_details_html
+
+    health = build_portfolio_health({})
+    health.idea_details["A"] = {
+        "name": "Agilent Technologies",
+        "price": "$153.69",
+        "pct_today": "+0.8%",
+        "range_52w": "$96.00 - $160.00",
+        "pe": "29.7",
+        "analyst_target": "$175.00",
+        "trend_1mo": "up",
+        "trend_6mo": "up",
+        "reason": "Agilent provides defensive life-sciences exposure.",
+        "chart_cid": "chart-A",
+    }
+    html = render_idea_details_html(health)
+    assert "Ideas for new money" in html
+    assert "A — Agilent Technologies" in html
+    assert "Agilent provides defensive life-sciences exposure." in html
+    assert "Price $153.69" in html and "Analyst target $175.00" in html
+    assert "Trend: 1mo up" in html
+    assert 'src="cid:chart-A"' in html
+
+
+def test_an_idea_without_a_chart_still_renders():
+    from stock_analyzer.reporting.health import build_portfolio_health, render_idea_details_html
+
+    health = build_portfolio_health({})
+    health.idea_details["AMP"] = {"name": "Ameriprise", "price": "$540.86"}
+    html = render_idea_details_html(health)
+    assert "AMP — Ameriprise" in html and "cid:" not in html
+
+
+def test_no_ideas_render_nothing():
+    from stock_analyzer.reporting.health import build_portfolio_health, render_idea_details_html
+
+    assert render_idea_details_html(build_portfolio_health({})) == ""
