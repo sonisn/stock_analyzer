@@ -29,7 +29,11 @@ def first_trading_day_of_december(year: int) -> date:
 
 
 def build_plan(settings: Settings, today: date) -> tuple[str, str]:
-    from ..data.brokerage import fetch_account_meta, fetch_portfolio_holdings
+    from ..data.brokerage import (
+        fetch_account_meta,
+        fetch_covered_call_obligations,
+        fetch_portfolio_holdings,
+    )
     from ..data.transactions import (
         fetch_activities_by_account,
         fetch_transaction_history,
@@ -64,6 +68,7 @@ def build_plan(settings: Settings, today: date) -> tuple[str, str]:
             sector_peers(settings.discover_db_path, list(splits), held=set(splits)),
             min_loss_usd=settings.harvest_min_loss_usd,
             min_loss_pct=settings.harvest_min_loss_pct,
+            covered_calls=fetch_covered_call_obligations(),
         )
     )
     soon = gains_turning_long_term(tax_lots, prices, set(taxable), today=today)

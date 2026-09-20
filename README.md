@@ -345,6 +345,47 @@ realizes the gain on someone else's schedule. On 2026-09-20 that was TSLA
 at 10% below a $400 strike, with all 200 shares committed. It is graded
 as a REVIEW in the suggestions ledger, not as a trade.
 
+## What the written options earned
+
+Premium shows up nowhere in performance: the shares are valued at the
+market, the cash lands as cash, and a called-away position simply
+disappears at the strike — so a winner taken by assignment grades as a
+sale into strength and the premium that paid for it is invisible. The
+quarterly review now carries an "Options written" section from the
+activity ledger (`data/options_income.py`), with the net premium per
+underlying and the shares that left at each strike.
+
+Three distinctions make the number honest, and each one came from the
+real ledger. A contract sold to OPEN is income; one bought to open is a
+bet (a long NFLX call lost $8,900 and belongs nowhere near premium).
+Which one it is cannot be read from the sign of a single row, only from
+which trade came first — folding in arrival order turned four long
+positions into "228 short contracts". And a contract opened and closed on
+the same day gives no ordering at all, so those are reported apart from
+both. Contract counts track the peak short position, not the largest
+single fill: NVDA's December $285 calls were sold -3 then -1, which is
+four contracts short.
+
+The tax-loss harvester also subtracts promised shares now. Selling shares
+that back a call turns it naked, so only the free shares above the
+committed ones are harvestable, counted per account — a call written in
+one account promises nothing in another.
+
+## Where new money buys a second payoff
+
+A part-lot earns nothing: 62 uncovered AVGO shares are 62 shares of
+upside, while 100 are a contract. `call_headroom` measures, per account,
+how many shares back no call and how far the position is from the next
+writable lot, so an add-on idea can say "45 more ARM shares (~$12,402)
+would complete a round lot you could write another covered call against".
+A position already holding a full uncovered lot becomes its own decision
+line, since that is premium available on shares already owned.
+
+Headroom is limited to holdings a call can actually be written on. Before
+that filter, SPAXX offered 208 contracts, the 401(k)'s commingled pool
+offered 40 shares, and Taronis Technologies — whose SEC registration was
+revoked in 2023 — offered one.
+
 ## Point-in-time fundamentals
 
 The forward-return model is price-only on purpose: a historical close is

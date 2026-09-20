@@ -127,3 +127,82 @@ def test_the_email_shows_what_is_promised():
 
 def test_no_calls_means_no_section():
     assert render_covered_calls_html(build_portfolio_health(HOLDINGS)) == ""
+
+
+# --- where new money would unlock another call -----------------------------------
+
+
+def test_headroom_is_measured_per_account():
+    # 60 uncovered shares in one account and 60 in another are not a
+    # contract: a call is written against shares in one place.
+    from stock_analyzer.reporting.health import call_headroom
+
+    health = build_portfolio_health(
+        {
+            "Traditional IRA": [{"ticker": "AVGO", "units": 60, "price": 357.61}],
+            "Robinhood Individual": [{"ticker": "AVGO", "units": 60, "price": 357.61}],
+        }
+    )
+    rows = {r["account"]: r for r in call_headroom(health)}
+    assert rows["Traditional IRA"]["writable_contracts"] == 0
+    assert rows["Traditional IRA"]["shares_to_next_lot"] == 40
+
+
+def test_shares_already_promised_do_not_count_as_headroom():
+    # AVGO on 2026-09-20: 162 shares, one call written, 62 free.
+    health = build_portfolio_health(
+        {"Traditional IRA": [{"ticker": "AVGO", "units": 162, "price": 357.61}]},
+        covered_calls={
+            "AVGO": {
+                "contracts": 1,
+                "shares_committed": 100.0,
+                "by_account": {"Traditional IRA": 1},
+                "legs": [],
+                "next_expiry": "2026-12-18",
+                "lowest_strike": 480.0,
+            }
+        },
+    )
+    from stock_analyzer.reporting.health import call_headroom, headroom_clause
+
+    [row] = call_headroom(health)
+    assert row["uncovered"] == 62
+    assert row["writable_contracts"] == 0 and row["shares_to_next_lot"] == 38
+    clause = headroom_clause(health, "AVGO")
+    assert "38 more shares" in clause and "Traditional IRA" in clause
+    assert "13,589" in clause  # 38 x $357.61
+
+
+def test_a_full_uncovered_lot_can_be_written_today():
+    from stock_analyzer.reporting.health import call_headroom, headroom_clause
+
+    health = build_portfolio_health(
+        {"Robinhood Individual": [{"ticker": "MRVL", "units": 240, "price": 244.24}]}
+    )
+    [row] = call_headroom(health)
+    assert row["writable_contracts"] == 2 and row["uncovered"] == 240
+    assert "enough to write 2 more call(s)" in headroom_clause(health, "MRVL")
+
+    item = next(i for i in decision_items(health) if i["label"] == "CALL HEADROOM")
+    assert "240 MRVL shares" in item["text"] and item["priority"] == 4
+
+
+def test_a_fully_covered_position_has_no_headroom():
+    from stock_analyzer.reporting.health import call_headroom, headroom_clause
+
+    health = _health()  # NVDA 401 shares, 400 promised
+    [row] = call_headroom(health)
+    assert row["uncovered"] == 401 - 400
+    assert row["writable_contracts"] == 0
+    # 99 short of another lot, so it is still worth naming
+    assert "99 more shares" in headroom_clause(health, "NVDA")
+
+
+def test_an_add_on_idea_names_what_it_would_unlock():
+    health = build_portfolio_health(
+        {"Robinhood Individual": [{"ticker": "ARM", "units": 55, "price": 275.61}]},
+        add_on=lambda **kwargs: [{"ticker": "ARM", "off_high_pct": -22.0}],
+    )
+    item = next(i for i in decision_items(health) if i["label"] == "ADD ON DIP")
+    assert "45 more shares" in item["text"]
+    assert "covered call" in item["text"]

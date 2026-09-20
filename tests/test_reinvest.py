@@ -152,7 +152,10 @@ def test_daily_sell_lines_name_a_destination():
         reinvest=reinvest,
     )
     assert asked == {"held": {"BAD", "DOWN", "LOSS"}, "n": 2}  # the swap covers LOSS
-    texts = {i["ticker"]: i["text"] for i in decision_items(h)}
+    # One ticker can raise more than one decision (a tax-loss sale and a
+    # covered-call note, say), so keep the sale-shaped line for each.
+    sale_labels = {"BROKEN", "DRAWDOWN", "TAX LOSS", "TARGET HIT"}
+    texts = {i["ticker"]: i["text"] for i in decision_items(h) if i["label"] in sale_labels}
     assert texts["BAD"].endswith(f"Reinvest the ~$900 in {format_idea(IDEA_A)}.")
     assert f"If you do sell, reinvest the ~$700 in {format_idea(IDEA_B)}." in texts["DOWN"]
     assert "buy PEER (same sector, not the same stock) with the ~$4,000" in texts["LOSS"]

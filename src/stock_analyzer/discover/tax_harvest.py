@@ -47,6 +47,9 @@ class HarvestCandidate:
     long_term_loss_usd: float
     est_tax_saving_usd: float
     rebuy_ok_after: date  # first day the ticker can be bought back if sold today
+    # Shares in this account already promised to a short call, excluded
+    # from `units` above.
+    units_under_call: float = 0.0
     lots: list[HarvestLot] = field(default_factory=list)
     wash_sale_until: date | None = None
     swap_candidates: list[str] = field(default_factory=list)
@@ -116,9 +119,17 @@ def find_harvest_candidates(
     min_loss_usd: float = 1000.0,
     min_loss_pct: float = 10.0,
     today: date | None = None,
+    covered_calls: dict[str, dict[str, Any]] | None = None,
 ) -> list[HarvestCandidate]:
+    """`covered_calls` is `fetch_covered_call_obligations()`. Shares
+    backing a short call in the SAME account cannot be sold without
+    buying the call back, so they are not harvestable units — counting
+    them would propose a loss sale that turns a covered call naked. Only
+    the free shares above the promised ones qualify, and a slice with
+    none left is dropped."""
     today = today or date.today()
     peers = peers or {}
+    covered_calls = covered_calls or {}
     out: list[HarvestCandidate] = []
     for ticker, info in position_splits.items():
         price = prices.get(ticker)
@@ -135,10 +146,20 @@ def find_harvest_candidates(
             avg = float(split.get("avg_buy_price") or 0)
             if units <= 0 or avg <= 0:
                 continue
+            account = str(split.get("account") or "")
+            # A call written in another account promises nothing here: the
+            # shares backing it are that account's.
+            promised = (
+                float(((covered_calls.get(ticker) or {}).get("by_account") or {}).get(account, 0))
+                * 100.0
+            )
+            free_units = units - promised
+            if free_units <= 0:
+                continue
+            units = free_units
             loss = units * (price - avg)
             if loss > -min_loss_usd or (price / avg - 1) * 100 > -min_loss_pct:
                 continue
-            account = str(split.get("account") or "")
             loss_lots = _loss_lots(lots, account, price, units)
             st = sum(lot.loss_usd for lot in loss_lots if not lot.long_term)
             lt = sum(lot.loss_usd for lot in loss_lots if lot.long_term)
@@ -159,6 +180,7 @@ def find_harvest_candidates(
                     short_term_loss_usd=st,
                     long_term_loss_usd=lt,
                     est_tax_saving_usd=-loss * rate,
+                    units_under_call=promised,
                     rebuy_ok_after=today + timedelta(days=WASH_SALE_DAYS + 1),
                     lots=loss_lots,
                     wash_sale_until=_wash_sale_until(lots, today),
@@ -200,11 +222,16 @@ def format_harvest_block(candidates: list[HarvestCandidate]) -> str:
         swaps = (
             f"; similar-exposure swaps: {', '.join(c.swap_candidates)}" if c.swap_candidates else ""
         )
+        under_call = (
+            f"; {c.units_under_call:g} more shares there back a short call and are not sellable"
+            if c.units_under_call
+            else ""
+        )
         lines.append(
             f"  {c.ticker} in {c.account}: {c.units:g} sh, basis ${c.avg_cost:,.2f} vs "
             f"${c.price:,.2f} ({c.loss_pct:+.1f}%), loss ${-c.loss_usd:,.0f} "
             f"(short-term ${-c.short_term_loss_usd:,.0f}, long-term ${-c.long_term_loss_usd:,.0f}), "
-            f"est. tax saving ~${c.est_tax_saving_usd:,.0f}{wash}{swaps}"
+            f"est. tax saving ~${c.est_tax_saving_usd:,.0f}{wash}{under_call}{swaps}"
         )
     return "\n".join(lines)
 
@@ -222,6 +249,7 @@ def harvest_report_data(candidates: list[HarvestCandidate]) -> list[dict[str, An
             "short_term_loss_usd": c.short_term_loss_usd,
             "long_term_loss_usd": c.long_term_loss_usd,
             "est_tax_saving_usd": c.est_tax_saving_usd,
+            "units_under_call": c.units_under_call,
             "lots": [
                 {
                     "date": lot.date,

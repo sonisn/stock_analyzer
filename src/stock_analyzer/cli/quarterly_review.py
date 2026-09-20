@@ -55,6 +55,20 @@ def performance_section(settings: Settings, *, start: date, today: date) -> str:
         return ""
 
 
+def options_section(settings: Settings, *, start: date, end: date, label: str) -> str:
+    """Premium written last quarter, and any shares called away. Never
+    blocks the review."""
+    from ..data.options_income import fetch_option_income
+    from ..reporting.quarterly import render_options_income_html
+
+    try:
+        income = fetch_option_income(start=start, end=end, db_path=settings.discover_db_path)
+        return render_options_income_html(income, label=label)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Options-income section failed (%s)", e)
+        return ""
+
+
 def build_review(settings: Settings, today: date) -> tuple[str, str]:
     """(subject, HTML) for the quarter before `today`."""
     from ..data.brokerage import fetch_portfolio_holdings
@@ -93,6 +107,7 @@ def build_review(settings: Settings, today: date) -> tuple[str, str]:
         summary=summary,
         health_html=health_html,
         performance_html=performance_section(settings, start=start, today=today),
+        options_html=options_section(settings, start=start, end=end, label=label),
     )
     scored = [g for g in graded if g["edge_pct"] is not None]
     good = sum(1 for g in scored if g["edge_pct"] >= 0)

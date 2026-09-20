@@ -301,6 +301,62 @@ def headline(summary: dict[str, Any]) -> list[str]:
     return lines
 
 
+def render_options_income_html(income: Any, *, label: str) -> str:
+    """Premium earned from written options, and what it cost in shares.
+
+    Without this a called-away holding is graded as a sale into strength
+    and the premium that paid for it is invisible — the wheel looks like
+    bad timing. Long options and same-day round trips are shown apart
+    from it: buying a call is a bet, not income.
+    """
+    if income is None or not getattr(income, "contracts_sold", 0):
+        return ""
+    rows = [
+        [
+            html.escape(ticker),
+            f"{vals['contracts']:.0f}",
+            f"${vals['net_premium']:,.0f}",
+            f"{vals['shares_called_away']:,.0f}" if vals["shares_called_away"] else "—",
+        ]
+        for ticker, vals in sorted(
+            income.by_underlying.items(), key=lambda kv: -kv[1]["net_premium"]
+        )
+    ]
+    parts = [
+        f'<section class="health"><h2>Options written — {html.escape(label)}</h2>',
+        f"<p>${income.premium_collected:,.0f} collected, ${-income.premium_paid_to_close:,.0f} "
+        f"paid to close: <b>${income.net_premium:,.0f} net</b> from {income.contracts_sold} "
+        f"contract(s). {income.expired} expired worthless, {income.bought_back} bought back, "
+        f"{income.assigned} assigned.</p>",
+    ]
+    if income.shares_called_away:
+        called = ", ".join(
+            f"{a.contracts * 100:,.0f} {a.underlying} at ${a.strike:,.0f}"
+            for a in income.assignments
+        )
+        parts.append(
+            f'<p style="color:#9c1010">Called away: {html.escape(called)}. Those shares left '
+            f"the portfolio at the strike — the premium above is what you were paid for "
+            f"giving up the upside past it.</p>"
+        )
+    parts.append(_table(["Underlying", "Contracts", "Net premium", "Shares called away"], rows))
+    extras = []
+    if income.long_positions:
+        net = sum(p.net_premium for p in income.long_positions)
+        extras.append(f"{len(income.long_positions)} long position(s), ${net:,.0f}")
+    if income.day_trades:
+        net = sum(p.net_premium for p in income.day_trades)
+        extras.append(f"{len(income.day_trades)} same-day round trip(s), ${net:,.0f}")
+    if extras:
+        parts.append(
+            '<p style="font-size:13px;color:#6b7280">Not counted as premium income: '
+            + html.escape("; ".join(extras))
+            + ". Buying options is a trade, not income earned on a holding.</p>"
+        )
+    parts.append("</section>")
+    return "".join(parts)
+
+
 def render_quarterly_html(
     *,
     label: str,
@@ -310,6 +366,7 @@ def render_quarterly_html(
     summary: dict[str, Any],
     health_html: str = "",
     performance_html: str = "",
+    options_html: str = "",
 ) -> str:
     from .html import _wrap_html
 
@@ -320,6 +377,8 @@ def render_quarterly_html(
     ]
     if performance_html:
         parts.append(performance_html)
+    if options_html:
+        parts.append(options_html)
     if not graded:
         parts.append("<p>No suggestions were recorded last quarter.</p>")
     else:

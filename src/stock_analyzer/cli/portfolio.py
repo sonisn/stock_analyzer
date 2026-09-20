@@ -7,6 +7,7 @@ from datetime import date
 from dotenv import load_dotenv
 
 from ..agents.portfolio import PortfolioAgent
+from ..agents.stock_views import is_equity
 from ..config import Settings
 from ..data import finnhub, yf_gateway
 from ..data.brokerage import (
@@ -58,6 +59,7 @@ def portfolio_health(
     data_notes: list[str] | None = None,
     stale_accounts: list[str] | None = None,
     covered_calls: dict[str, dict] | None = None,
+    optionable: set[str] | None = None,
     world_markets: list[dict] | None = None,
 ):
     """The deterministic PortfolioHealth (reporting/health.py) with the live
@@ -87,7 +89,7 @@ def portfolio_health(
         return thesis_report_data(check_theses(picks, eps_revisions=revisions))
 
     def harvest() -> list[dict]:
-        from ..data.brokerage import fetch_account_meta
+        from ..data.brokerage import fetch_account_meta, fetch_covered_call_obligations
         from ..data.transactions import fetch_transaction_history, to_tax_payloads
         from ..discover.reinvest import sector_peers
         from ..discover.tax_harvest import find_harvest_candidates, harvest_report_data
@@ -109,6 +111,9 @@ def portfolio_health(
                 sector_peers(db, list(splits), held=set(splits)),
                 min_loss_usd=settings.harvest_min_loss_usd,
                 min_loss_pct=settings.harvest_min_loss_pct,
+                # Shares backing a short call are not sellable, so they
+                # are not harvestable either.
+                covered_calls=fetch_covered_call_obligations(),
             )
         )
 
@@ -161,6 +166,7 @@ def portfolio_health(
             data_notes=data_notes,
             stale_accounts=stale_accounts,
             covered_calls=covered_calls,
+            optionable=optionable,
             world_markets=world_markets,
             max_sector_pct=settings.discover_max_sector_pct,
             sector_of=sector_of,
@@ -338,6 +344,10 @@ def main() -> None:
         data_notes=price_notes,
         stale_accounts=stale,
         covered_calls=covered_calls,
+        # A money-market fund has no options chain, whatever its quote
+        # looks like — SPAXX's 20,846 units are not 208 contracts.
+        optionable={t.upper() for t, d in (agent.ticker_data or {}).items() if is_equity(d)}
+        or None,
         world_markets=world,
     )
     record_daily_suggestions(settings, health)

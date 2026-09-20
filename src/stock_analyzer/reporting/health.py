@@ -72,6 +72,9 @@ class PortfolioHealth:
     # call are promised: selling them turns the call naked, so no sale
     # suggestion here is free.
     covered_calls: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # {ticker: {account: units}} — a call can only be written against
+    # shares sitting in one account, so coverage is an per-account fact.
+    units_by_account: dict[str, dict[str, float]] = field(default_factory=dict)
     # Overnight and trailing moves on the exchanges that price this
     # portfolio's demand (data/world_markets.py). Context, never a
     # decision: these are 3-5 year holdings.
@@ -116,6 +119,7 @@ def build_portfolio_health(
     data_notes: list[str] | None = None,
     stale_accounts: list[str] | None = None,
     covered_calls: dict[str, dict[str, Any]] | None = None,
+    optionable: set[str] | None = None,
     world_markets: list[dict[str, Any]] | None = None,
     max_sector_pct: float = 30.0,
     sector_of: Callable[[list[str]], dict[str, str]] | None = None,
@@ -134,6 +138,24 @@ def build_portfolio_health(
     health.stale_accounts.extend(stale_accounts or [])
     health.world_markets.extend(world_markets or [])
     health.covered_calls.update(covered_calls or {})
+    # Only things a call can actually be written against. Without this,
+    # SPAXX showed 208 writable contracts, a 401(k) commingled pool
+    # showed 40 shares of headroom, and Taronis Technologies — whose
+    # registration the SEC revoked in 2023 — offered a contract.
+    from ..data.brokerage import is_listed_symbol
+
+    for account, items in (holdings or {}).items():
+        for item in items:
+            ticker = str(item.get("ticker") or "")
+            units = float(item.get("units") or 0)
+            if not ticker or units <= 0:
+                continue
+            if not is_listed_symbol(ticker, item.get("kind")):
+                continue
+            if optionable is not None and ticker.upper() not in optionable:
+                continue
+            per_ticker = health.units_by_account.setdefault(ticker, {})
+            per_ticker[account] = per_ticker.get(account, 0.0) + units
     positions = aggregate_positions(holdings, prices)
     tickers = sorted(positions)
 
@@ -585,6 +607,75 @@ MAX_DECISIONS = 6
 ASSIGNMENT_WATCH_PCT = 15.0
 
 
+# One contract covers this many shares.
+SHARES_PER_CONTRACT = 100
+
+
+def call_headroom(h: PortfolioHealth) -> list[dict[str, Any]]:
+    """Per account: shares not promised to a call, and what it would take
+    to reach the next writable lot.
+
+    Coverage is an account-level fact — 60 uncovered shares in one
+    account and 60 in another are not a contract. `writable` is what
+    could be sold today without buying anything; `shares_to_next_lot` is
+    the shortfall when a position is one part-lot away from another call.
+    """
+    out = []
+    for ticker, by_account in sorted(h.units_by_account.items()):
+        written = (h.covered_calls.get(ticker) or {}).get("by_account") or {}
+        units_total = h.units.get(ticker) or 0
+        value = h.values.get(ticker)
+        price = (value / units_total) if value and units_total else None
+        for account, units in sorted(by_account.items()):
+            promised = float(written.get(account, 0)) * SHARES_PER_CONTRACT
+            uncovered = units - promised
+            # Fractional dust left over from a DRIP is not headroom.
+            if uncovered < 1:
+                continue
+            writable = int(uncovered // SHARES_PER_CONTRACT)
+            shortfall = (SHARES_PER_CONTRACT - (uncovered % SHARES_PER_CONTRACT)) % (
+                SHARES_PER_CONTRACT
+            )
+            out.append(
+                {
+                    "ticker": ticker,
+                    "account": account,
+                    "units": units,
+                    "uncovered": uncovered,
+                    "writable_contracts": writable,
+                    "shares_to_next_lot": shortfall,
+                    "cost_to_next_lot": (shortfall * price) if price and shortfall else None,
+                }
+            )
+    return out
+
+
+def headroom_clause(h: PortfolioHealth, ticker: str) -> str:
+    """What buying more of `ticker` would unlock, for a new-money idea.
+
+    A part-lot earns nothing: 62 uncovered AVGO shares are 62 shares of
+    upside, while 100 are a contract. Naming the shortfall turns "add on
+    weakness" into a decision with a second payoff attached.
+    """
+    rows = [r for r in call_headroom(h) if r["ticker"] == ticker]
+    if not rows:
+        return ""
+    # The account closest to completing a lot is the one worth topping up.
+    best = min(rows, key=lambda r: r["shares_to_next_lot"])
+    if best["writable_contracts"]:
+        return (
+            f" {best['uncovered']:,.0f} shares in {best['account']} are uncovered — enough to "
+            f"write {best['writable_contracts']} more call(s) on what you already hold."
+        )
+    if not best["shares_to_next_lot"]:
+        return ""
+    cost = f" (~${best['cost_to_next_lot']:,.0f})" if best["cost_to_next_lot"] else ""
+    return (
+        f" {best['shares_to_next_lot']:,.0f} more shares in {best['account']}{cost} would "
+        f"complete a round lot you could write another covered call against."
+    )
+
+
 def covered_call_clause(h: PortfolioHealth, ticker: str) -> str:
     """What an open short call adds to a decision to sell `ticker`.
 
@@ -691,6 +782,17 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
         add(1, None, "STALE DATA", f"Reconnect the account: {note}.")
     for item in assignment_items(h):
         add(3, item["ticker"], "CALL ASSIGNMENT", item["text"])
+    for row in call_headroom(h):
+        if not row["writable_contracts"]:
+            continue
+        add(
+            4,
+            row["ticker"],
+            "CALL HEADROOM",
+            f"{row['uncovered']:,.0f} {row['ticker']} shares in {row['account']} back no call: "
+            f"{row['writable_contracts']} contract(s) could be written against shares you "
+            f"already own.",
+        )
     for r in h.drawdowns:
         add(
             2,
@@ -775,7 +877,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             a["ticker"],
             "ADD ON DIP",
             f"{a['ticker']} is {-a['off_high_pct']:.0f}% below its 52-week high with its "
-            f"long-term case intact — a candidate for new money.",
+            f"long-term case intact — a candidate for new money." + headroom_clause(h, a["ticker"]),
         )
     for r in h.sectors:
         if r["over"]:

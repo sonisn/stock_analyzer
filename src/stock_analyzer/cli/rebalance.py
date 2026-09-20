@@ -36,6 +36,7 @@ from ..data.brokerage import (
     fetch_account_cash,
     fetch_account_meta,
     fetch_account_sync_status,
+    fetch_covered_call_obligations,
     fetch_portfolio_holdings,
     listed_tickers,
     stale_account_notes,
@@ -524,6 +525,9 @@ class RebalancePipeline(DiscoverPipeline):
                 self.state.get("holdings_peers") or {},
                 min_loss_usd=self.settings.harvest_min_loss_usd,
                 min_loss_pct=self.settings.harvest_min_loss_pct,
+                # Shares backing a short call cannot be sold without
+                # buying it back, so they are not harvestable.
+                covered_calls=fetch_covered_call_obligations(),
             )
         except Exception as e:
             logger.warning("tax-loss harvest scan failed (%s) — skipping", e)
