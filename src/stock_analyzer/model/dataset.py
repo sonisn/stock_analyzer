@@ -34,6 +34,15 @@ from .features import FEATURES, panel_features
 logger = get_logger(__name__)
 
 HORIZONS: tuple[int, ...] = (21, 63)  # trading days ≈ 1 and 3 months
+
+# What the training set carries labels for. A year is here because the
+# portfolio is held for three to five: margins and leverage have no
+# business predicting a quarter of price action, so a 63-day test is not
+# a fair test of whether fundamentals matter at all. It is deliberately
+# NOT in HORIZONS, which drives what `labels.py` writes to
+# `candidate_outcomes` — a 252-day outcome row takes a year to mature and
+# that is a separate decision from what the model may train on.
+DATASET_HORIZONS: tuple[int, ...] = (*HORIZONS, 252)
 _CHUNK = 100
 _CACHE_MAX_AGE_HOURS = 20
 
@@ -136,7 +145,7 @@ def build_dataset(
 
     parts = {name: feats[name].loc[dates].stack(future_stack=True) for name in FEATURES}
     beta = feats["beta_252"].loc[dates]
-    for h in HORIZONS:
+    for h in DATASET_HORIZONS:
         ret, spy_ret = forward_returns(panel, h)
         ret, spy_ret = ret.reindex(cal).loc[dates], spy_ret.reindex(cal).loc[dates]
         parts[f"fwd_{h}"] = ret.sub(spy_ret, axis=0).stack(future_stack=True)

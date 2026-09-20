@@ -329,3 +329,26 @@ def test_as_reported_requests_are_chunked_smaller(monkeypatch):
     sizes.clear()
     wisesheets.fetch_metrics(many, ["revenue"])  # the normal path keeps the full cap
     assert max(sizes) == 100
+
+
+def test_the_training_set_carries_a_one_year_label_without_labelling_the_db():
+    # A 3-5 year holder is not served by a 63-day test of whether
+    # fundamentals matter; a 252-day outcome row, though, takes a year to
+    # mature and is a separate decision.
+    from stock_analyzer.model.dataset import DATASET_HORIZONS, HORIZONS
+
+    assert 252 in DATASET_HORIZONS
+    assert 252 not in HORIZONS
+
+
+def test_the_one_year_label_is_built(monkeypatch):
+    from stock_analyzer.model.dataset import PricePanel, build_dataset
+
+    dates = pd.bdate_range("2022-01-03", periods=700)
+    frame = pd.DataFrame(
+        {t: pd.Series(range(1, len(dates) + 1), index=dates, dtype=float) for t in ("AAA", "BBB")}
+    )
+    panel = PricePanel(frame, frame * 1.01, frame * 1000, frame["AAA"].copy())
+    data = build_dataset(panel)
+    assert "fwd_252" in data.columns and "fwd_252_badj" in data.columns
+    assert data["fwd_252"].notna().any()

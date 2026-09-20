@@ -22,7 +22,7 @@ from dotenv import load_dotenv
 from ..config import Settings
 from ..data.universe_base import load_base_universe
 from ..logging import get_logger
-from ..model.dataset import HORIZONS, build_dataset, load_panel
+from ..model.dataset import DATASET_HORIZONS, build_dataset, load_panel
 from ..model.fundamental_features import FUNDAMENTAL_FEATURES
 from ..model.labels import label_candidates
 from ..model.ranker_model import format_model_report, save_model, walk_forward
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> None:
     use_market_timezone()
     load_dotenv()
     parser = argparse.ArgumentParser(prog="train-model", description=__doc__.split("\n\n")[0])
-    parser.add_argument("--horizon", type=int, default=63, choices=HORIZONS)
+    parser.add_argument("--horizon", type=int, default=63, choices=DATASET_HORIZONS)
     parser.add_argument("--population", default="gated", choices=("gated", "all"))
     parser.add_argument("--years", type=int, default=15)
     parser.add_argument(
