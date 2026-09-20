@@ -83,6 +83,10 @@ class PortfolioHealth:
     # holding gets a chart, trends and a valuation; an idea got a ticker
     # and a sentence, which is not enough to act on.
     idea_details: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # {ticker: contracted-but-undelivered revenue} (data/backlog.py).
+    # Price and book can say opposite things: AVGO was called BROKEN on
+    # 2026-09-20 with its book up 552% over the year.
+    backlog: dict[str, dict[str, Any]] = field(default_factory=dict)
     # {ticker: {account: units}} — a call can only be written against
     # shares sitting in one account, so coverage is an per-account fact.
     units_by_account: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -159,6 +163,7 @@ def build_portfolio_health(
     covered_calls: dict[str, dict[str, Any]] | None = None,
     roll_ideas: dict[str, str] | None = None,
     sector_rotation: dict[str, Any] | None = None,
+    backlog: dict[str, dict[str, Any]] | None = None,
     optionable: set[str] | None = None,
     options_accounts: tuple[str, ...] = (),
     world_markets: list[dict[str, Any]] | None = None,
@@ -182,6 +187,7 @@ def build_portfolio_health(
     health.options_accounts = tuple(options_accounts or ())
     health.roll_ideas.update(roll_ideas or {})
     health.sector_rotation.update(sector_rotation or {})
+    health.backlog.update(backlog or {})
     # Only things a call can actually be written against. Without this,
     # SPAXX showed 208 writable contracts, a 401(k) commingled pool
     # showed 40 shares of headroom, and Taronis Technologies — whose
@@ -530,6 +536,7 @@ def render_health_html(h: PortfolioHealth) -> str:
             + ", ".join(f"{html.escape(r['sector'])} {r['pct']:.0f}%" for r in top)
             + "</p>"
         )
+    parts.append(render_backlog_html(h))
     parts.append(render_idea_details_html(h))
     parts.append(render_sector_rotation_html(h))
     parts.append(render_covered_calls_html(h))
@@ -569,6 +576,45 @@ def suggested_tickers(h: PortfolioHealth) -> list[str]:
         if ticker and ticker not in out and ticker not in h.values:
             out.append(ticker)
     return out
+
+
+def render_backlog_html(h: PortfolioHealth) -> str:
+    """Contracted revenue not yet delivered, per holding that tags it.
+
+    The only forward number in the report that is not an opinion: signed
+    orders, disclosed to the SEC, with the date they were filed.
+    """
+    if not h.backlog:
+        return ""
+    from ..data.backlog import _money
+
+    rows = []
+    for ticker, rec in sorted(h.backlog.items(), key=lambda kv: -(kv[1].get("yoy_pct") or -999)):
+
+        def pct(key: str, r: dict[str, Any] = rec) -> str:
+            value = r.get(key)
+            if value is None:
+                return "—"
+            colour = "#166534" if value > 0 else "#9c1010"
+            return f'<span style="color:{colour}">{value:+.0f}%</span>'
+
+        rows.append(
+            [
+                html.escape(ticker),
+                _money(rec["value"]),
+                pct("qoq_pct"),
+                pct("yoy_pct"),
+                html.escape(str(rec.get("period_end") or "—")),
+            ]
+        )
+    parts = ["<h3>Contracted book (order backlog)</h3>"]
+    parts.append(_table(["Ticker", "Book", "Quarter", "Year", "As of"], rows))
+    parts.append(
+        '<p style="font-size:13px;color:#6b7280">Revenue already under contract and not '
+        "yet delivered, from each company's SEC filing. Quarterly, so it lags the price "
+        "— and it is the one forward number here that is not somebody's forecast.</p>"
+    )
+    return "".join(parts)
 
 
 def render_idea_details_html(h: PortfolioHealth) -> str:
@@ -882,6 +928,39 @@ def headroom_clause(h: PortfolioHealth, ticker: str) -> str:
     )
 
 
+# A book moving less than this either way is noise, not evidence.
+BACKLOG_MATERIAL_PCT = 10.0
+
+
+def backlog_clause(h: PortfolioHealth, ticker: str) -> str:
+    """What the order book says about a holding being sold, or "".
+
+    Stated in whichever direction it points. A growing book beside a
+    broken-looking chart is the case for waiting; a shrinking one is the
+    strongest confirmation a sale can have, and leaving that out would
+    make this a bull-only footnote.
+    """
+    from ..data.backlog import backlog_note
+
+    rec = h.backlog.get(ticker)
+    if not rec:
+        return ""
+    move = rec.get("yoy_pct")
+    if move is None:
+        move = rec.get("qoq_pct")
+    if move is None or abs(move) < BACKLOG_MATERIAL_PCT:
+        return ""
+    note = backlog_note(rec)
+    if not note:
+        return ""
+    lead = (
+        "Against that, the order book is growing"
+        if move > 0
+        else "The order book agrees: it is shrinking"
+    )
+    return f" {lead} — {note}."
+
+
 def covered_call_clause(h: PortfolioHealth, ticker: str) -> str:
     """What an open short call adds to a decision to sell `ticker`.
 
@@ -1016,6 +1095,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             f"Re-check the long-term thesis for {r['ticker']}: {r['pnl_pct']:+.1f}% from cost. "
             f"A lower price alone isn't a reason to sell — sell only if the business case "
             f"has broken."
+            + backlog_clause(h, r["ticker"])
             + covered_call_clause(h, r["ticker"])
             + proceeds(r["ticker"], r.get("value"), conditional=True),
             dest_ticker(r["ticker"]),
@@ -1028,6 +1108,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
                 c["ticker"],
                 "BROKEN",
                 f"Consider selling {c['ticker']}: long-term thesis broken — {reason}."
+                + backlog_clause(h, c["ticker"])
                 + covered_call_clause(h, c["ticker"])
                 + proceeds(c["ticker"], h.values.get(c["ticker"])),
                 dest_ticker(c["ticker"]),
@@ -1082,6 +1163,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             "TAX LOSS",
             f"Tax-loss option: selling {c['ticker']} in {c['account']} realizes "
             f"{_money(c['loss_usd'])} (~{_money(c['est_tax_saving_usd'])} tax saved){wash}."
+            + backlog_clause(h, c["ticker"])
             + covered_call_clause(h, c["ticker"])
             + where,
             swaps[0] if swaps else dest_ticker(c["ticker"]),

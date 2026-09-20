@@ -414,6 +414,37 @@ tokens. The reason the ranker gave for the pick heads the block, then
 price, today's move, the 52-week range, P/E, analyst target, dividend and
 the 1/3/6/12-month trends.
 
+## The contracted book
+
+Everything else forward-looking in the pipeline is somebody's opinion:
+analyst targets, forward P/E, EPS revisions. Remaining performance
+obligations are not. They are signed orders a company has told the SEC it
+has not delivered yet, tagged in every 10-Q and 10-K as
+`RevenueRemainingPerformanceObligation` and free through the same EDGAR
+client `sec_edgar` already uses.
+
+It matters because price and book can say opposite things. On 2026-09-20
+the daily email called AVGO's thesis BROKEN — below its 200-day average,
+lagging SPY by 17 points, analysts cutting EPS — while its book had gone
+$45.0B → $164.6B → $179.2B over two quarters, +552% over a year. POWL was
+flagged at -26.4% and offered as a tax-loss sale with its book up 71%.
+Both may still be sells; neither should be sold without that in view.
+
+So every sale-shaped decision now carries the book when it has moved more
+than `BACKLOG_MATERIAL_PCT` (10%) — in whichever direction it points. A
+growing book is the case for waiting; a shrinking one is the strongest
+confirmation a sale can have, and leaving that out would make it a
+bull-only footnote. A "Contracted book" table lists the holdings that tag
+it, fastest-growing first.
+
+Every fact carries the date it was **filed**, so `as_of` gives the book
+as it was known on a past date — point-in-time by construction, which
+yfinance's forward estimates are not. Coverage is partial by nature:
+ANET stopped tagging it in 2022, and banks and retailers never do, so it
+is evidence where present and never a filter that penalizes absence. A
+company whose newest fact is older than `MAX_FACT_AGE_DAYS` (200) is
+treated as no longer reporting it rather than shown a stale book.
+
 ## Why this stock, and what the market is rewarding
 
 A reinvestment line read "reinvest the ~$57,770 in A (pick #2,

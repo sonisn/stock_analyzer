@@ -61,6 +61,7 @@ def portfolio_health(
     covered_calls: dict[str, dict] | None = None,
     roll_ideas: dict[str, str] | None = None,
     sector_rotation: dict | None = None,
+    backlog: dict | None = None,
     optionable: set[str] | None = None,
     world_markets: list[dict] | None = None,
 ):
@@ -177,6 +178,7 @@ def portfolio_health(
             covered_calls=covered_calls,
             roll_ideas=roll_ideas,
             sector_rotation=sector_rotation,
+            backlog=backlog,
             optionable=optionable,
             options_accounts=settings.options_accounts,
             world_markets=world_markets,
@@ -225,6 +227,22 @@ def attach_idea_details(health) -> list[str]:
             continue
         health.idea_details[ticker] = {**data, "reason": reasons.get(ticker)}
     return [t for t in tickers if t in health.idea_details]
+
+
+def held_backlog(tickers: list[str]) -> dict:
+    """Contracted-but-undelivered revenue per holding, or {}.
+
+    Free (SEC XBRL) and guarded: a company that does not tag the concept
+    is simply absent, and a failure costs the section rather than the
+    email.
+    """
+    try:
+        from ..data.backlog import batch_rpo
+
+        return batch_rpo(tickers)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Order-book data unavailable (%s)", e)
+        return {}
 
 
 def market_rotation() -> dict:
@@ -455,6 +473,9 @@ def main() -> None:
         prices=prices,
         roll_ideas=roll_ideas_for(settings, covered_calls, prices),
         sector_rotation=market_rotation(),
+        # Signed orders not yet delivered — the one forward number in the
+        # email that is not a forecast.
+        backlog=held_backlog(tickers),
         data_notes=price_notes,
         stale_accounts=stale,
         covered_calls=covered_calls,
