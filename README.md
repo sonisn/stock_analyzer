@@ -371,10 +371,19 @@ that back a call turns it naked, so only the free shares above the
 committed ones are harvestable, counted per account — a call written in
 one account promises nothing in another.
 
-`OPTIONS_ACCOUNTS` now gates covered calls as well as cash-secured puts.
-It gated only puts before, so there was no way to keep call-writing out
-of an account that cannot trade options. Empty still means every account,
-so the default is unchanged.
+`OPTIONS_ACCOUNTS` gates covered calls as well as cash-secured puts. It
+gated only puts before, so there was no way to keep either out of an
+account that cannot trade options. Empty still means every account.
+
+An account outside that list is treated as a blocked opportunity rather
+than an absent one. The Schwab HSA holds 73 uncovered BE shares and no
+options approval, so suggesting a call there would be an instruction that
+cannot be followed — but silence would read as "nothing to do". Add-on
+ideas name only accounts that could act, while a separate line says what
+the paperwork is worth: *"HSA Brokerage ...263 is not approved for
+options, so BE is 27 shares (~$7,172) from a writable lot — the premium
+is behind an options application, not behind the market."* One line per
+account, since it is one form.
 
 ## Where new money buys a second payoff
 

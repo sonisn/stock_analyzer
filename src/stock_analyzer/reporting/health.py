@@ -75,6 +75,11 @@ class PortfolioHealth:
     # {ticker: {account: units}} — a call can only be written against
     # shares sitting in one account, so coverage is an per-account fact.
     units_by_account: dict[str, dict[str, float]] = field(default_factory=dict)
+    # Accounts approved to trade options (OPTIONS_ACCOUNTS; empty = all).
+    # The Schwab HSA holds 73 uncovered BE shares and cannot write a call
+    # against them until an options application is filed, which is a
+    # different situation from having no shares spare.
+    options_accounts: tuple[str, ...] = ()
     # Overnight and trailing moves on the exchanges that price this
     # portfolio's demand (data/world_markets.py). Context, never a
     # decision: these are 3-5 year holdings.
@@ -120,6 +125,7 @@ def build_portfolio_health(
     stale_accounts: list[str] | None = None,
     covered_calls: dict[str, dict[str, Any]] | None = None,
     optionable: set[str] | None = None,
+    options_accounts: tuple[str, ...] = (),
     world_markets: list[dict[str, Any]] | None = None,
     max_sector_pct: float = 30.0,
     sector_of: Callable[[list[str]], dict[str, str]] | None = None,
@@ -138,6 +144,7 @@ def build_portfolio_health(
     health.stale_accounts.extend(stale_accounts or [])
     health.world_markets.extend(world_markets or [])
     health.covered_calls.update(covered_calls or {})
+    health.options_accounts = tuple(options_accounts or ())
     # Only things a call can actually be written against. Without this,
     # SPAXX showed 208 writable contracts, a 401(k) commingled pool
     # showed 40 shares of headroom, and Taronis Technologies — whose
@@ -636,6 +643,7 @@ def call_headroom(h: PortfolioHealth) -> list[dict[str, Any]]:
             shortfall = (SHARES_PER_CONTRACT - (uncovered % SHARES_PER_CONTRACT)) % (
                 SHARES_PER_CONTRACT
             )
+            approved = not h.options_accounts or account in h.options_accounts
             out.append(
                 {
                     "ticker": ticker,
@@ -645,8 +653,50 @@ def call_headroom(h: PortfolioHealth) -> list[dict[str, Any]]:
                     "writable_contracts": writable,
                     "shares_to_next_lot": shortfall,
                     "cost_to_next_lot": (shortfall * price) if price and shortfall else None,
+                    "options_approved": approved,
                 }
             )
+    return out
+
+
+def blocked_headroom(h: PortfolioHealth) -> list[dict[str, Any]]:
+    """Uncovered shares sitting in an account that cannot trade options.
+
+    Silence here would read as "nothing to do", when the truth is that
+    the shares are there and the paperwork is not: the Schwab HSA needs
+    an options application before its 73 BE shares can back anything.
+    One line per account, not per holding, so the ask stays a single
+    piece of paperwork.
+    """
+    by_account: dict[str, list[dict[str, Any]]] = {}
+    for row in call_headroom(h):
+        if row["options_approved"]:
+            continue
+        by_account.setdefault(row["account"], []).append(row)
+
+    out = []
+    for account, rows in sorted(by_account.items()):
+        writable = sum(r["writable_contracts"] for r in rows)
+        closest = min(rows, key=lambda r: r["shares_to_next_lot"])
+        if writable:
+            what = f"{writable} contract(s) could be written on shares already held there"
+        elif closest["cost_to_next_lot"]:
+            what = (
+                f"{closest['ticker']} is {closest['shares_to_next_lot']:,.0f} shares "
+                f"(~${closest['cost_to_next_lot']:,.0f}) from a writable lot"
+            )
+        else:
+            continue
+        out.append(
+            {
+                "ticker": closest["ticker"],
+                "account": account,
+                "text": (
+                    f"{account} is not approved for options, so {what} — the premium is "
+                    f"behind an options application, not behind the market."
+                ),
+            }
+        )
     return out
 
 
@@ -657,7 +707,10 @@ def headroom_clause(h: PortfolioHealth, ticker: str) -> str:
     upside, while 100 are a contract. Naming the shortfall turns "add on
     weakness" into a decision with a second payoff attached.
     """
-    rows = [r for r in call_headroom(h) if r["ticker"] == ticker]
+    # Only accounts that can actually write the call. Naming a lot in an
+    # account without options approval is an instruction that cannot be
+    # followed.
+    rows = [r for r in call_headroom(h) if r["ticker"] == ticker and r["options_approved"]]
     if not rows:
         return ""
     # The account closest to completing a lot is the one worth topping up.
@@ -782,8 +835,10 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
         add(1, None, "STALE DATA", f"Reconnect the account: {note}.")
     for item in assignment_items(h):
         add(3, item["ticker"], "CALL ASSIGNMENT", item["text"])
+    for row in blocked_headroom(h):
+        add(4, row["ticker"], "OPTIONS NOT APPROVED", row["text"])
     for row in call_headroom(h):
-        if not row["writable_contracts"]:
+        if not row["writable_contracts"] or not row["options_approved"]:
             continue
         add(
             4,

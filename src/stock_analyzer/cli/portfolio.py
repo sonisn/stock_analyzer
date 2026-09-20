@@ -167,6 +167,7 @@ def portfolio_health(
             stale_accounts=stale_accounts,
             covered_calls=covered_calls,
             optionable=optionable,
+            options_accounts=settings.options_accounts,
             world_markets=world_markets,
             max_sector_pct=settings.discover_max_sector_pct,
             sector_of=sector_of,

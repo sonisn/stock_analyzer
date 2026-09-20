@@ -206,3 +206,73 @@ def test_an_add_on_idea_names_what_it_would_unlock():
     item = next(i for i in decision_items(health) if i["label"] == "ADD ON DIP")
     assert "45 more shares" in item["text"]
     assert "covered call" in item["text"]
+
+
+def test_an_unapproved_account_is_a_blocked_opportunity_not_a_silent_one():
+    # The Schwab HSA holds 73 uncovered BE shares and cannot trade
+    # options until a form is filed. Saying nothing would read as
+    # "nothing to do here".
+    from stock_analyzer.reporting.health import (
+        blocked_headroom,
+        call_headroom,
+        headroom_clause,
+    )
+
+    health = build_portfolio_health(
+        {
+            "HSA Brokerage ...263": [{"ticker": "BE", "units": 73, "price": 265.63}],
+            "Traditional IRA": [{"ticker": "BE", "units": 300, "price": 265.63}],
+        },
+        options_accounts=("Traditional IRA",),
+    )
+    rows = {r["account"]: r for r in call_headroom(health)}
+    assert rows["HSA Brokerage ...263"]["options_approved"] is False
+    assert rows["Traditional IRA"]["options_approved"] is True
+
+    # The add-on clause only names accounts that could act on it.
+    assert "Traditional IRA" in headroom_clause(health, "BE")
+    assert "HSA" not in headroom_clause(health, "BE")
+
+    [blocked] = blocked_headroom(health)
+    assert "not approved for options" in blocked["text"]
+    assert "27 shares" in blocked["text"] and "options application" in blocked["text"]
+
+    item = next(i for i in decision_items(health) if i["label"] == "OPTIONS NOT APPROVED")
+    assert item["priority"] == 4
+
+
+def test_a_writable_lot_in_an_unapproved_account_is_not_offered_as_income():
+    from stock_analyzer.reporting.health import blocked_headroom
+
+    health = build_portfolio_health(
+        {"HSA Brokerage ...263": [{"ticker": "BE", "units": 200, "price": 265.63}]},
+        options_accounts=("Traditional IRA",),
+    )
+    assert [i for i in decision_items(health) if i["label"] == "CALL HEADROOM"] == []
+    [blocked] = blocked_headroom(health)
+    assert "2 contract(s) could be written" in blocked["text"]
+
+
+def test_one_line_per_account_not_per_holding():
+    from stock_analyzer.reporting.health import blocked_headroom
+
+    health = build_portfolio_health(
+        {
+            "HSA Brokerage ...263": [
+                {"ticker": "BE", "units": 73, "price": 265.63},
+                {"ticker": "OKLO", "units": 60, "price": 38.0},
+            ]
+        },
+        options_accounts=("Traditional IRA",),
+    )
+    assert len(blocked_headroom(health)) == 1  # one form to file, one line
+
+
+def test_no_allowlist_means_every_account_is_approved():
+    from stock_analyzer.reporting.health import blocked_headroom, call_headroom
+
+    health = build_portfolio_health(
+        {"HSA Brokerage ...263": [{"ticker": "BE", "units": 73, "price": 265.63}]}
+    )
+    assert call_headroom(health)[0]["options_approved"] is True
+    assert blocked_headroom(health) == []
