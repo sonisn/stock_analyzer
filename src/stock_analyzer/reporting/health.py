@@ -67,6 +67,10 @@ class PortfolioHealth:
     # Data-quality notes (a stale account price, a missing cost basis):
     # things that make the numbers above worth a second look.
     data_notes: list[str] = field(default_factory=list)
+    # Overnight and trailing moves on the exchanges that price this
+    # portfolio's demand (data/world_markets.py). Context, never a
+    # decision: these are 3-5 year holdings.
+    world_markets: list[dict[str, Any]] = field(default_factory=list)
     # Accounts the broker has stopped syncing. Not a footnote like the
     # notes above — until the connection is restored every number for
     # that account describes the day it went dark, so it leads the email.
@@ -106,6 +110,7 @@ def build_portfolio_health(
     prices: dict[str, float] | None = None,
     data_notes: list[str] | None = None,
     stale_accounts: list[str] | None = None,
+    world_markets: list[dict[str, Any]] | None = None,
     max_sector_pct: float = 30.0,
     sector_of: Callable[[list[str]], dict[str, str]] | None = None,
     held_thesis_checks: Callable[[set[str]], list[dict[str, Any]]] | None = None,
@@ -121,6 +126,7 @@ def build_portfolio_health(
     health = PortfolioHealth(max_sector_pct=max_sector_pct)
     health.data_notes.extend(data_notes or [])
     health.stale_accounts.extend(stale_accounts or [])
+    health.world_markets.extend(world_markets or [])
     positions = aggregate_positions(holdings, prices)
     tickers = sorted(positions)
 
@@ -449,6 +455,7 @@ def render_health_html(h: PortfolioHealth) -> str:
             + ", ".join(f"{html.escape(r['sector'])} {r['pct']:.0f}%" for r in top)
             + "</p>"
         )
+    parts.append(render_world_markets_html(h))
     if h.stale_accounts:
         parts.append(
             '<p style="font-size:13px;color:#9c1010"><b>Stale account data:</b> '
@@ -468,6 +475,51 @@ def render_health_html(h: PortfolioHealth) -> str:
             + "</p>"
         )
     parts.append("</section>")
+    return "".join(parts)
+
+
+def render_world_markets_html(h: PortfolioHealth) -> str:
+    """The exchanges that traded before New York, and what they say about
+    what is held. Trailing columns lead; the overnight move is last,
+    because one session is not a reason to touch a 3-5 year position."""
+    rows = h.world_markets
+    if not rows:
+        return ""
+    from ..data.world_markets import world_signals
+
+    def cell(row: dict[str, Any], window: str) -> str:
+        value = row.get(window)
+        if value is None:
+            return "—"
+        color = "#166534" if value > 0 else "#9c1010" if value < 0 else "#6b7280"
+        return f'<span style="color:{color}">{value:+.1f}%</span>'
+
+    parts = ["<h3>World markets</h3>"]
+    parts.append(
+        _table(
+            ["Market", "Region", "6mo", "1y", "1mo", "1d"],
+            [
+                [
+                    html.escape(str(r["name"])),
+                    html.escape(str(r["region"])),
+                    cell(r, "6mo"),
+                    cell(r, "1y"),
+                    cell(r, "1mo"),
+                    cell(r, "1d"),
+                ]
+                for r in rows
+            ],
+        )
+    )
+    signals = world_signals(rows, set(h.values))
+    for line in signals.holdings_context:
+        parts.append(f'<p style="font-size:13px;color:#374151">{html.escape(line)}</p>')
+    if signals.regime_breaks:
+        parts.append(
+            '<p style="font-size:13px;color:#9c1010">Down more than 10% over the year: '
+            + html.escape("; ".join(signals.regime_breaks))
+            + "</p>"
+        )
     return "".join(parts)
 
 

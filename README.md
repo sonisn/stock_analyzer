@@ -319,6 +319,29 @@ glance" flags with the date it went dark and the one fix for it:
 reconnect it in SnapTrade. Until then, every number for that account
 describes the day it stopped syncing.
 
+## World markets
+
+The macro context was US-only — FRED's yield curve, VIX and jobs, plus
+relative strength against SPY — while the demand behind these holdings is
+priced overnight on other exchanges. Taiwan sets the tone for TSM and for
+the foundry capacity behind NVDA and AVGO, Korea prices the memory cycle,
+the dollar decides what foreign revenue translates to, and copper reads
+industrial and grid demand for POWL.
+
+`data/world_markets.py` fetches sixteen markets east to west (Nikkei,
+KOSPI, Taiwan, Hang Seng, Shanghai, Sensex, DAX, FTSE, Euro Stoxx, S&P,
+Nasdaq, SOX, plus the dollar index, USD/JPY, copper and crude) with
+trailing 1d/1mo/6mo/1y changes, all free through the same paced yfinance
+gateway. They appear as a table at the end of the daily email's health
+block and are appended to the Ranker's macro context.
+
+Each market declares which holdings it actually bears on, so the block
+says "Taiwan Weighted +41% over six months — foundry capacity: reads
+across to NVDA, TSM" rather than reciting indices. The trailing columns
+come first and the overnight move last, deliberately: one session is not
+a reason to touch a 3-5 year position. A market down more than 10% over a
+year is called out as a regime break.
+
 ## Fundamentals as filed
 
 yfinance's fundamentals are derived, undated, and sometimes wrong in ways

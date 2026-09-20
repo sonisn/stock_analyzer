@@ -56,6 +56,7 @@ def portfolio_health(
     prices: dict[str, float] | None = None,
     data_notes: list[str] | None = None,
     stale_accounts: list[str] | None = None,
+    world_markets: list[dict] | None = None,
 ):
     """The deterministic PortfolioHealth (reporting/health.py) with the live
     data sources wired in. None when disabled or on any failure — the daily
@@ -157,6 +158,7 @@ def portfolio_health(
             prices=prices,
             data_notes=data_notes,
             stale_accounts=stale_accounts,
+            world_markets=world_markets,
             max_sector_pct=settings.discover_max_sector_pct,
             sector_of=sector_of,
             held_thesis_checks=held_thesis_checks,
@@ -304,6 +306,15 @@ def main() -> None:
     # prices as if they were today's, so name the account instead of
     # quietly valuing stale data.
     stale = stale_account_notes(fetch_account_sync_status())
+    # The exchanges that priced these holdings overnight. Guarded: a
+    # missing index is context lost, not an email lost.
+    try:
+        from ..data.world_markets import fetch_world_markets
+
+        world = fetch_world_markets()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("World markets unavailable (%s)", e)
+        world = []
     _, unlisted = listed_tickers(holdings)
     if unlisted:
         price_notes.append(
@@ -316,6 +327,7 @@ def main() -> None:
         prices=prices,
         data_notes=price_notes,
         stale_accounts=stale,
+        world_markets=world,
     )
     record_daily_suggestions(settings, health)
     record_portfolio_snapshot(settings, holdings, prices=prices)

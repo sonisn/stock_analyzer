@@ -739,7 +739,21 @@ class DiscoverPipeline:
     def step_macro_regime(self, step_input: StepInput) -> StepOutput:
         data = fetch_regime_data(self.settings.fred_api_key)
         self.state["macro_data"] = data
-        self.state["macro_summary"] = regime_summary_text(data)
+        summary = regime_summary_text(data)
+        # FRED describes the US only. Semiconductor demand is priced in
+        # Taipei and Seoul overnight, and the dollar decides what foreign
+        # revenue is worth, so the Ranker sees those too.
+        try:
+            from ..data.world_markets import fetch_world_markets, world_markets_text
+
+            rows = fetch_world_markets()
+            self.state["world_markets"] = rows
+            if rows:
+                held = set(self.state.get("holdings_tickers") or [])
+                summary = f"{summary}\n\n{world_markets_text(rows, held)}"
+        except Exception as e:  # noqa: BLE001 — context, not a dependency
+            logger.warning("World markets unavailable (%s) — US macro only", e)
+        self.state["macro_summary"] = summary
         # Truncate for terminal preview.
         return StepOutput(content=self.state["macro_summary"][:200])
 
