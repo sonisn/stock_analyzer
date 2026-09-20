@@ -140,6 +140,14 @@ class Settings(BaseSettings):
     # check on held former picks, sector weight vs the cap, tax-loss
     # harvesting candidates, earnings this week. No LLM calls.
     portfolio_health: bool = True
+    # Whether the daily email proposes stocks you do NOT own: the "Ideas
+    # for new money" blocks and the "reinvest the proceeds in X" tail on
+    # a sale line. Off leaves every action on a current holding intact —
+    # sells, drawdown re-checks, tax-loss candidates, covered calls — and
+    # stops the email from sourcing new names out of an ageing pick pool.
+    # Turn it off when the picks are stale relative to how you are now
+    # investing; `discover-stocks` is where fresh ones come from.
+    daily_email_new_ideas: bool = True
     history_upkeep: bool = True
     history_text_retention_days: int = 365
     history_session_retention_days: int = 30

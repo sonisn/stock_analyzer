@@ -109,8 +109,12 @@ def portfolio_health(
                 splits,
                 lot_prices,
                 to_tax_payloads(fetch_transaction_history(db_path=db)),
-                # Same-sector names keep the exposure after a loss sale.
-                sector_peers(db, list(splits), held=set(splits)),
+                # Same-sector names keep the exposure after a loss sale —
+                # still a stock you do not own, so it follows the same
+                # switch. The harvest itself stays either way.
+                sector_peers(db, list(splits), held=set(splits))
+                if settings.daily_email_new_ideas
+                else {},
                 min_loss_usd=settings.harvest_min_loss_usd,
                 min_loss_pct=settings.harvest_min_loss_pct,
                 # Shares backing a short call are not sellable, so they
@@ -181,7 +185,10 @@ def portfolio_health(
             held_thesis_checks=held_thesis_checks,
             harvest=harvest,
             earnings=earnings,
-            reinvest=reinvest,
+            # With new ideas off, a sale line stops naming somewhere to
+            # put the money: the pick pool it would draw from is the
+            # thing being distrusted.
+            reinvest=reinvest if settings.daily_email_new_ideas else None,
             income=income,
             add_on=add_on,
             earnings_results=earnings_results if ticker_data else None,
@@ -467,7 +474,7 @@ def main() -> None:
     # A suggested stock gets the same look as a held one: its own chart,
     # trends and valuation. Without it an idea is a ticker and a
     # sentence, which is not enough to act on.
-    ideas = attach_idea_details(health)
+    ideas = attach_idea_details(health) if settings.daily_email_new_ideas else []
     charts = fetch_charts(tickers + [t for t in ideas if t not in tickers])
     chart_cids = {t: _chart_cid(t) for t in charts}
     inline_images = {_chart_cid(t): data for t, data in charts.items()}

@@ -101,6 +101,28 @@ class PortfolioHealth:
     stale_accounts: list[str] = field(default_factory=list)
 
 
+# Money-market funds hold a $1.00 net asset value by design, so a cash
+# sweep reads as tens of thousands of "shares". SPAXX offered 208 covered
+# call contracts before this: the quote type would have caught it, but
+# only when a caller happened to pass one, and the quarterly review does
+# not. A price pinned to a dollar is the fact itself.
+_CASH_LIKE_SYMBOLS = frozenset(
+    {"SPAXX", "FDRXX", "SPRXX", "FZFXX", "VMFXX", "VMRXX", "SWVXX", "SNVXX", "SNSXX"}
+)
+_CASH_NAV_TOLERANCE = 0.02
+
+
+def is_cash_like(ticker: str, price: float | None) -> bool:
+    """A cash sweep or money-market fund rather than a tradable equity."""
+    if str(ticker or "").upper() in _CASH_LIKE_SYMBOLS:
+        return True
+    try:
+        value = float(price) if price is not None else None
+    except TypeError, ValueError:
+        return False
+    return value is not None and abs(value - 1.0) <= _CASH_NAV_TOLERANCE
+
+
 def aggregate_positions(
     holdings: dict[str, list[dict[str, Any]]],
     prices: dict[str, float] | None = None,
@@ -173,6 +195,8 @@ def build_portfolio_health(
             if not ticker or units <= 0:
                 continue
             if not is_listed_symbol(ticker, item.get("kind")):
+                continue
+            if is_cash_like(ticker, item.get("price")):
                 continue
             if optionable is not None and ticker.upper() not in optionable:
                 continue

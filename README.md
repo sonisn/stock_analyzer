@@ -385,6 +385,20 @@ options, so BE is 27 shares (~$7,172) from a writable lot — the premium
 is behind an options application, not behind the market."* One line per
 account, since it is one form.
 
+## Turning off new-stock suggestions
+
+`DAILY_EMAIL_NEW_IDEAS=0` stops the daily email proposing stocks you do
+not own: the "Ideas for new money" blocks, the "reinvest the proceeds in
+X" tail on a sale line, and the same-sector swap named beside a tax-loss
+candidate. Every action on a current holding is untouched — sells,
+drawdown re-checks, tax-loss candidates, covered-call rolls, assignment
+warnings, add-on-weakness.
+
+The reason to use it: those names come from the stored pick pool, so they
+are as old as the last `discover-stocks` run and were chosen under
+whatever settings were in force then. When the two have drifted apart,
+the daily email should not be the thing sourcing new positions.
+
 ## A suggested stock gets the same look as a held one
 
 A holding comes with a chart, trend labels, a 52-week range and a
@@ -487,6 +501,12 @@ Headroom is limited to holdings a call can actually be written on. Before
 that filter, SPAXX offered 208 contracts, the 401(k)'s commingled pool
 offered 40 shares, and Taronis Technologies — whose SEC registration was
 revoked in 2023 — offered one.
+
+A money-market fund is excluded on its own evidence rather than on the
+caller remembering to pass a quote type: `is_cash_like` catches a NAV
+pinned to $1.00 and a list of sweep symbols. SPAXX came back the moment
+it was read through a path that passed no quote types — which the
+quarterly review does.
 
 ## Point-in-time fundamentals
 

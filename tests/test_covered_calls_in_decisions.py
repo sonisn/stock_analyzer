@@ -329,3 +329,26 @@ def test_no_rotation_data_renders_nothing():
     )
 
     assert render_sector_rotation_html(build_portfolio_health({})) == ""
+
+
+def test_a_cash_sweep_is_never_covered_call_headroom():
+    # SPAXX held 20,846 "shares" at $1.00 and was offered as 208
+    # writable contracts. The quote type catches it, but only when a
+    # caller passes one — the quarterly review does not.
+    from stock_analyzer.reporting.health import build_portfolio_health, call_headroom, is_cash_like
+
+    health = build_portfolio_health(
+        {
+            "Traditional IRA": [
+                {"ticker": "SPAXX", "units": 20846, "price": 1.0},
+                {"ticker": "NVDA", "units": 401, "price": 222.27},
+            ]
+        }
+    )
+    assert [r["ticker"] for r in call_headroom(health)] == ["NVDA"]
+
+    # by name, and by a NAV pinned to a dollar for one not on the list
+    assert is_cash_like("SPAXX", 1.0) and is_cash_like("FDRXX", None)
+    assert is_cash_like("XXXXX", 0.999)
+    assert not is_cash_like("NVDA", 222.27)
+    assert not is_cash_like("SOFI", None)

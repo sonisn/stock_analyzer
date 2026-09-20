@@ -315,3 +315,34 @@ def test_no_ideas_render_nothing():
     from stock_analyzer.reporting.health import build_portfolio_health, render_idea_details_html
 
     assert render_idea_details_html(build_portfolio_health({})) == ""
+
+
+def test_new_ideas_can_be_switched_off_without_losing_holding_actions():
+    # "Drop the new suggestions, keep the action on current holdings."
+    from stock_analyzer.reporting.health import (
+        build_portfolio_health,
+        decision_items,
+        render_idea_details_html,
+    )
+
+    holdings = {
+        "Brokerage": [
+            {"ticker": "DOWN", "units": 10, "average_purchase_price": 100.0, "price": 70.0}
+        ]
+    }
+    # reinvest=None is what the CLI passes when the switch is off.
+    off = build_portfolio_health(holdings, reinvest=None)
+    drawdown = next(i for i in decision_items(off) if i["label"] == "DRAWDOWN")
+    assert "DOWN" in drawdown["text"]  # the holding action survives
+    assert "einvest" not in drawdown["text"]  # nothing new is proposed
+    assert drawdown["reinvest_into"] is None
+    assert render_idea_details_html(off) == ""
+
+    on = build_portfolio_health(
+        holdings,
+        reinvest=lambda held, over_cap, n: [
+            {"ticker": "A", "rank": 2, "pick_date": "2026-09-17", "sector": "Healthcare"}
+        ],
+    )
+    on_item = next(i for i in decision_items(on) if i["label"] == "DRAWDOWN")
+    assert "reinvest" in on_item["text"] and on_item["reinvest_into"] == "A"
