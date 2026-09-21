@@ -40,6 +40,7 @@ button.theme{margin-left:auto;background:var(--surface);color:var(--ink2);border
 .tile .v{font-size:24px;font-weight:600;margin-top:4px;letter-spacing:-.02em}
 .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:20px}
 h2{font-size:15px;margin:0 0 4px;letter-spacing:-.01em}
+h3{font-size:13px;margin:18px 0 6px;color:var(--ink2);font-weight:600}
 .note{font-size:12.5px;color:var(--ink3);margin:0 0 14px}
 table{width:100%;border-collapse:collapse;font-size:13.5px}
 th{text-align:left;font-weight:500;color:var(--ink3);font-size:11.5px;text-transform:uppercase;
@@ -62,8 +63,8 @@ svg{display:block;width:100%;height:auto;overflow:visible}
 .gl{stroke:var(--line);stroke-width:1}
 .ax{fill:var(--ink3);font-size:10.5px}
 .lbl{fill:var(--ink2);font-size:11px}
-#detail{display:none}
-#detail.show{display:block}
+#detail,#why{display:none}
+#detail.show,#why.show{display:block}
 .viewtext{font-size:13px;color:var(--ink2);line-height:1.6;margin-top:10px;
  border-left:2px solid var(--s1);padding-left:12px}
 .bar{height:7px;border-radius:4px;background:var(--s1)}
@@ -141,7 +142,7 @@ const num = v => v===null||v===undefined ? '<span class="dim">—</span>'
 const vpill = v => v==='good call' ? '<span class="pill" style="color:var(--good);border-color:currentColor">good call</span>'
   : v==='missed' ? '<span class="pill" style="color:var(--bad);border-color:currentColor">missed</span>'
   : v==='too early' ? '<span class="pill dim">too early</span>' : '<span class="dim">—</span>';
-$('#sugg').innerHTML = D.suggestions.map(s=>`<tr>
+$('#sugg').innerHTML = D.suggestions.map(s=>`<tr data-t="${s.ticker}">
   <td class="dim">${esc(s.d)}${s.run?`<div style="font-size:11px">run ${s.run}</div>`:''}</td>
   <td><b>${esc(s.ticker)}</b><div class="dim" style="font-size:11px">${esc(s.action)}</div></td>
   <td class="num">${num(s.ret)}</td>
@@ -150,6 +151,60 @@ $('#sugg').innerHTML = D.suggestions.map(s=>`<tr>
   <td class="num">${num(s.edge)}</td>
   <td>${vpill(s.verdict)}</td>
   <td class="dim hide-s">${esc(s.acted)}</td></tr>`).join('');
+
+document.querySelectorAll('#sugg tr').forEach(tr=>tr.onclick=()=>why(tr.dataset.t));
+
+/* why a ticker was advised: scenarios, bull, bear, catalysts */
+function why(t){
+  const r = D.reasoning[t];
+  const rev = D.reviews[t];
+  $('#why').classList.add('show');
+  $('#wt').textContent = t;
+  if(!r && !rev){ $('#wbody').innerHTML =
+    '<p class="note">No stored reasoning for this ticker — it came from a '+
+    'deterministic rule in the daily email rather than from the ranker.</p>'; return; }
+  let h='';
+  if(r && r.scenarios && r.scenarios.length){
+    const ev = r.scenarios.reduce((a,s)=>a + s.prob/100*s.target, 0);
+    h += `<h3>Scenarios <span class="dim" style="font-weight:400">· expected `+
+         `${ev>=0?'+':''}${ev.toFixed(1)}%/yr</span></h3>` + scen(r.scenarios);
+  }
+  if(r && r.bull) h += `<h3>Bull case</h3><div class="viewtext">${esc(r.bull)}</div>`;
+  if(r && r.bear) h += `<h3>Bear case (red team)</h3>`+
+    `<div class="viewtext" style="border-color:var(--bad)">${esc(r.bear)}</div>`;
+  if(r && r.catalysts && r.catalysts.length){
+    h += '<h3>Catalysts</h3><table><thead><tr><th>Event</th><th>When</th>'+
+         '<th>Direction</th><th>Impact</th></tr></thead><tbody>'+
+      r.catalysts.map(c=>`<tr><td>${esc(c.event)}</td>`+
+        `<td class="dim">${esc(c.when||'date TBD')}</td>`+
+        `<td>${esc(c.direction)}</td><td class="dim">${esc(c.impact)}</td></tr>`).join('')+
+      '</tbody></table>';
+  }
+  if(rev) h += `<h3>Reviewer's note</h3><div class="viewtext">${esc(rev)}</div>`;
+  $('#wbody').innerHTML = h;
+  $('#why').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+function scen(rows){
+  const W=660,rowH=34,P={l:58,r:96,t:6};
+  const H=P.t+rows.length*rowH+8;
+  const lo=Math.min(-5,...rows.map(r=>r.target)), hi=Math.max(5,...rows.map(r=>r.target));
+  const x=v=>P.l+(v-lo)/(hi-lo)*(W-P.l-P.r);
+  const col={bull:'var(--good)',base:'var(--ink3)',bear:'var(--bad)'};
+  let g=`<line class="gl" x1="${x(0)}" y1="${P.t}" x2="${x(0)}" y2="${H-8}"
+     stroke="var(--ink3)" stroke-dasharray="3 3"/>`;
+  rows.forEach((r,i)=>{
+    const cy=P.t+i*rowH+rowH/2, c=col[r.label]||'var(--s1)';
+    const x0=Math.min(x(0),x(r.target)), w=Math.max(2,Math.abs(x(r.target)-x(0)));
+    g+=`<text class="lbl" x="0" y="${cy+4}">${r.label}</text>
+      <rect x="${x0}" y="${cy-8}" width="${w}" height="16" rx="4" fill="${c}"
+        opacity="${0.25+0.55*r.prob/100}"><title>${r.label}: ${r.prob}% chance of `+
+      `${r.target>=0?'+':''}${r.target}%</title></rect>
+      <text class="lbl" x="${W-P.r+10}" y="${cy+4}">${r.prob}% · `+
+      `${r.target>=0?'+':''}${r.target}%</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Scenario probabilities and targets">${g}</svg>`;
+}
 
 /* runs */
 $('#runs').innerHTML = D.runs.map(r=>`<tr>
@@ -215,7 +270,13 @@ def render_page(data: dict[str, Any]) -> str:
  <table><thead><tr><th>Suggested</th><th>Ticker</th><th class="num">Return</th>
   <th class="num hide-s">SPY</th><th class="hide-s">Replaced by</th>
   <th class="num">Edge</th><th>Verdict</th><th class="hide-s">Acted</th></tr></thead>
- <tbody id="sugg"></tbody></table></div>
+ <tbody id="sugg"></tbody></table>
+ <p class="note" style="margin-top:12px">Click any row for the reasoning behind it.</p></div>
+
+<div class="card" id="why">
+ <h2><span id="wt"></span> — why</h2>
+ <div id="wbody"></div>
+</div>
 
 <div class="card"><h2>Recent runs</h2>
  <p class="note">Pipeline history.</p>

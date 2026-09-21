@@ -27,7 +27,15 @@ from sqlmodel import select
 
 from ..config import Settings
 from ..db.session import get_session
-from ..db.tables import HoldingReviewRow, Run, StockView, Suggestion
+from ..db.tables import (
+    HoldingReviewRow,
+    PickCatalyst,
+    PickScenario,
+    Run,
+    RunOutput,
+    StockView,
+    Suggestion,
+)
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -38,6 +46,66 @@ def _latest_review_run(db_path: str) -> int | None:
         return session.exec(
             select(HoldingReviewRow.run_id).order_by(HoldingReviewRow.run_id.desc())  # type: ignore[attr-defined]
         ).first()
+
+
+def _reasoning(db_path: str) -> dict[str, dict[str, Any]]:
+    """Per ticker: the scenarios behind its expected return, the bull case,
+    the red team's bear case, and the catalysts named for it.
+
+    The ledger says what was advised; this says why. All of it was already
+    persisted — the scenarios as rows, the prose in `run_outputs` — and
+    none of it was reachable outside the PDF of the run that produced it.
+    Newest run wins, so a ticker picked twice shows the current thinking.
+    """
+    from ..discover.report_sections import _split_by_pick_blocks, _split_by_ticker_blocks
+
+    out: dict[str, dict[str, Any]] = {}
+    with get_session(db_path) as session:
+        scenarios = session.exec(
+            select(
+                PickScenario.run_id, PickScenario.ticker, PickScenario.label,
+                PickScenario.probability, PickScenario.target_return_pct,
+            ).order_by(PickScenario.run_id)
+        ).all()
+        catalysts = session.exec(
+            select(
+                PickCatalyst.run_id, PickCatalyst.ticker, PickCatalyst.event,
+                PickCatalyst.expected_date, PickCatalyst.direction, PickCatalyst.impact,
+            ).order_by(PickCatalyst.run_id, PickCatalyst.seq)
+        ).all()
+        prose = session.exec(
+            select(RunOutput.run_id, RunOutput.ranker_full, RunOutput.redteam_full)
+            .order_by(RunOutput.run_id)
+        ).all()
+
+    for run_id, ticker, label, prob, target in scenarios:
+        rec = out.setdefault(ticker, {})
+        if rec.get("_scen_run") != run_id:
+            rec["_scen_run"], rec["scenarios"] = run_id, []
+        rec["scenarios"] = [s for s in rec["scenarios"] if s["label"] != label]
+        rec["scenarios"].append(
+            dict(label=label, prob=round(prob * 100), target=round(target, 1))
+        )
+    for run_id, ticker, event, when, direction, impact in catalysts:
+        rec = out.setdefault(ticker, {})
+        if rec.get("_cat_run") != run_id:
+            rec["_cat_run"], rec["catalysts"] = run_id, []
+        rec["catalysts"].append(
+            dict(event=event, when=when, direction=direction, impact=impact)
+        )
+    for _run_id, ranker_text, redteam_text in prose:
+        for ticker, block in _split_by_pick_blocks(ranker_text or "").items():
+            out.setdefault(ticker, {})["bull"] = block.strip()
+        for ticker, block in _split_by_ticker_blocks(redteam_text or "").items():
+            out.setdefault(ticker, {})["bear"] = block.strip()
+
+    for rec in out.values():
+        rec.pop("_scen_run", None)
+        rec.pop("_cat_run", None)
+        if "scenarios" in rec:
+            order = {"bull": 0, "base": 1, "bear": 2}
+            rec["scenarios"].sort(key=lambda s: order.get(s["label"], 9))
+    return {k: v for k, v in out.items() if v}
 
 
 def collect(settings: Settings, *, today: date) -> dict[str, Any]:
@@ -77,6 +145,14 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
                     HoldingReviewRow.verdict,
                     HoldingReviewRow.confidence,
                 ).where(HoldingReviewRow.run_id == run_id)
+            ).all()
+        }
+        review_text = {
+            t: r
+            for t, r in session.exec(
+                select(HoldingReviewRow.ticker, HoldingReviewRow.review_text).where(
+                    HoldingReviewRow.run_id == run_id
+                )
             ).all()
         }
         history_rows = session.exec(
@@ -145,6 +221,11 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
             dict(run=rid, d=run_days.get(rid, ""), v=verdict or "?", c=conf or 0)
         )
 
+    # Only for tickers the page actually references. Every run adds picks,
+    # so carrying prose for all of them would grow the file without bound
+    # and none of it would be reachable.
+    referenced = set(positions) | {s["ticker"] for s in suggestions}
+    reasoning = {t: r for t, r in _reasoning(db).items() if t in referenced}
     graded = grade_suggestions(
         suggestions, today=today,
         units_now={t: p["units"] for t, p in positions.items()}, fetch=fetch,
@@ -163,6 +244,8 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
             for g in graded
         ],
         holdings_ok=bool(positions),
+        reasoning=reasoning,
+        reviews={t: (r or "") for t, r in review_text.items()},
     )
 
 

@@ -71,3 +71,62 @@ def test_it_writes_where_the_cli_writes(tmp_path, monkeypatch):
     out = _Pipe(settings).step_refresh_dashboard(None)
     assert target.exists(), out.content
     assert "<html" in target.read_text()
+
+
+def test_reasoning_is_kept_only_for_tickers_the_page_shows(monkeypatch, tmp_path):
+    """Every run adds picks. Carrying prose for all of them would grow the
+    file without bound, and none of it would be reachable."""
+    import stock_analyzer.cli.dashboard as dash
+
+    monkeypatch.setattr(
+        dash,
+        "_reasoning",
+        lambda db: {
+            t: {"bull": "x" * 2000, "bear": "y" * 2000}
+            for t in ("NVDA", "LLY", "NEVER_HELD", "ALSO_NOT")
+        },
+    )
+    seen = {}
+
+    def fake_grade(items, *, today, units_now, fetch):
+        seen["n"] = len(items)
+        return []
+
+    monkeypatch.setattr("stock_analyzer.reporting.quarterly.grade_suggestions", fake_grade)
+    monkeypatch.setattr("stock_analyzer.data.price_record.record_prices", lambda *a, **k: {})
+    monkeypatch.setattr(
+        "stock_analyzer.data.price_record.coverage",
+        lambda db: {"rows": 0, "tickers": 0, "first": None, "last": None},
+    )
+    monkeypatch.setattr(dash, "_latest_review_run", lambda db: 1)
+    # No brokerage, no SEC — the referenced set comes from suggestions alone.
+    monkeypatch.setattr(
+        "stock_analyzer.data.brokerage.fetch_portfolio_holdings",
+        lambda: (_ for _ in ()).throw(RuntimeError("offline")),
+    )
+
+    from stock_analyzer.config import Settings
+    from stock_analyzer.db.repository import record_suggestions
+    from stock_analyzer.db.session import get_session
+
+    db = str(tmp_path / "d.db")
+    with get_session(db) as s:
+        record_suggestions(
+            s,
+            [
+                dict(
+                    suggested_on="2026-09-20",
+                    source="daily",
+                    action="BUY",
+                    ticker="LLY",
+                    detail="",
+                    price=1.0,
+                    units_held=0.0,
+                    run_id=None,
+                    reinvest_into=None,
+                )
+            ],
+        )
+        s.commit()
+    data = dash.collect(Settings(discover_db_path=db), today=__import__("datetime").date.today())
+    assert set(data["reasoning"]) == {"LLY"}, "unreferenced tickers must be dropped"
