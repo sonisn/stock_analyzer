@@ -321,22 +321,36 @@ def fetch_recent_picks(session: Session, *, n_runs: int = 3) -> list[tuple[str, 
 
 
 def record_suggestions(session: Session, rows: list[dict[str, Any]]) -> int:
-    """Store advice given today; a (day, source, action, ticker) already
-    stored is skipped, so re-running the daily email is harmless. Returns
-    how many rows were added."""
+    """Store advice given today. Returns how many rows were added.
+
+    A (day, source, action, ticker) already stored is not duplicated, so
+    re-running the daily email is harmless. But a LATER run on the same
+    day is a revision, not a repeat: on 2026-09-20 two rebalances both
+    said BUY LLY, the first at ~$26,000 and the second — after it could
+    see the covered calls — at $18,450, and the ledger kept the first.
+    That is the sizing the grading would later assume was acted on. So a
+    row from a newer run replaces the one on record, and the count
+    returned stays the count of genuinely new advice.
+    """
     added = 0
     for row in rows:
-        exists = session.exec(
-            select(Suggestion.id).where(
+        existing = session.exec(
+            select(Suggestion).where(
                 Suggestion.suggested_on == row["suggested_on"],
                 Suggestion.source == row["source"],
                 Suggestion.action == row["action"],
                 Suggestion.ticker == row["ticker"],
             )
         ).first()
-        if exists is None:
+        if existing is None:
             session.add(Suggestion(**row))
             added += 1
+            continue
+        new_run, old_run = row.get("run_id"), existing.run_id
+        if new_run is not None and (old_run is None or new_run > old_run):
+            for field, value in row.items():
+                if field != "id":
+                    setattr(existing, field, value)
     session.flush()
     return added
 
