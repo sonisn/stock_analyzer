@@ -272,6 +272,23 @@ class PortfolioSnapshot(SQLModel, table=True):
     accounts: str | None = None
 
 
+class TickerPrice(SQLModel, table=True):
+    """One close per ticker per trading day, kept permanently.
+
+    Every price this system has ever fetched was used once and discarded,
+    so "what was AVGO worth on the day we said sell it?" had no answer.
+    Grading advice needs exactly that, and re-deriving it later is both a
+    network call and a chance to get it wrong. Append-only and tiny — a
+    year of sixteen holdings is about four thousand rows.
+    """
+
+    __tablename__ = "ticker_prices"
+
+    ticker: str = Field(primary_key=True)
+    day: str = Field(primary_key=True)  # ISO trading day
+    close: float
+
+
 class BrokerageActivity(SQLModel, table=True):
     """One brokerage activity (buy, sell, dividend, reinvestment, deposit,
     transfer, option event), kept permanently so tax lots and cash flows
@@ -326,6 +343,7 @@ __all__ = [
     "BrokerageActivity",
     "TickerReference",
     "PortfolioSnapshot",
+    "TickerPrice",
     "Suggestion",
     "Run",
     "Candidate",

@@ -200,6 +200,13 @@ def _acted(item: dict[str, Any], units_now: dict[str, float]) -> str:
     return "—"
 
 
+# Below this age a suggestion has no outcome worth naming. 30 days is
+# the shortest horizon anything else here is measured on, and it is still
+# noise against a 3-5 year holding period — the label says "too early"
+# rather than inventing a verdict from a few days of drift.
+VERDICT_MIN_AGE_DAYS = 30
+
+
 def grade_suggestions(
     items: list[dict[str, Any]],
     *,
@@ -233,8 +240,15 @@ def grade_suggestions(
             elif action not in OPTIONS and spy is not None:
                 edge = ret - spy
         verdict = "—"
+        age = (today - since).days
         if edge is not None and action not in OPTIONS:
-            verdict = "good call" if edge >= 0 else "missed"
+            if age < VERDICT_MIN_AGE_DAYS:
+                # Advice given days ago has no outcome yet. Grading it
+                # anyway prints "good call" against a 0.0% edge, which
+                # reads as a result and is only the absence of one.
+                verdict = "too early"
+            else:
+                verdict = "good call" if edge >= 0 else "missed"
         out.append(
             {
                 **item,

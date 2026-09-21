@@ -850,6 +850,13 @@ class RebalancePipeline(DiscoverPipeline):
             },
         }
         today = date.today().isoformat()
+        # Where a sale's proceeds were meant to go. A sell is only good or
+        # bad relative to what replaced it, so the pair has to be recorded
+        # at the moment the advice is given — afterwards there is no way to
+        # know which buy the sale was funding. The plan's own BUY/ADD lines
+        # are the destinations, largest first.
+        destinations = [a.ticker for a in plan.actions if a.action in {"BUY", "ADD"}]
+        reinvest_into = destinations[0] if destinations else None
         rows = [
             {
                 "suggested_on": today,
@@ -860,6 +867,11 @@ class RebalancePipeline(DiscoverPipeline):
                 "price": prices.get(a.ticker),
                 "units_held": (positions.get(a.ticker) or {}).get("units", 0.0),
                 "run_id": run_id,
+                "reinvest_into": (
+                    reinvest_into
+                    if a.action in {"SELL", "TRIM"} and reinvest_into != a.ticker
+                    else None
+                ),
             }
             for a in plan.actions
         ]
