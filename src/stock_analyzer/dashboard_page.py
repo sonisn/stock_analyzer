@@ -12,8 +12,9 @@ so there is no library to vendor and nothing to load.
 
 from __future__ import annotations
 
-import json
 from typing import Any
+
+from .serialization import dumps_compact
 
 CSS = """
 :root{color-scheme:light;
@@ -284,4 +285,4 @@ def render_page(data: dict[str, Any]) -> str:
   <th class="num">Surv.</th><th class="num">Picks</th></tr></thead>
  <tbody id="runs"></tbody></table></div>
 
-</div><script>{JS.replace("__DATA__", json.dumps(data))}</script></body></html>"""
+</div><script>{JS.replace("__DATA__", dumps_compact(data))}</script></body></html>"""

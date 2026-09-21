@@ -21,13 +21,13 @@ things on judgement alone.
 
 from __future__ import annotations
 
-import json
 import math
 import sqlite3
 from dataclasses import dataclass
 from typing import Any
 
 from ..logging import get_logger
+from ..serialization import loads
 
 logger = get_logger(__name__)
 
@@ -72,7 +72,7 @@ def load_rows(db_path: str, horizon: int) -> list[dict[str, Any]]:
     rows = []
     for rec in con.execute(query, (horizon,)):
         try:
-            breakdown = json.loads(rec["score_breakdown"])
+            breakdown = loads(rec["score_breakdown"])
         except (TypeError, ValueError):
             continue
         flat: dict[str, float] = {}
