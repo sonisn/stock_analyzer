@@ -66,6 +66,7 @@ quarterly-review = "stock_analyzer.cli.quarterly_review:main"
 tax-planner = "stock_analyzer.cli.tax_planner:main"
 replay-rebalance = "stock_analyzer.cli.replay_rebalance:main"
 dashboard = "stock_analyzer.cli.dashboard:main"
+score-attribution = "stock_analyzer.cli.score_attribution:main"
 
 [build-system]
 requires = ["hatchling"]
