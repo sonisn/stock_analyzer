@@ -255,6 +255,11 @@ class Settings(BaseSettings):
     # premium is the entire return. A missing vol reading keeps the
     # candidate: an unknown IV is not evidence of a cheap one.
     csp_min_iv_hv_ratio: float = 1.0
+    # Rewrite the static dashboard at the end of a run, so the page and the
+    # email never disagree about what was decided. Off makes the page
+    # change only on its own schedule.
+    dashboard_after_run: bool = True
+    dashboard_path: str = "~/.stock_analyzer/reports/dashboard.html"
     # How many past runs' picks are put candidates (plus this run's).
     csp_pick_lookback_runs: int = 3
     # Accounts approved to sell puts (comma-separated labels as the

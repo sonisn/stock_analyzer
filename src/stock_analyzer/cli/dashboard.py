@@ -177,9 +177,7 @@ def main(argv: list[str] | None = None) -> None:
     load_dotenv()
     settings = Settings.from_env()
     data = collect(settings, today=date.today())
-    out = Path(args.out).expanduser() if args.out else (
-        Path("~/.stock_analyzer/reports/dashboard.html").expanduser()
-    )
+    out = Path(args.out or settings.dashboard_path).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_page(data))
     logger.info(

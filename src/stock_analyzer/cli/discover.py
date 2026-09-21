@@ -1557,6 +1557,43 @@ class DiscoverPipeline:
         prices, _ = reconcile_prices(holdings)
         return pick_sectors, _holdings_value_by_sector(holdings, sector_of, prices)
 
+    def step_refresh_dashboard(self, step_input: StepInput) -> StepOutput:
+        """Rewrite the static dashboard so it reflects the run that just
+        finished.
+
+        The page is a generated file, not a service, so it only changes
+        when something regenerates it. Cron does that after the close; a
+        run started by hand would otherwise leave the page showing the
+        previous day's plan while the email showed the new one — the two
+        disagreeing is worse than the page being a few hours stale.
+
+        Never fails the run. The plan is already emailed and persisted by
+        the time this executes; a dashboard that did not refresh is a
+        cosmetic problem, and the next scheduled build fixes it.
+        """
+        if not self.settings.dashboard_after_run:
+            return StepOutput(content="dashboard: disabled via DASHBOARD_AFTER_RUN=0")
+        from datetime import date as _date
+        from pathlib import Path
+
+        from ..cli.dashboard import collect
+        from ..dashboard_page import render_page
+
+        try:
+            data = collect(self.settings, today=_date.today())
+            out = Path(self.settings.dashboard_path).expanduser()
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(render_page(data))
+        except Exception as e:  # noqa: BLE001 — cosmetic, never fatal
+            logger.warning("Dashboard refresh failed (%s) — the scheduled build will retry", e)
+            return StepOutput(content=f"dashboard: failed ({type(e).__name__})")
+        return StepOutput(
+            content=(
+                f"dashboard: {len(data['holdings'])} holding(s), "
+                f"{len(data['suggestions'])} graded suggestion(s) -> {out}"
+            )
+        )
+
     def step_history_upkeep(self, step_input: StepInput) -> StepOutput:
         """Last step of every run: add new history, trim old (db/retention.py).
         Never fails the run — every sub-step only logs on error."""
@@ -1888,6 +1925,7 @@ class DiscoverPipeline:
                     Step(name="sizer", executor=self.step_sizer),
                     Step(name="persist_and_report", executor=self.step_persist_and_report),
                     Step(name="history_upkeep", executor=self.step_history_upkeep),
+                    Step(name="dashboard", executor=self.step_refresh_dashboard),
                 ],
             )
         )
