@@ -91,12 +91,13 @@ prose plan in `full_text`. Structured fields must match the prose.\
 
 def _build_agent(provider: Provider, model: str, effort: str) -> AgnoAgent:
     # Adaptive thinking is sufficient for sizing (constraint optimization,
-    # not open-ended reasoning). Medium effort.
+    # not open-ended reasoning). Medium effort. Thinking spends from the
+    # same budget as the answer, so 4,000 left too little for the JSON.
     return AgnoAgent(
         "Sizer",
         provider,
         model,
-        model_kwargs=reasoning_model_kwargs(provider, effort, max_tokens=4000),
+        model_kwargs=reasoning_model_kwargs(provider, effort, max_tokens=16000),
         instructions=SIZER_INSTRUCTIONS,
         output_schema=SizerOutput,
     )

@@ -27,7 +27,7 @@ from typing import Any
 
 from ..data.transactions import _coerce_date, _extract_ticker, is_option_activity
 from ..models.portfolio import long_term_on
-from .tax_lot_helper import _LONG_TERM_RATE, _SHORT_TERM_RATE
+from .tax_lot_helper import long_term_rate, short_term_rate
 
 SOON_DAYS = 60
 ORDINARY_OFFSET_LIMIT = 3000.0
@@ -159,7 +159,7 @@ def gains_turning_long_term(
                         "units": _num(lot.get("units")),
                         "gain": gain,
                         "long_term_on": when,
-                        "tax_saved_by_waiting": gain * (_SHORT_TERM_RATE - _LONG_TERM_RATE),
+                        "tax_saved_by_waiting": gain * (short_term_rate() - long_term_rate()),
                     }
                 )
     return sorted(out, key=lambda r: r["long_term_on"])

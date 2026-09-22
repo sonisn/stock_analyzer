@@ -224,16 +224,20 @@ def render_page(data: dict[str, Any]) -> str:
     flagged = sum(1 for h in holdings if h.get("verdict") and h["verdict"] != "HOLD")
     withcalls = sum(1 for h in holdings if h.get("calls"))
     rec = data["record"]
-    stale = "" if data.get("holdings_ok") else (
-        '<div class="card" style="border-color:var(--bad)"><b>Holdings unavailable.</b> '
-        "The brokerage could not be reached when this page was generated, so the table "
-        "below is empty. Everything else is from the database and is unaffected.</div>"
+    stale = (
+        ""
+        if data.get("holdings_ok")
+        else (
+            '<div class="card" style="border-color:var(--bad)"><b>Holdings unavailable.</b> '
+            "The brokerage could not be reached when this page was generated, so the table "
+            "below is empty. Everything else is from the database and is unaffected.</div>"
+        )
     )
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Portfolio Dashboard</title><style>{CSS}</style></head><body><div class="wrap">
 <header><h1>Portfolio</h1>
- <span class="sub">run #{data['latest_run']} · generated {data['generated']}</span>
+ <span class="sub">run #{data["latest_run"]} · generated {data["generated"]}</span>
  <button class="theme" id="tbtn">Dark</button></header>
 {stale}
 <div class="tiles">
@@ -264,7 +268,7 @@ def render_page(data: dict[str, Any]) -> str:
 
 <div class="card"><h2>Suggestions, graded</h2>
  <p class="note">Every piece of advice, measured against the price record
-  ({rec['rows']:,} closes on {rec['tickers']} tickers, {rec['first']} to {rec['last']}).
+  ({rec["rows"]:,} closes on {rec["tickers"]} tickers, {rec["first"]} to {rec["last"]}).
   <b>A sale is scored against what replaced it</b> — edge is the replacement’s return
   minus the sold stock’s, so positive means the switch was worth making. Anything
   under 30 days old reads <i>too early</i> rather than inventing a verdict.</p>

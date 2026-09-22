@@ -170,11 +170,12 @@ def default_file_targets(cache_dir: str) -> list[tuple[Path, str]]:
         ),
         (Path(os.path.expanduser(cache_dir)), "price_panel_*.pkl"),
     ]
-    # Cron wrapper logs (scripts/run_*.sh), only if this is the project checkout.
+    # Cron wrapper logs (scripts/run_job.sh), only if this is the project checkout.
     if (PROJECT_ROOT / "pyproject.toml").exists():
         targets += [
             (PROJECT_ROOT / "logs", pattern)
-            for pattern in ("portfolio_*.log", "insiders_*.log", "model_review_*.log")
+            # <job>_YYYYMMDD.log, one per job per day (scripts/run_job.sh)
+            for pattern in ("*_[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9].log",)
         ]
     return targets
 

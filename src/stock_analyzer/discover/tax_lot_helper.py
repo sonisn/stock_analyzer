@@ -15,13 +15,32 @@ match the actual lot data.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
-# Federal tax rate assumptions — rough enough that the LLM can use them
-# as ranking signal but explicit enough to flag in prose. The user's
-# actual bracket may differ, so the LLM cites these as estimates.
-_LONG_TERM_RATE = 0.18  # mid-bracket long-term cap gains + state
-_SHORT_TERM_RATE = 0.32  # high-bracket ordinary income
+# Tax rate assumptions — rough enough that the LLM can use them as ranking
+# signal but explicit enough to flag in prose, so the LLM cites them as
+# estimates. Set TAX_RATE_LONG_TERM / TAX_RATE_SHORT_TERM (fractions,
+# federal + state) to your own bracket. Read per call rather than at
+# import: modules are imported before a CLI loads `.env`.
+_DEFAULT_LONG_TERM_RATE = 0.18  # mid-bracket long-term cap gains + state
+_DEFAULT_SHORT_TERM_RATE = 0.32  # high-bracket ordinary income
+
+
+def _rate(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name) or default)
+    except ValueError:
+        return default
+    return value if 0.0 <= value < 1.0 else default
+
+
+def long_term_rate() -> float:
+    return _rate("TAX_RATE_LONG_TERM", _DEFAULT_LONG_TERM_RATE)
+
+
+def short_term_rate() -> float:
+    return _rate("TAX_RATE_SHORT_TERM", _DEFAULT_SHORT_TERM_RATE)
 
 
 def _compute_lot_impact(
@@ -65,7 +84,7 @@ def _compute_lot_impact(
     # Taxable account.
     if realized >= 0:
         # Gain: tax owed at the appropriate rate.
-        rate = _LONG_TERM_RATE if treatment == "long_term" else _SHORT_TERM_RATE
+        rate = long_term_rate() if treatment == "long_term" else short_term_rate()
         estimated_tax = realized * rate
         return {
             "proceeds": round(proceeds, 2),
@@ -86,7 +105,7 @@ def _compute_lot_impact(
     # then crosses to short-term; up to $3,000 against ordinary income
     # per year with unlimited carryforward). For ranking purposes we
     # estimate the marginal tax saving at the matching rate.
-    rate = _LONG_TERM_RATE if treatment == "long_term" else _SHORT_TERM_RATE
+    rate = long_term_rate() if treatment == "long_term" else short_term_rate()
     harvest_savings = abs(realized) * rate
     return {
         "proceeds": round(proceeds, 2),

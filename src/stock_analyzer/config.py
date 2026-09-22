@@ -158,6 +158,11 @@ class Settings(BaseSettings):
     history_reference_retention_days: int = 365
     # Compact the database file once trimming has freed this share of it.
     history_vacuum_min_free_pct: float = 20.0
+    # `ops backup` (nightly from cron) writes consistent copies of the
+    # database here and keeps the newest `backup_keep`. Keep it on a
+    # different disk from `discover_db_path`.
+    backup_dir: str = "~/.stock_analyzer/backups"
+    backup_keep: int = 14
     # The monthly review flags the database when it passes this size.
     history_db_warn_mb: float = 50.0
     # Ranker consensus: one round per (provider, model) pair listed here,

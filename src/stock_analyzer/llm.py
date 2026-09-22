@@ -15,6 +15,7 @@ from agno.models.anthropic import Claude
 from agno.models.google import Gemini
 from agno.models.openai import OpenAIChat
 from agno.run.base import RunStatus
+from pydantic import BaseModel
 
 from .logging import get_logger
 from .usage import BUDGET, TRACKER
@@ -44,6 +45,62 @@ _FALLBACK_ERRORS: tuple[type[Exception], ...] = (
 # field (agno's Claude default is 8192).
 _DEFAULT_OUTPUT_ALLOWANCE = 8192
 
+# The Anthropic SDK refuses a long non-streaming request rather than risk
+# a silent HTTP timeout — `3600 * max_tokens / 128_000 > 600` seconds —
+# which caps an unstreamed call at 21,333 output tokens. The guard is
+# skipped when the caller sets its own timeout:
+#
+#     if not stream and not is_given(timeout) and client.timeout == DEFAULT
+#
+# so an explicit timeout is what buys the headroom, not streaming. agno's
+# `stream=True` was tried on 2026-09-20 and does not help: it streams
+# agno's own event iterator while the model layer still issues a
+# non-streaming HTTP call, so the guard fired anyway.
+MAX_NONSTREAMING_OUTPUT_TOKENS = 128_000 * 600 // 3600  # 21,333
+# Long enough for a 64k-token answer to arrive at Opus's pace.
+LONG_OUTPUT_TIMEOUT_S = 1800.0
+
+
+class OutputTruncatedError(RuntimeError):
+    """The model stopped because it ran into its output ceiling.
+
+    Raised only when a structured answer was expected and did not parse —
+    a cut-off JSON document is not a result, and treating it as one is how
+    a lost plan used to read downstream as "hold everything". Carries the
+    raw text so a caller that paid for it can still show it. Deliberately
+    not a fallback error: another provider under the same ceiling would
+    run out the same way.
+    """
+
+    def __init__(self, stage: str, max_output_tokens: int, raw_text: str) -> None:
+        super().__init__(
+            f"{stage} hit its {max_output_tokens:,}-token output ceiling before the "
+            "structured answer was complete"
+        )
+        self.stage = stage
+        self.max_output_tokens = max_output_tokens
+        self.raw_text = raw_text
+
+
+def output_tokens_used(provider: str, metrics: Any) -> int:
+    """Tokens a call spent against its output ceiling.
+
+    agno never copies the provider's stop reason onto the run, so hitting
+    the ceiling has to be read off the token count instead. Claude and
+    OpenAI count thinking inside `output_tokens`; Gemini reports it
+    separately as `reasoning_tokens`, and it counts against the ceiling.
+    """
+    used = int(getattr(metrics, "output_tokens", 0) or 0)
+    if provider == "gemini":
+        used += int(getattr(metrics, "reasoning_tokens", 0) or 0)
+    return used
+
+
+def hit_output_ceiling(provider: str, metrics: Any, max_output_tokens: int) -> bool:
+    # A few tokens of slack: providers stop at, not past, the ceiling, and
+    # a count within 1% of it is not a natural end.
+    return output_tokens_used(provider, metrics) >= max_output_tokens * 0.99
+
 
 class AgnoAgent:
     """Factory wrapper around `agno.agent.Agent` supporting multiple providers."""
@@ -68,12 +125,14 @@ class AgnoAgent:
         # For the cost cap's worst-case estimate: system prompt size and the
         # most output the model is allowed to produce on one call.
         kw = model_kwargs or {}
-        self._max_output_tokens = int(
-            kw.get("max_tokens")
-            or kw.get("max_completion_tokens")
-            or kw.get("max_output_tokens")
-            or _DEFAULT_OUTPUT_ALLOWANCE
+        explicit_max = (
+            kw.get("max_tokens") or kw.get("max_completion_tokens") or kw.get("max_output_tokens")
         )
+        self._max_output_tokens = int(explicit_max or _DEFAULT_OUTPUT_ALLOWANCE)
+        # Truncation is only judged against a ceiling this code chose; with
+        # none set, the provider default is unknown and nothing is flagged.
+        self._explicit_max_output = int(explicit_max) if explicit_max else None
+        self._structured = agent_kwargs.get("output_schema") is not None
         self._instruction_chars = len(str(agent_kwargs.get("instructions") or ""))
 
         model_cls = _MODEL_REGISTRY[provider]
@@ -101,7 +160,29 @@ class AgnoAgent:
         if getattr(result, "status", None) == RunStatus.error:
             message = str(getattr(result, "content", None) or "Agent.run() returned status=ERROR")
             raise ModelProviderError(message=message, model_name=self.name, model_id=self.model_id)
+        self._check_truncation(result)
         return result
+
+    def _check_truncation(self, result: Any) -> None:
+        ceiling = self._explicit_max_output
+        metrics = getattr(result, "metrics", None)
+        if ceiling is None or metrics is None:
+            return
+        if not hit_output_ceiling(self.provider, metrics, ceiling):
+            return
+        content = getattr(result, "content", None)
+        logger.warning(
+            "%s on %s/%s used %d of its %d output tokens — the answer was likely cut off",
+            self.name,
+            self.provider,
+            self.model_id,
+            output_tokens_used(self.provider, metrics),
+            ceiling,
+        )
+        if self._structured and not isinstance(content, BaseModel):
+            raise OutputTruncatedError(
+                self.name, ceiling, content if isinstance(content, str) else ""
+            )
 
     def print_response(self, *args: Any, **kwargs: Any) -> Any:
         return self.agent.print_response(*args, **kwargs)
@@ -123,14 +204,7 @@ def reasoning_model_kwargs(
     used to (Claude-only) before other providers were wired in.
     """
     if provider == "claude":
-        # Adaptive thinking pins temperature at 1; the API rejects any other
-        # value, so `temperature` is intentionally not threaded through here.
-        return {
-            "thinking": {"type": "adaptive"},
-            "output_config": {"effort": effort},
-            "max_tokens": max_tokens,
-            "temperature": 1,
-        }
+        return claude_thinking_kwargs(effort, max_tokens)
     if provider == "openai":
         # Reasoning-tier OpenAI models reject a caller-set temperature, so it
         # is omitted rather than passed and rejected by the API. Reasoning-
@@ -151,6 +225,25 @@ def reasoning_model_kwargs(
             "temperature": temperature,
         }
     raise ValueError(f"Unsupported provider {provider!r}.")
+
+
+def claude_thinking_kwargs(effort: str, max_tokens: int) -> dict[str, Any]:
+    """Adaptive thinking at `effort`, with room for `max_tokens` of output.
+
+    No `temperature`: current Claude models have removed the sampling
+    parameters (adaptive thinking runs at the model's own setting), so
+    sending one is at best a no-op and at worst a 400 on the next model.
+    A budget past the SDK's non-streaming limit gets an explicit timeout —
+    see MAX_NONSTREAMING_OUTPUT_TOKENS.
+    """
+    kwargs: dict[str, Any] = {
+        "thinking": {"type": "adaptive"},
+        "output_config": {"effort": effort},
+        "max_tokens": max_tokens,
+    }
+    if max_tokens > MAX_NONSTREAMING_OUTPUT_TOKENS:
+        kwargs["timeout"] = LONG_OUTPUT_TIMEOUT_S
+    return kwargs
 
 
 def deterministic_model_kwargs(provider: Provider) -> dict[str, Any]:

@@ -68,8 +68,7 @@ def covered_call_block(
         "SHARES ALREADY PROMISED (covered calls you have written)\n"
         "Selling a share that backs a short call turns that call naked. Only\n"
         "the free shares below can be sold; to go further you must buy the\n"
-        "call back first, and the plan has to say so and account for its cost.\n"
-        + "\n".join(rows)
+        "call back first, and the plan has to say so and account for its cost.\n" + "\n".join(rows)
     )
 
 

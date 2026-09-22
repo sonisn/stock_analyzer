@@ -221,7 +221,5 @@ def backlog_block(books: dict[str, dict[str, Any]]) -> str:
         "Revenue already under contract and not yet delivered — signed orders,\n"
         "not an analyst forecast. A book growing fast argues against trimming\n"
         "the name; a shrinking one supports a sale. Holdings with no row do not\n"
-        "tag the concept and must NOT be treated as having no backlog.\n"
-        + "\n".join(rows)
+        "tag the concept and must NOT be treated as having no backlog.\n" + "\n".join(rows)
     )
-

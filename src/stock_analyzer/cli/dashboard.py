@@ -63,19 +63,27 @@ def _reasoning(db_path: str) -> dict[str, dict[str, Any]]:
     with get_session(db_path) as session:
         scenarios = session.exec(
             select(
-                PickScenario.run_id, PickScenario.ticker, PickScenario.label,
-                PickScenario.probability, PickScenario.target_return_pct,
+                PickScenario.run_id,
+                PickScenario.ticker,
+                PickScenario.label,
+                PickScenario.probability,
+                PickScenario.target_return_pct,
             ).order_by(PickScenario.run_id)
         ).all()
         catalysts = session.exec(
             select(
-                PickCatalyst.run_id, PickCatalyst.ticker, PickCatalyst.event,
-                PickCatalyst.expected_date, PickCatalyst.direction, PickCatalyst.impact,
+                PickCatalyst.run_id,
+                PickCatalyst.ticker,
+                PickCatalyst.event,
+                PickCatalyst.expected_date,
+                PickCatalyst.direction,
+                PickCatalyst.impact,
             ).order_by(PickCatalyst.run_id, PickCatalyst.seq)
         ).all()
         prose = session.exec(
-            select(RunOutput.run_id, RunOutput.ranker_full, RunOutput.redteam_full)
-            .order_by(RunOutput.run_id)
+            select(RunOutput.run_id, RunOutput.ranker_full, RunOutput.redteam_full).order_by(
+                RunOutput.run_id
+            )
         ).all()
 
     for run_id, ticker, label, prob, target in scenarios:
@@ -83,16 +91,12 @@ def _reasoning(db_path: str) -> dict[str, dict[str, Any]]:
         if rec.get("_scen_run") != run_id:
             rec["_scen_run"], rec["scenarios"] = run_id, []
         rec["scenarios"] = [s for s in rec["scenarios"] if s["label"] != label]
-        rec["scenarios"].append(
-            dict(label=label, prob=round(prob * 100), target=round(target, 1))
-        )
+        rec["scenarios"].append(dict(label=label, prob=round(prob * 100), target=round(target, 1)))
     for run_id, ticker, event, when, direction, impact in catalysts:
         rec = out.setdefault(ticker, {})
         if rec.get("_cat_run") != run_id:
             rec["_cat_run"], rec["catalysts"] = run_id, []
-        rec["catalysts"].append(
-            dict(event=event, when=when, direction=direction, impact=impact)
-        )
+        rec["catalysts"].append(dict(event=event, when=when, direction=direction, impact=impact))
     for _run_id, ranker_text, redteam_text in prose:
         for ticker, block in _split_by_pick_blocks(ranker_text or "").items():
             out.setdefault(ticker, {})["bull"] = block.strip()
@@ -156,31 +160,50 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
             ).all()
         }
         history_rows = session.exec(
-            select(HoldingReviewRow.ticker, HoldingReviewRow.run_id,
-                   HoldingReviewRow.verdict, HoldingReviewRow.confidence)
-            .order_by(HoldingReviewRow.run_id)
+            select(
+                HoldingReviewRow.ticker,
+                HoldingReviewRow.run_id,
+                HoldingReviewRow.verdict,
+                HoldingReviewRow.confidence,
+            ).order_by(HoldingReviewRow.run_id)
         ).all()
-        run_days = {
-            r_id: d[:10]
-            for r_id, d in session.exec(select(Run.id, Run.run_at)).all()
-        }
+        run_days = {r_id: d[:10] for r_id, d in session.exec(select(Run.id, Run.run_at)).all()}
         views = {t: v for t, v in session.exec(select(StockView.ticker, StockView.view)).all()}
         suggestions = [
-            dict(id=s.id, suggested_on=s.suggested_on, source=s.source, action=s.action,
-                 ticker=s.ticker, detail=s.detail, price=s.price, units_held=s.units_held,
-                 reinvest_into=s.reinvest_into, run_id=s.run_id)
+            dict(
+                id=s.id,
+                suggested_on=s.suggested_on,
+                source=s.source,
+                action=s.action,
+                ticker=s.ticker,
+                detail=s.detail,
+                price=s.price,
+                units_held=s.units_held,
+                reinvest_into=s.reinvest_into,
+                run_id=s.run_id,
+            )
             for s in session.exec(select(Suggestion).order_by(Suggestion.id)).all()
         ]
         runs = [
-            dict(id=r.id, kind=r.kind, d=r.run_at[:10], universe=r.universe_size,
-                 survivors=r.survivors, picks=r.picks)
+            dict(
+                id=r.id,
+                kind=r.kind,
+                d=r.run_at[:10],
+                universe=r.universe_size,
+                survivors=r.survivors,
+                picks=r.picks,
+            )
             for r in session.exec(select(Run).order_by(Run.id.desc())).all()[:20]  # type: ignore[attr-defined]
         ]
 
     # Record today's closes before grading, so the grade is computed from
     # the record rather than from a second, possibly different, fetch.
-    tickers = sorted(set(positions) | {s["ticker"] for s in suggestions}
-                     | {s["reinvest_into"] for s in suggestions if s["reinvest_into"]} | {"SPY"})
+    tickers = sorted(
+        set(positions)
+        | {s["ticker"] for s in suggestions}
+        | {s["reinvest_into"] for s in suggestions if s["reinvest_into"]}
+        | {"SPY"}
+    )
     record_prices(db, tickers, today=today)
 
     books: dict[str, dict[str, Any]] = {}
@@ -203,16 +226,22 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
         units, cost = p["units"], p["cost"]
         px = prices_now.get(t)
         avg = cost / units if units else 0
-        holdings.append(dict(
-            ticker=t, units=round(units, 2), price=px,
-            value=round(units * px) if px else None,
-            pl=round((px / avg - 1) * 100, 1) if px and avg else None,
-            verdict=(reviews.get(t) or (None, None))[0],
-            conf=(reviews.get(t) or (None, None))[1],
-            calls=(obligations.get(t) or {}).get("contracts", 0),
-            free=round(units - float((obligations.get(t) or {}).get("shares_committed") or 0), 2),
-            book=(books.get(t) or {}).get("yoy_pct"),
-        ))
+        holdings.append(
+            dict(
+                ticker=t,
+                units=round(units, 2),
+                price=px,
+                value=round(units * px) if px else None,
+                pl=round((px / avg - 1) * 100, 1) if px and avg else None,
+                verdict=(reviews.get(t) or (None, None))[0],
+                conf=(reviews.get(t) or (None, None))[1],
+                calls=(obligations.get(t) or {}).get("contracts", 0),
+                free=round(
+                    units - float((obligations.get(t) or {}).get("shares_committed") or 0), 2
+                ),
+                book=(books.get(t) or {}).get("yoy_pct"),
+            )
+        )
     holdings.sort(key=lambda h: -(h["value"] or 0))
 
     history: dict[str, list[dict[str, Any]]] = {}
@@ -227,20 +256,36 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
     referenced = set(positions) | {s["ticker"] for s in suggestions}
     reasoning = {t: r for t, r in _reasoning(db).items() if t in referenced}
     graded = grade_suggestions(
-        suggestions, today=today,
-        units_now={t: p["units"] for t, p in positions.items()}, fetch=fetch,
+        suggestions,
+        today=today,
+        units_now={t: p["units"] for t, p in positions.items()},
+        fetch=fetch,
     )
     graded.sort(key=lambda g: (g["suggested_on"], g.get("id") or 0), reverse=True)
 
     return dict(
-        generated=today.isoformat(), latest_run=run_id, holdings=holdings,
-        history=history, views=views, runs=runs, record=coverage(db),
+        generated=today.isoformat(),
+        latest_run=run_id,
+        holdings=holdings,
+        history=history,
+        views=views,
+        runs=runs,
+        record=coverage(db),
         suggestions=[
-            dict(d=g["suggested_on"], ticker=g["ticker"], action=g["action"],
-                 run=g.get("run_id"), ret=g.get("return_pct"), spy=g.get("spy_pct"),
-                 swap=g.get("reinvest_into"), swap_pct=g.get("reinvest_pct"),
-                 edge=g.get("edge_pct"), verdict=g.get("verdict"), acted=g.get("acted"),
-                 detail=(g.get("detail") or "")[:150])
+            dict(
+                d=g["suggested_on"],
+                ticker=g["ticker"],
+                action=g["action"],
+                run=g.get("run_id"),
+                ret=g.get("return_pct"),
+                spy=g.get("spy_pct"),
+                swap=g.get("reinvest_into"),
+                swap_pct=g.get("reinvest_pct"),
+                edge=g.get("edge_pct"),
+                verdict=g.get("verdict"),
+                acted=g.get("acted"),
+                detail=(g.get("detail") or "")[:150],
+            )
             for g in graded
         ],
         holdings_ok=bool(positions),
@@ -257,6 +302,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--open", action="store_true", help="print the path when done")
     args = parser.parse_args(argv)
 
+    from ..market_time import use_market_timezone
+
+    use_market_timezone()
     load_dotenv()
     settings = Settings.from_env()
     data = collect(settings, today=date.today())
@@ -264,10 +312,14 @@ def main(argv: list[str] | None = None) -> None:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render_page(data))
     logger.info(
-        "Dashboard: %d holding(s), %d graded suggestion(s), %d price rows -> %s (%,d bytes)"
-        .replace("%,d", "%d"),
-        len(data["holdings"]), len(data["suggestions"]), data["record"]["rows"],
-        out, out.stat().st_size,
+        "Dashboard: %d holding(s), %d graded suggestion(s), %d price rows -> %s (%,d bytes)".replace(
+            "%,d", "%d"
+        ),
+        len(data["holdings"]),
+        len(data["suggestions"]),
+        data["record"]["rows"],
+        out,
+        out.stat().st_size,
     )
     if args.open:
         print(out)

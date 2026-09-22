@@ -107,8 +107,9 @@ and `TRADIER_*` knobs.
 ## Quickstart
 
 ```bash
-# Install (Python 3.14+, uses uv)
-uv sync
+# Install (Python 3.14+, uses uv). `--extra dev` keeps pytest + ruff;
+# a plain `uv sync` removes them.
+uv sync --extra dev
 
 # Configure — copy and fill in your keys
 cp .env.example .env
@@ -118,6 +119,7 @@ uv run discover-stocks            # find new picks
 uv run rebalance-portfolio        # review holdings + plan
 uv run analyze-portfolio          # one-off analyst-style report
 uv run analyze-insiders           # insider + political trade signals
+uv run ops doctor                 # free check of every key, model id and source
 ```
 
 ## Required env vars
@@ -752,18 +754,54 @@ the file (VACUUM) once trimming frees 20% of it, and the monthly
 `model-review` email reports the database size and largest tables, flagging
 it past `HISTORY_DB_WARN_MB` (50 MB).
 
+## Scheduled jobs and upkeep
+
+Cron calls one-line `scripts/run_<job>.sh` shims, which all go through
+`scripts/run_job.sh <job> <command...>`: it writes `logs/<job>_YYYYMMDD.log`
+and, when the command exits non-zero, emails the log's last 80 lines
+(`ops alert`). History upkeep deletes those logs after 30 days.
+
+| Command | What | No LLM |
+|---|---|---|
+| `ops doctor` | database integrity, `.env` permissions, Finnhub, FRED, SnapTrade, SMTP login, and a free model lookup for every configured (provider, model) — catches a bad key or a retired model id before a run pays for it | ✓ |
+| `ops backup` | consistent SQLite copy into `BACKUP_DIR` (default `~/.stock_analyzer/backups`, keep `BACKUP_KEEP`=14); `scripts/run_backup.sh` runs it nightly | ✓ |
+| `scripts/update.sh` | fetches `origin/main`, runs the suite on it in a throwaway worktree, and fast-forwards only if it passes (`scripts/run_update.sh` from cron) | ✓ |
+
+Suggested crontab (New York time):
+
+```cron
+CRON_TZ=America/New_York
+30 12 * * 1-5 /path/to/stock_analyzer/scripts/run_update.sh
+30 13 * * 1-5 /path/to/stock_analyzer/scripts/run_portfolio.sh
+35 13 * * 1   /path/to/stock_analyzer/scripts/run_insiders.sh
+15 16 * * 1-5 /path/to/stock_analyzer/scripts/run_dashboard.sh
+0  2  * * *   /path/to/stock_analyzer/scripts/run_backup.sh
+```
+
+The weekly insider email pairs the news-based summary with open-market
+Form 4 buys and sells filed on your holdings and watchlist (Finnhub, no
+LLM). When every news search fails — e.g. the Tavily quota is spent — the
+email says so instead of arriving empty, and when every source fails it is
+not sent and the job alerts.
+
+Structured LLM stages detect an answer cut off at its output ceiling
+(agno does not pass the provider's stop reason through, so it is read off
+the token count) and raise `OutputTruncatedError` with the raw text,
+rather than handing a half-written JSON document downstream.
+
 ## Tests
 
 ```bash
 uv run pytest -q
 ```
 
-323 tests covering the high-stakes math (tax-lot computation, verdict
+860+ tests covering the high-stakes math (tax-lot computation, verdict
 auto-repair, direction-aware and horizon-separated track-record alpha,
 beta adjustment, score validation, forecast calibration, parsers,
 section-dispatch parity HTML/PDF, multi-provider ranker consensus math,
 cross-source data reconciliation, macro-veto rules). The full suite runs
-in ~9s.
+in ~30s. CI (`.github/workflows/ci.yml`) runs ruff and the suite on every
+push and pull request.
 
 `tests/conftest.py` points `Settings` at no env file and blocks outbound
 sockets for the whole suite, so a test can never read your real `.env` or

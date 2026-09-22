@@ -73,7 +73,7 @@ def load_rows(db_path: str, horizon: int) -> list[dict[str, Any]]:
     for rec in con.execute(query, (horizon,)):
         try:
             breakdown = loads(rec["score_breakdown"])
-        except (TypeError, ValueError):
+        except TypeError, ValueError:
             continue
         flat: dict[str, float] = {}
         for group, parts in breakdown.items():
@@ -82,8 +82,9 @@ def load_rows(db_path: str, horizon: int) -> list[dict[str, Any]]:
                     if isinstance(value, (int, float)):
                         flat[f"{group}.{name}"] = float(value)
         if flat:
-            rows.append({"day": rec["day"], "ticker": rec["ticker"],
-                         "excess": rec["excess_pct"], **flat})
+            rows.append(
+                {"day": rec["day"], "ticker": rec["ticker"], "excess": rec["excess_pct"], **flat}
+            )
     con.close()
     return rows
 
@@ -132,7 +133,9 @@ def attribute(rows: list[dict[str, Any]]) -> list[ComponentResult]:
         used_rows = 0
         nonzero = 0
         for day_rows in usable.values():
-            pairs = [(r[comp], r["excess"]) for r in day_rows if comp in r and r["excess"] is not None]
+            pairs = [
+                (r[comp], r["excess"]) for r in day_rows if comp in r and r["excess"] is not None
+            ]
             if len(pairs) < MIN_ROWS_PER_DATE:
                 continue
             ic = _spearman([p[0] for p in pairs], [p[1] for p in pairs])

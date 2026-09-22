@@ -30,13 +30,20 @@ logger = get_logger(__name__)
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="score-attribution", description=__doc__.split("\n\n")[0])
-    parser.add_argument("--horizon", type=int, default=None,
-                        help="forward horizon in days (default: both 21 and 63)")
+    parser.add_argument(
+        "--horizon",
+        type=int,
+        default=None,
+        help="forward horizon in days (default: both 21 and 63)",
+    )
     args = parser.parse_args(argv)
 
+    from ..market_time import use_market_timezone
+
+    use_market_timezone()
     load_dotenv()
     db = Settings.from_env().discover_db_path
-    for horizon in ([args.horizon] if args.horizon else [21, 63]):
+    for horizon in [args.horizon] if args.horizon else [21, 63]:
         rows = load_rows(db, horizon)
         results = attribute(rows)
         print()

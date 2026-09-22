@@ -14,7 +14,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..llm import AgnoAgent, Provider
+from ..llm import (
+    AgnoAgent,
+    OutputTruncatedError,
+    Provider,
+    claude_thinking_kwargs,
+)
 from ..logging import get_logger
 from ..models.llm import HoldingReview
 from ..models.rebalance import RebalancePlan
@@ -708,25 +713,11 @@ def format_accounts_block(
     return "\n".join(lines)
 
 
-# The Anthropic SDK refuses a long non-streaming request rather than risk
-# a silent HTTP timeout — `3600 * max_tokens / 128_000 > 600` seconds —
-# which caps an unstreamed call at 21,333 output tokens. The guard is
-# skipped when the caller sets its own timeout:
-#
-#     if not stream and not is_given(timeout) and client.timeout == DEFAULT
-#
-# so REBALANCER_TIMEOUT_S below is what buys the headroom, not streaming.
-# agno's `stream=True` was tried on 2026-09-20 and does not help: it
-# streams agno's own event iterator while the model layer still issues a
-# non-streaming HTTP call, so the guard fired anyway.
-MAX_NONSTREAMING_OUTPUT_TOKENS = 128_000 * 600 // 3600  # 21,333
-# Long enough for the whole 64k budget to arrive at Opus's pace.
-REBALANCER_TIMEOUT_S = 1800.0
 # What the rebalancer asks for. Three runs died at this step on
 # 2026-09-20: 16,000 cut the JSON off mid-string, 32,000 was refused
-# before it was sent, and agno's stream flag did not reach the API. With
-# an explicit timeout the budget can finally sit where truncation stops
-# being the constraint.
+# before it was sent (no timeout — see llm.MAX_NONSTREAMING_OUTPUT_TOKENS),
+# and agno's stream flag did not reach the API. With an explicit timeout
+# the budget can finally sit where truncation stops being the constraint.
 REBALANCER_MAX_OUTPUT_TOKENS = 64_000
 
 
@@ -743,15 +734,6 @@ class RebalancePlanUnparseable(RuntimeError):
         super().__init__(message)
         self.raw_text = raw_text
         self.truncated = truncated
-
-
-def _looks_truncated(run_output: object) -> bool:
-    """True when the provider stopped because it hit the output ceiling."""
-    metrics = getattr(run_output, "metrics", None)
-    for attr in ("stop_reason", "finish_reason"):
-        if str(getattr(metrics, attr, "") or "").lower() in {"max_tokens", "length"}:
-            return True
-    return False
 
 
 class Rebalancer:
@@ -801,28 +783,18 @@ class Rebalancer:
             "Rebalancer",
             provider,
             model,
-            model_kwargs={
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": effort},
-                # Output budget. The plan must include: structured actions
-                # list (incl. WRITE_CALL), option_writes list, AND the
-                # full_text prose (cash math, tax-agnostic alternative,
-                # wash-sale audit, per-holding reasoning, CC premium
-                # reinvestment math, stub-consolidation narrative).
-                # 8000 was the pre-CC value and caused mid-JSON truncation
-                # on plans with WRITE_CALLs. 16000 then did the same on
-                # 2026-09-20 — a 16-holding book with CC and CSP context
-                # ran the JSON out at exactly 16,000 output tokens, and the
-                # whole plan was lost.
-                #
-                # The timeout is load-bearing: without it the SDK refuses
-                # any budget over MAX_NONSTREAMING_OUTPUT_TOKENS outright.
-                "max_tokens": REBALANCER_MAX_OUTPUT_TOKENS,
-                "timeout": REBALANCER_TIMEOUT_S,
-                # Adaptive thinking requires temperature=1; the API rejects
-                # anything else with a 400.
-                "temperature": 1,
-            },
+            # Output budget. The plan must include: structured actions
+            # list (incl. WRITE_CALL), option_writes list, AND the
+            # full_text prose (cash math, tax-agnostic alternative,
+            # wash-sale audit, per-holding reasoning, CC premium
+            # reinvestment math, stub-consolidation narrative).
+            # 8000 was the pre-CC value and caused mid-JSON truncation
+            # on plans with WRITE_CALLs. 16000 then did the same on
+            # 2026-09-20 — a 16-holding book with CC and CSP context
+            # ran the JSON out at exactly 16,000 output tokens, and the
+            # whole plan was lost. Past the SDK's non-streaming limit the
+            # kwargs carry an explicit timeout, which is load-bearing.
+            model_kwargs=claude_thinking_kwargs(effort, REBALANCER_MAX_OUTPUT_TOKENS),
             instructions=instructions,
             output_schema=RebalancePlan,
         )
@@ -930,7 +902,13 @@ class Rebalancer:
             f"${cash_available:,.0f}" if cash_available is not None else "unknown",
             agg,
         )
-        raw = self.agent.run(prompt)
+        try:
+            raw = self.agent.run(prompt)
+        except OutputTruncatedError as e:
+            # The prose in a cut-off answer is still the only copy of
+            # reasoning the run paid for, so it travels with the error
+            # instead of dying in a log line.
+            raise RebalancePlanUnparseable(str(e), raw_text=e.raw_text, truncated=True) from e
         result = raw.content
         if result is None:
             raise RuntimeError(
@@ -944,14 +922,11 @@ class Rebalancer:
                 try:
                     result = RebalancePlan.model_validate_json(result)
                 except Exception as e:
-                    # The usual cause is the output-token ceiling cutting the
-                    # JSON mid-string. The prose in it is still the only copy
-                    # of reasoning the run paid for, so it travels with the
-                    # error instead of dying in a log line.
+                    # Truncation is caught above; this is malformed JSON that
+                    # finished inside the budget. Keep the text all the same.
                     raise RebalancePlanUnparseable(
                         f"Rebalancer returned a string that wasn't valid RebalancePlan JSON: {e}",
                         raw_text=result,
-                        truncated=_looks_truncated(raw),
                     ) from e
             else:
                 raise RuntimeError(

@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from .tax_lot_helper import _LONG_TERM_RATE, _SHORT_TERM_RATE
+from .tax_lot_helper import long_term_rate, short_term_rate
 
 WASH_SALE_DAYS = 30
 
@@ -166,9 +166,9 @@ def find_harvest_candidates(
             # Blend the rate by the lots' short/long mix; with no lot detail
             # assume long-term, the smaller (conservative) saving.
             if st + lt < 0:
-                rate = (st * _SHORT_TERM_RATE + lt * _LONG_TERM_RATE) / (st + lt)
+                rate = (st * short_term_rate() + lt * long_term_rate()) / (st + lt)
             else:
-                rate = _LONG_TERM_RATE
+                rate = long_term_rate()
             out.append(
                 HarvestCandidate(
                     ticker=ticker,

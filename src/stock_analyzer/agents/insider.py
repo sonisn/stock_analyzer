@@ -9,7 +9,7 @@ from ..logging import get_logger
 
 logger = get_logger(__name__)
 
-INSIDER_INSTRUCTIONS = f"""\
+INSIDER_INSTRUCTIONS = """\
 You are a financial intelligence analyst. The user provides three lists:
 1. Recent congressional trade coverage (politicians on a high-profile watchlist)
 2. Recent insider trade coverage (corporate executives, Form 4 filings)
@@ -24,7 +24,7 @@ from the snippets when stated.
 
 Output format (plain text only, no markdown headings, no bold):
 
-=== INSIDER, POLITICAL & BILLIONAIRE TRADING — {date.today().strftime("%b %d, %Y")} ===
+=== INSIDER, POLITICAL & BILLIONAIRE TRADING — {today} ===
 
 Notable Congressional Trades:
 List up to 5 most material trades. Each as one line:
@@ -60,7 +60,9 @@ class InsiderAgent:
             "Insider Analyst",
             provider,
             model,
-            instructions=INSIDER_INSTRUCTIONS,
+            # Dated when the agent is built, not when this module is imported:
+            # the import runs before the CLI switches to market time.
+            instructions=INSIDER_INSTRUCTIONS.format(today=date.today().strftime("%b %d, %Y")),
         )
 
     def run(

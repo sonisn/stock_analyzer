@@ -150,19 +150,23 @@ conviction numbers.\
 """
 
 
+RANKER_MAX_OUTPUT_TOKENS = 32000
+
+
 def _build_agent(provider: Provider, model: str, effort: str) -> AgnoAgent:
     # Opus 4.7+ adaptive thinking spends part of `max_tokens` on the
     # thinking trace, so the JSON output competes with it. Our response is
     # rich (5 picks × 3 scenarios × bull/bear prose + pairs_not_to_hold_
     # together + full_text) and we hit truncation mid-string at ~4500
-    # visible tokens when capped at 8000. Bumped to 16000 so thinking AND
-    # output both fit comfortably — kept the same across providers even
-    # though only Claude's adaptive thinking actually spends into it.
+    # visible tokens when capped at 8000. 16000 is the value that later cut
+    # the rebalance plan off, so the Ranker gets twice that — past the SDK's
+    # non-streaming limit, so Claude's kwargs carry an explicit timeout.
+    # The same budget applies across providers.
     return AgnoAgent(
         "Ranker",
         provider,
         model,
-        model_kwargs=reasoning_model_kwargs(provider, effort, max_tokens=16000),
+        model_kwargs=reasoning_model_kwargs(provider, effort, max_tokens=RANKER_MAX_OUTPUT_TOKENS),
         instructions=RANKER_INSTRUCTIONS,
         output_schema=RankerOutput,
     )

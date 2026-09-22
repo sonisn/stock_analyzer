@@ -17,7 +17,7 @@ Skipped on NO_ACTION plans (nothing to pre-mortem).
 
 from __future__ import annotations
 
-from ..llm import AgnoAgent, Provider
+from ..llm import AgnoAgent, OutputTruncatedError, Provider, claude_thinking_kwargs
 from ..logging import get_logger
 from ..models.reports import PreMortem
 
@@ -104,14 +104,9 @@ class PreMortemAgent:
             "PreMortem",
             provider,
             model,
-            model_kwargs={
-                "thinking": {"type": "adaptive"},
-                "output_config": {"effort": effort},
-                "max_tokens": 4000,
-                # Adaptive thinking requires temperature=1; the API rejects
-                # anything else with a 400.
-                "temperature": 1,
-            },
+            # Thinking spends from the same budget as the answer; 4,000
+            # left too little room for a full post-mortem after it.
+            model_kwargs=claude_thinking_kwargs(effort, 16000),
             instructions=PREMORTEM_INSTRUCTIONS,
             output_schema=PreMortem,
         )
@@ -131,7 +126,11 @@ class PreMortemAgent:
             f"wrong. Write the post-mortem."
         )
         logger.info("Running plan-level pre-mortem with Opus")
-        result = self.agent.run(prompt).content
+        try:
+            result = self.agent.run(prompt).content
+        except OutputTruncatedError as e:
+            logger.warning("Pre-mortem dropped: %s", e)
+            return None
         if result is None:
             logger.warning("Pre-mortem returned no content")
             return None

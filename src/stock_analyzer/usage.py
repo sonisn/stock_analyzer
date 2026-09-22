@@ -21,6 +21,7 @@ from typing import Any
 _PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-fable-5-1": (10.0, 50.0),
     "claude-fable-5": (10.0, 50.0),
+    "claude-opus-5-5": (4.0, 20.0),
     "claude-opus-5": (5.0, 25.0),
     "claude-opus-4-8": (5.0, 25.0),
     "claude-opus-4-7": (5.0, 25.0),
@@ -75,6 +76,9 @@ class UsageTracker:
             row.calls += 1
             row.input_tokens += getattr(metrics, "input_tokens", 0) or 0
             row.output_tokens += getattr(metrics, "output_tokens", 0) or 0
+            if model.startswith("gemini"):
+                # Gemini reports thinking apart from output, and bills it as output.
+                row.output_tokens += getattr(metrics, "reasoning_tokens", 0) or 0
             row.cache_read_tokens += getattr(metrics, "cache_read_tokens", 0) or 0
             row.cache_write_tokens += getattr(metrics, "cache_write_tokens", 0) or 0
 

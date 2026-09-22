@@ -170,8 +170,10 @@ def _build_agent(provider: Provider, model: str) -> AgnoAgent:
             # truncated response is not recoverable: the JSON ends
             # mid-string and the whole themes object is dropped
             # ("Unterminated string ... Failed to convert response to
-            # output_schema"). Budget for the full object.
-            "max_tokens": 8000,
+            # output_schema"). Budget for the full object — and for the
+            # thinking current Sonnet models do by default, which spends
+            # from the same budget.
+            "max_tokens": 16000,
         },
         instructions=MARKET_THEMES_INSTRUCTIONS,
         output_schema=MarketThemes,

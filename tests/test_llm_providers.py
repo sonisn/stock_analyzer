@@ -12,13 +12,25 @@ from __future__ import annotations
 from stock_analyzer.llm import AgnoAgent, reasoning_model_kwargs, run_with_fallback
 
 
-def test_claude_kwargs_use_adaptive_thinking_and_pin_temperature():
+def test_claude_kwargs_use_adaptive_thinking_and_send_no_temperature():
     kwargs = reasoning_model_kwargs("claude", "high", temperature=0.3, max_tokens=1234)
     assert kwargs["thinking"] == {"type": "adaptive"}
     assert kwargs["output_config"] == {"effort": "high"}
     assert kwargs["max_tokens"] == 1234
-    # Adaptive thinking requires temperature=1 regardless of what's passed.
-    assert kwargs["temperature"] == 1
+    # Current Claude models removed the sampling parameters.
+    assert "temperature" not in kwargs
+    # Short budgets stay under the SDK's non-streaming guard on their own.
+    assert "timeout" not in kwargs
+
+
+def test_a_claude_budget_past_the_unstreamed_limit_carries_a_timeout():
+    """The SDK refuses an unstreamed request whose budget could outlast its
+    default timeout, before a token is sent. An explicit timeout is the one
+    thing that skips that guard."""
+    from stock_analyzer.llm import MAX_NONSTREAMING_OUTPUT_TOKENS
+
+    kwargs = reasoning_model_kwargs("claude", "high", max_tokens=MAX_NONSTREAMING_OUTPUT_TOKENS + 1)
+    assert kwargs["timeout"] > 0
 
 
 def test_openai_kwargs_use_reasoning_effort_and_max_completion_tokens():
@@ -139,3 +151,72 @@ def test_agno_agent_run_passes_through_on_success():
 
     result = agent.run("prompt")
     assert result.content == "all good"
+
+
+# --- AgnoAgent.run() and the output ceiling ---------------------------------
+
+
+class _Metrics:
+    def __init__(self, output_tokens, reasoning_tokens=0):
+        self.output_tokens = output_tokens
+        self.reasoning_tokens = reasoning_tokens
+
+
+def _structured_agent(provider, max_tokens, content, metrics):
+    from agno.run.base import RunStatus
+    from pydantic import BaseModel
+
+    class _Out(BaseModel):
+        x: int
+
+    class _FakeRunOutput:
+        status = RunStatus.completed
+
+    _FakeRunOutput.content = content
+    _FakeRunOutput.metrics = metrics
+    key = {"claude": "max_tokens", "gemini": "max_output_tokens"}[provider]
+    agent = AgnoAgent(
+        "Test", provider, "some-model", model_kwargs={key: max_tokens}, output_schema=_Out
+    )
+    agent.agent.run = lambda *a, **k: _FakeRunOutput()
+    return agent, _Out
+
+
+def test_a_structured_answer_cut_off_at_the_ceiling_raises_with_its_text():
+    """agno drops the provider's stop reason, so a cut-off JSON document
+    used to come back as a plain string and read downstream as an empty
+    result. Spending the whole budget without a parsed answer is the
+    signal."""
+    import pytest
+
+    from stock_analyzer.llm import OutputTruncatedError
+
+    agent, _ = _structured_agent("claude", 16000, '{"x": 1, "prose": "sell MR', _Metrics(16000))
+    with pytest.raises(OutputTruncatedError) as e:
+        agent.run("prompt")
+    assert e.value.raw_text.startswith('{"x": 1')
+    assert e.value.max_output_tokens == 16000
+
+
+def test_an_answer_that_ends_inside_the_budget_is_left_alone():
+    agent, _ = _structured_agent("claude", 16000, "not json", _Metrics(9000))
+    assert agent.run("prompt").content == "not json"
+
+
+def test_a_parsed_answer_is_kept_even_at_the_ceiling():
+    agent, out = _structured_agent("claude", 100, None, _Metrics(100))
+    parsed = out(x=1)
+    agent.agent.run = lambda *a, **k: type(
+        "R", (), {"status": None, "content": parsed, "metrics": _Metrics(100)}
+    )()
+    assert agent.run("prompt").content == parsed
+
+
+def test_gemini_thinking_counts_against_its_ceiling():
+    import pytest
+
+    from stock_analyzer.llm import OutputTruncatedError
+
+    agent, _ = _structured_agent("gemini", 16000, "{", _Metrics(4000, reasoning_tokens=12000))
+    with pytest.raises(OutputTruncatedError):
+        agent.run("prompt")

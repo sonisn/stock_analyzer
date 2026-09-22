@@ -64,4 +64,3 @@ def dumps_compact(payload: Any) -> str:
 def loads(raw: str | bytes) -> Any:
     """orjson.loads, which takes str and bytes alike."""
     return orjson.loads(raw)
-

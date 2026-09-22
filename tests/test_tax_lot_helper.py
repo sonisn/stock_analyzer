@@ -170,3 +170,20 @@ def test_long_term_starts_the_day_after_the_anniversary():
     assert lot(date(2026, 1, 10)).is_long_term is False  # anniversary: still short-term
     assert lot(date(2026, 1, 11)).is_long_term is True
     assert lot(date(2026, 1, 11)).long_term_on == "2026-01-11"
+
+
+def test_tax_rates_follow_the_environment_and_ignore_nonsense(monkeypatch):
+    from stock_analyzer.discover import tax_lot_helper as h
+
+    monkeypatch.delenv("TAX_RATE_SHORT_TERM", raising=False)
+    monkeypatch.delenv("TAX_RATE_LONG_TERM", raising=False)
+    assert (h.short_term_rate(), h.long_term_rate()) == (0.32, 0.18)
+
+    monkeypatch.setenv("TAX_RATE_SHORT_TERM", "0.41")
+    monkeypatch.setenv("TAX_RATE_LONG_TERM", "0.238")
+    assert (h.short_term_rate(), h.long_term_rate()) == (0.41, 0.238)
+
+    # A percent where a fraction belongs would triple every tax estimate.
+    monkeypatch.setenv("TAX_RATE_SHORT_TERM", "37")
+    monkeypatch.setenv("TAX_RATE_LONG_TERM", "abc")
+    assert (h.short_term_rate(), h.long_term_rate()) == (0.32, 0.18)

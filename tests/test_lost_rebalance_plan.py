@@ -16,7 +16,7 @@ from stock_analyzer.cli.rebalance import build_email_subject
 from stock_analyzer.config import Settings
 from stock_analyzer.discover.rebalance_csp import _blocked_note
 from stock_analyzer.discover.rebalance_sections import build_rebalance_sections
-from stock_analyzer.discover.rebalancer import RebalancePlanUnparseable, _looks_truncated
+from stock_analyzer.discover.rebalancer import RebalancePlanUnparseable
 
 TRUNCATED = '{"status":"ACTION","aggressiveness_applied":"balanced","summary":"sell MRVL'
 
@@ -51,20 +51,23 @@ def test_the_error_carries_the_text_the_run_paid_for():
     assert RebalancePlanUnparseable("bad json").truncated is False
 
 
-def test_truncation_is_read_off_the_provider_not_guessed():
-    class _M:
-        stop_reason = "max_tokens"
+def test_a_cut_off_plan_keeps_its_text_and_says_it_was_truncated(monkeypatch):
+    """agno never reports the stop reason, so the check used to read a
+    field that was always empty and call every lost plan "malformed". The
+    token count is what shows the ceiling was hit."""
+    from stock_analyzer.discover.rebalancer import Rebalancer
+    from stock_analyzer.llm import OutputTruncatedError
 
-    class _Run:
-        metrics = _M()
+    rb = Rebalancer("claude", "claude-opus-5")
 
-    class _Ended:
-        class metrics:  # noqa: N801
-            stop_reason = "end_turn"
+    def _cut_off(*_a, **_k):
+        raise OutputTruncatedError("Rebalancer", 64000, TRUNCATED)
 
-    assert _looks_truncated(_Run()) is True
-    assert _looks_truncated(_Ended()) is False
-    assert _looks_truncated(object()) is False
+    monkeypatch.setattr(rb.agent, "run", _cut_off)
+    with pytest.raises(RebalancePlanUnparseable) as e:
+        rb.decide({}, "", 1000.0)
+    assert e.value.truncated is True
+    assert e.value.raw_text == TRUNCATED
 
 
 def test_a_lost_plan_is_not_a_hold_recommendation():
@@ -187,24 +190,18 @@ def test_a_budget_over_the_unstreamed_ceiling_needs_an_explicit_timeout():
     configured = r.REBALANCER_MAX_OUTPUT_TOKENS
     assert configured > 16000, "16,000 is the value that truncated a real plan"
     assert configured <= 128_000, "128k is the model's own output limit"
-    if configured > r.MAX_NONSTREAMING_OUTPUT_TOKENS:
-        assert r.REBALANCER_TIMEOUT_S > 0, (
-            f"max_tokens={configured} is above the SDK's non-streaming ceiling "
-            f"({r.MAX_NONSTREAMING_OUTPUT_TOKENS}); without an explicit timeout "
-            "the request is refused before it is sent"
-        )
 
 
 def test_the_timeout_actually_reaches_the_model():
     """The bypass only works if the timeout lands on the Anthropic client,
-    so assert it is in the kwargs the model is constructed with."""
-    import inspect
-
+    so assert it is on the model the agent was built with."""
     from stock_analyzer.discover import rebalancer as r
+    from stock_analyzer.llm import MAX_NONSTREAMING_OUTPUT_TOKENS
 
-    source = inspect.getsource(r.Rebalancer.__init__)
-    assert '"timeout": REBALANCER_TIMEOUT_S' in source
-    assert '"max_tokens": REBALANCER_MAX_OUTPUT_TOKENS' in source
+    model = r.Rebalancer("claude", "claude-opus-5").agent._model
+    assert model.max_tokens == r.REBALANCER_MAX_OUTPUT_TOKENS
+    if r.REBALANCER_MAX_OUTPUT_TOKENS > MAX_NONSTREAMING_OUTPUT_TOKENS:
+        assert (model.timeout or 0) > 0
 
 
 def test_replay_reads_a_stored_run_back(tmp_path):
