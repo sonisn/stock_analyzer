@@ -50,7 +50,44 @@ class RebalancePlanSteps:
                 "Rebalance: no ranker_text in state (Ranker step likely "
                 "failed). Producing holdings-only plan from reviews."
             )
-        rebalancer = Rebalancer(
+        rebalancer = self._build_rebalancer()
+        log_rebalancer_input_estimate(
+            self.state,
+            ranker_text=ranker_text,
+            history_block=history_block,
+        )
+        try:
+            plan = self._request_plan(rebalancer, ranker_text, history_block)
+        except Exception as e:  # noqa: BLE001 — see _record_lost_plan
+            return self._record_lost_plan(e)
+        plan = self._validate_covered_calls(plan)
+        plan = self._validate_puts(plan)
+        # Last, and deterministic: the prompt block above asks the model to
+        # plan around promised shares; this checks that it did. A sale of
+        # shares backing a short call cannot be executed at all.
+        plan, sale_warnings = validate_sales(
+            plan,
+            positions=self.state.get("holdings_positions") or {},
+            obligations=self.state.get("covered_call_obligations") or {},
+        )
+        if sale_warnings:
+            self.state["sale_warnings"] = sale_warnings
+        self.state["rebalance_plan"] = plan
+        self.state["rebalance_text"] = plan.full_text
+        self.state["harvest_candidates"] = harvest_report_data(
+            flag_plan_conflicts(self.state.get("harvest_candidates_obj") or [], plan)
+        )
+        return StepOutput(
+            content=(
+                f"Rebalance plan generated "
+                f"(status={plan.status}, "
+                f"aggressiveness={plan.aggressiveness_applied}, "
+                f"actions={len(plan.actions)})"
+            )
+        )
+
+    def _build_rebalancer(self) -> Rebalancer:
+        return Rebalancer(
             "claude",
             self.settings.discover_opus_model,
             cc_target_delta_min=self.settings.cc_target_delta_min,
@@ -68,66 +105,67 @@ class RebalancePlanSteps:
             csp_max_pct_per_put=self.settings.csp_max_pct_per_put,
             csp_max_pct_total=self.settings.csp_max_pct_total,
         )
-        log_rebalancer_input_estimate(
-            self.state,
-            ranker_text=ranker_text,
+
+    def _request_plan(self, rebalancer: Rebalancer, ranker_text: str, history_block: str) -> Any:
+        return rebalancer.decide(
+            self.state.get("holdings_reviews", {}),
+            ranker_text,
+            self.state.get("cash_balance"),
+            self.state.get("macro_summary", ""),
+            aggressiveness=self.settings.discover_rebalance_aggressiveness,
             history_block=history_block,
+            market_themes_block=self.state.get("market_themes_block", ""),
+            cc_context_block=self.state.get("cc_context_block", ""),
+            harvest_block=self.state.get("harvest_block", ""),
+            csp_context_block=self.state.get("csp_context_block", ""),
+            accounts_block=format_accounts_block(
+                self.state.get("account_cash") or {}, self.state.get("account_meta") or {}
+            ),
+            add_on_block=self._add_on_block(),
+            backlog_block=self.state.get("backlog_block") or "",
+            stub_income_block=self.state.get("stub_income_block") or "",
+            obligations_block=covered_call_block(
+                self.state.get("holdings_positions") or {},
+                self.state.get("covered_call_obligations") or {},
+            ),
         )
-        try:
-            plan = rebalancer.decide(
-                self.state.get("holdings_reviews", {}),
-                ranker_text,
-                self.state.get("cash_balance"),
-                self.state.get("macro_summary", ""),
-                aggressiveness=self.settings.discover_rebalance_aggressiveness,
-                history_block=history_block,
-                market_themes_block=self.state.get("market_themes_block", ""),
-                cc_context_block=self.state.get("cc_context_block", ""),
-                harvest_block=self.state.get("harvest_block", ""),
-                csp_context_block=self.state.get("csp_context_block", ""),
-                accounts_block=format_accounts_block(
-                    self.state.get("account_cash") or {}, self.state.get("account_meta") or {}
-                ),
-                add_on_block=self._add_on_block(),
-                backlog_block=self.state.get("backlog_block") or "",
-                stub_income_block=self.state.get("stub_income_block") or "",
-                obligations_block=covered_call_block(
-                    self.state.get("holdings_positions") or {},
-                    self.state.get("covered_call_obligations") or {},
-                ),
-            )
-        except Exception as e:  # noqa: BLE001 — see below
-            # Every way this call can fail has to land here, not just bad
-            # JSON. On 2026-09-20 the second attempt died on a ValueError
-            # from the SDK (max_tokens too high to run unstreamed), which
-            # the narrower `except RebalancePlanUnparseable` missed — so
-            # the run reported the failure internally and still sent an
-            # ordinary-looking email with an ordinary subject line.
-            unparseable = e if isinstance(e, RebalancePlanUnparseable) else None
-            # Do NOT let this pass as "no plan". Everything downstream —
-            # the premortem, the report, the database — reads an absent
-            # plan as a decision not to trade, which is the opposite of
-            # what happened.
-            logger.error(
-                "The rebalance plan was not produced (%s: %s). The report will "
-                "say so rather than render an empty action list.",
-                type(e).__name__,
-                e,
-                exc_info=unparseable is None,
-            )
-            self.state["rebalance_plan"] = None
-            self.state["rebalance_text"] = unparseable.raw_text if unparseable else ""
-            if unparseable is None:
-                note = f"The rebalancer did not return a plan ({type(e).__name__})"
-            elif unparseable.truncated:
-                note = "The rebalancer's plan was cut off before it finished"
-            else:
-                note = "The rebalancer's plan could not be read"
-            self.state["rebalance_failed"] = note
-            self.state["harvest_candidates"] = harvest_report_data(
-                self.state.get("harvest_candidates_obj") or []
-            )
-            return StepOutput(content=f"rebalance: PLAN LOST ({type(e).__name__}: {e})")
+
+    def _record_lost_plan(self, e: Exception) -> StepOutput:
+        # Every way the plan call can fail has to land here, not just bad
+        # JSON. On 2026-09-20 the second attempt died on a ValueError
+        # from the SDK (max_tokens too high to run unstreamed), which
+        # the narrower `except RebalancePlanUnparseable` missed — so
+        # the run reported the failure internally and still sent an
+        # ordinary-looking email with an ordinary subject line.
+        unparseable = e if isinstance(e, RebalancePlanUnparseable) else None
+        # Do NOT let this pass as "no plan". Everything downstream —
+        # the premortem, the report, the database — reads an absent
+        # plan as a decision not to trade, which is the opposite of
+        # what happened.
+        logger.error(
+            "The rebalance plan was not produced (%s: %s). The report will "
+            "say so rather than render an empty action list.",
+            type(e).__name__,
+            e,
+            exc_info=unparseable is None,
+        )
+        self.state["rebalance_plan"] = None
+        self.state["rebalance_text"] = unparseable.raw_text if unparseable else ""
+        if unparseable is None:
+            note = f"The rebalancer did not return a plan ({type(e).__name__})"
+        elif unparseable.truncated:
+            note = "The rebalancer's plan was cut off before it finished"
+        else:
+            note = "The rebalancer's plan could not be read"
+        self.state["rebalance_failed"] = note
+        self.state["harvest_candidates"] = harvest_report_data(
+            self.state.get("harvest_candidates_obj") or []
+        )
+        return StepOutput(content=f"rebalance: PLAN LOST ({type(e).__name__}: {e})")
+
+    def _validate_covered_calls(self, plan: Any) -> Any:
+        """Check WRITE_CALLs against the fetched chains. A crash keeps the
+        unvalidated plan and says so."""
         try:
             plan, cc_warnings = apply_cc_plan_validation(
                 plan,
@@ -151,6 +189,11 @@ class RebalancePlanSteps:
                 exc_info=True,
             )
             self.state["cc_warnings"] = [f"validation crashed: {e}"]
+        return plan
+
+    def _validate_puts(self, plan: Any) -> Any:
+        """Check SELL_PUTs against the chains and cash caps. A crash drops
+        every put: unvalidated puts could over-commit cash."""
         try:
             plan, csp_warnings = apply_csp_plan_validation(
                 plan,
@@ -186,29 +229,7 @@ class RebalancePlanSteps:
             csp_warnings = [f"put validation crashed ({e}); all puts dropped"]
         if csp_warnings:
             self.state["csp_warnings"] = csp_warnings
-        # Last, and deterministic: the prompt block above asks the model to
-        # plan around promised shares; this checks that it did. A sale of
-        # shares backing a short call cannot be executed at all.
-        plan, sale_warnings = validate_sales(
-            plan,
-            positions=self.state.get("holdings_positions") or {},
-            obligations=self.state.get("covered_call_obligations") or {},
-        )
-        if sale_warnings:
-            self.state["sale_warnings"] = sale_warnings
-        self.state["rebalance_plan"] = plan
-        self.state["rebalance_text"] = plan.full_text
-        self.state["harvest_candidates"] = harvest_report_data(
-            flag_plan_conflicts(self.state.get("harvest_candidates_obj") or [], plan)
-        )
-        return StepOutput(
-            content=(
-                f"Rebalance plan generated "
-                f"(status={plan.status}, "
-                f"aggressiveness={plan.aggressiveness_applied}, "
-                f"actions={len(plan.actions)})"
-            )
-        )
+        return plan
 
     def step_premortem(self, step_input: StepInput) -> StepOutput:
         """Adversarial hindsight on the rebalance plan: imagine reading the
