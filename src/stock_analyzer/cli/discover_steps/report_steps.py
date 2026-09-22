@@ -4,6 +4,8 @@ history upkeep."""
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
+from typing import Any
 
 from agno.workflow.types import StepInput, StepOutput
 
@@ -133,7 +135,56 @@ class ReportSteps:
             logger.warning("Could not record the picks as suggestions (%s)", e)
 
     def step_persist_and_report(self, step_input: StepInput) -> StepOutput:
-        # 1. SQLite persistence (same as before)
+        run_id = self._persist_run()
+        self._record_pick_suggestions(run_id)
+
+        # Fetch a chart for each pick (existing chart-img.com client).
+        pick_tickers = [t for _, t, _ in self.state["picks"]]
+        charts: dict[str, bytes] = {}
+        try:
+            charts = fetch_charts(pick_tickers)
+        except Exception as e:
+            logger.warning("Chart fetch failed (%s) — report will omit charts", e)
+        chart_cids = {t: f"chart-{t.replace('.', '-')}" for t in charts}
+
+        # One section list, rendered to both HTML and PDF.
+        sections = self._report_sections(pick_tickers)
+        html_body = render_html_email(sections, chart_cids)
+        pdf_bytes = render_pdf(sections, charts)
+
+        delivered, delivery_error, local_pdf_path = self._deliver_report(
+            run_id, pick_tickers, html_body, pdf_bytes, charts, chart_cids
+        )
+
+        # Always dump the full analysis to the log so the user can recover
+        # every section — even when email is offline or wasn't configured.
+        _log_discover_analysis(
+            delivered=delivered,
+            delivery_error=delivery_error,
+            local_pdf_path=str(local_pdf_path),
+            ranker_text=self.state["ranker_text"],
+            redteam_text=self.state["redteam_text"],
+            sizer_text=self.state["sizer_text"],
+        )
+
+        self.state["run_id"] = run_id
+        self.state["pdf_bytes"] = pdf_bytes
+        self.state["html_body"] = html_body
+        self.state["local_pdf_path"] = str(local_pdf_path)
+        print_terminal_summary(self.state["ranker_text"], self.state["sizer_text"])
+        print(f"\nPDF saved: {local_pdf_path}")
+        log_path = current_log_file()
+        if log_path:
+            print(f"Log file:  {log_path}")
+        status = "emailed" if delivered else "persisted (no email)"
+        return StepOutput(
+            content=(
+                f"Run #{run_id} {status}; PDF {len(pdf_bytes)} bytes (saved to {local_pdf_path})"
+            )
+        )
+
+    def _persist_run(self) -> int:
+        """The run, its candidates, snapshots, scorecards, picks and outputs."""
         with get_session(self.settings.discover_db_path) as session:
             run_id = insert_run(
                 session,
@@ -212,21 +263,14 @@ class ReportSteps:
                 sizer_full=self.state["sizer_text"],
                 holdings_summary=self.state["holdings_summary"],
             )
+        return run_id
 
-        self._record_pick_suggestions(run_id)
-
-        # 2. Fetch a chart for each pick (existing chart-img.com client).
-        pick_tickers = [t for _, t, _ in self.state["picks"]]
-        charts: dict[str, bytes] = {}
-        try:
-            charts = fetch_charts(pick_tickers)
-        except Exception as e:
-            logger.warning("Chart fetch failed (%s) — report will omit charts", e)
-        chart_cids = {t: f"chart-{t.replace('.', '-')}" for t in charts}
-
-        # 2b. Style factor tilt — remap each pick's existing score_breakdown
-        # leaves into named growth/value/quality/momentum/low_vol buckets
-        # for reporting only (no rescoring).
+    def _pick_factor_tilts(
+        self, pick_tickers: list[str]
+    ) -> tuple[dict[str, dict[str, float]], dict[str, float]]:
+        """Style factor tilt — remap each pick's existing score_breakdown
+        leaves into named growth/value/quality/momentum/low_vol buckets
+        for reporting only (no rescoring)."""
         candidates_by_ticker = {c["ticker"]: c for c in self.state["candidates"]}
         hv_data = self.state.get("historical_volatility") or {}
         pick_tilts: dict[str, dict[str, float]] = {}
@@ -238,6 +282,10 @@ class ReportSteps:
             if tilt:
                 pick_tilts[ticker] = tilt
         portfolio_tilt = average_factor_tilts(list(pick_tilts.values()))
+        return pick_tilts, portfolio_tilt
+
+    def _report_sections(self, pick_tickers: list[str]) -> list[Any]:
+        pick_tilts, portfolio_tilt = self._pick_factor_tilts(pick_tickers)
         analyses = self.state.get("analyses") or {}
         pick_catalysts = {
             t: catalysts_to_dicts(analyses[t].upcoming_catalysts)
@@ -245,8 +293,7 @@ class ReportSteps:
             if t in analyses
         }
 
-        # 3. Build shared section list, then render both HTML and PDF from it.
-        sections = build_sections(
+        return build_sections(
             ranker_text=self.state["ranker_text"],
             redteam_text=self.state["redteam_text"],
             sizer_text=self.state["sizer_text"],
@@ -274,10 +321,18 @@ class ReportSteps:
             paper_ledger=self.state.get("paper_ledger"),
             thesis_checks=self.state.get("thesis_checks"),
         )
-        html_body = render_html_email(sections, chart_cids)
-        pdf_bytes = render_pdf(sections, charts)
 
-        # 4. Send email (or fall back to logging if EMAIL_TO unset).
+    def _deliver_report(
+        self,
+        run_id: int,
+        pick_tickers: list[str],
+        html_body: str,
+        pdf_bytes: bytes,
+        charts: dict[str, bytes],
+        chart_cids: dict[str, str],
+    ) -> tuple[bool, str | None, Path]:
+        """Save the PDF, then email it (or log that EMAIL_TO is unset).
+        Returns (delivered, delivery_error, local_pdf_path)."""
         today = date.today()
         picks_summary = ", ".join(pick_tickers[:5])
         subject = (
@@ -315,30 +370,4 @@ class ReportSteps:
                 "Run %d's HTML/PDF available via state if you want to inspect them.",
                 run_id,
             )
-
-        # Always dump the full analysis to the log so the user can recover
-        # every section — even when email is offline or wasn't configured.
-        _log_discover_analysis(
-            delivered=delivered,
-            delivery_error=delivery_error,
-            local_pdf_path=str(local_pdf_path),
-            ranker_text=self.state["ranker_text"],
-            redteam_text=self.state["redteam_text"],
-            sizer_text=self.state["sizer_text"],
-        )
-
-        self.state["run_id"] = run_id
-        self.state["pdf_bytes"] = pdf_bytes
-        self.state["html_body"] = html_body
-        self.state["local_pdf_path"] = str(local_pdf_path)
-        print_terminal_summary(self.state["ranker_text"], self.state["sizer_text"])
-        print(f"\nPDF saved: {local_pdf_path}")
-        log_path = current_log_file()
-        if log_path:
-            print(f"Log file:  {log_path}")
-        status = "emailed" if delivered else "persisted (no email)"
-        return StepOutput(
-            content=(
-                f"Run #{run_id} {status}; PDF {len(pdf_bytes)} bytes (saved to {local_pdf_path})"
-            )
-        )
+        return delivered, delivery_error, local_pdf_path
