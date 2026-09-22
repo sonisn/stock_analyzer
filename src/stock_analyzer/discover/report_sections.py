@@ -297,9 +297,18 @@ def append_track_record_section(
     if record.n_picks_total == 0:
         return
 
+    sections.append(Section(kind="heading", text="Track record", level=2))
+    _track_record_headline(sections, record)
+    _track_record_tables(sections, record)
+    _scored_calls_table(sections, record)
+    _pending_calls_table(sections, record)
+    _unscorable_calls_note(sections, record)
+
+
+def _track_record_headline(sections: list[Section], record: TrackRecord) -> None:
+    """One sentence on the mature calls, and alpha by call as a bar chart."""
     from .track_record import format_track_record_summary
 
-    sections.append(Section(kind="heading", text="Track record", level=2))
     horizon = record.reported_horizon_days
     by_direction = [
         ("buy", record.buy_stats),
@@ -357,6 +366,9 @@ def append_track_record_section(
                 )
             )
 
+
+def _track_record_tables(sections: list[Section], record: TrackRecord) -> None:
+    """Per-horizon stats by call, and buy alpha by model and provider."""
     stat_rows: list[list[str]] = []
     breakdown_rows: list[list[str]] = []
     for h in record.horizons:
@@ -425,6 +437,10 @@ def append_track_record_section(
             )
         )
 
+
+def _scored_calls_table(sections: list[Section], record: TrackRecord) -> None:
+    """Scored calls best to worst, capped at the best and worst few."""
+    horizon = record.reported_horizon_days
     scored = sorted(
         (p for p in record.picks if p.alpha_pct is not None),
         key=lambda p: p.alpha_pct or 0.0,
@@ -445,32 +461,39 @@ def append_track_record_section(
             )
         )
 
-    if record.pending:
-        pending = sorted(record.pending, key=lambda p: p.pick_date, reverse=True)[:5]
-        sections.append(
-            Section(
-                kind="heading",
-                text=f"Too young to score ({record.n_pending}; live mark only)",
-                level=3,
-            )
-        )
-        sections.append(
-            Section(
-                kind="table",
-                table_header=["Call", "Ticker", "Date", "Age", "Live return"],
-                table_rows=[
-                    [
-                        _DIRECTION_LABELS.get(p.direction, p.direction),
-                        p.ticker,
-                        p.pick_date,
-                        f"{p.age_days}d",
-                        _pct_or_dash(p.pick_return_pct),
-                    ]
-                    for p in pending
-                ],
-            )
-        )
 
+def _pending_calls_table(sections: list[Section], record: TrackRecord) -> None:
+    """The five newest calls too young to score."""
+    if not record.pending:
+        return
+    pending = sorted(record.pending, key=lambda p: p.pick_date, reverse=True)[:5]
+    sections.append(
+        Section(
+            kind="heading",
+            text=f"Too young to score ({record.n_pending}; live mark only)",
+            level=3,
+        )
+    )
+    sections.append(
+        Section(
+            kind="table",
+            table_header=["Call", "Ticker", "Date", "Age", "Live return"],
+            table_rows=[
+                [
+                    _DIRECTION_LABELS.get(p.direction, p.direction),
+                    p.ticker,
+                    p.pick_date,
+                    f"{p.age_days}d",
+                    _pct_or_dash(p.pick_return_pct),
+                ]
+                for p in pending
+            ],
+        )
+    )
+
+
+def _unscorable_calls_note(sections: list[Section], record: TrackRecord) -> None:
+    """Calls with no forward price are flagged, not dropped."""
     no_data = sorted(
         (u for u in record.unmeasurable if u.reason == "no_price_data"),
         key=lambda u: u.pick_date,
@@ -767,9 +790,6 @@ def build_sections(
     structured_sizer = sizer_output if isinstance(sizer_output, SizerOutput) else None
 
     today = date.today().isoformat()
-    pick_blocks = _split_by_pick_blocks(ranker_text)
-    bear_blocks = _split_by_ticker_blocks(redteam_text)
-    alloc_blocks = _split_by_ticker_blocks(sizer_text)
     pick_order = [t for _, t, _ in parse_picks(structured_ranker or ranker_text)]
     survivors = [c for c in candidates if c["passed_filter"]]
     rejected = [c for c in candidates if not c["passed_filter"]]
@@ -799,6 +819,57 @@ def build_sections(
 
     # Context (themes, macro, rotation, holdings) is collected here and
     # placed after the picks: the report leads with what to act on.
+    ctx = _context_sections(
+        market_themes=market_themes,
+        macro_summary=macro_summary,
+        data_warnings=data_warnings,
+        sector_rotation=sector_rotation,
+        holdings_rows=holdings_rows,
+        holdings_summary=holdings_summary,
+    )
+
+    append_pick_cards(
+        s,
+        pick_order=pick_order,
+        structured_ranker=structured_ranker,
+        structured_redteam=structured_redteam,
+        structured_sizer=structured_sizer,
+        ranker_text=ranker_text,
+        redteam_text=redteam_text,
+        sizer_text=sizer_text,
+        pick_catalysts=pick_catalysts,
+    )
+
+    s.append(Section(kind="page_break"))
+    append_allocation_table(s, structured_sizer)
+    append_correlation_notes(s, structured_ranker, ranker_text)
+    append_redteam_summary(s, structured_redteam, redteam_text)
+    append_sizer_warnings(s, structured_sizer, sizer_text)
+
+    append_thesis_check_section(s, thesis_checks)
+    s.extend(ctx)
+    append_track_record_section(s, track_record, track_record_block)
+    append_paper_ledger_section(s, paper_ledger)
+
+    append_survivor_table(s, survivors)
+    append_factor_tilt(s, portfolio_tilt, pick_tilts)
+    append_rejected_candidates(s, rejected, n_candidates=len(candidates))
+
+    append_usage_section(s, usage)
+    return s
+
+
+def _context_sections(
+    *,
+    market_themes: object,
+    macro_summary: str,
+    data_warnings: list[str] | None,
+    sector_rotation: dict[str, Any] | None,
+    holdings_rows: list[list[str]] | None,
+    holdings_summary: str,
+) -> list[Section]:
+    """Themes, macro, data warnings, rotation and holdings — the context
+    that follows the picks."""
     ctx: list[Section] = []
 
     # Market themes panel — what's hot right now (drives ranker bias).
@@ -855,11 +926,28 @@ def build_sections(
         )
     else:
         ctx.append(Section(kind="preformatted", text=holdings_summary or "(none)"))
+    return ctx
 
-    # Per-pick cards. When structured outputs are present, emit a single
-    # rich pick_card section per ticker (renderer composes rank pill +
-    # conviction badge + fragility chip + allocation + bull/bear prose).
-    # Otherwise fall back to the legacy heading + preformatted layout.
+
+def append_pick_cards(
+    s: list[Section],
+    *,
+    pick_order: list[str],
+    structured_ranker: Any,
+    structured_redteam: Any,
+    structured_sizer: Any,
+    ranker_text: str,
+    redteam_text: str,
+    sizer_text: str,
+    pick_catalysts: dict[str, list[dict[str, Any]]] | None,
+) -> None:
+    """Per-pick cards. When structured outputs are present, emit a single
+    rich pick_card section per ticker (renderer composes rank pill +
+    conviction badge + fragility chip + allocation + bull/bear prose).
+    Otherwise fall back to the legacy heading + preformatted layout."""
+    pick_blocks = _split_by_pick_blocks(ranker_text)
+    bear_blocks = _split_by_ticker_blocks(redteam_text)
+    alloc_blocks = _split_by_ticker_blocks(sizer_text)
     pick_by_ticker: dict[str, Any] = {}
     if structured_ranker:
         pick_by_ticker = {p.ticker: p for p in structured_ranker.picks}
@@ -873,33 +961,16 @@ def build_sections(
     for ticker in pick_order:
         s.append(Section(kind="page_break"))
         if pick_by_ticker.get(ticker):
-            pick = pick_by_ticker[ticker]
-            bear = bear_by_ticker.get(ticker)
-            alloc = alloc_by_ticker.get(ticker)
             s.append(
                 Section(
                     kind="pick_card",
-                    data={
-                        "ticker": ticker,
-                        "rank": pick.rank,
-                        "one_liner": pick.one_liner,
-                        "conviction": pick.conviction,
-                        "time_horizon": pick.time_horizon,
-                        "bull_thesis": pick.bull_thesis,
-                        "what_youre_betting_on": pick.what_youre_betting_on,
-                        "why_over_alternatives": pick.why_over_alternatives,
-                        "sector_concentration_check": pick.sector_concentration_check,
-                        "bear_case": bear.bear_case if bear else None,
-                        "most_fragile_assumption": (bear.most_fragile_assumption if bear else None),
-                        "watch_metric": bear.watch_metric if bear else None,
-                        "fragility_rank": bear.fragility_rank if bear else None,
-                        "allocation_pct": (alloc.allocation_pct if alloc else None),
-                        "allocation_usd": (alloc.allocation_usd if alloc else None),
-                        "allocation_rationale": alloc.rationale if alloc else None,
-                        "agreement_ratio": pick.agreement_ratio,
-                        "voting_providers": pick.voting_providers,
-                        "catalysts": (pick_catalysts or {}).get(ticker, []),
-                    },
+                    data=_pick_card_data(
+                        ticker,
+                        pick_by_ticker[ticker],
+                        bear_by_ticker.get(ticker),
+                        alloc_by_ticker.get(ticker),
+                        (pick_catalysts or {}).get(ticker, []),
+                    ),
                 )
             )
             s.append(Section(kind="image", image_ticker=ticker))
@@ -913,28 +984,58 @@ def build_sections(
             s.append(Section(kind="heading", text="Position sizing", level=3))
             s.append(Section(kind="preformatted", text=alloc_blocks.get(ticker, "(missing)")))
 
-    s.append(Section(kind="page_break"))
-    # Structured allocation table when sizer ran in Phase 4e mode.
-    if structured_sizer and structured_sizer.allocations:
-        s.append(Section(kind="heading", text="Allocation summary", level=2))
-        s.append(
-            Section(
-                kind="allocation_table",
-                data={
-                    "allocations": [
-                        {
-                            "ticker": a.ticker,
-                            "pct": a.allocation_pct,
-                            "usd": a.allocation_usd,
-                            "rationale": a.rationale,
-                        }
-                        for a in structured_sizer.allocations
-                    ],
-                    "warnings": list(structured_sizer.concentration_warnings),
-                },
-            )
-        )
 
+def _pick_card_data(
+    ticker: str, pick: Any, bear: Any, alloc: Any, catalysts: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "ticker": ticker,
+        "rank": pick.rank,
+        "one_liner": pick.one_liner,
+        "conviction": pick.conviction,
+        "time_horizon": pick.time_horizon,
+        "bull_thesis": pick.bull_thesis,
+        "what_youre_betting_on": pick.what_youre_betting_on,
+        "why_over_alternatives": pick.why_over_alternatives,
+        "sector_concentration_check": pick.sector_concentration_check,
+        "bear_case": bear.bear_case if bear else None,
+        "most_fragile_assumption": (bear.most_fragile_assumption if bear else None),
+        "watch_metric": bear.watch_metric if bear else None,
+        "fragility_rank": bear.fragility_rank if bear else None,
+        "allocation_pct": (alloc.allocation_pct if alloc else None),
+        "allocation_usd": (alloc.allocation_usd if alloc else None),
+        "allocation_rationale": alloc.rationale if alloc else None,
+        "agreement_ratio": pick.agreement_ratio,
+        "voting_providers": pick.voting_providers,
+        "catalysts": catalysts,
+    }
+
+
+def append_allocation_table(s: list[Section], structured_sizer: Any) -> None:
+    """Structured allocation table when sizer ran in Phase 4e mode."""
+    if not (structured_sizer and structured_sizer.allocations):
+        return
+    s.append(Section(kind="heading", text="Allocation summary", level=2))
+    s.append(
+        Section(
+            kind="allocation_table",
+            data={
+                "allocations": [
+                    {
+                        "ticker": a.ticker,
+                        "pct": a.allocation_pct,
+                        "usd": a.allocation_usd,
+                        "rationale": a.rationale,
+                    }
+                    for a in structured_sizer.allocations
+                ],
+                "warnings": list(structured_sizer.concentration_warnings),
+            },
+        )
+    )
+
+
+def append_correlation_notes(s: list[Section], structured_ranker: Any, ranker_text: str) -> None:
     s.append(Section(kind="heading", text="Ranker correlation notes", level=2))
     if structured_ranker is not None:
         # Structured output ran — pairs_not_to_hold_together is the
@@ -956,6 +1057,8 @@ def build_sections(
         trailing = re.split(_PICK_RE, ranker_text)[-1].strip()
         s.append(Section(kind="preformatted", text=trailing or "(none)"))
 
+
+def append_redteam_summary(s: list[Section], structured_redteam: Any, redteam_text: str) -> None:
     s.append(Section(kind="heading", text="Red-team summary", level=2))
     if structured_redteam:
         s.append(
@@ -969,6 +1072,8 @@ def build_sections(
             Section(kind="preformatted", text=redteam_text.split("---")[-1].strip() or "(none)")
         )
 
+
+def append_sizer_warnings(s: list[Section], structured_sizer: Any, sizer_text: str) -> None:
     s.append(Section(kind="heading", text="Sizer concentration warnings", level=2))
     if structured_sizer:
         if structured_sizer.concentration_warnings:
@@ -979,86 +1084,92 @@ def build_sections(
     else:
         s.append(Section(kind="preformatted", text=sizer_text.split("---")[-1].strip() or "(none)"))
 
-    append_thesis_check_section(s, thesis_checks)
-    s.extend(ctx)
-    append_track_record_section(s, track_record, track_record_block)
-    append_paper_ledger_section(s, paper_ledger)
 
-    if survivors:
-        s.append(Section(kind="page_break"))
-        s.append(Section(kind="heading", text="All candidates that passed filters", level=2))
-        rows: list[list[str]] = []
-        for c in sorted(survivors, key=lambda x: x.get("score") or 0, reverse=True):
-            comp = c.get("score_components") or {}
-            rows.append(
-                [
-                    c["ticker"],
-                    f"{c.get('score') or '—'}",
-                    f"{comp.get('fundamentals', '—')}",
-                    f"{comp.get('trend', '—')}",
-                    f"{comp.get('conviction', '—')}",
-                    c.get("sector") or "—",
-                ]
-            )
-        s.append(
-            Section(
-                kind="table",
-                table_header=["Ticker", "Score", "Fund.", "Trend", "Conv.", "Sector"],
-                table_rows=rows,
-            )
+def append_survivor_table(s: list[Section], survivors: list[dict[str, Any]]) -> None:
+    if not survivors:
+        return
+    s.append(Section(kind="page_break"))
+    s.append(Section(kind="heading", text="All candidates that passed filters", level=2))
+    rows: list[list[str]] = []
+    for c in sorted(survivors, key=lambda x: x.get("score") or 0, reverse=True):
+        comp = c.get("score_components") or {}
+        rows.append(
+            [
+                c["ticker"],
+                f"{c.get('score') or '—'}",
+                f"{comp.get('fundamentals', '—')}",
+                f"{comp.get('trend', '—')}",
+                f"{comp.get('conviction', '—')}",
+                c.get("sector") or "—",
+            ]
         )
-
-    if portfolio_tilt or pick_tilts:
-        s.append(Section(kind="heading", text="Style factor tilt", level=2))
-        s.append(
-            Section(
-                kind="factor_tilt_panel",
-                data={
-                    "portfolio": portfolio_tilt or {},
-                    "picks": [
-                        {"ticker": ticker, "tilt": tilt}
-                        for ticker, tilt in (pick_tilts or {}).items()
-                    ],
-                },
-            )
+    s.append(
+        Section(
+            kind="table",
+            table_header=["Ticker", "Score", "Fund.", "Trend", "Conv.", "Sector"],
+            table_rows=rows,
         )
+    )
 
-    if rejected:
-        s.append(Section(kind="page_break"))
-        s.append(Section(kind="heading", text="Rejected candidates", level=2))
+
+def append_factor_tilt(
+    s: list[Section],
+    portfolio_tilt: dict[str, float] | None,
+    pick_tilts: dict[str, dict[str, float]] | None,
+) -> None:
+    if not (portfolio_tilt or pick_tilts):
+        return
+    s.append(Section(kind="heading", text="Style factor tilt", level=2))
+    s.append(
+        Section(
+            kind="factor_tilt_panel",
+            data={
+                "portfolio": portfolio_tilt or {},
+                "picks": [
+                    {"ticker": ticker, "tilt": tilt} for ticker, tilt in (pick_tilts or {}).items()
+                ],
+            },
+        )
+    )
+
+
+def append_rejected_candidates(
+    s: list[Section], rejected: list[dict[str, Any]], *, n_candidates: int
+) -> None:
+    if not rejected:
+        return
+    s.append(Section(kind="page_break"))
+    s.append(Section(kind="heading", text="Rejected candidates", level=2))
+    s.append(
+        Section(
+            kind="para",
+            text=(
+                f"{len(rejected)} of {n_candidates} candidates were "
+                f"eliminated by the hard filter, grouped below by their "
+                f"primary reason."
+            ),
+        )
+    )
+    by_reason: dict[str, list[str]] = {}
+    for c in rejected:
+        label = _primary_reject_reason(c.get("fail_reasons") or [])
+        by_reason.setdefault(label, []).append(c["ticker"])
+    ordered_reasons = sorted(by_reason.items(), key=lambda kv: len(kv[1]), reverse=True)
+    # Reusing the generic sector_pie renderer (label, value) pairs — it
+    # has no sector-specific logic, just a labeled pie chart.
+    s.append(
+        Section(
+            kind="sector_pie",
+            pie_data=[(label, float(len(tickers))) for label, tickers in ordered_reasons],
+        )
+    )
+    for label, tickers in ordered_reasons:
         s.append(
             Section(
                 kind="para",
-                text=(
-                    f"{len(rejected)} of {len(candidates)} candidates were "
-                    f"eliminated by the hard filter, grouped below by their "
-                    f"primary reason."
-                ),
+                text=f"{label} ({len(tickers)}): " + ", ".join(sorted(tickers)),
             )
         )
-        by_reason: dict[str, list[str]] = {}
-        for c in rejected:
-            label = _primary_reject_reason(c.get("fail_reasons") or [])
-            by_reason.setdefault(label, []).append(c["ticker"])
-        ordered_reasons = sorted(by_reason.items(), key=lambda kv: len(kv[1]), reverse=True)
-        # Reusing the generic sector_pie renderer (label, value) pairs — it
-        # has no sector-specific logic, just a labeled pie chart.
-        s.append(
-            Section(
-                kind="sector_pie",
-                pie_data=[(label, float(len(tickers))) for label, tickers in ordered_reasons],
-            )
-        )
-        for label, tickers in ordered_reasons:
-            s.append(
-                Section(
-                    kind="para",
-                    text=f"{label} ({len(tickers)}): " + ", ".join(sorted(tickers)),
-                )
-            )
-
-    append_usage_section(s, usage)
-    return s
 
 
 # --- terminal summary -------------------------------------------------------
