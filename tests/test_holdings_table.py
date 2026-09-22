@@ -4,7 +4,7 @@ for the report instead of a monospace bullet list."""
 
 from __future__ import annotations
 
-from stock_analyzer.cli.discover import (
+from stock_analyzer.cli.discover_steps.helpers import (
     _aggregate_holdings,
     _holdings_summary,
     _holdings_table_rows,

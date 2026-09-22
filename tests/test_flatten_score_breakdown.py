@@ -7,7 +7,7 @@ against a nested one and silently returned [] every run."""
 
 from __future__ import annotations
 
-from stock_analyzer.cli.discover import _flatten_score_breakdown
+from stock_analyzer.cli.discover_steps.helpers import _flatten_score_breakdown
 
 
 def test_flattens_components_and_breakdown_into_matching_key_shape():

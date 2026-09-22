@@ -102,7 +102,7 @@ def persist_rebalance_run(
         )
     # Same forecast fields the discover persist step stores, so rebalance
     # runs' picks feed calibration and the thesis check too.
-    from ..cli.discover import _pick_forecasts
+    from ..cli.discover_steps.helpers import _pick_forecasts
 
     forecasts = _pick_forecasts(state.get("ranker_output"))
     prices = {c["ticker"]: c.get("price") for c in state.get("candidates") or []}

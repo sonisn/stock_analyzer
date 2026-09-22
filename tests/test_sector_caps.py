@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from stock_analyzer.cli.discover import _holdings_value_by_sector
+from stock_analyzer.cli.discover_steps.helpers import _holdings_value_by_sector
 from stock_analyzer.discover.sizer import enforce_sector_caps, format_sector_exposure_block
 from stock_analyzer.models.llm import Allocation, SizerOutput
 

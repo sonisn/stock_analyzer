@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from stock_analyzer.cli.discover import _format_risk_parity_block
+from stock_analyzer.cli.discover_steps.helpers import _format_risk_parity_block
 from stock_analyzer.models.llm import RankerOutput, RankerPick
 from stock_analyzer.models.market import RealizedVolatility
 
