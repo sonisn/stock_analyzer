@@ -35,7 +35,7 @@ rest still render.
 from __future__ import annotations
 
 import html
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -188,26 +188,7 @@ def build_portfolio_health(
     health.roll_ideas.update(roll_ideas or {})
     health.sector_rotation.update(sector_rotation or {})
     health.backlog.update(backlog or {})
-    # Only things a call can actually be written against. Without this,
-    # SPAXX showed 208 writable contracts, a 401(k) commingled pool
-    # showed 40 shares of headroom, and Taronis Technologies — whose
-    # registration the SEC revoked in 2023 — offered a contract.
-    from ..data.brokerage import is_listed_symbol
-
-    for account, items in (holdings or {}).items():
-        for item in items:
-            ticker = str(item.get("ticker") or "")
-            units = float(item.get("units") or 0)
-            if not ticker or units <= 0:
-                continue
-            if not is_listed_symbol(ticker, item.get("kind")):
-                continue
-            if is_cash_like(ticker, item.get("price")):
-                continue
-            if optionable is not None and ticker.upper() not in optionable:
-                continue
-            per_ticker = health.units_by_account.setdefault(ticker, {})
-            per_ticker[account] = per_ticker.get(account, 0.0) + units
+    _count_writable_units(health, holdings, optionable)
     positions = aggregate_positions(holdings, prices)
     tickers = sorted(positions)
 
@@ -217,55 +198,6 @@ def build_portfolio_health(
         except Exception as e:  # noqa: BLE001 — one check must not sink the email
             logger.warning("Portfolio health: %s check failed: %s", name, e)
             health.unavailable.append(name)
-
-    def snapshot() -> None:
-        value = sum(p["value"] for p in positions.values())
-        # Unrealized is measured only over positions that have BOTH a value
-        # and a cost basis. Summing all the value against only the known
-        # cost counted a position with no cost basis as pure profit.
-        priced = [p for p in positions.values() if p["value"] and p["cost"]]
-        cost = sum(p["cost"] for p in priced)
-        matched = sum(p["value"] for p in priced)
-        no_basis = [t for t, p in positions.items() if p["value"] and not p["cost"]]
-        if no_basis:
-            health.data_notes.append(
-                "no cost basis for " + ", ".join(sorted(no_basis)) + " — left out of unrealized P/L"
-            )
-        health.values = {t: p["value"] for t, p in positions.items()}
-        health.units = {t: p["units"] for t, p in positions.items()}
-        health.snapshot = {
-            "positions": len(positions),
-            "value": value,
-            "unrealized": matched - cost,
-            "unrealized_pct": (matched / cost - 1) * 100 if cost else 0.0,
-        }
-
-    def drawdowns() -> None:
-        for t in tickers:
-            p = positions[t]
-            if not p["cost"] or not p["value"]:
-                continue
-            pnl = (p["value"] / p["cost"] - 1) * 100
-            if pnl <= DRAWDOWN_REVIEW_PCT:
-                health.drawdowns.append({"ticker": t, "pnl_pct": pnl, "value": p["value"]})
-        health.drawdowns.sort(key=lambda r: r["pnl_pct"])
-
-    def sectors() -> None:
-        if sector_of is None:
-            return
-        by_ticker = sector_of(tickers)
-        health.sector_by_ticker = dict(by_ticker)
-        total = sum(p["value"] for p in positions.values())
-        weights: dict[str, float] = {}
-        for t, p in positions.items():
-            weights[by_ticker.get(t) or "Unknown"] = (
-                weights.get(by_ticker.get(t) or "Unknown", 0.0) + p["value"]
-            )
-        for sector, value in sorted(weights.items(), key=lambda kv: -kv[1]):
-            pct = value / total * 100 if total else 0.0
-            health.sectors.append(
-                {"sector": sector, "pct": pct, "over": sector != "Unknown" and pct > max_sector_pct}
-            )
 
     def thesis() -> None:
         if held_thesis_checks is not None:
@@ -279,9 +211,10 @@ def build_portfolio_health(
         if earnings is not None:
             health.earnings = sorted(earnings(tickers).values(), key=lambda e: e["days_until"])
 
-    attempt("snapshot", snapshot)
-    attempt("drawdown review", drawdowns)
-    attempt("sector weights", sectors)
+    attempt("snapshot", lambda: _snapshot(health, positions))
+    attempt("drawdown review", lambda: _drawdowns(health, positions))
+    if sector_of is not None:
+        attempt("sector weights", lambda: _sector_weights(health, positions, sector_of))
     attempt("thesis check", thesis)
     attempt("tax-loss harvesting", harvesting)
     attempt("earnings calendar", upcoming)
@@ -319,6 +252,93 @@ def build_portfolio_health(
 
     attempt("reinvestment ideas", ideas)
     return health
+
+
+def _count_writable_units(
+    health: PortfolioHealth,
+    holdings: dict[str, list[dict[str, Any]]],
+    optionable: set[str] | None,
+) -> None:
+    """Shares per ticker per account that a call could be written against.
+
+    Without this filter SPAXX showed 208 writable contracts, a 401(k)
+    commingled pool showed 40 shares of headroom, and Taronis Technologies
+    — whose registration the SEC revoked in 2023 — offered a contract.
+    """
+    from ..data.brokerage import is_listed_symbol
+
+    for account, items in (holdings or {}).items():
+        for item in items:
+            ticker = str(item.get("ticker") or "")
+            units = float(item.get("units") or 0)
+            if not ticker or units <= 0:
+                continue
+            if not is_listed_symbol(ticker, item.get("kind")):
+                continue
+            if is_cash_like(ticker, item.get("price")):
+                continue
+            if optionable is not None and ticker.upper() not in optionable:
+                continue
+            per_ticker = health.units_by_account.setdefault(ticker, {})
+            per_ticker[account] = per_ticker.get(account, 0.0) + units
+
+
+def _snapshot(health: PortfolioHealth, positions: dict[str, dict[str, float]]) -> None:
+    value = sum(p["value"] for p in positions.values())
+    # Unrealized is measured only over positions that have BOTH a value
+    # and a cost basis. Summing all the value against only the known
+    # cost counted a position with no cost basis as pure profit.
+    priced = [p for p in positions.values() if p["value"] and p["cost"]]
+    cost = sum(p["cost"] for p in priced)
+    matched = sum(p["value"] for p in priced)
+    no_basis = [t for t, p in positions.items() if p["value"] and not p["cost"]]
+    if no_basis:
+        health.data_notes.append(
+            "no cost basis for " + ", ".join(sorted(no_basis)) + " — left out of unrealized P/L"
+        )
+    health.values = {t: p["value"] for t, p in positions.items()}
+    health.units = {t: p["units"] for t, p in positions.items()}
+    health.snapshot = {
+        "positions": len(positions),
+        "value": value,
+        "unrealized": matched - cost,
+        "unrealized_pct": (matched / cost - 1) * 100 if cost else 0.0,
+    }
+
+
+def _drawdowns(health: PortfolioHealth, positions: dict[str, dict[str, float]]) -> None:
+    for t in sorted(positions):
+        p = positions[t]
+        if not p["cost"] or not p["value"]:
+            continue
+        pnl = (p["value"] / p["cost"] - 1) * 100
+        if pnl <= DRAWDOWN_REVIEW_PCT:
+            health.drawdowns.append({"ticker": t, "pnl_pct": pnl, "value": p["value"]})
+    health.drawdowns.sort(key=lambda r: r["pnl_pct"])
+
+
+def _sector_weights(
+    health: PortfolioHealth,
+    positions: dict[str, dict[str, float]],
+    sector_of: Callable[[list[str]], dict[str, str]],
+) -> None:
+    by_ticker = sector_of(sorted(positions))
+    health.sector_by_ticker = dict(by_ticker)
+    total = sum(p["value"] for p in positions.values())
+    weights: dict[str, float] = {}
+    for t, p in positions.items():
+        weights[by_ticker.get(t) or "Unknown"] = (
+            weights.get(by_ticker.get(t) or "Unknown", 0.0) + p["value"]
+        )
+    for sector, value in sorted(weights.items(), key=lambda kv: -kv[1]):
+        pct = value / total * 100 if total else 0.0
+        health.sectors.append(
+            {
+                "sector": sector,
+                "pct": pct,
+                "over": sector != "Unknown" and pct > health.max_sector_pct,
+            }
+        )
 
 
 def _sale_items(h: PortfolioHealth) -> list[str]:
@@ -364,170 +384,18 @@ def _money(v: float) -> str:
 
 
 def render_health_html(h: PortfolioHealth) -> str:
-    parts = ['<section class="health"><h2>Portfolio health</h2>']
-    s = h.snapshot
-    if s:
-        color = "#0e6432" if s["unrealized"] >= 0 else "#9c1010"
-        parts.append(
-            '<p class="health-strip">'
-            f"<b>{_money(s['value'])}</b> across {int(s['positions'])} positions · unrealized "
-            f'<b style="color:{color}">{_money(s["unrealized"])} ({s["unrealized_pct"]:+.1f}%)</b></p>'
-        )
-
-    alerts = 0
-    if h.drawdowns:
-        alerts += len(h.drawdowns)
-        parts.append("<h3>Down 20%+ from cost: re-check the long-term thesis</h3>")
-        parts.append(
-            _table(
-                ["", "Ticker", "From cost"],
-                [
-                    [_badge("DRAWDOWN"), html.escape(r["ticker"]), f"{r['pnl_pct']:+.1f}%"]
-                    for r in h.drawdowns
-                ],
-            )
-        )
-    if h.thesis:
-        alerts += len(h.thesis)
-        parts.append("<h3>Held former picks: thesis check</h3>")
-        parts.append(
-            _table(
-                ["", "Ticker", "Since pick", "vs SPY", "Why"],
-                [
-                    [
-                        _badge(c["status"]),
-                        html.escape(c["ticker"]),
-                        f"{c['return_pct']:+.1f}%",
-                        f"{c['excess_pct']:+.1f} pts" if c.get("excess_pct") is not None else "—",
-                        html.escape(
-                            "; ".join(x["text"] for x in c["signals"] if x["severity"] != "info")
-                        ),
-                    ]
-                    for c in h.thesis
-                ],
-            )
-        )
-    over = [r for r in h.sectors if r["over"]]
-    if over:
-        alerts += len(over)
-        parts.append("<h3>Sector weight above the cap</h3>")
-        parts.append(
-            _table(
-                ["", "Sector", "Share of holdings"],
-                [[_badge("OVER CAP"), html.escape(r["sector"]), f"{r['pct']:.1f}%"] for r in over],
-            )
-        )
-    if h.harvest:
-        alerts += len(h.harvest)
-        parts.append("<h3>Tax-loss harvesting candidates</h3>")
-        parts.append(
-            _table(
-                ["Ticker", "Account", "Loss", "Est. tax saving", "Note"],
-                [
-                    [
-                        html.escape(c["ticker"]),
-                        html.escape(c["account"]),
-                        f"{_money(c['loss_usd'])} ({c['loss_pct']:+.1f}%)",
-                        f"~{_money(c['est_tax_saving_usd'])}",
-                        html.escape(
-                            f"bought within 30 days — a loss sale before {c['wash_sale_until']} "
-                            "may be a wash sale"
-                            if c.get("wash_sale_until")
-                            else f"no rebuy until {c['rebuy_ok_after']}"
-                        ),
-                    ]
-                    for c in h.harvest
-                ],
-            )
-        )
-    if h.add_on:
-        parts.append("<h3>Add on weakness (long-term case intact)</h3>")
-        parts.append(
-            _table(
-                ["Ticker", "Below 52-week high", "Share of portfolio", "Sector"],
-                [
-                    [
-                        html.escape(a["ticker"]),
-                        f"{a['off_high_pct']:+.1f}%",
-                        f"{a['weight_pct']:.1f}%",
-                        html.escape(a.get("sector") or "—"),
-                    ]
-                    for a in h.add_on
-                ],
-            )
-        )
-    inc = h.income
-    if inc and (inc.get("forward_annual") or inc.get("received_12m")):
-        parts.append("<h3>Dividend income</h3>")
-        yld = f" ({inc['yield_pct']:.2f}% of holdings)" if inc.get("yield_pct") else ""
-        line = (
-            f"About <b>{_money(inc['forward_annual'])}/yr</b> at current rates{yld}; "
-            f"{_money(inc['received_12m'])} received over the last 12 months"
-        )
-        if inc.get("reinvested_12m"):
-            line += f", {_money(inc['reinvested_12m'])} of it reinvested automatically"
-        parts.append(f"<p>{line}.</p>")
-        if inc.get("cash_12m"):
-            where = (
-                f" — consider putting it to work in {html.escape(h.add_on[0]['ticker'])}"
-                if h.add_on
-                else ""
-            )
-            parts.append(
-                f"<p>{_money(inc['cash_12m'])} of dividends arrived as cash in "
-                f"{html.escape(', '.join(inc.get('cash_accounts') or []))}{where}.</p>"
-            )
-        payers = [r for r in inc.get("rows") or [] if r["annual"]][:5]
-        if payers:
-            parts.append(
-                _table(
-                    ["Ticker", "Per year", "Yield", "Last 12 months", "Reinvested"],
-                    [
-                        [
-                            html.escape(r["ticker"]),
-                            _money(r["annual"]),
-                            f"{r['yield_pct']:.2f}%" if r.get("yield_pct") else "—",
-                            _money(r["received_12m"]),
-                            {True: "yes", False: "no", None: "—"}[r["reinvested"]],
-                        ]
-                        for r in payers
-                    ],
-                )
-            )
-    if h.reinvest:
-        from ..discover.reinvest import format_idea
-
-        parts.append("<h3>Where sale proceeds could go</h3>")
-        parts.append(
-            "<p>Recent discover picks you don't hold, outside any over-cap sector: "
-            + ", ".join(html.escape(format_idea(i)) for i in h.reinvest)
-            + ".</p>"
-        )
-    if h.earnings_results:
-        from ..discover.post_earnings import result_text
-
-        parts.append("<h3>Earnings results (last 7 days)</h3>")
-        parts.append(
-            "<ul>"
-            + "".join(f"<li>{html.escape(result_text(r))}</li>" for r in h.earnings_results)
-            + "</ul>"
-        )
-    if h.earnings:
-        parts.append("<h3>Earnings in the next 7 days</h3>")
-        parts.append(
-            _table(
-                ["Ticker", "Date", "In"],
-                [
-                    [
-                        html.escape(e["ticker"]),
-                        html.escape(e["earnings_date"]),
-                        f"{e['days_until']}d",
-                    ]
-                    for e in h.earnings
-                ],
-            )
-        )
-    if not alerts:
+    alerts = [_drawdowns_html(h), _thesis_html(h), _over_cap_html(h), _harvest_html(h)]
+    parts = [
+        '<section class="health"><h2>Portfolio health</h2>',
+        _snapshot_html(h),
+        *alerts,
+        _add_on_html(h),
+        _income_html(h),
+        _reinvest_html(h),
+        _earnings_results_html(h),
+        _upcoming_earnings_html(h),
+    ]
+    if not any(alerts):
         parts.append("<p>No drawdown, thesis, sector or tax-loss alerts today.</p>")
     top = [r for r in h.sectors if r["sector"] != "Unknown"][:3]
     if top:
@@ -561,6 +429,183 @@ def render_health_html(h: PortfolioHealth) -> str:
         )
     parts.append("</section>")
     return "".join(parts)
+
+
+def _snapshot_html(h: PortfolioHealth) -> str:
+    s = h.snapshot
+    if not s:
+        return ""
+    color = "#0e6432" if s["unrealized"] >= 0 else "#9c1010"
+    return (
+        '<p class="health-strip">'
+        f"<b>{_money(s['value'])}</b> across {int(s['positions'])} positions · unrealized "
+        f'<b style="color:{color}">{_money(s["unrealized"])} ({s["unrealized_pct"]:+.1f}%)</b></p>'
+    )
+
+
+def _drawdowns_html(h: PortfolioHealth) -> str:
+    if not h.drawdowns:
+        return ""
+    return "<h3>Down 20%+ from cost: re-check the long-term thesis</h3>" + _table(
+        ["", "Ticker", "From cost"],
+        [
+            [_badge("DRAWDOWN"), html.escape(r["ticker"]), f"{r['pnl_pct']:+.1f}%"]
+            for r in h.drawdowns
+        ],
+    )
+
+
+def _thesis_html(h: PortfolioHealth) -> str:
+    if not h.thesis:
+        return ""
+    return "<h3>Held former picks: thesis check</h3>" + _table(
+        ["", "Ticker", "Since pick", "vs SPY", "Why"],
+        [
+            [
+                _badge(c["status"]),
+                html.escape(c["ticker"]),
+                f"{c['return_pct']:+.1f}%",
+                f"{c['excess_pct']:+.1f} pts" if c.get("excess_pct") is not None else "—",
+                html.escape("; ".join(x["text"] for x in c["signals"] if x["severity"] != "info")),
+            ]
+            for c in h.thesis
+        ],
+    )
+
+
+def _over_cap_html(h: PortfolioHealth) -> str:
+    over = [r for r in h.sectors if r["over"]]
+    if not over:
+        return ""
+    return "<h3>Sector weight above the cap</h3>" + _table(
+        ["", "Sector", "Share of holdings"],
+        [[_badge("OVER CAP"), html.escape(r["sector"]), f"{r['pct']:.1f}%"] for r in over],
+    )
+
+
+def _harvest_html(h: PortfolioHealth) -> str:
+    if not h.harvest:
+        return ""
+    return "<h3>Tax-loss harvesting candidates</h3>" + _table(
+        ["Ticker", "Account", "Loss", "Est. tax saving", "Note"],
+        [
+            [
+                html.escape(c["ticker"]),
+                html.escape(c["account"]),
+                f"{_money(c['loss_usd'])} ({c['loss_pct']:+.1f}%)",
+                f"~{_money(c['est_tax_saving_usd'])}",
+                html.escape(
+                    f"bought within 30 days — a loss sale before {c['wash_sale_until']} "
+                    "may be a wash sale"
+                    if c.get("wash_sale_until")
+                    else f"no rebuy until {c['rebuy_ok_after']}"
+                ),
+            ]
+            for c in h.harvest
+        ],
+    )
+
+
+def _add_on_html(h: PortfolioHealth) -> str:
+    if not h.add_on:
+        return ""
+    return "<h3>Add on weakness (long-term case intact)</h3>" + _table(
+        ["Ticker", "Below 52-week high", "Share of portfolio", "Sector"],
+        [
+            [
+                html.escape(a["ticker"]),
+                f"{a['off_high_pct']:+.1f}%",
+                f"{a['weight_pct']:.1f}%",
+                html.escape(a.get("sector") or "—"),
+            ]
+            for a in h.add_on
+        ],
+    )
+
+
+def _income_html(h: PortfolioHealth) -> str:
+    inc = h.income
+    if not (inc and (inc.get("forward_annual") or inc.get("received_12m"))):
+        return ""
+    parts = ["<h3>Dividend income</h3>"]
+    yld = f" ({inc['yield_pct']:.2f}% of holdings)" if inc.get("yield_pct") else ""
+    line = (
+        f"About <b>{_money(inc['forward_annual'])}/yr</b> at current rates{yld}; "
+        f"{_money(inc['received_12m'])} received over the last 12 months"
+    )
+    if inc.get("reinvested_12m"):
+        line += f", {_money(inc['reinvested_12m'])} of it reinvested automatically"
+    parts.append(f"<p>{line}.</p>")
+    if inc.get("cash_12m"):
+        where = (
+            f" — consider putting it to work in {html.escape(h.add_on[0]['ticker'])}"
+            if h.add_on
+            else ""
+        )
+        parts.append(
+            f"<p>{_money(inc['cash_12m'])} of dividends arrived as cash in "
+            f"{html.escape(', '.join(inc.get('cash_accounts') or []))}{where}.</p>"
+        )
+    payers = [r for r in inc.get("rows") or [] if r["annual"]][:5]
+    if payers:
+        parts.append(
+            _table(
+                ["Ticker", "Per year", "Yield", "Last 12 months", "Reinvested"],
+                [
+                    [
+                        html.escape(r["ticker"]),
+                        _money(r["annual"]),
+                        f"{r['yield_pct']:.2f}%" if r.get("yield_pct") else "—",
+                        _money(r["received_12m"]),
+                        {True: "yes", False: "no", None: "—"}[r["reinvested"]],
+                    ]
+                    for r in payers
+                ],
+            )
+        )
+    return "".join(parts)
+
+
+def _reinvest_html(h: PortfolioHealth) -> str:
+    if not h.reinvest:
+        return ""
+    from ..discover.reinvest import format_idea
+
+    return (
+        "<h3>Where sale proceeds could go</h3>"
+        "<p>Recent discover picks you don't hold, outside any over-cap sector: "
+        + ", ".join(html.escape(format_idea(i)) for i in h.reinvest)
+        + ".</p>"
+    )
+
+
+def _earnings_results_html(h: PortfolioHealth) -> str:
+    if not h.earnings_results:
+        return ""
+    from ..discover.post_earnings import result_text
+
+    return (
+        "<h3>Earnings results (last 7 days)</h3>"
+        + "<ul>"
+        + "".join(f"<li>{html.escape(result_text(r))}</li>" for r in h.earnings_results)
+        + "</ul>"
+    )
+
+
+def _upcoming_earnings_html(h: PortfolioHealth) -> str:
+    if not h.earnings:
+        return ""
+    return "<h3>Earnings in the next 7 days</h3>" + _table(
+        ["Ticker", "Date", "In"],
+        [
+            [
+                html.escape(e["ticker"]),
+                html.escape(e["earnings_date"]),
+                f"{e['days_until']}d",
+            ]
+            for e in h.earnings
+        ],
+    )
 
 
 def suggested_tickers(h: PortfolioHealth) -> list[str]:
@@ -1034,52 +1079,73 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
     thesis is a reason to sell. Price drops ask for a thesis re-check, and
     upcoming earnings or a pick past its bull case are information, not
     something to trade on."""
-    items: list[dict[str, Any]] = []
+    dest = _SaleDestinations(h)
+    items = [
+        *_account_items(h),
+        *_option_items(h),
+        *_drawdown_items(h, dest),
+        *_thesis_items(h, dest),
+        *_earnings_items(h),
+        *_harvest_items(h, dest),
+        *_add_on_items(h),
+        *_sector_items(h),
+    ]
+    items.sort(key=lambda i: i["priority"])
+    return items
 
-    def add(
-        priority: int, ticker: str | None, label: str, text: str, reinvest_into: str | None = None
-    ) -> None:
-        items.append(
-            {
-                "priority": priority,
-                "ticker": ticker,
-                "label": label,
-                "text": text,
-                "reinvest_into": reinvest_into,
-            }
+
+def _item(
+    priority: int, ticker: str | None, label: str, text: str, reinvest_into: str | None = None
+) -> dict[str, Any]:
+    return {
+        "priority": priority,
+        "ticker": ticker,
+        "label": label,
+        "text": text,
+        "reinvest_into": reinvest_into,
+    }
+
+
+class _SaleDestinations:
+    """Where each suggested sale's money could go. Each sale gets its own
+    idea while they last, then they repeat."""
+
+    def __init__(self, h: PortfolioHealth) -> None:
+        self._dest = (
+            {t: h.reinvest[i % len(h.reinvest)] for i, t in enumerate(_sale_items(h))}
+            if (h.reinvest)
+            else {}
         )
 
-    from ..discover.reinvest import format_idea
-
-    # Each sale gets its own idea while they last, then they repeat.
-    dest = (
-        {t: h.reinvest[i % len(h.reinvest)] for i, t in enumerate(_sale_items(h))}
-        if (h.reinvest)
-        else {}
-    )
-
-    def dest_ticker(ticker: str) -> str | None:
-        idea = dest.get(ticker)
+    def ticker(self, ticker: str) -> str | None:
+        idea = self._dest.get(ticker)
         return idea["ticker"] if idea else None
 
-    def proceeds(ticker: str, amount: float | None, *, conditional: bool = False) -> str:
-        idea = dest.get(ticker)
+    def clause(self, ticker: str, amount: float | None, *, conditional: bool = False) -> str:
+        from ..discover.reinvest import format_idea
+
+        idea = self._dest.get(ticker)
         if idea is None:
             return ""
         money = f"the ~{_money(amount)}" if amount else "the proceeds"
         lead = " If you do sell, reinvest" if conditional else " Reinvest"
         return f"{lead} {money} in {format_idea(idea)}."
 
+
+def _account_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
     for note in h.stale_accounts:
-        add(1, None, "STALE DATA", f"Reconnect the account: {note}.")
+        yield _item(1, None, "STALE DATA", f"Reconnect the account: {note}.")
+
+
+def _option_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
     for item in assignment_items(h):
-        add(3, item["ticker"], "CALL ASSIGNMENT", item["text"])
+        yield _item(3, item["ticker"], "CALL ASSIGNMENT", item["text"])
     for row in blocked_headroom(h):
-        add(4, row["ticker"], "OPTIONS NOT APPROVED", row["text"])
+        yield _item(4, row["ticker"], "OPTIONS NOT APPROVED", row["text"])
     for row in call_headroom(h):
         if not row["writable_contracts"] or not row["options_approved"]:
             continue
-        add(
+        yield _item(
             4,
             row["ticker"],
             "CALL HEADROOM",
@@ -1087,8 +1153,11 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             f"{row['writable_contracts']} contract(s) could be written against shares you "
             f"already own.",
         )
+
+
+def _drawdown_items(h: PortfolioHealth, dest: _SaleDestinations) -> Iterator[dict[str, Any]]:
     for r in h.drawdowns:
-        add(
+        yield _item(
             2,
             r["ticker"],
             "DRAWDOWN",
@@ -1097,24 +1166,27 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             f"has broken."
             + backlog_clause(h, r["ticker"])
             + covered_call_clause(h, r["ticker"])
-            + proceeds(r["ticker"], r.get("value"), conditional=True),
-            dest_ticker(r["ticker"]),
+            + dest.clause(r["ticker"], r.get("value"), conditional=True),
+            dest.ticker(r["ticker"]),
         )
+
+
+def _thesis_items(h: PortfolioHealth, dest: _SaleDestinations) -> Iterator[dict[str, Any]]:
     for c in h.thesis:
         reason = next((s["text"] for s in c["signals"] if s["severity"] != "info"), "")
         if c["status"] == "BROKEN":
-            add(
+            yield _item(
                 1,
                 c["ticker"],
                 "BROKEN",
                 f"Consider selling {c['ticker']}: long-term thesis broken — {reason}."
                 + backlog_clause(h, c["ticker"])
                 + covered_call_clause(h, c["ticker"])
-                + proceeds(c["ticker"], h.values.get(c["ticker"])),
-                dest_ticker(c["ticker"]),
+                + dest.clause(c["ticker"], h.values.get(c["ticker"])),
+                dest.ticker(c["ticker"]),
             )
         elif c["status"] == "TARGET HIT":
-            add(
+            yield _item(
                 4,
                 c["ticker"],
                 "TARGET HIT",
@@ -1123,25 +1195,31 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
                 + covered_call_clause(h, c["ticker"]),
             )
         else:
-            add(4, c["ticker"], "WATCH", f"Keep an eye on {c['ticker']}: {reason}.")
+            yield _item(4, c["ticker"], "WATCH", f"Keep an eye on {c['ticker']}: {reason}.")
+
+
+def _earnings_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
     from ..discover.post_earnings import result_text
 
     for r in h.earnings_results:
         lowering = r["direction"] == "lowering"
-        add(
+        yield _item(
             2 if lowering else 4,
             r["ticker"],
             "EARNINGS CUT" if lowering else "EARNINGS",
             result_text(r),
         )
     for e in h.earnings:
-        add(
+        yield _item(
             4,
             e["ticker"],
             "EARNINGS",
             f"{e['ticker']} reports {e['earnings_date']} (in {e['days_until']}d) — nothing to "
             f"do before the print; check the results against the long-term thesis.",
         )
+
+
+def _harvest_items(h: PortfolioHealth, dest: _SaleDestinations) -> Iterator[dict[str, Any]]:
     for c in h.harvest:
         wash = (
             f"; recent purchase — a loss sale before {c['wash_sale_until']} may be a wash sale"
@@ -1156,8 +1234,8 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
                 f"stock) with the ~{_money(slice_value)}."
             )
         else:
-            where = proceeds(c["ticker"], slice_value)
-        add(
+            where = dest.clause(c["ticker"], slice_value)
+        yield _item(
             3,
             c["ticker"],
             "TAX LOSS",
@@ -1166,27 +1244,31 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
             + backlog_clause(h, c["ticker"])
             + covered_call_clause(h, c["ticker"])
             + where,
-            swaps[0] if swaps else dest_ticker(c["ticker"]),
+            swaps[0] if swaps else dest.ticker(c["ticker"]),
         )
+
+
+def _add_on_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
     for a in h.add_on:
-        add(
+        yield _item(
             4,
             a["ticker"],
             "ADD ON DIP",
             f"{a['ticker']} is {-a['off_high_pct']:.0f}% below its 52-week high with its "
             f"long-term case intact — a candidate for new money." + headroom_clause(h, a["ticker"]),
         )
+
+
+def _sector_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
     for r in h.sectors:
         if r["over"]:
-            add(
+            yield _item(
                 4,
                 None,
                 "OVER CAP",
                 f"Don't add to {r['sector']}: already {r['pct']:.0f}% of holdings "
                 f"(cap {h.max_sector_pct:.0f}%).",
             )
-    items.sort(key=lambda i: i["priority"])
-    return items
 
 
 # Decision labels that are advice worth grading later, as ledger actions.
