@@ -11,23 +11,18 @@ from sqlmodel import Session
 from ..config import Settings
 from ..data.chart_img import fetch_charts
 from ..db.repository import (
-    insert_candidate,
-    insert_candidate_snapshot,
     insert_holdings_review,
-    insert_pick,
-    insert_pick_catalysts,
     insert_run,
     insert_run_outputs,
-    insert_scorecard,
 )
 from ..logging import current_log_file, get_logger
 from ..reporting.smtp import SmtpServer
-from .catalysts import catalysts_to_dicts
 from .report import (
     parse_confidence,
     parse_verdict,
     print_terminal_summary,
 )
+from .run_records import insert_candidates, insert_picks, insert_scorecards, insert_snapshots
 
 logger = get_logger(__name__)
 
@@ -55,37 +50,15 @@ def persist_rebalance_run(
         cash_budget=state.get("cash_balance"),
         kind="rebalance",
     )
-    for c in candidates:
-        insert_candidate(
-            session,
-            run_id,
-            c["ticker"],
-            passed_filter=c["passed_filter"],
-            fail_reasons=c["fail_reasons"],
-            score=c["score"],
-            score_components=c["score_components"],
-            score_breakdown=c["score_breakdown"],
-            sources=c["sources"],
-            conviction=c["conviction"],
-            sector=c["sector"],
-            price=c["price"],
-        )
-    fundamentals = state.get("fundamentals") or {}
-    revisions = state.get("eps_revisions") or {}
-    for c in candidates:
-        if c["ticker"] in fundamentals:
-            insert_candidate_snapshot(
-                session,
-                run_id,
-                c["ticker"],
-                fundamentals.get(c["ticker"]),
-                revisions.get(c["ticker"]),
-            )
-    for ticker, report in analyses.items():
-        analyst_text = getattr(report, "full_text", None) or (
-            report if isinstance(report, str) else ""
-        )
-        insert_scorecard(session, run_id, ticker, analyst_text)
+    insert_candidates(session, run_id, candidates)
+    insert_snapshots(
+        session,
+        run_id,
+        candidates,
+        state.get("fundamentals") or {},
+        state.get("eps_revisions") or {},
+    )
+    insert_scorecards(session, run_id, analyses)
     for ticker, review in state.get("holdings_reviews", {}).items():
         if not review:
             continue
@@ -102,30 +75,14 @@ def persist_rebalance_run(
         )
     # Same forecast fields the discover persist step stores, so rebalance
     # runs' picks feed calibration and the thesis check too.
-    from ..cli.discover_steps.helpers import _pick_forecasts
-
-    forecasts = _pick_forecasts(state.get("ranker_output"))
-    prices = {c["ticker"]: c.get("price") for c in state.get("candidates") or []}
-    for rank, ticker, _ in picks:
-        forecast = forecasts.get(ticker, {})
-        insert_pick(
-            session,
-            run_id,
-            rank=rank,
-            ticker=ticker,
-            conviction=forecast.get("conviction"),
-            ev_pct=forecast.get("ev_pct"),
-            entry_price=prices.get(ticker),
-            time_horizon=forecast.get("time_horizon"),
-            scenarios=forecast.get("scenarios"),
-            agreement_ratio=forecast.get("agreement_ratio"),
-            voting_providers=forecast.get("voting_providers"),
-        )
-        analysis = analyses.get(ticker)
-        if analysis is not None and getattr(analysis, "upcoming_catalysts", None):
-            insert_pick_catalysts(
-                session, run_id, ticker, catalysts_to_dicts(analysis.upcoming_catalysts)
-            )
+    insert_picks(
+        session,
+        run_id,
+        picks,
+        ranker_output=state.get("ranker_output"),
+        candidates=state.get("candidates") or [],
+        analyses=analyses,
+    )
     plan = state.get("rebalance_plan")
     insert_run_outputs(
         session,

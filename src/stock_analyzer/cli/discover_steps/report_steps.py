@@ -11,13 +11,8 @@ from agno.workflow.types import StepInput, StepOutput
 
 from ...data.chart_img import fetch_charts
 from ...db.repository import (
-    insert_candidate,
-    insert_candidate_snapshot,
-    insert_pick,
-    insert_pick_catalysts,
     insert_run,
     insert_run_outputs,
-    insert_scorecard,
 )
 from ...db.session import get_session
 from ...discover.catalysts import catalysts_to_dicts
@@ -28,12 +23,17 @@ from ...discover.report import (
     render_html_email,
     render_pdf,
 )
+from ...discover.run_records import (
+    insert_candidates,
+    insert_picks,
+    insert_scorecards,
+    insert_snapshots,
+)
 from ...logging import current_log_file, get_logger
 from ...reporting.smtp import SmtpServer
 from ...usage import TRACKER
 from .helpers import (
     _log_discover_analysis,
-    _pick_forecasts,
     _save_local_pdf,
 )
 
@@ -196,65 +196,23 @@ class ReportSteps:
                 cash_budget=self.settings.discover_cash_budget,
                 kind="discover",
             )
-            for c in self.state["candidates"]:
-                insert_candidate(
-                    session,
-                    run_id,
-                    c["ticker"],
-                    passed_filter=c["passed_filter"],
-                    fail_reasons=c["fail_reasons"],
-                    score=c["score"],
-                    score_components=c["score_components"],
-                    score_breakdown=c["score_breakdown"],
-                    sources=c["sources"],
-                    conviction=c["conviction"],
-                    sector=c["sector"],
-                    price=c["price"],
-                )
-            fundamentals = self.state.get("fundamentals") or {}
-            revisions = self.state.get("eps_revisions") or {}
-            for c in self.state["candidates"]:
-                if c["ticker"] in fundamentals:
-                    insert_candidate_snapshot(
-                        session,
-                        run_id,
-                        c["ticker"],
-                        fundamentals.get(c["ticker"]),
-                        revisions.get(c["ticker"]),
-                    )
-            for ticker, report in self.state["analyses"].items():
-                analyst_text = getattr(report, "full_text", None) or (
-                    report if isinstance(report, str) else ""
-                )
-                insert_scorecard(session, run_id, ticker, analyst_text)
-            # Forecast fields travel with the pick so calibration can grade
-            # them later; `entry_price` is the screen-time price, never a
-            # refetch, so a historical pick is never repriced with new data.
-            forecasts = _pick_forecasts(self.state.get("ranker_output"))
-            prices = {c["ticker"]: c.get("price") for c in self.state["candidates"]}
-            for rank, ticker, _ in self.state["picks"]:
-                forecast = forecasts.get(ticker, {})
-                insert_pick(
-                    session,
-                    run_id,
-                    rank=rank,
-                    ticker=ticker,
-                    conviction=forecast.get("conviction"),
-                    ev_pct=forecast.get("ev_pct"),
-                    entry_price=prices.get(ticker),
-                    time_horizon=forecast.get("time_horizon"),
-                    scenarios=forecast.get("scenarios"),
-                    agreement_ratio=forecast.get("agreement_ratio"),
-                    voting_providers=forecast.get("voting_providers"),
-                )
-                analysis = self.state["analyses"].get(ticker)
-                if analysis is not None and getattr(analysis, "upcoming_catalysts", None):
-                    insert_pick_catalysts(
-                        session,
-                        run_id,
-                        ticker,
-                        catalysts_to_dicts(analysis.upcoming_catalysts),
-                    )
+            insert_candidates(session, run_id, self.state["candidates"])
+            insert_snapshots(
+                session,
+                run_id,
+                self.state["candidates"],
+                self.state.get("fundamentals") or {},
+                self.state.get("eps_revisions") or {},
+            )
+            insert_scorecards(session, run_id, self.state["analyses"])
+            insert_picks(
+                session,
+                run_id,
+                self.state["picks"],
+                ranker_output=self.state.get("ranker_output"),
+                candidates=self.state["candidates"],
+                analyses=self.state["analyses"],
+            )
             insert_run_outputs(
                 session,
                 run_id,

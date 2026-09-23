@@ -54,6 +54,17 @@ class AnalysisSteps:
             # depends on so the rest of the pipeline degrades cleanly.
             self.state["analyses"] = {}
             return StepOutput(content="analyst: no survivors; skipping")
+        payloads = self._analyst_payloads(survivors)
+        analyses, catalyst_warnings = self._run_analysts(survivors, payloads)
+        self.state["analyses"] = analyses
+        self.state["catalyst_warnings"] = catalyst_warnings
+        if not self.state["analyses"]:
+            logger.error("Analyst: all calls failed; downstream LLM stages will skip")
+            return StepOutput(content="Analyst: all calls failed; downstream will skip")
+        return StepOutput(content=f"Analyst: {len(self.state['analyses'])} scorecards")
+
+    def _analyst_payloads(self, survivors: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Everything the Analyst sees about each survivor."""
         fundamentals = self.state.get("fundamentals", {})
         technicals = self.state.get("technicals", {})
         risk_factors = self.state.get("risk_factors", {})
@@ -121,7 +132,14 @@ class AnalysisSteps:
             }
             for flag in reconciliation_flags:
                 logger.warning("Data reconciliation (%s): %s", ticker, flag)
+        return payloads
 
+    def _run_analysts(
+        self, survivors: list[dict[str, Any]], payloads: dict[str, dict[str, Any]]
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Deep (Sonnet) and light (Haiku) tiers under the cost cap, then
+        the catalyst repair pass."""
+        recent_news = self.state.get("recent_news") or {}
         fallback = (
             self.settings.discover_fallback_provider,
             self.settings.resolve_fallback_model(),
@@ -146,15 +164,7 @@ class AnalysisSteps:
         for cut in cuts:
             BUDGET.note(cut)
         payloads = {t: payloads[t] for t in keep}
-        analyses, catalyst_warnings = repair_catalysts(
-            analyze_tiered(deep, light, payloads, deep_tickers), recent_news
-        )
-        self.state["analyses"] = analyses
-        self.state["catalyst_warnings"] = catalyst_warnings
-        if not self.state["analyses"]:
-            logger.error("Analyst: all calls failed; downstream LLM stages will skip")
-            return StepOutput(content="Analyst: all calls failed; downstream will skip")
-        return StepOutput(content=f"Analyst: {len(self.state['analyses'])} scorecards")
+        return repair_catalysts(analyze_tiered(deep, light, payloads, deep_tickers), recent_news)
 
     def step_holdings(self, step_input: StepInput) -> StepOutput:
         try:
