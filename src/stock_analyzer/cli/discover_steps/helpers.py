@@ -188,7 +188,7 @@ def _validate_and_correct_themes(
     """
     if themes is None:
         return None
-    from ...models.llm import MarketTheme, MarketThemes
+    from ...models.llm import MarketThemes
 
     if not isinstance(themes, MarketThemes):
         return themes
@@ -200,96 +200,108 @@ def _validate_and_correct_themes(
         if rs6 is not None:
             rs6_by_ticker[ticker.upper()] = float(rs6)
 
-    corrected: list[MarketTheme] = []
-    for theme in themes.themes:
-        valid_members = [t for t in theme.member_tickers if t.upper() in upper_universe]
-        dropped = [t for t in theme.member_tickers if t.upper() not in upper_universe]
-        if dropped:
-            logger.info(
-                "Theme '%s': dropped %d/%d tickers not in universe: %s",
-                theme.name,
-                len(dropped),
-                len(theme.member_tickers),
-                ", ".join(dropped[:10]),
-            )
-
-        if len(valid_members) < 3:
-            logger.warning(
-                "Theme '%s': only %d valid member(s) survive — dropping "
-                "theme entirely (likely hallucinated).",
-                theme.name,
-                len(valid_members),
-            )
-            continue
-
-        # Data-derived strength: avg rs_6mo across surviving members,
-        # mapped 0..10 via a sigmoid-ish curve. SPY-neutral → ~5, +15% → ~8,
-        # +25% → ~9, -10% → ~3, -20% → ~1.
-        rs6_values = [rs6_by_ticker[m.upper()] for m in valid_members if m.upper() in rs6_by_ticker]
-        if rs6_values:
-            avg_rs = sum(rs6_values) / len(rs6_values)
-            data_strength = max(1, min(10, round(5 + avg_rs * 25)))
-        else:
-            data_strength = theme.strength
-
-        # Reconcile: if claimed strength diverges from data by > 3, log
-        # warning and blend (60% data, 40% LLM).
-        delta = abs(theme.strength - data_strength)
-        if delta > 3:
-            corrected_strength = round(0.6 * data_strength + 0.4 * theme.strength)
-            logger.warning(
-                "Theme '%s': LLM claimed strength=%d, data says %d "
-                "(avg rs_6mo of members = %.1f%%). Adjusting to %d.",
-                theme.name,
-                theme.strength,
-                data_strength,
-                (sum(rs6_values) / len(rs6_values) * 100) if rs6_values else 0,
-                corrected_strength,
-            )
-            new_strength = corrected_strength
-        else:
-            new_strength = theme.strength
-
-        # Reconcile trending against data: if avg rs_6mo strongly negative,
-        # force 'down'; strongly positive → 'up'.
-        if rs6_values:
-            avg_rs = sum(rs6_values) / len(rs6_values)
-            if avg_rs < -0.05 and theme.trending == "up":
-                logger.warning(
-                    "Theme '%s': LLM said trending=up but avg rs_6mo "
-                    "of members is %.1f%% — flipping to 'down'.",
-                    theme.name,
-                    avg_rs * 100,
-                )
-                new_trending = "down"
-            elif avg_rs > 0.10 and theme.trending == "down":
-                logger.warning(
-                    "Theme '%s': LLM said trending=down but avg rs_6mo "
-                    "of members is %.1f%% — flipping to 'up'.",
-                    theme.name,
-                    avg_rs * 100,
-                )
-                new_trending = "up"
-            else:
-                new_trending = theme.trending
-        else:
-            new_trending = theme.trending
-
-        corrected.append(
-            MarketTheme(
-                name=theme.name,
-                description=theme.description,
-                strength=new_strength,
-                trending=new_trending,
-                member_tickers=valid_members,
-            )
-        )
-
+    corrected = [
+        fixed
+        for theme in themes.themes
+        if (fixed := _correct_theme(theme, upper_universe, rs6_by_ticker)) is not None
+    ]
     if not corrected:
         logger.warning("All themes were invalidated; returning None.")
         return None
+    return MarketThemes(themes=corrected, full_text=_themes_full_text(corrected))
 
-    # Rebuild full_text to reflect the corrections.
+
+def _correct_theme(
+    theme: Any, upper_universe: set[str], rs6_by_ticker: dict[str, float]
+) -> Any | None:
+    """The theme with unknown members dropped and strength/trend checked
+    against the members' data, or None if fewer than 3 members survive."""
+    from ...models.llm import MarketTheme
+
+    valid_members = [t for t in theme.member_tickers if t.upper() in upper_universe]
+    dropped = [t for t in theme.member_tickers if t.upper() not in upper_universe]
+    if dropped:
+        logger.info(
+            "Theme '%s': dropped %d/%d tickers not in universe: %s",
+            theme.name,
+            len(dropped),
+            len(theme.member_tickers),
+            ", ".join(dropped[:10]),
+        )
+
+    if len(valid_members) < 3:
+        logger.warning(
+            "Theme '%s': only %d valid member(s) survive — dropping "
+            "theme entirely (likely hallucinated).",
+            theme.name,
+            len(valid_members),
+        )
+        return None
+
+    rs6_values = [rs6_by_ticker[m.upper()] for m in valid_members if m.upper() in rs6_by_ticker]
+    return MarketTheme(
+        name=theme.name,
+        description=theme.description,
+        strength=_reconciled_strength(theme, rs6_values),
+        trending=_reconciled_trend(theme, rs6_values),
+        member_tickers=valid_members,
+    )
+
+
+def _reconciled_strength(theme: Any, rs6_values: list[float]) -> int:
+    """Data-derived strength: avg rs_6mo across surviving members, mapped
+    0..10 via a sigmoid-ish curve (SPY-neutral → ~5, +15% → ~8, +25% → ~9,
+    -10% → ~3, -20% → ~1). If the claimed strength diverges from it by more
+    than 3, log a warning and blend (60% data, 40% LLM)."""
+    if rs6_values:
+        avg_rs = sum(rs6_values) / len(rs6_values)
+        data_strength = max(1, min(10, round(5 + avg_rs * 25)))
+    else:
+        data_strength = theme.strength
+
+    delta = abs(theme.strength - data_strength)
+    if delta <= 3:
+        return theme.strength
+    corrected_strength = round(0.6 * data_strength + 0.4 * theme.strength)
+    logger.warning(
+        "Theme '%s': LLM claimed strength=%d, data says %d "
+        "(avg rs_6mo of members = %.1f%%). Adjusting to %d.",
+        theme.name,
+        theme.strength,
+        data_strength,
+        (sum(rs6_values) / len(rs6_values) * 100) if rs6_values else 0,
+        corrected_strength,
+    )
+    return corrected_strength
+
+
+def _reconciled_trend(theme: Any, rs6_values: list[float]) -> str:
+    """Reconcile trending against data: if avg rs_6mo is strongly negative,
+    force 'down'; strongly positive → 'up'."""
+    if not rs6_values:
+        return theme.trending
+    avg_rs = sum(rs6_values) / len(rs6_values)
+    if avg_rs < -0.05 and theme.trending == "up":
+        logger.warning(
+            "Theme '%s': LLM said trending=up but avg rs_6mo "
+            "of members is %.1f%% — flipping to 'down'.",
+            theme.name,
+            avg_rs * 100,
+        )
+        return "down"
+    if avg_rs > 0.10 and theme.trending == "down":
+        logger.warning(
+            "Theme '%s': LLM said trending=down but avg rs_6mo "
+            "of members is %.1f%% — flipping to 'up'.",
+            theme.name,
+            avg_rs * 100,
+        )
+        return "up"
+    return theme.trending
+
+
+def _themes_full_text(corrected: list[Any]) -> str:
+    """full_text rebuilt to reflect the corrections."""
     parts: list[str] = []
     for t in corrected:
         parts.append(
@@ -297,7 +309,7 @@ def _validate_and_correct_themes(
             f"{t.description}\n"
             f"Members: {', '.join(t.member_tickers)}"
         )
-    return MarketThemes(themes=corrected, full_text="\n\n".join(parts))
+    return "\n\n".join(parts)
 
 
 def _top_fail_reasons(candidates: list[dict[str, Any]], *, k: int = 3) -> str:

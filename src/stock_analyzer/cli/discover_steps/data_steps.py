@@ -333,56 +333,113 @@ class DataSteps:
 
         prescreen_reasons = self.state.get("prescreen_reasons") or {}
 
-        candidates: list[dict[str, Any]] = []
-        for ticker in self.state["tickers"]:
-            f = fundamentals.get(ticker)
-            t = technicals.get(ticker)
-            u = universe[ticker]
-            if ticker in prescreen_reasons:
-                # Eliminated before the fundamentals fetch — report why it
-                # actually failed rather than "no fundamentals data".
-                passes, reasons = False, list(prescreen_reasons[ticker])
-            else:
-                passes, reasons = passes_hard_filter(f, t, self.settings.discover_trend_gate)
-            cand: dict[str, Any] = {
-                "ticker": ticker,
-                "passed_filter": passes,
-                "fail_reasons": reasons,
-                "sources": u["sources"],
-                "conviction": u["conviction"],
-                "sector": (f or {}).get("sector"),
-                "price": (t or {}).get("price"),
-                "score": None,
-                "score_components": None,
-                "score_breakdown": None,
-                "themes": [m["name"] for m in (themes_by_t.get(ticker.upper()) or [])],
-            }
-            if passes and f and t:
-                scored = score_candidate(
-                    f,
-                    t,
-                    u,
-                    revisions=revisions_by_t.get(ticker),
-                )
-                bonus, theme_meta = theme_score_bonus(ticker, themes_by_t)
-                cand["score"] = round(scored["score"] + bonus, 1)
-                cand["score_components"] = {
-                    **scored["components"],
-                    "theme_bonus": bonus,
-                }
-                cand["score_breakdown"] = {
-                    **scored["breakdown"],
-                    "theme": theme_meta,
-                }
-            cand["sector_bias"] = sector_bias(cand["sector"], self.state.get("sector_rotation", {}))
-            candidates.append(cand)
-
+        candidates = [
+            self._screen_candidate(
+                ticker,
+                fundamentals=fundamentals,
+                technicals=technicals,
+                universe=universe,
+                themes_by_t=themes_by_t,
+                revisions_by_t=revisions_by_t,
+                prescreen_reasons=prescreen_reasons,
+            )
+            for ticker in self.state["tickers"]
+        ]
         self._apply_model_scores(candidates, technicals)
         survivors = sorted(
             [c for c in candidates if c["passed_filter"]],
             key=lambda c: c["score"] or 0,
             reverse=True,
         )[:MAX_CANDIDATES_FOR_LLM]
+        passed = self._log_screen_funnel(candidates, survivors, universe)
+        self.state["candidates"] = candidates
+        self.state["survivors"] = survivors
+        self.state["survivor_tickers"] = [c["ticker"] for c in survivors]
+
+        self._add_similar_setups(survivors)
+
+        if not survivors:
+            # Don't raise — agno doesn't propagate state from a step that
+            # raises, which leaves every enrichment step in the next
+            # parallel block reading a missing survivor_tickers key and
+            # cascading 4 retry attempts × 10 steps of KeyError noise.
+            # Log loudly + return so state is preserved; downstream
+            # steps short-circuit on the empty list and the run lands as
+            # an honest 0-candidates row in the DB.
+            logger.error(
+                "Screen: no candidates passed hard filters out of %d "
+                "(top fail reasons: %s). Continuing with empty survivors "
+                "so downstream steps degrade cleanly.",
+                len(candidates),
+                _top_fail_reasons(candidates),
+            )
+            return StepOutput(content=f"Screen: 0/{len(candidates)} passed — no survivors")
+        return StepOutput(
+            content=f"Screen: {passed}/{len(candidates)} passed; top {len(survivors)} → LLM"
+        )
+
+    def _screen_candidate(
+        self,
+        ticker: str,
+        *,
+        fundamentals: dict[str, Any],
+        technicals: dict[str, Any],
+        universe: dict[str, Any],
+        themes_by_t: dict[str, Any],
+        revisions_by_t: dict[str, Any],
+        prescreen_reasons: dict[str, Any],
+    ) -> dict[str, Any]:
+        """One ticker through the hard filter and, if it passes, the score."""
+        f = fundamentals.get(ticker)
+        t = technicals.get(ticker)
+        u = universe[ticker]
+        if ticker in prescreen_reasons:
+            # Eliminated before the fundamentals fetch — report why it
+            # actually failed rather than "no fundamentals data".
+            passes, reasons = False, list(prescreen_reasons[ticker])
+        else:
+            passes, reasons = passes_hard_filter(f, t, self.settings.discover_trend_gate)
+        cand: dict[str, Any] = {
+            "ticker": ticker,
+            "passed_filter": passes,
+            "fail_reasons": reasons,
+            "sources": u["sources"],
+            "conviction": u["conviction"],
+            "sector": (f or {}).get("sector"),
+            "price": (t or {}).get("price"),
+            "score": None,
+            "score_components": None,
+            "score_breakdown": None,
+            "themes": [m["name"] for m in (themes_by_t.get(ticker.upper()) or [])],
+        }
+        if passes and f and t:
+            scored = score_candidate(
+                f,
+                t,
+                u,
+                revisions=revisions_by_t.get(ticker),
+            )
+            bonus, theme_meta = theme_score_bonus(ticker, themes_by_t)
+            cand["score"] = round(scored["score"] + bonus, 1)
+            cand["score_components"] = {
+                **scored["components"],
+                "theme_bonus": bonus,
+            }
+            cand["score_breakdown"] = {
+                **scored["breakdown"],
+                "theme": theme_meta,
+            }
+        cand["sector_bias"] = sector_bias(cand["sector"], self.state.get("sector_rotation", {}))
+
+        return cand
+
+    def _log_screen_funnel(
+        self,
+        candidates: list[dict[str, Any]],
+        survivors: list[dict[str, Any]],
+        universe: dict[str, Any],
+    ) -> int:
+        """Log the screen funnel; returns how many passed the hard filter."""
         passed = sum(1 for c in candidates if c["passed_filter"])
         # Funnel visibility: the hard filter is a momentum style bet, so a
         # thin tape can collapse the survivor set to a handful. Logged
@@ -410,10 +467,9 @@ class DataSteps:
                 "weak discrimination rather than selection.",
                 passed,
             )
-        self.state["candidates"] = candidates
-        self.state["survivors"] = survivors
-        self.state["survivor_tickers"] = [c["ticker"] for c in survivors]
+        return passed
 
+    def _add_similar_setups(self, survivors: list[dict[str, Any]]) -> None:
         # Factor-similarity few-shot retrieval: for the handful of
         # top-scored survivors, find past candidates with a similar
         # score_breakdown and what they actually did. Appended onto the
@@ -448,26 +504,6 @@ class DataSteps:
                 )
         except Exception as e:
             logger.warning("similar-past-setups lookup failed (%s) — continuing without", e)
-
-        if not survivors:
-            # Don't raise — agno doesn't propagate state from a step that
-            # raises, which leaves every enrichment step in the next
-            # parallel block reading a missing survivor_tickers key and
-            # cascading 4 retry attempts × 10 steps of KeyError noise.
-            # Log loudly + return so state is preserved; downstream
-            # steps short-circuit on the empty list and the run lands as
-            # an honest 0-candidates row in the DB.
-            logger.error(
-                "Screen: no candidates passed hard filters out of %d "
-                "(top fail reasons: %s). Continuing with empty survivors "
-                "so downstream steps degrade cleanly.",
-                len(candidates),
-                _top_fail_reasons(candidates),
-            )
-            return StepOutput(content=f"Screen: 0/{len(candidates)} passed — no survivors")
-        return StepOutput(
-            content=f"Screen: {passed}/{len(candidates)} passed; top {len(survivors)} → LLM"
-        )
 
     def step_risk_factors(self, step_input: StepInput) -> StepOutput:
         tickers = self.state.get("survivor_tickers") or []
