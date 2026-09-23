@@ -13,6 +13,7 @@ from .report_sections import (
     append_track_record_section,
     append_usage_section,
     build_sections,
+    market_themes_sections,
     parse_confidence,
     parse_rebalance_status,
     parse_verdict,
@@ -160,6 +161,29 @@ def append_rebalance_overview(
         sections.append(Section(kind="heading", text="Holdings dashboard", level=2))
         sections.append(Section(kind="holdings_dashboard", holdings=dashboard_rows))
 
+    _append_catalyst_headlines(sections, holdings_positions, holdings_news)
+
+    if sector_value:
+        pie_data = sorted(sector_value.items(), key=lambda x: x[1], reverse=True)
+        sections.append(Section(kind="heading", text="Sector allocation", level=2))
+        sections.append(Section(kind="sector_pie", pie_data=pie_data))
+
+    append_track_record_section(sections, track_record, track_record_block)
+    append_thesis_check_section(sections, thesis_checks)
+
+    sections.extend(market_themes_sections(market_themes))
+
+    if macro_summary:
+        sections.append(Section(kind="heading", text="Macro regime", level=2))
+        sections.append(Section(kind="blockquote", text=macro_summary))
+
+
+def _append_catalyst_headlines(
+    sections: list[Section],
+    holdings_positions: dict[str, dict[str, Any]],
+    holdings_news: dict[str, list[dict[str, Any]]] | None,
+) -> None:
+    """Up to two headlines per holding, for reading — not for the verdicts."""
     catalyst_rows: list[list[str]] = []
     if holdings_news:
         for ticker in sorted(holdings_positions.keys()):
@@ -193,40 +217,6 @@ def append_rebalance_overview(
                 table_rows=catalyst_rows,
             )
         )
-
-    if sector_value:
-        pie_data = sorted(sector_value.items(), key=lambda x: x[1], reverse=True)
-        sections.append(Section(kind="heading", text="Sector allocation", level=2))
-        sections.append(Section(kind="sector_pie", pie_data=pie_data))
-
-    append_track_record_section(sections, track_record, track_record_block)
-    append_thesis_check_section(sections, thesis_checks)
-
-    from ..models.llm import MarketThemes
-
-    if isinstance(market_themes, MarketThemes) and market_themes.themes:
-        sections.append(Section(kind="heading", text="Current market themes", level=2))
-        sections.append(
-            Section(
-                kind="market_themes_panel",
-                data={
-                    "themes": [
-                        {
-                            "name": t.name,
-                            "description": t.description,
-                            "strength": t.strength,
-                            "trending": t.trending,
-                            "member_tickers": list(t.member_tickers),
-                        }
-                        for t in market_themes.themes
-                    ],
-                },
-            )
-        )
-
-    if macro_summary:
-        sections.append(Section(kind="heading", text="Macro regime", level=2))
-        sections.append(Section(kind="blockquote", text=macro_summary))
 
 
 def append_harvest_section(
@@ -322,104 +312,22 @@ def append_rebalance_plan_body(
     sections.append(Section(kind="heading", text="Rebalance plan (action list)", level=1))
 
     if plan_failure:
-        sections.append(
-            Section(
-                kind="para",
-                text=(
-                    f"<b>{plan_failure}.</b> There is no action list below because the "
-                    "plan could not be read back, not because the rebalancer decided to "
-                    "hold. Whatever of it survived is printed underneath, unedited — read "
-                    "it as notes, not as instructions — and the run should be repeated "
-                    "before you act."
-                ),
-            )
-        )
-        if rebalance_text:
-            sections.append(Section(kind="heading", text="Plan text as far as it got", level=2))
-            sections.append(Section(kind="preformatted", text=rebalance_text))
-
+        _append_plan_failure(sections, plan_failure, rebalance_text)
     plan = rebalance_plan if isinstance(rebalance_plan, RebalancePlan) else None
     if plan and plan.actions:
-        sections.append(
-            Section(
-                kind="rebalance_action_table",
-                data={
-                    "actions": [
-                        {"action": a.action, "ticker": a.ticker, "sizing": a.sizing}
-                        for a in plan.actions
-                    ],
-                    "summary": plan.summary,
-                },
-            )
-        )
-
+        _append_action_table(sections, plan)
     if isinstance(premortem, PreMortem) and (premortem.failures or premortem.summary):
-        sections.append(
-            Section(
-                kind="heading",
-                text="Pre-mortem (adversarial hindsight)",
-                level=2,
-            )
-        )
-        sections.append(
-            Section(
-                kind="premortem_panel",
-                data={
-                    "overall_verdict": premortem.overall_verdict,
-                    "summary": premortem.summary,
-                    "failures": [
-                        {
-                            "likelihood": f.likelihood,
-                            "severity": f.severity,
-                            "triggering_action": f.triggering_action,
-                            "failure_narrative": f.failure_narrative,
-                            "early_warning": f.early_warning,
-                        }
-                        for f in premortem.failures
-                    ],
-                },
-            )
-        )
-
-    from .cc_render import (
-        compute_premium_deployment,
-        compute_premium_income,
-        compute_round_lot_summary,
-    )
-
-    if plan is not None and plan.option_writes:
-        sections.append(
-            Section(
-                kind="premium_income",
-                data=compute_premium_income(plan, slippage_buffer=cc_slippage_buffer),
-            )
-        )
-    if cc_round_lot_coverage:
-        rls = compute_round_lot_summary(cc_round_lot_coverage)
-        if rls["rows"]:
-            sections.append(Section(kind="round_lot_coverage", data=rls))
-    if plan is not None and (
-        plan.option_writes
-        or any(
-            a.action in ("ADD", "BUY") or (a.action == "TRIM" and "stub" in a.sizing.lower())
-            for a in plan.actions
-        )
-    ):
-        stub_usd = 0.0
-        if cc_round_lot_coverage:
-            for a in plan.actions:
-                if a.action == "TRIM" and "stub" in a.sizing.lower():
-                    rec = cc_round_lot_coverage.get(a.ticker)
-                    if rec is not None:
-                        stub_usd += getattr(rec, "stub_dollar_value", 0.0)
-        deployment = compute_premium_deployment(
+        _append_premortem(sections, premortem)
+    if plan is not None:
+        _append_option_income(
+            sections,
             plan,
             cash_balance=cash_balance,
-            slippage_buffer=cc_slippage_buffer,
-            stub_consolidation_usd=stub_usd,
+            cc_round_lot_coverage=cc_round_lot_coverage,
+            cc_slippage_buffer=cc_slippage_buffer,
         )
-        if deployment["gross_premium_usd"] > 0 or deployment["deployments"] or stub_usd > 0:
-            sections.append(Section(kind="premium_deployment", data=deployment))
+    elif cc_round_lot_coverage:
+        _append_round_lot_coverage(sections, cc_round_lot_coverage)
 
     if cc_warnings:
         sections.append(
@@ -442,6 +350,124 @@ def append_rebalance_plan_body(
         )
 
     sections.append(Section(kind="preformatted", text=rebalance_text))
+
+
+def _append_plan_failure(sections: list[Section], plan_failure: str, rebalance_text: str) -> None:
+    sections.append(
+        Section(
+            kind="para",
+            text=(
+                f"<b>{plan_failure}.</b> There is no action list below because the "
+                "plan could not be read back, not because the rebalancer decided to "
+                "hold. Whatever of it survived is printed underneath, unedited — read "
+                "it as notes, not as instructions — and the run should be repeated "
+                "before you act."
+            ),
+        )
+    )
+    if rebalance_text:
+        sections.append(Section(kind="heading", text="Plan text as far as it got", level=2))
+        sections.append(Section(kind="preformatted", text=rebalance_text))
+
+
+def _append_action_table(sections: list[Section], plan: RebalancePlan) -> None:
+    sections.append(
+        Section(
+            kind="rebalance_action_table",
+            data={
+                "actions": [
+                    {"action": a.action, "ticker": a.ticker, "sizing": a.sizing}
+                    for a in plan.actions
+                ],
+                "summary": plan.summary,
+            },
+        )
+    )
+
+
+def _append_premortem(sections: list[Section], premortem: PreMortem) -> None:
+    sections.append(
+        Section(
+            kind="heading",
+            text="Pre-mortem (adversarial hindsight)",
+            level=2,
+        )
+    )
+    sections.append(
+        Section(
+            kind="premortem_panel",
+            data={
+                "overall_verdict": premortem.overall_verdict,
+                "summary": premortem.summary,
+                "failures": [
+                    {
+                        "likelihood": f.likelihood,
+                        "severity": f.severity,
+                        "triggering_action": f.triggering_action,
+                        "failure_narrative": f.failure_narrative,
+                        "early_warning": f.early_warning,
+                    }
+                    for f in premortem.failures
+                ],
+            },
+        )
+    )
+
+
+def _append_round_lot_coverage(
+    sections: list[Section], cc_round_lot_coverage: dict[str, Any]
+) -> None:
+    from .cc_render import compute_round_lot_summary
+
+    rls = compute_round_lot_summary(cc_round_lot_coverage)
+    if rls["rows"]:
+        sections.append(Section(kind="round_lot_coverage", data=rls))
+
+
+def _append_option_income(
+    sections: list[Section],
+    plan: RebalancePlan,
+    *,
+    cash_balance: float | None,
+    cc_round_lot_coverage: dict[str, Any] | None,
+    cc_slippage_buffer: float,
+) -> None:
+    """Premium from the calls written, part-lot coverage, and where the
+    premium (plus any stub sales) gets deployed."""
+    from .cc_render import compute_premium_deployment, compute_premium_income
+
+    if plan.option_writes:
+        sections.append(
+            Section(
+                kind="premium_income",
+                data=compute_premium_income(plan, slippage_buffer=cc_slippage_buffer),
+            )
+        )
+    if cc_round_lot_coverage:
+        _append_round_lot_coverage(sections, cc_round_lot_coverage)
+    if not (
+        plan.option_writes
+        or any(
+            a.action in ("ADD", "BUY") or (a.action == "TRIM" and "stub" in a.sizing.lower())
+            for a in plan.actions
+        )
+    ):
+        return
+    stub_usd = 0.0
+    if cc_round_lot_coverage:
+        for a in plan.actions:
+            if a.action == "TRIM" and "stub" in a.sizing.lower():
+                rec = cc_round_lot_coverage.get(a.ticker)
+                if rec is not None:
+                    stub_usd += getattr(rec, "stub_dollar_value", 0.0)
+    deployment = compute_premium_deployment(
+        plan,
+        cash_balance=cash_balance,
+        slippage_buffer=cc_slippage_buffer,
+        stub_consolidation_usd=stub_usd,
+    )
+    if deployment["gross_premium_usd"] > 0 or deployment["deployments"] or stub_usd > 0:
+        sections.append(Section(kind="premium_deployment", data=deployment))
 
 
 def append_reinvest_section(sections: list[Section], reinvest: dict[str, Any] | None) -> None:
@@ -608,6 +634,26 @@ def append_discover_appendix(
     sections.extend(discover_sections[2:])
 
 
+def _plan_status(
+    plan_failure: str | None, rebalance_plan: object, rebalance_text: str
+) -> tuple[str, str]:
+    """(status, banner text) for the top of the report."""
+    if plan_failure:
+        # A plan that never arrived is not a plan that said "do nothing".
+        # The banner has to carry that, because every other part of this
+        # report looks identical in both cases.
+        return "FAILED", "STATUS: PLAN INCOMPLETE — DO NOT READ AS 'NO TRADES'"
+    status = parse_rebalance_status(rebalance_plan or rebalance_text)
+    status_label = (
+        "STATUS: NO ACTION RECOMMENDED"
+        if status == "NO_ACTION"
+        else "STATUS: ACTION RECOMMENDED"
+        if status == "ACTION"
+        else "STATUS: REVIEW REQUIRED"
+    )
+    return status, status_label
+
+
 def build_rebalance_sections(
     *,
     rebalance_text: str,
@@ -652,20 +698,7 @@ def build_rebalance_sections(
     del cc_eligibility, cc_stub_pool_total_usd  # reserved for future section use
 
     today = date.today().isoformat()
-    if plan_failure:
-        # A plan that never arrived is not a plan that said "do nothing".
-        # The banner has to carry that, because every other part of this
-        # report looks identical in both cases.
-        status, status_label = "FAILED", "STATUS: PLAN INCOMPLETE — DO NOT READ AS 'NO TRADES'"
-    else:
-        status = parse_rebalance_status(rebalance_plan or rebalance_text)
-        status_label = (
-            "STATUS: NO ACTION RECOMMENDED"
-            if status == "NO_ACTION"
-            else "STATUS: ACTION RECOMMENDED"
-            if status == "ACTION"
-            else "STATUS: REVIEW REQUIRED"
-        )
+    status, status_label = _plan_status(plan_failure, rebalance_plan, rebalance_text)
 
     dashboard_rows, total_value, _total_cost, sector_value, total_pnl_pct = (
         build_holdings_dashboard_rows(

@@ -435,83 +435,7 @@ def format_validation_report(report: ValidationReport) -> str:
     ]
 
     if report.buckets:
-        lines += [
-            "MEAN FORWARD ALPHA BY SCORE QUINTILE",
-            "(a rising curve means the composite ranks correctly; a flat one",
-            " means the score is not separating winners from losers)",
-            "",
-            f"  {'':4s}  {'n':>4s}  {'mean score':>10s}  {'mean alpha':>10s}  "
-            f"{'median':>8s}  {'hit rate':>8s}",
-        ]
-        for bucket in report.buckets:
-            lines.append(
-                f"  {bucket.label:4s}  {bucket.n:4d}  {bucket.mean_score:10.1f}  "
-                f"{bucket.mean_alpha_pct:+9.2f}%  "
-                f"{bucket.median_alpha_pct:+7.2f}%  {bucket.hit_rate:7.0%}"
-            )
-        top = report.buckets[-1].mean_alpha_pct
-        bottom = report.buckets[0].mean_alpha_pct
-        means = [b.mean_alpha_pct for b in report.buckets]
-        monotone = all(b >= a for a, b in zip(means, means[1:], strict=False))
-        lines += [
-            "",
-            f"  Q5 - Q1 spread: {top - bottom:+.2f}%",
-            f"  Curve is {'monotone' if monotone else 'NOT monotone'} across Q1-Q5.",
-        ]
-        # The spread alone is a two-point comparison on small buckets, so a
-        # pure-noise score can show a large one. The verdict leans on the
-        # rank correlation AND on whether that correlation is resolvable at
-        # this sample size: the standard error of a Spearman IC is roughly
-        # 1/sqrt(n-1), so on 30 names anything under ~0.36 is
-        # indistinguishable from chance. Saying so is the point — this tool
-        # exists to withhold false comfort, and "not enough data yet" is a
-        # legitimate answer that a bare spread would hide.
-        ic = report.score_ic
-        n = report.n_candidates
-        se = 1.0 / math.sqrt(max(n - 1, 1))
-        threshold = 1.96 * se
-        lines.append(
-            f"  IC needed to clear noise at n={n}: |IC| > {threshold:.3f} (1.96 x standard error)."
-        )
-        if abs(top - bottom) <= 1.0:
-            verdict = (
-                f"  VERDICT: NO separation (spread {top - bottom:+.2f}%) — the "
-                f"composite is not earning its weight in deciding which "
-                f"candidates reach the LLM stages."
-            )
-        elif ic is None:
-            verdict = (
-                "  VERDICT: forward returns show no variation, so no rank "
-                "correlation is computable. Treat the spread as an artifact."
-            )
-        elif ic >= threshold:
-            verdict = (
-                f"  VERDICT: the score is separating (IC {ic:+.3f} clears the "
-                f"{threshold:.3f} noise bar, spread {top - bottom:+.2f}%)."
-                + (
-                    ""
-                    if monotone
-                    else " The non-monotone middle says the "
-                    "ordering is noisy inside the range — trust the extremes, "
-                    "not the individual buckets."
-                )
-            )
-        elif ic <= -threshold:
-            verdict = (
-                f"  VERDICT: the score is INVERTED (IC {ic:+.3f}) — "
-                f"high-scoring candidates underperformed low-scoring ones. "
-                f"Stop raising the cutoff and re-examine the components below."
-            )
-        else:
-            verdict = (
-                f"  VERDICT: NO reliable separation. The Q5-Q1 gap "
-                f"({top - bottom:+.2f}%) is not backed by the overall ranking "
-                f"(IC {ic:+.3f}, inside the {threshold:.3f} noise bar at "
-                f"n={n}), so it is two small buckets differing by chance "
-                f"rather than the score working. Collect more runs before "
-                f"acting on it."
-            )
-        lines += ["", verdict]
+        lines += _quintile_lines(report)
     else:
         lines.append(
             f"Not enough observations for quintiles "
@@ -519,38 +443,7 @@ def format_validation_report(report: ValidationReport) -> str:
         )
 
     if report.component_ics:
-        lines += [
-            "",
-            "INFORMATION COEFFICIENT BY SUB-COMPONENT",
-            "(Spearman rank correlation with forward alpha. Negative = the",
-            " component is pointing the wrong way and costing you accuracy.)",
-            "",
-            f"  {'component':28s}  {'n':>4s}  {'IC':>7s}  {'mean':>6s}  verdict",
-        ]
-        for component in report.component_ics:
-            lines.append(
-                f"  {component.component:28s}  {component.n:4d}  "
-                f"{component.ic:+7.3f}  {component.mean_value:6.1f}  "
-                f"{component.verdict}"
-            )
-        bad = [c for c in report.component_ics if c.is_significant and c.ic < 0]
-        if bad:
-            lines += [
-                "",
-                "ACTION: these components have a wrong sign that clears the "
-                "noise bar — drop or invert them in screen.py before tuning "
-                "anything else:",
-            ]
-            lines += [
-                f"  - {c.component} (IC {c.ic:+.3f} vs bar {c.noise_bar:.3f}, n={c.n})" for c in bad
-            ]
-        elif report.component_ics:
-            lines += [
-                "",
-                "No component's IC clears the noise bar yet, in either "
-                "direction. That is a sample-size result, not a clean bill of "
-                "health — keep running the pipeline and re-check.",
-            ]
+        lines += _component_lines(report)
 
     lines += [
         "",
@@ -560,3 +453,126 @@ def format_validation_report(report: ValidationReport) -> str:
         "=" * 72,
     ]
     return "\n".join(lines)
+
+
+def _quintile_lines(report: ValidationReport) -> list[str]:
+    """Mean forward alpha by score quintile, the spread, and the verdict."""
+    lines: list[str] = [
+        "MEAN FORWARD ALPHA BY SCORE QUINTILE",
+        "(a rising curve means the composite ranks correctly; a flat one",
+        " means the score is not separating winners from losers)",
+        "",
+        f"  {'':4s}  {'n':>4s}  {'mean score':>10s}  {'mean alpha':>10s}  "
+        f"{'median':>8s}  {'hit rate':>8s}",
+    ]
+    for bucket in report.buckets:
+        lines.append(
+            f"  {bucket.label:4s}  {bucket.n:4d}  {bucket.mean_score:10.1f}  "
+            f"{bucket.mean_alpha_pct:+9.2f}%  "
+            f"{bucket.median_alpha_pct:+7.2f}%  {bucket.hit_rate:7.0%}"
+        )
+    top = report.buckets[-1].mean_alpha_pct
+    bottom = report.buckets[0].mean_alpha_pct
+    means = [b.mean_alpha_pct for b in report.buckets]
+    monotone = all(b >= a for a, b in zip(means, means[1:], strict=False))
+    lines += [
+        "",
+        f"  Q5 - Q1 spread: {top - bottom:+.2f}%",
+        f"  Curve is {'monotone' if monotone else 'NOT monotone'} across Q1-Q5.",
+    ]
+    # The spread alone is a two-point comparison on small buckets, so a
+    # pure-noise score can show a large one. The verdict leans on the
+    # rank correlation AND on whether that correlation is resolvable at
+    # this sample size: the standard error of a Spearman IC is roughly
+    # 1/sqrt(n-1), so on 30 names anything under ~0.36 is
+    # indistinguishable from chance. Saying so is the point — this tool
+    # exists to withhold false comfort, and "not enough data yet" is a
+    # legitimate answer that a bare spread would hide.
+    ic = report.score_ic
+    n = report.n_candidates
+    se = 1.0 / math.sqrt(max(n - 1, 1))
+    threshold = 1.96 * se
+    lines.append(
+        f"  IC needed to clear noise at n={n}: |IC| > {threshold:.3f} (1.96 x standard error)."
+    )
+    lines += ["", _separation_verdict(top - bottom, ic, threshold, n, monotone=monotone)]
+    return lines
+
+
+def _separation_verdict(
+    spread: float, ic: float | None, threshold: float, n: int, *, monotone: bool
+) -> str:
+    if abs(spread) <= 1.0:
+        return (
+            f"  VERDICT: NO separation (spread {spread:+.2f}%) — the "
+            f"composite is not earning its weight in deciding which "
+            f"candidates reach the LLM stages."
+        )
+    if ic is None:
+        return (
+            "  VERDICT: forward returns show no variation, so no rank "
+            "correlation is computable. Treat the spread as an artifact."
+        )
+    if ic >= threshold:
+        return (
+            f"  VERDICT: the score is separating (IC {ic:+.3f} clears the "
+            f"{threshold:.3f} noise bar, spread {spread:+.2f}%)."
+            + (
+                ""
+                if monotone
+                else " The non-monotone middle says the "
+                "ordering is noisy inside the range — trust the extremes, "
+                "not the individual buckets."
+            )
+        )
+    if ic <= -threshold:
+        return (
+            f"  VERDICT: the score is INVERTED (IC {ic:+.3f}) — "
+            f"high-scoring candidates underperformed low-scoring ones. "
+            f"Stop raising the cutoff and re-examine the components below."
+        )
+    return (
+        f"  VERDICT: NO reliable separation. The Q5-Q1 gap "
+        f"({spread:+.2f}%) is not backed by the overall ranking "
+        f"(IC {ic:+.3f}, inside the {threshold:.3f} noise bar at "
+        f"n={n}), so it is two small buckets differing by chance "
+        f"rather than the score working. Collect more runs before "
+        f"acting on it."
+    )
+
+
+def _component_lines(report: ValidationReport) -> list[str]:
+    """Information coefficient per sub-component, and what to do about it."""
+    lines = [
+        "",
+        "INFORMATION COEFFICIENT BY SUB-COMPONENT",
+        "(Spearman rank correlation with forward alpha. Negative = the",
+        " component is pointing the wrong way and costing you accuracy.)",
+        "",
+        f"  {'component':28s}  {'n':>4s}  {'IC':>7s}  {'mean':>6s}  verdict",
+    ]
+    for component in report.component_ics:
+        lines.append(
+            f"  {component.component:28s}  {component.n:4d}  "
+            f"{component.ic:+7.3f}  {component.mean_value:6.1f}  "
+            f"{component.verdict}"
+        )
+    bad = [c for c in report.component_ics if c.is_significant and c.ic < 0]
+    if bad:
+        lines += [
+            "",
+            "ACTION: these components have a wrong sign that clears the "
+            "noise bar — drop or invert them in screen.py before tuning "
+            "anything else:",
+        ]
+        lines += [
+            f"  - {c.component} (IC {c.ic:+.3f} vs bar {c.noise_bar:.3f}, n={c.n})" for c in bad
+        ]
+    elif report.component_ics:
+        lines += [
+            "",
+            "No component's IC clears the noise bar yet, in either "
+            "direction. That is a sample-size result, not a clean bill of "
+            "health — keep running the pipeline and re-check.",
+        ]
+    return lines

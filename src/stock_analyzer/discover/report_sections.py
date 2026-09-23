@@ -859,6 +859,32 @@ def build_sections(
     return s
 
 
+def market_themes_sections(market_themes: object) -> list[Section]:
+    """The 'Current market themes' heading and panel, when there are any."""
+    from ..models.llm import MarketThemes
+
+    if not (isinstance(market_themes, MarketThemes) and market_themes.themes):
+        return []
+    return [
+        Section(kind="heading", text="Current market themes", level=2),
+        Section(
+            kind="market_themes_panel",
+            data={
+                "themes": [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "strength": t.strength,
+                        "trending": t.trending,
+                        "member_tickers": list(t.member_tickers),
+                    }
+                    for t in market_themes.themes
+                ],
+            },
+        ),
+    ]
+
+
 def _context_sections(
     *,
     market_themes: object,
@@ -870,30 +896,8 @@ def _context_sections(
 ) -> list[Section]:
     """Themes, macro, data warnings, rotation and holdings — the context
     that follows the picks."""
-    ctx: list[Section] = []
-
     # Market themes panel — what's hot right now (drives ranker bias).
-    from ..models.llm import MarketThemes
-
-    if isinstance(market_themes, MarketThemes) and market_themes.themes:
-        ctx.append(Section(kind="heading", text="Current market themes", level=2))
-        ctx.append(
-            Section(
-                kind="market_themes_panel",
-                data={
-                    "themes": [
-                        {
-                            "name": t.name,
-                            "description": t.description,
-                            "strength": t.strength,
-                            "trending": t.trending,
-                            "member_tickers": list(t.member_tickers),
-                        }
-                        for t in market_themes.themes
-                    ],
-                },
-            )
-        )
+    ctx: list[Section] = market_themes_sections(market_themes)
 
     if macro_summary:
         ctx.append(Section(kind="heading", text="Macro regime", level=2))

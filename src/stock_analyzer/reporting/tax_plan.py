@@ -30,8 +30,17 @@ def render_tax_plan_html(
         "professional.</p>"
     ]
 
-    parts.append("<h2>Realized so far this year (estimate)</h2>")
-    s = summary
+    parts.append(_realized_html(realized, summary))
+    parts.append(_harvest_html(harvest, summary))
+    if worthless:
+        parts.append(_worthless_html(worthless))
+    parts.append(_wait_for_long_term_html(soon))
+    return _wrap_html(f"Tax planner — {year}", "".join(parts))
+
+
+def _realized_html(realized: dict[str, dict[str, Any]], s: dict[str, Any]) -> str:
+    esc = html.escape
+    parts = ["<h2>Realized so far this year (estimate)</h2>"]
     parts.append(
         f"<p>Short-term <b>{_money(s['short_term'])}</b> · long-term "
         f"<b>{_money(s['long_term'])}</b> · net <b>{_money(s['net_gain'])}</b></p>"
@@ -67,95 +76,106 @@ def render_tax_plan_html(
             "share(s) have no purchase on record (e.g. transferred in) — their gain isn't "
             "included.</p>"
         )
+    return "".join(parts)
 
-    parts.append("<h2>Losses you could harvest</h2>")
+
+def _harvest_html(harvest: list[dict[str, Any]], s: dict[str, Any]) -> str:
+    esc = html.escape
+    parts = ["<h2>Losses you could harvest</h2>"]
     if not harvest:
         parts.append("<p>No taxable position is far enough below its cost to harvest.</p>")
-    else:
-        parts.append(
-            f"<p>Selling these realizes <b>{_money(-s['harvestable_loss'])}</b>: "
-            f"{_money(s['offsets_gains'])} offsets this year's gains, "
-            f"{_money(s['offsets_ordinary'])} offsets ordinary income (up to $3,000)"
-            + (f", and {_money(s['carry_forward'])} carries forward" if s["carry_forward"] else "")
-            + f" — roughly {_money(s['est_tax_saving'])} of tax.</p>"
-        )
-        parts.append(
-            _table(
-                ["Ticker", "Account", "Loss", "Keep the exposure with", "Watch out"],
+        return "".join(parts)
+    parts.append(
+        f"<p>Selling these realizes <b>{_money(-s['harvestable_loss'])}</b>: "
+        f"{_money(s['offsets_gains'])} offsets this year's gains, "
+        f"{_money(s['offsets_ordinary'])} offsets ordinary income (up to $3,000)"
+        + (f", and {_money(s['carry_forward'])} carries forward" if s["carry_forward"] else "")
+        + f" — roughly {_money(s['est_tax_saving'])} of tax.</p>"
+    )
+    parts.append(
+        _table(
+            ["Ticker", "Account", "Loss", "Keep the exposure with", "Watch out"],
+            [
                 [
-                    [
-                        esc(c["ticker"]),
-                        esc(c["account"]),
-                        f"{_money(c['loss_usd'])} ({c['loss_pct']:+.1f}%)",
-                        esc(", ".join(c.get("swap_candidates") or []) or "—"),
-                        esc(
-                            f"bought within 30 days — sell after {c['wash_sale_until']}"
-                            if c.get("wash_sale_until")
-                            else f"don't rebuy before {c['rebuy_ok_after']}"
-                        ),
-                    ]
-                    for c in harvest
-                ],
-            )
+                    esc(c["ticker"]),
+                    esc(c["account"]),
+                    f"{_money(c['loss_usd'])} ({c['loss_pct']:+.1f}%)",
+                    esc(", ".join(c.get("swap_candidates") or []) or "—"),
+                    esc(
+                        f"bought within 30 days — sell after {c['wash_sale_until']}"
+                        if c.get("wash_sale_until")
+                        else f"don't rebuy before {c['rebuy_ok_after']}"
+                    ),
+                ]
+                for c in harvest
+            ],
         )
-        parts.append(
-            '<p style="font-size:13px;color:#6b7280">Wash-sale rule: buying the same '
-            "stock (in any account, IRA included, dividend reinvestment included) within 30 "
-            "days before or after the sale disallows the loss. Turn off dividend "
-            "reinvestment on a stock you plan to harvest.</p>"
-        )
+    )
+    parts.append(
+        '<p style="font-size:13px;color:#6b7280">Wash-sale rule: buying the same '
+        "stock (in any account, IRA included, dividend reinvestment included) within 30 "
+        "days before or after the sale disallows the loss. Turn off dividend "
+        "reinvestment on a stock you plan to harvest.</p>"
+    )
+    return "".join(parts)
 
-    if worthless:
-        total = sum(-r["loss_usd"] for r in worthless)
-        parts.append("<h2>Possibly worthless — ask your preparer</h2>")
-        parts.append(
-            f"<p><b>{_money(total)}</b> of cost basis sits in holdings with no listing left. "
-            "These never show up above because a loss can only be harvested by selling, and "
-            "there is no bid to sell into.</p>"
-        )
-        parts.append(
-            _table(
-                ["Holding", "Account", "Shares", "Cost basis", "Now worth", "Why"],
+
+def _worthless_html(worthless: list[dict[str, Any]]) -> str:
+    esc = html.escape
+    total = sum(-r["loss_usd"] for r in worthless)
+    parts = ["<h2>Possibly worthless — ask your preparer</h2>"]
+    parts.append(
+        f"<p><b>{_money(total)}</b> of cost basis sits in holdings with no listing left. "
+        "These never show up above because a loss can only be harvested by selling, and "
+        "there is no bid to sell into.</p>"
+    )
+    parts.append(
+        _table(
+            ["Holding", "Account", "Shares", "Cost basis", "Now worth", "Why"],
+            [
                 [
-                    [
-                        esc(r["symbol"]),
-                        esc(r["account"]),
-                        f"{r['units']:g}",
-                        _money(r["cost_basis_usd"]),
-                        _money(r["value_usd"]),
-                        esc(r["reason"]),
-                    ]
-                    for r in worthless
-                ],
-            )
+                    esc(r["symbol"]),
+                    esc(r["account"]),
+                    f"{r['units']:g}",
+                    _money(r["cost_basis_usd"]),
+                    _money(r["value_usd"]),
+                    esc(r["reason"]),
+                ]
+                for r in worthless
+            ],
         )
-        parts.append(
-            '<p style="font-size:13px;color:#6b7280">A security that has become <i>wholly</i> '
-            "worthless is treated as sold for $0 on the <b>last day of the tax year it became "
-            "worthless</b> (IRC §165(g)) — which is usually an earlier year than this one, so "
-            "the deduction may call for an amended return rather than anything done before "
-            "December 31. Establishing that year, and that the security is worthless rather "
-            "than merely unquoted, is your tax preparer's call, not this report's.</p>"
-        )
+    )
+    parts.append(
+        '<p style="font-size:13px;color:#6b7280">A security that has become <i>wholly</i> '
+        "worthless is treated as sold for $0 on the <b>last day of the tax year it became "
+        "worthless</b> (IRC §165(g)) — which is usually an earlier year than this one, so "
+        "the deduction may call for an amended return rather than anything done before "
+        "December 31. Establishing that year, and that the security is worthless rather "
+        "than merely unquoted, is your tax preparer's call, not this report's.</p>"
+    )
+    return "".join(parts)
 
-    parts.append("<h2>Gains to leave alone for now</h2>")
+
+def _wait_for_long_term_html(soon: list[dict[str, Any]]) -> str:
+    esc = html.escape
+    parts = ["<h2>Gains to leave alone for now</h2>"]
     if not soon:
         parts.append("<p>No short-term lot in profit turns long-term in the next 60 days.</p>")
-    else:
-        parts.append(
-            _table(
-                ["Ticker", "Account", "Shares", "Gain", "Long-term from", "Tax saved by waiting"],
+        return "".join(parts)
+    parts.append(
+        _table(
+            ["Ticker", "Account", "Shares", "Gain", "Long-term from", "Tax saved by waiting"],
+            [
                 [
-                    [
-                        esc(r["ticker"]),
-                        esc(r["account"]),
-                        f"{r['units']:g}",
-                        _money(r["gain"]),
-                        f"{r['long_term_on']:%b %d, %Y}",
-                        f"~{_money(r['tax_saved_by_waiting'])}",
-                    ]
-                    for r in soon
-                ],
-            )
+                    esc(r["ticker"]),
+                    esc(r["account"]),
+                    f"{r['units']:g}",
+                    _money(r["gain"]),
+                    f"{r['long_term_on']:%b %d, %Y}",
+                    f"~{_money(r['tax_saved_by_waiting'])}",
+                ]
+                for r in soon
+            ],
         )
-    return _wrap_html(f"Tax planner — {year}", "".join(parts))
+    )
+    return "".join(parts)
