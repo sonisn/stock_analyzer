@@ -404,8 +404,51 @@ def measure_track_record(db_path: str, *, lookback_days: int = 180) -> TrackReco
     if not decisions:
         return _empty_record()
 
-    # One history fetch per (ticker, decision date) covers every horizon and
-    # the beta window; SPY is fetched once per distinct decision date.
+    spy_frames, ticker_frames = _fetch_frames(decisions)
+    all_rows, unmeasurable = _score_all(decisions, ticker_frames, spy_frames)
+
+    no_data = [u for u in unmeasurable if u.reason == "no_price_data"]
+    if no_data:
+        logger.info(
+            "Track record: %d decision(s) had no forward price data "
+            "(delisted or bad symbol) and are reported, not dropped: %s",
+            len(no_data),
+            ", ".join(sorted({u.ticker for u in no_data})[:10]),
+        )
+
+    pending = [r for r in all_rows if not r.is_mature]
+    horizons = _horizon_stats(all_rows, pending, ticker_model, ticker_providers)
+    record = _build_record(
+        horizons,
+        n_distinct=len({(d.ticker, d.pick_date, d.direction) for d in decisions}),
+        pending=pending,
+        unmeasurable=unmeasurable,
+        n_no_data=len(no_data),
+    )
+
+    logger.info(
+        "Track record: reported horizon=%sd; buys=%d hold=%d trim=%d sell=%d; "
+        "%d pending; %d unmeasurable; overall_sharpe=%s",
+        record.reported_horizon_days,
+        record.buy_stats.n_mature,
+        record.hold_stats.n_mature,
+        record.trim_stats.n_mature,
+        record.sell_stats.n_mature,
+        record.n_pending,
+        record.n_unmeasurable,
+        f"{record.overall_sharpe:.2f}" if record.overall_sharpe is not None else "n/a",
+    )
+    return record
+
+
+def _fetch_frames(
+    decisions: list[_Decision],
+) -> tuple[dict[str, pd.DataFrame | None], dict[tuple[str, str], pd.DataFrame | None]]:
+    """(SPY frame per decision date, frame per (ticker, decision date)).
+
+    One history fetch per (ticker, decision date) covers every horizon and
+    the beta window; SPY is fetched once per distinct decision date.
+    """
     max_horizon = max(_HORIZONS)
     fetch_keys = {(d.ticker, d.pick_date) for d in decisions}
     distinct_dates = sorted({d.pick_date for d in decisions})
@@ -436,7 +479,14 @@ def measure_track_record(db_path: str, *, lookback_days: int = 180) -> TrackReco
             except Exception as e:
                 logger.debug("history fetch failed for %s: %s", key, e)
                 ticker_frames[key] = None
+    return spy_frames, ticker_frames
 
+
+def _score_all(
+    decisions: list[_Decision],
+    ticker_frames: dict[tuple[str, str], pd.DataFrame | None],
+    spy_frames: dict[str, pd.DataFrame | None],
+) -> tuple[list[PickReturn], list[UnmeasurableDecision]]:
     all_rows: list[PickReturn] = []
     unmeasurable: list[UnmeasurableDecision] = []
     for decision in decisions:
@@ -448,66 +498,66 @@ def measure_track_record(db_path: str, *, lookback_days: int = 180) -> TrackReco
         all_rows.extend(rows)
         if bad is not None:
             unmeasurable.append(bad)
+    return all_rows, unmeasurable
 
-    no_data = [u for u in unmeasurable if u.reason == "no_price_data"]
-    if no_data:
-        logger.info(
-            "Track record: %d decision(s) had no forward price data "
-            "(delisted or bad symbol) and are reported, not dropped: %s",
-            len(no_data),
-            ", ".join(sorted({u.ticker for u in no_data})[:10]),
+
+def _horizon_stats(
+    all_rows: list[PickReturn],
+    pending: list[PickReturn],
+    ticker_model: dict[str, str | None],
+    ticker_providers: dict[str, list[str] | None],
+) -> list[HorizonStats]:
+    """Mature decisions summarized per horizon, per direction, and — for
+    buys — per model and provider."""
+
+    def direction(scored: list[PickReturn], name: str) -> DirectionStats:
+        return _aggregate(
+            [r for r in scored if r.direction == name],
+            pending_count=sum(1 for p in pending if p.direction == name),
         )
 
-    pending = [r for r in all_rows if not r.is_mature]
     horizons: list[HorizonStats] = []
     for horizon in _HORIZONS:
         rows = [r for r in all_rows if r.is_mature and r.horizon_days == horizon]
         if not rows:
             continue
         scored = [r for r in rows if r.alpha_pct is not None]
+        buys = [r for r in scored if r.direction == "buy"]
         horizons.append(
             HorizonStats(
                 horizon_days=horizon,
                 overall=_aggregate(_dedup_for_overall(scored)),
-                buy_stats=_aggregate(
-                    [r for r in scored if r.direction == "buy"],
-                    pending_count=sum(1 for p in pending if p.direction == "buy"),
-                ),
-                hold_stats=_aggregate(
-                    [r for r in scored if r.direction == "hold"],
-                    pending_count=sum(1 for p in pending if p.direction == "hold"),
-                ),
-                trim_stats=_aggregate(
-                    [r for r in scored if r.direction == "trim"],
-                    pending_count=sum(1 for p in pending if p.direction == "trim"),
-                ),
-                sell_stats=_aggregate(
-                    [r for r in scored if r.direction == "sell"],
-                    pending_count=sum(1 for p in pending if p.direction == "sell"),
-                ),
-                model_breakdown=_compute_model_breakdown(
-                    [r for r in scored if r.direction == "buy"],
-                    ticker_model,
-                ),
-                provider_breakdown=_compute_provider_breakdown(
-                    [r for r in scored if r.direction == "buy"],
-                    ticker_providers,
-                ),
+                buy_stats=direction(scored, "buy"),
+                hold_stats=direction(scored, "hold"),
+                trim_stats=direction(scored, "trim"),
+                sell_stats=direction(scored, "sell"),
+                model_breakdown=_compute_model_breakdown(buys, ticker_model),
+                provider_breakdown=_compute_provider_breakdown(buys, ticker_providers),
                 decisions=rows,
             )
         )
+    return horizons
 
+
+def _build_record(
+    horizons: list[HorizonStats],
+    *,
+    n_distinct: int,
+    pending: list[PickReturn],
+    unmeasurable: list[UnmeasurableDecision],
+    n_no_data: int,
+) -> TrackRecord:
+    """The headline record: the reported horizon's stats, or an empty
+    summary while nothing has matured."""
     reported = _pick_reported_horizon(horizons)
-    n_distinct = len({(d.ticker, d.pick_date, d.direction) for d in decisions})
-
     if reported is None:
-        record = TrackRecord(
+        return TrackRecord(
             n_picks_total=n_distinct,
             n_mature=0,
             n_pending=len(pending),
             reported_horizon_days=0,
             horizons=[],
-            n_unmeasurable=len(no_data),
+            n_unmeasurable=n_no_data,
             unmeasurable=unmeasurable,
             mean_return_pct=None,
             mean_spy_return_pct=None,
@@ -524,46 +574,31 @@ def measure_track_record(db_path: str, *, lookback_days: int = 180) -> TrackReco
             picks=[],
             pending=pending,
         )
-    else:
-        overall = reported.overall
-        record = TrackRecord(
-            n_picks_total=n_distinct,
-            n_mature=len(reported.decisions),
-            n_pending=len(pending),
-            reported_horizon_days=reported.horizon_days,
-            horizons=horizons,
-            n_unmeasurable=len(no_data),
-            unmeasurable=unmeasurable,
-            mean_return_pct=overall.mean_return_pct,
-            mean_spy_return_pct=overall.mean_spy_return_pct,
-            mean_alpha_pct=overall.mean_alpha_pct,
-            winners=overall.winners,
-            losers=overall.losers,
-            flats=overall.flats,
-            overall_sharpe=overall.sharpe,
-            buy_stats=reported.buy_stats,
-            hold_stats=reported.hold_stats,
-            trim_stats=reported.trim_stats,
-            sell_stats=reported.sell_stats,
-            model_breakdown=reported.model_breakdown,
-            provider_breakdown=reported.provider_breakdown,
-            picks=reported.decisions,
-            pending=pending,
-        )
-
-    logger.info(
-        "Track record: reported horizon=%sd; buys=%d hold=%d trim=%d sell=%d; "
-        "%d pending; %d unmeasurable; overall_sharpe=%s",
-        record.reported_horizon_days,
-        record.buy_stats.n_mature,
-        record.hold_stats.n_mature,
-        record.trim_stats.n_mature,
-        record.sell_stats.n_mature,
-        record.n_pending,
-        record.n_unmeasurable,
-        f"{record.overall_sharpe:.2f}" if record.overall_sharpe is not None else "n/a",
+    overall = reported.overall
+    return TrackRecord(
+        n_picks_total=n_distinct,
+        n_mature=len(reported.decisions),
+        n_pending=len(pending),
+        reported_horizon_days=reported.horizon_days,
+        horizons=horizons,
+        n_unmeasurable=n_no_data,
+        unmeasurable=unmeasurable,
+        mean_return_pct=overall.mean_return_pct,
+        mean_spy_return_pct=overall.mean_spy_return_pct,
+        mean_alpha_pct=overall.mean_alpha_pct,
+        winners=overall.winners,
+        losers=overall.losers,
+        flats=overall.flats,
+        overall_sharpe=overall.sharpe,
+        buy_stats=reported.buy_stats,
+        hold_stats=reported.hold_stats,
+        trim_stats=reported.trim_stats,
+        sell_stats=reported.sell_stats,
+        model_breakdown=reported.model_breakdown,
+        provider_breakdown=reported.provider_breakdown,
+        picks=reported.decisions,
+        pending=pending,
     )
-    return record
 
 
 def _pick_reported_horizon(

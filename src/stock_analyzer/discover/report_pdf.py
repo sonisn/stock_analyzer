@@ -13,6 +13,7 @@ pre-mortem verdict banner. If you want the two renderers to render
 from __future__ import annotations
 
 import html
+from collections.abc import Callable
 from io import BytesIO
 from typing import Any
 
@@ -534,6 +535,20 @@ def _pdf_pick_card(d: dict[str, Any], styles, chart_data: bytes | None = None) -
     which is what happened when the chart was a full-width 3.5in image
     rendered as a separate flowable after a card that already filled most
     of a page."""
+    flow: list[Any] = [_pdf_pick_header(d, styles)]
+    if chart_data:
+        try:
+            flow.append(Image(BytesIO(chart_data), width=4.0 * inch, height=2.15 * inch))
+            flow.append(Spacer(1, 6))
+        except Exception as e:  # noqa: BLE001 — the page is worth more than its chart
+            logger.warning("Dropped a chart from the PDF (%s)", e)
+    flow.extend(_pdf_pick_body(d, styles))
+    return flow
+
+
+def _pdf_pick_header(d: dict[str, Any], styles) -> Table:
+    """Ticker plus pill badges (rank, conviction, fragility, allocation,
+    consensus) as one 6-column row."""
     ticker = str(d.get("ticker", ""))
     rank = d.get("rank")
     conviction = d.get("conviction") if isinstance(d.get("conviction"), int) else None
@@ -543,9 +558,7 @@ def _pdf_pick_card(d: dict[str, Any], styles, chart_data: bytes | None = None) -
     agreement_ratio = d.get("agreement_ratio")
     voting_providers = d.get("voting_providers")
 
-    flow: list[Any] = []
-
-    # Header row: ticker + pill badges as a single 5-column Table.
+    # Header row: ticker + pill badges as a single 6-column Table.
     pill_cells: list[Paragraph] = []
     pill_cells.append(
         Paragraph(
@@ -615,15 +628,12 @@ def _pdf_pick_card(d: dict[str, Any], styles, chart_data: bytes | None = None) -
             ]
         )
     )
-    flow.append(header)
+    return header
 
-    if chart_data:
-        try:
-            flow.append(Image(BytesIO(chart_data), width=4.0 * inch, height=2.15 * inch))
-            flow.append(Spacer(1, 6))
-        except Exception as e:  # noqa: BLE001 — the page is worth more than its chart
-            logger.warning("Dropped a chart from the PDF (%s)", e)
 
+def _pdf_pick_body(d: dict[str, Any], styles) -> list[Any]:
+    """One-liner, bull and bear cases, catalysts, alternatives, sizing."""
+    flow: list[Any] = []
     one_liner = str(d.get("one_liner") or "").strip()
     if one_liner:
         flow.append(Paragraph(html.escape(one_liner), styles["BodyText"]))
@@ -1333,9 +1343,12 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
         title="Stock Discovery",
         author="stock-analyzer",
     )
-    styles = _pdf_styles()
-    flow: list[Any] = []
+    doc.build(_pdf_flowables(sections, chart_bytes, _pdf_styles()))
+    return buf.getvalue()
 
+
+def _pdf_flowables(sections: list[Section], chart_bytes: dict[str, bytes], styles) -> list[Any]:
+    flow: list[Any] = []
     # A pick_card is immediately followed by its own "image" section
     # (report_sections.py). Consumed inline by _pdf_pick_card instead of
     # dispatched separately, so the chart lands on the same page as the
@@ -1345,125 +1358,97 @@ def render_pdf(sections: list[Section], chart_bytes: dict[str, bytes]) -> bytes:
         if skip_next_image and s.kind == "image":
             skip_next_image = False
             continue
-        if s.kind == "heading":
-            flow.append(Paragraph(html.escape(s.text), styles[f"Heading{min(s.level, 3)}"]))
-            flow.append(Spacer(1, 4))
-        elif s.kind == "para":
-            flow.append(Paragraph(html.escape(s.text), styles["BodyText"]))
-            flow.append(Spacer(1, 4))
-        elif s.kind == "preformatted":
-            flow.append(Preformatted(s.text, styles["Code"]))
-            flow.append(Spacer(1, 4))
-        elif s.kind == "blockquote":
-            flow.append(Paragraph(html.escape(s.text), styles["Quote"]))
-            flow.append(Spacer(1, 6))
-        elif s.kind == "image" and s.image_ticker:
-            data = chart_bytes.get(s.image_ticker)
-            if data:
-                try:
-                    img = Image(BytesIO(data), width=6.5 * inch, height=3.5 * inch)
-                    flow.append(img)
-                    flow.append(Spacer(1, 4))
-                except Exception as e:  # noqa: BLE001 — as above
-                    logger.warning("Dropped the %s chart from the PDF (%s)", s.image_ticker, e)
-        elif s.kind == "table" and s.table_header and s.table_rows:
-            tdata, col_widths = _fit_table(s.table_header, s.table_rows, styles)
-            t = Table(tdata, repeatRows=1, hAlign="LEFT", colWidths=col_widths)
-            t.setStyle(
-                TableStyle(
-                    [
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
-                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("FONTSIZE", (0, 0), (-1, -1), 9),
-                        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ]
-                )
-            )
-            flow.append(t)
-            flow.append(Spacer(1, 4))
-        elif s.kind == "status_banner":
-            flow.append(_pdf_status_banner(s.status, s.text, styles))
-            flow.append(Spacer(1, 6))
-
-        elif s.kind == "metric_strip":
-            strip = _pdf_metric_strip(s.metrics or [], styles)
-            if strip is not None:
-                flow.append(strip)
-                flow.append(Spacer(1, 6))
-
-        elif s.kind == "holdings_dashboard" and s.holdings:
-            flow.append(_pdf_holdings_dashboard(s.holdings))
-            flow.append(Spacer(1, 6))
-
-        elif s.kind == "sector_pie" and s.pie_data:
-            pie = _pdf_sector_pie(s.pie_data)
-            if pie is not None:
-                flow.append(pie)
-                flow.append(Spacer(1, 6))
-
-        elif s.kind == "pick_card" and s.data:
+        if s.kind == "pick_card":
+            if not s.data:
+                continue
             next_ticker = (
                 sections[i + 1].image_ticker
                 if i + 1 < len(sections) and sections[i + 1].kind == "image"
                 else None
             )
             chart_data = chart_bytes.get(next_ticker) if next_ticker else None
-            for el in _pdf_pick_card(s.data, styles, chart_data=chart_data):
-                flow.append(el)
+            flow.extend(_pdf_pick_card(s.data, styles, chart_data=chart_data))
             if chart_data:
                 skip_next_image = True
+            continue
+        render = _PDF_SECTION_RENDERERS.get(s.kind)
+        if render is not None:
+            flow.extend(render(s, chart_bytes, styles))
+    return flow
 
-        elif s.kind == "allocation_table" and s.data:
-            for el in _pdf_allocation_table(s.data, styles):
-                flow.append(el)
 
-        elif s.kind == "rebalance_action_table" and s.data:
-            for el in _pdf_rebalance_action_table(s.data, styles):
-                flow.append(el)
+def _spaced(flowable: Any, space: float) -> list[Any]:
+    """The flowable and the gap under it; nothing when there is nothing."""
+    return [] if flowable is None else [flowable, Spacer(1, space)]
 
-        elif s.kind == "holding_review_card" and s.data:
-            for el in _pdf_holding_review_card(s.data, styles):
-                flow.append(el)
 
-        elif s.kind == "market_themes_panel" and s.data:
-            for el in _pdf_market_themes_panel(s.data, styles):
-                flow.append(el)
+def _pdf_image_section(s: Section, chart_bytes: dict[str, bytes], styles) -> list[Any]:
+    data = chart_bytes.get(s.image_ticker) if s.image_ticker else None
+    if not data:
+        return []
+    try:
+        return _spaced(Image(BytesIO(data), width=6.5 * inch, height=3.5 * inch), 4)
+    except Exception as e:  # noqa: BLE001 — the page is worth more than its chart
+        logger.warning("Dropped the %s chart from the PDF (%s)", s.image_ticker, e)
+        return []
 
-        elif s.kind == "premortem_panel" and s.data:
-            for el in _pdf_premortem_panel(s.data, styles):
-                flow.append(el)
 
-        elif s.kind == "factor_tilt_panel" and s.data:
-            for el in _pdf_factor_tilt_panel(s.data, styles):
-                flow.append(el)
+def _pdf_table_section(s: Section, chart_bytes: dict[str, bytes], styles) -> list[Any]:
+    if not (s.table_header and s.table_rows):
+        return []
+    tdata, col_widths = _fit_table(s.table_header, s.table_rows, styles)
+    t = Table(tdata, repeatRows=1, hAlign="LEFT", colWidths=col_widths)
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#eeeeee")),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ]
+        )
+    )
+    return _spaced(t, 4)
 
-        elif s.kind == "equity_curve" and s.data:
-            chart = _pdf_equity_curve(s.data)
-            if chart is not None:
-                flow.append(chart)
-                flow.append(Spacer(1, 6))
 
-        elif s.kind == "bar_chart" and s.data:
-            chart = _pdf_bar_chart(s.data)
-            if chart is not None:
-                flow.append(chart)
-                flow.append(Spacer(1, 6))
+def _data_panel(build: Callable[..., list[Any]]) -> Callable[..., list[Any]]:
+    """A renderer for a kind whose builder takes (data, styles)."""
+    return lambda s, chart_bytes, styles: build(s.data, styles) if s.data else []
 
-        elif s.kind == "premium_income" and s.data:
-            for el in _pdf_premium_income(s.data, styles):
-                flow.append(el)
 
-        elif s.kind == "round_lot_coverage" and s.data:
-            for el in _pdf_round_lot_coverage(s.data, styles):
-                flow.append(el)
+def _data_chart(build: Callable[[Any], Any]) -> Callable[..., list[Any]]:
+    """A renderer for a kind whose builder takes (data) and may decline."""
+    return lambda s, chart_bytes, styles: _spaced(build(s.data), 6) if s.data else []
 
-        elif s.kind == "premium_deployment" and s.data:
-            for el in _pdf_premium_deployment(s.data, styles):
-                flow.append(el)
 
-        elif s.kind == "page_break":
-            flow.append(PageBreak())
-
-    doc.build(flow)
-    return buf.getvalue()
+# One renderer per SectionKind (pick_card is handled in _pdf_flowables):
+# (section, chart_bytes, styles) -> flowables.
+_PDF_SECTION_RENDERERS: dict[str, Callable[..., list[Any]]] = {
+    "heading": lambda s, c, st: _spaced(
+        Paragraph(html.escape(s.text), st[f"Heading{min(s.level, 3)}"]), 4
+    ),
+    "para": lambda s, c, st: _spaced(Paragraph(html.escape(s.text), st["BodyText"]), 4),
+    "preformatted": lambda s, c, st: _spaced(Preformatted(s.text, st["Code"]), 4),
+    "blockquote": lambda s, c, st: _spaced(Paragraph(html.escape(s.text), st["Quote"]), 6),
+    "image": _pdf_image_section,
+    "table": _pdf_table_section,
+    "status_banner": lambda s, c, st: _spaced(_pdf_status_banner(s.status, s.text, st), 6),
+    "metric_strip": lambda s, c, st: _spaced(_pdf_metric_strip(s.metrics or [], st), 6),
+    "holdings_dashboard": lambda s, c, st: (
+        _spaced(_pdf_holdings_dashboard(s.holdings), 6) if s.holdings else []
+    ),
+    "sector_pie": lambda s, c, st: _spaced(_pdf_sector_pie(s.pie_data), 6) if s.pie_data else [],
+    "allocation_table": _data_panel(_pdf_allocation_table),
+    "rebalance_action_table": _data_panel(_pdf_rebalance_action_table),
+    "holding_review_card": _data_panel(_pdf_holding_review_card),
+    "market_themes_panel": _data_panel(_pdf_market_themes_panel),
+    "premortem_panel": _data_panel(_pdf_premortem_panel),
+    "factor_tilt_panel": _data_panel(_pdf_factor_tilt_panel),
+    "equity_curve": _data_chart(_pdf_equity_curve),
+    "bar_chart": _data_chart(_pdf_bar_chart),
+    "premium_income": _data_panel(_pdf_premium_income),
+    "round_lot_coverage": _data_panel(_pdf_round_lot_coverage),
+    "premium_deployment": _data_panel(_pdf_premium_deployment),
+    "page_break": lambda s, c, st: [PageBreak()],
+}
