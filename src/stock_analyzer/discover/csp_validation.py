@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections.abc import Callable
 from datetime import date
 
 from ..logging import get_logger
@@ -259,33 +260,22 @@ def validate_csp_writes(
         if q is None:
             _warn(f"put on {t} dropped: ${cp.strike:,.2f}P {cp.expiry} is not in the chain")
             continue
-        dte = (q.expiry - today).days
-        if not dte_min <= dte <= dte_max:
-            _warn(f"put on {t} dropped: {dte} days to expiry, outside {dte_min}-{dte_max}")
-            continue
-        if chain is not None and chain.spot > 0 and cp.strike >= chain.spot:
-            _warn(
-                f"put on {t} dropped: strike ${cp.strike:,.2f} is not below spot ${chain.spot:,.2f}"
-            )
-            continue
-        delta = q.delta if q.delta is not None else cp.delta
-        if not delta_min - _DELTA_TOLERANCE <= abs(delta) <= delta_max + _DELTA_TOLERANCE:
-            _warn(
-                f"put on {t} dropped: |Δ| {abs(delta):.2f} outside {delta_min:.2f}-{delta_max:.2f}"
-            )
+        reason = _put_rejection(
+            cp,
+            q,
+            chain,
+            delta_min=delta_min,
+            delta_max=delta_max,
+            dte_min=dte_min,
+            dte_max=dte_max,
+            today=today,
+        )
+        if reason is not None:
+            _warn(reason)
             continue
 
         per_contract = cp.strike * 100.0
-        account = cp.account
-        if room:
-            if room.get(account, 0.0) < per_contract:
-                best = max(room, key=lambda a: room[a])
-                if account and best != account:
-                    _warn(f"put on {t} moved from {account!r} to {best!r}: not enough cash there")
-                account = best
-            allowed = min(cand.max_csp_cash, total_room, room[account])
-        else:
-            allowed = min(cand.max_csp_cash, total_room)
+        account, allowed = _place_put(cp, cand, room, total_room, _warn)
         contracts = min(cp.contracts, int(allowed // per_contract))
         if contracts <= 0:
             _warn(
@@ -298,6 +288,7 @@ def validate_csp_writes(
                 f"put on {t} cut from {cp.contracts} to {contracts} contract(s) "
                 "to fit the cash caps"
             )
+        delta = q.delta if q.delta is not None else cp.delta
         premium = _mid(q) or cp.est_premium_per_share
         fixed = cp.model_copy(
             update={
@@ -312,16 +303,71 @@ def validate_csp_writes(
         if room:
             room[account] -= fixed.cash_reserved
 
-    actions: list[RebalanceAction] = []
-    for a in plan.actions:
-        if a.action != "SELL_PUT":
-            actions.append(a)
-        elif a.ticker in kept and not any(
-            x.ticker == a.ticker and x.action == "SELL_PUT" for x in actions
-        ):
-            actions.append(a.model_copy(update={"sizing": csp_sizing(kept[a.ticker])}))
-        elif a.ticker not in kept:
-            _warn(f"SELL_PUT on {a.ticker} dropped: no valid put detail")
-
+    actions = _reconcile_put_actions(plan.actions, kept, _warn)
     cleaned = plan.model_copy(update={"actions": actions, "csp_writes": list(kept.values())})
     return cleaned, warnings
+
+
+def _put_rejection(
+    cp: CashSecuredPut,
+    q: OptionQuote,
+    chain: OptionChain | None,
+    *,
+    delta_min: float,
+    delta_max: float,
+    dte_min: int,
+    dte_max: int,
+    today: date,
+) -> str | None:
+    """Why a put that is in the chain breaks the posture, or None."""
+    t = cp.ticker
+    dte = (q.expiry - today).days
+    if not dte_min <= dte <= dte_max:
+        return f"put on {t} dropped: {dte} days to expiry, outside {dte_min}-{dte_max}"
+    if chain is not None and chain.spot > 0 and cp.strike >= chain.spot:
+        return f"put on {t} dropped: strike ${cp.strike:,.2f} is not below spot ${chain.spot:,.2f}"
+    delta = q.delta if q.delta is not None else cp.delta
+    if not delta_min - _DELTA_TOLERANCE <= abs(delta) <= delta_max + _DELTA_TOLERANCE:
+        return f"put on {t} dropped: |Δ| {abs(delta):.2f} outside {delta_min:.2f}-{delta_max:.2f}"
+    return None
+
+
+def _place_put(
+    cp: CashSecuredPut,
+    cand: CspCandidate,
+    room: dict[str, float],
+    total_room: float,
+    warn: Callable[[str], None],
+) -> tuple[str, float]:
+    """(account the put goes in, cash it may reserve). The stated account
+    if it can secure one contract, else the one with the most room."""
+    per_contract = cp.strike * 100.0
+    account = cp.account
+    if not room:
+        return account, min(cand.max_csp_cash, total_room)
+    if room.get(account, 0.0) < per_contract:
+        best = max(room, key=lambda a: room[a])
+        if account and best != account:
+            warn(f"put on {cp.ticker} moved from {account!r} to {best!r}: not enough cash there")
+        account = best
+    return account, min(cand.max_csp_cash, total_room, room[account])
+
+
+def _reconcile_put_actions(
+    actions: list[RebalanceAction],
+    kept: dict[str, CashSecuredPut],
+    warn: Callable[[str], None],
+) -> list[RebalanceAction]:
+    """One SELL_PUT per kept put, its sizing rewritten from the validated
+    detail; SELL_PUTs without a valid put are dropped."""
+    out: list[RebalanceAction] = []
+    for a in actions:
+        if a.action != "SELL_PUT":
+            out.append(a)
+        elif a.ticker in kept and not any(
+            x.ticker == a.ticker and x.action == "SELL_PUT" for x in out
+        ):
+            out.append(a.model_copy(update={"sizing": csp_sizing(kept[a.ticker])}))
+        elif a.ticker not in kept:
+            warn(f"SELL_PUT on {a.ticker} dropped: no valid put detail")
+    return out
