@@ -72,103 +72,8 @@ def portfolio_health(
         return None
     from ..reporting.health import build_portfolio_health
 
-    db = settings.discover_db_path
     prices = prices or {}
-
-    def sector_of(tickers: list[str]) -> dict[str, str]:
-        from ..data.reference import profiles
-
-        return {t: p["sector"] for t, p in profiles(tickers, db).items() if p.get("sector")}
-
-    def held_thesis_checks(held: set[str]) -> list[dict]:
-        from ..data.eps_revisions import batch_eps_revisions
-        from ..discover.thesis_tracker import check_theses, load_open_picks, thesis_report_data
-
-        picks = [p for p in load_open_picks(db) if p.ticker in held]
-        if not picks:
-            return []
-        # Estimate cuts are what turn a price signal into a BROKEN thesis.
-        revisions = batch_eps_revisions([p.ticker for p in picks])
-        return thesis_report_data(check_theses(picks, eps_revisions=revisions))
-
-    def harvest() -> list[dict]:
-        from ..data.brokerage import fetch_account_meta, fetch_covered_call_obligations
-        from ..data.transactions import fetch_transaction_history, to_tax_payloads
-        from ..discover.reinvest import sector_peers
-        from ..discover.tax_harvest import find_harvest_candidates, harvest_report_data
-        from .rebalance import _build_position_splits
-
-        splits = _build_position_splits(holdings, fetch_account_meta())
-        lot_prices = {
-            h["ticker"]: prices.get(str(h["ticker"]).upper()) or h.get("price")
-            for items in holdings.values()
-            for h in items
-            if h.get("ticker")
-        }
-        return harvest_report_data(
-            find_harvest_candidates(
-                splits,
-                lot_prices,
-                to_tax_payloads(fetch_transaction_history(db_path=db)),
-                # Same-sector names keep the exposure after a loss sale —
-                # still a stock you do not own, so it follows the same
-                # switch. The harvest itself stays either way.
-                sector_peers(db, list(splits), held=set(splits))
-                if settings.daily_email_new_ideas
-                else {},
-                min_loss_usd=settings.harvest_min_loss_usd,
-                min_loss_pct=settings.harvest_min_loss_pct,
-                # Shares backing a short call are not sellable, so they
-                # are not harvestable either.
-                covered_calls=fetch_covered_call_obligations(),
-            )
-        )
-
-    def earnings(tickers: list[str]) -> dict[str, dict]:
-        from ..data.earnings_calendar import batch_earnings_flags
-
-        return batch_earnings_flags(tickers, within_days=7, db_path=db)
-
-    def income(units: dict[str, float], values: dict[str, float]) -> dict:
-        from ..data.transactions import fetch_cash_activity
-        from ..discover.income import dividend_income, forward_dividend_rates
-
-        return dividend_income(
-            units=units,
-            values=values,
-            rates=forward_dividend_rates(sorted(units)),
-            received=fetch_cash_activity(days_back=370, db_path=db)["dividends"],
-        )
-
-    def add_on(**kwargs) -> list[dict]:
-        from ..data.eps_revisions import batch_eps_revisions
-        from ..discover.add_on import add_on_candidates, price_vs_high
-
-        def estimates_cut(tickers: list[str]) -> set[str]:
-            revisions = batch_eps_revisions(tickers)
-            return {t for t, r in revisions.items() if (r or {}).get("direction_30d") == "lowering"}
-
-        return add_on_candidates(
-            highs=price_vs_high(sorted(kwargs["values"])), estimates_cut=estimates_cut, **kwargs
-        )
-
-    def earnings_results() -> list[dict]:
-        from ..data.eps_revisions import batch_eps_revisions
-        from ..discover.post_earnings import recent_results, with_revisions
-
-        recent = recent_results(ticker_data or {}, today=date.today())
-        if not recent:
-            return []
-        return with_revisions(recent, batch_eps_revisions([r["ticker"] for r in recent]))
-
-    def reinvest(held: set[str], over_cap: set[str], n: int) -> list[dict]:
-        from ..discover.reinvest import load_pick_pool, reinvest_ideas, with_sector_bias
-
-        ideas = reinvest_ideas(load_pick_pool(db), held=held, avoid_sectors=over_cap, n=n)
-        # The same rotation the report shows, so the tag on an idea and
-        # the table above it can never disagree — and it is fetched once.
-        return with_sector_bias(ideas, sector_rotation)
-
+    src = _LiveHealthSources(settings, holdings, prices, ticker_data, sector_rotation)
     try:
         return build_portfolio_health(
             holdings,
@@ -183,21 +88,135 @@ def portfolio_health(
             options_accounts=settings.options_accounts,
             world_markets=world_markets,
             max_sector_pct=settings.discover_max_sector_pct,
-            sector_of=sector_of,
-            held_thesis_checks=held_thesis_checks,
-            harvest=harvest,
-            earnings=earnings,
+            sector_of=src.sector_of,
+            held_thesis_checks=src.held_thesis_checks,
+            harvest=src.harvest,
+            earnings=src.earnings,
             # With new ideas off, a sale line stops naming somewhere to
             # put the money: the pick pool it would draw from is the
             # thing being distrusted.
-            reinvest=reinvest if settings.daily_email_new_ideas else None,
-            income=income,
-            add_on=add_on,
-            earnings_results=earnings_results if ticker_data else None,
+            reinvest=src.reinvest if settings.daily_email_new_ideas else None,
+            income=src.income,
+            add_on=src.add_on,
+            earnings_results=src.earnings_results if ticker_data else None,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Portfolio health block failed (%s) — sending the email without it", e)
         return None
+
+
+class _LiveHealthSources:
+    """The data each portfolio-health check reads, fetched only when the
+    check runs (build_portfolio_health isolates each one's failures)."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        holdings: dict[str, list[dict]],
+        prices: dict[str, float],
+        ticker_data: dict[str, dict] | None,
+        sector_rotation: dict | None,
+    ) -> None:
+        self.settings = settings
+        self.db = settings.discover_db_path
+        self.holdings = holdings
+        self.prices = prices
+        self.ticker_data = ticker_data
+        self.sector_rotation = sector_rotation
+
+    def sector_of(self, tickers: list[str]) -> dict[str, str]:
+        from ..data.reference import profiles
+
+        return {t: p["sector"] for t, p in profiles(tickers, self.db).items() if p.get("sector")}
+
+    def held_thesis_checks(self, held: set[str]) -> list[dict]:
+        from ..data.eps_revisions import batch_eps_revisions
+        from ..discover.thesis_tracker import check_theses, load_open_picks, thesis_report_data
+
+        picks = [p for p in load_open_picks(self.db) if p.ticker in held]
+        if not picks:
+            return []
+        # Estimate cuts are what turn a price signal into a BROKEN thesis.
+        revisions = batch_eps_revisions([p.ticker for p in picks])
+        return thesis_report_data(check_theses(picks, eps_revisions=revisions))
+
+    def harvest(self) -> list[dict]:
+        from ..data.brokerage import fetch_account_meta, fetch_covered_call_obligations
+        from ..data.transactions import fetch_transaction_history, to_tax_payloads
+        from ..discover.reinvest import sector_peers
+        from ..discover.tax_harvest import find_harvest_candidates, harvest_report_data
+        from .rebalance import _build_position_splits
+
+        splits = _build_position_splits(self.holdings, fetch_account_meta())
+        lot_prices = {
+            h["ticker"]: self.prices.get(str(h["ticker"]).upper()) or h.get("price")
+            for items in self.holdings.values()
+            for h in items
+            if h.get("ticker")
+        }
+        return harvest_report_data(
+            find_harvest_candidates(
+                splits,
+                lot_prices,
+                to_tax_payloads(fetch_transaction_history(db_path=self.db)),
+                # Same-sector names keep the exposure after a loss sale —
+                # still a stock you do not own, so it follows the same
+                # switch. The harvest itself stays either way.
+                sector_peers(self.db, list(splits), held=set(splits))
+                if self.settings.daily_email_new_ideas
+                else {},
+                min_loss_usd=self.settings.harvest_min_loss_usd,
+                min_loss_pct=self.settings.harvest_min_loss_pct,
+                # Shares backing a short call are not sellable, so they
+                # are not harvestable either.
+                covered_calls=fetch_covered_call_obligations(),
+            )
+        )
+
+    def earnings(self, tickers: list[str]) -> dict[str, dict]:
+        from ..data.earnings_calendar import batch_earnings_flags
+
+        return batch_earnings_flags(tickers, within_days=7, db_path=self.db)
+
+    def income(self, units: dict[str, float], values: dict[str, float]) -> dict:
+        from ..data.transactions import fetch_cash_activity
+        from ..discover.income import dividend_income, forward_dividend_rates
+
+        return dividend_income(
+            units=units,
+            values=values,
+            rates=forward_dividend_rates(sorted(units)),
+            received=fetch_cash_activity(days_back=370, db_path=self.db)["dividends"],
+        )
+
+    def add_on(self, **kwargs) -> list[dict]:
+        from ..data.eps_revisions import batch_eps_revisions
+        from ..discover.add_on import add_on_candidates, price_vs_high
+
+        def estimates_cut(tickers: list[str]) -> set[str]:
+            revisions = batch_eps_revisions(tickers)
+            return {t for t, r in revisions.items() if (r or {}).get("direction_30d") == "lowering"}
+
+        return add_on_candidates(
+            highs=price_vs_high(sorted(kwargs["values"])), estimates_cut=estimates_cut, **kwargs
+        )
+
+    def earnings_results(self) -> list[dict]:
+        from ..data.eps_revisions import batch_eps_revisions
+        from ..discover.post_earnings import recent_results, with_revisions
+
+        recent = recent_results(self.ticker_data or {}, today=date.today())
+        if not recent:
+            return []
+        return with_revisions(recent, batch_eps_revisions([r["ticker"] for r in recent]))
+
+    def reinvest(self, held: set[str], over_cap: set[str], n: int) -> list[dict]:
+        from ..discover.reinvest import load_pick_pool, reinvest_ideas, with_sector_bias
+
+        ideas = reinvest_ideas(load_pick_pool(self.db), held=held, avoid_sectors=over_cap, n=n)
+        # The same rotation the report shows, so the tag on an idea and
+        # the table above it can never disagree — and it is fetched once.
+        return with_sector_bias(ideas, self.sector_rotation)
 
 
 def attach_idea_details(health) -> list[str]:
