@@ -13,6 +13,18 @@ fi
 JOB="$1"
 shift
 
+# Ubuntu's cron ignores CRON_TZ and this machine's clock is UTC, so a job
+# meant for a New York time is scheduled at BOTH UTC hours it can fall on
+# (EDT, UTC-4, and EST, UTC-5) with NY_AT=HH:MM set, e.g.
+#   30 13,14 * * 1-5 NY_AT=09:30 .../run_portfolio.sh
+# Only the firing whose New York hour matches runs; the other exits quietly.
+# The minute is left to cron, so a start a few seconds late still counts.
+if [ -n "${NY_AT:-}" ]; then
+    if [ "$(TZ=America/New_York date +%H)" != "${NY_AT%%:*}" ]; then
+        exit 0
+    fi
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 LOG_DIR="$PROJECT_ROOT/logs"

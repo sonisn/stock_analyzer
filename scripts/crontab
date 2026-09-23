@@ -1,0 +1,26 @@
+# stock-analyzer schedule. Install with:  crontab scripts/crontab
+# (replaces the whole crontab — check `crontab -l` first if you added other jobs)
+#
+# Times are New York time, set by NY_AT. Ubuntu's cron ignores CRON_TZ and
+# this machine runs on UTC, so each job fires at BOTH UTC hours its New York
+# time can fall on (EDT = UTC-4, EST = UTC-5) and scripts/run_job.sh runs it
+# only on the firing whose New York hour matches. No edits at DST changes.
+#
+# m  h(UTC)  dom  mon       dow  command
+
+# 8:30 AM NY, weekdays: update to origin/main only if its tests pass.
+30   12,13   *    *         1-5  NY_AT=08:30 /home/sonisnehal/stock_analyzer/scripts/run_update.sh
+# 9:30 AM NY, weekdays: daily portfolio email.
+30   13,14   *    *         1-5  NY_AT=09:30 /home/sonisnehal/stock_analyzer/scripts/run_portfolio.sh
+# 9:35 AM NY, Mondays: insider / congressional / Form 4 email.
+35   13,14   *    *         1    NY_AT=09:35 /home/sonisnehal/stock_analyzer/scripts/run_insiders.sh
+# 4:15 PM NY, weekdays: static dashboard, after the 4:00 PM close so the day's prices are final.
+15   20,21   *    *         1-5  NY_AT=16:15 /home/sonisnehal/stock_analyzer/scripts/run_dashboard.sh
+# 11:00 AM NY, 1st of the month: model review email.
+0    15,16   1    *         *    NY_AT=11:00 /home/sonisnehal/stock_analyzer/scripts/run_model_review.sh
+# 9:35 AM NY, days 1-7 of Jan/Apr/Jul/Oct: quarterly review (acts only on the quarter's first trading day).
+35   13,14   1-7  1,4,7,10  *    NY_AT=09:35 /home/sonisnehal/stock_analyzer/scripts/run_quarterly_review.sh
+# 8:40 AM NY, Dec 1-7: year-end tax planner (acts only on December's first trading day).
+40   12,13   1-7  12        *    NY_AT=08:40 /home/sonisnehal/stock_analyzer/scripts/run_tax_planner.sh
+# 2:00 AM NY, nightly: database backup to ~/.stock_analyzer/backups (keeps 14).
+0    6,7     *    *         *    NY_AT=02:00 /home/sonisnehal/stock_analyzer/scripts/run_backup.sh

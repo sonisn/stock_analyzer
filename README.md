@@ -767,15 +767,15 @@ and, when the command exits non-zero, emails the log's last 80 lines
 | `ops backup` | consistent SQLite copy into `BACKUP_DIR` (default `~/.stock_analyzer/backups`, keep `BACKUP_KEEP`=14); `scripts/run_backup.sh` runs it nightly | ✓ |
 | `scripts/update.sh` | fetches `origin/main`, runs the suite on it in a throwaway worktree, and fast-forwards only if it passes (`scripts/run_update.sh` from cron) | ✓ |
 
-Suggested crontab (New York time):
+The schedule lives in `scripts/crontab`; install it with `crontab scripts/crontab`.
+Ubuntu's cron ignores `CRON_TZ` and the server runs on UTC, so each job is
+scheduled at both UTC hours its New York time can fall on (EDT and EST) with
+`NY_AT=HH:MM`, and `run_job.sh` runs it only on the firing whose New York hour
+matches — no edits at daylight-saving changes:
 
 ```cron
-CRON_TZ=America/New_York
-30 12 * * 1-5 /path/to/stock_analyzer/scripts/run_update.sh
-30 13 * * 1-5 /path/to/stock_analyzer/scripts/run_portfolio.sh
-35 13 * * 1   /path/to/stock_analyzer/scripts/run_insiders.sh
-15 16 * * 1-5 /path/to/stock_analyzer/scripts/run_dashboard.sh
-0  2  * * *   /path/to/stock_analyzer/scripts/run_backup.sh
+# 9:30 AM New York, weekdays
+30 13,14 * * 1-5 NY_AT=09:30 /path/to/stock_analyzer/scripts/run_portfolio.sh
 ```
 
 The weekly insider email pairs the news-based summary with open-market
