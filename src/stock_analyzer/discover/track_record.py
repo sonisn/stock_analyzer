@@ -48,7 +48,7 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 import pandas as pd
 
@@ -238,97 +238,101 @@ def _score_decision(
     """
     pick_date = date.fromisoformat(decision.pick_date)
     too_young = decision.age_days < _MIN_AGE_DAYS
+    no_data = "too_young" if too_young else "no_price_data"
 
     if ticker_df is None or ticker_df.empty or spy_df is None or spy_df.empty:
-        return [], UnmeasurableDecision(
-            ticker=decision.ticker,
-            pick_date=decision.pick_date,
-            direction=decision.direction,
-            age_days=decision.age_days,
-            reason="too_young" if too_young else "no_price_data",
-        )
+        return [], _unmeasurable(decision, no_data)
 
     t_closes = ticker_df["Close"].dropna()
     s_closes = spy_df["Close"].dropna()
     t_entry = _close_on_or_after(t_closes, pick_date)
     s_entry = _close_on_or_after(s_closes, pick_date)
     if t_entry is None or s_entry is None:
-        return [], UnmeasurableDecision(
-            ticker=decision.ticker,
-            pick_date=decision.pick_date,
-            direction=decision.direction,
-            age_days=decision.age_days,
-            reason="too_young" if too_young else "no_price_data",
-        )
+        return [], _unmeasurable(decision, no_data)
 
-    beta = _compute_beta(t_closes, s_closes, pick_date)
-
-    def _row(horizon: int, measure_on: date, *, mature: bool) -> PickReturn | None:
-        t_exit = _close_on_or_before(t_closes, measure_on)
-        s_exit = _close_on_or_before(s_closes, measure_on)
-        if t_exit is None or s_exit is None:
-            return None
-        if t_exit[1] <= t_entry[1]:
-            return None  # no elapsed trading time yet
-        pick_ret = _pct_change(t_entry[0], t_exit[0])
-        spy_ret = _pct_change(s_entry[0], s_exit[0])
-        alpha = (
-            _directional(pick_ret - spy_ret, decision.direction)
-            if pick_ret is not None and spy_ret is not None
-            else None
-        )
-        beta_alpha = (
-            _directional(pick_ret - beta * spy_ret, decision.direction)
-            if (pick_ret is not None and spy_ret is not None and beta is not None)
-            else None
-        )
-        return PickReturn(
-            ticker=decision.ticker,
-            pick_date=decision.pick_date,
-            age_days=decision.age_days,
-            direction=decision.direction,
-            horizon_days=horizon,
-            measured_date=t_exit[1].isoformat(),
-            pick_price=t_entry[0],
-            measured_price=t_exit[0],
-            pick_return_pct=pick_ret,
-            spy_return_pct=spy_ret,
-            alpha_pct=alpha,
-            beta=beta,
-            beta_adjusted_alpha_pct=beta_alpha,
-            is_mature=mature,
-        )
-
+    series = _Series(
+        t_closes, s_closes, t_entry, s_entry, _compute_beta(t_closes, s_closes, pick_date)
+    )
     if too_young:
         # Live mark to the latest available bar, clearly not a finished
         # measurement (horizon_days=0, is_mature=False).
-        pending = _row(0, date.today(), mature=False)
+        pending = _measure(decision, series, 0, date.today(), mature=False)
         if pending is None:
-            return [], UnmeasurableDecision(
-                ticker=decision.ticker,
-                pick_date=decision.pick_date,
-                direction=decision.direction,
-                age_days=decision.age_days,
-                reason="too_young",
-            )
+            return [], _unmeasurable(decision, "too_young")
         return [pending], None
 
     rows: list[PickReturn] = []
     for horizon in _HORIZONS:
         if decision.age_days < horizon:
             continue
-        row = _row(horizon, pick_date + timedelta(days=horizon), mature=True)
+        row = _measure(decision, series, horizon, pick_date + timedelta(days=horizon), mature=True)
         if row is not None:
             rows.append(row)
     if not rows:
-        return [], UnmeasurableDecision(
-            ticker=decision.ticker,
-            pick_date=decision.pick_date,
-            direction=decision.direction,
-            age_days=decision.age_days,
-            reason="no_price_data",
-        )
+        return [], _unmeasurable(decision, "no_price_data")
     return rows, None
+
+
+def _unmeasurable(decision: _Decision, reason: str) -> UnmeasurableDecision:
+    return UnmeasurableDecision(
+        ticker=decision.ticker,
+        pick_date=decision.pick_date,
+        direction=decision.direction,
+        age_days=decision.age_days,
+        reason=reason,
+    )
+
+
+class _Series(NamedTuple):
+    """A decision's closes and SPY's, their entry bars, and the stock's beta."""
+
+    t_closes: pd.Series
+    s_closes: pd.Series
+    t_entry: tuple[float, date]
+    s_entry: tuple[float, date]
+    beta: float | None
+
+
+def _measure(
+    decision: _Decision, series: _Series, horizon: int, measure_on: date, *, mature: bool
+) -> PickReturn | None:
+    """Return, SPY return and alphas from entry to `measure_on`, or None
+    when there is no bar yet past the entry."""
+    t_closes, s_closes, t_entry, s_entry, beta = series
+    t_exit = _close_on_or_before(t_closes, measure_on)
+    s_exit = _close_on_or_before(s_closes, measure_on)
+    if t_exit is None or s_exit is None:
+        return None
+    if t_exit[1] <= t_entry[1]:
+        return None  # no elapsed trading time yet
+    pick_ret = _pct_change(t_entry[0], t_exit[0])
+    spy_ret = _pct_change(s_entry[0], s_exit[0])
+    alpha = (
+        _directional(pick_ret - spy_ret, decision.direction)
+        if pick_ret is not None and spy_ret is not None
+        else None
+    )
+    beta_alpha = (
+        _directional(pick_ret - beta * spy_ret, decision.direction)
+        if (pick_ret is not None and spy_ret is not None and beta is not None)
+        else None
+    )
+    return PickReturn(
+        ticker=decision.ticker,
+        pick_date=decision.pick_date,
+        age_days=decision.age_days,
+        direction=decision.direction,
+        horizon_days=horizon,
+        measured_date=t_exit[1].isoformat(),
+        pick_price=t_entry[0],
+        measured_price=t_exit[0],
+        pick_return_pct=pick_ret,
+        spy_return_pct=spy_ret,
+        alpha_pct=alpha,
+        beta=beta,
+        beta_adjusted_alpha_pct=beta_alpha,
+        is_mature=mature,
+    )
 
 
 def _sharpe(alphas: list[float]) -> float | None:

@@ -243,7 +243,44 @@ def measure_calibration(db_path: str, *, lookback_days: int = 540) -> Calibratio
     n_pending = sum(1 for f in forecasts if f.ev_pct is not None and f.age_days < f.ev_horizon_days)
     n_no_forecast = sum(1 for f in forecasts if f.ev_pct is None)
 
-    # --- EV error + scenario reliability (EV horizon) ---
+    ev_errors, reliability = _score_expected_values(ev_candidates)
+    buckets = _conviction_buckets(conviction_candidates)
+
+    record = CalibrationRecord(
+        ev_horizon_days=max(
+            (f.ev_horizon_days for f in ev_candidates), default=_EV_HORIZON_DAYS_ANNUALIZED
+        ),
+        conviction_horizon_days=_CONVICTION_HORIZON_DAYS,
+        n_scored=len(ev_errors),
+        n_pending=n_pending,
+        n_without_forecast=n_no_forecast,
+        mean_ev_error_pct=(
+            statistics.mean([e.error_pct for e in ev_errors]) if ev_errors else None
+        ),
+        median_ev_error_pct=(
+            statistics.median([e.error_pct for e in ev_errors]) if ev_errors else None
+        ),
+        ev_errors=sorted(ev_errors, key=lambda e: e.error_pct),
+        conviction_buckets=buckets,
+        scenario_reliability=reliability,
+    )
+    logger.info(
+        "Calibration: %d forecast(s) scored at %dd, %d pending, "
+        "%d without a recorded forecast; mean EV error=%s",
+        record.n_scored,
+        _EV_HORIZON_DAYS,
+        record.n_pending,
+        record.n_without_forecast,
+        f"{record.mean_ev_error_pct:+.1f}%" if record.mean_ev_error_pct is not None else "n/a",
+    )
+    return record
+
+
+def _score_expected_values(
+    ev_candidates: list[_Forecast],
+) -> tuple[list[EVError], list[ScenarioReliability]]:
+    """EV error per matured forecast, and how often each stated scenario
+    actually landed (at the EV horizon)."""
     ev_errors: list[EVError] = []
     landed: dict[str, int] = defaultdict(int)
     stated: dict[str, list[float]] = defaultdict(list)
@@ -285,8 +322,12 @@ def measure_calibration(db_path: str, *, lookback_days: int = 540) -> Calibratio
                 n_landed=landed.get(label, 0),
             )
         )
+    return ev_errors, reliability
 
-    # --- conviction ordering (track-record horizon) ---
+
+def _conviction_buckets(conviction_candidates: list[_Forecast]) -> list[ConvictionBucket]:
+    """Mean alpha vs SPY per conviction band (at the track-record horizon);
+    a band needs _MIN_BUCKET_N scored picks to be shown."""
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         conv_returns = list(
             ex.map(
@@ -322,35 +363,7 @@ def measure_calibration(db_path: str, *, lookback_days: int = 540) -> Calibratio
                 mean_alpha_pct=sum(alphas) / len(alphas),
             )
         )
-
-    record = CalibrationRecord(
-        ev_horizon_days=max(
-            (f.ev_horizon_days for f in ev_candidates), default=_EV_HORIZON_DAYS_ANNUALIZED
-        ),
-        conviction_horizon_days=_CONVICTION_HORIZON_DAYS,
-        n_scored=len(ev_errors),
-        n_pending=n_pending,
-        n_without_forecast=n_no_forecast,
-        mean_ev_error_pct=(
-            statistics.mean([e.error_pct for e in ev_errors]) if ev_errors else None
-        ),
-        median_ev_error_pct=(
-            statistics.median([e.error_pct for e in ev_errors]) if ev_errors else None
-        ),
-        ev_errors=sorted(ev_errors, key=lambda e: e.error_pct),
-        conviction_buckets=buckets,
-        scenario_reliability=reliability,
-    )
-    logger.info(
-        "Calibration: %d forecast(s) scored at %dd, %d pending, "
-        "%d without a recorded forecast; mean EV error=%s",
-        record.n_scored,
-        _EV_HORIZON_DAYS,
-        record.n_pending,
-        record.n_without_forecast,
-        f"{record.mean_ev_error_pct:+.1f}%" if record.mean_ev_error_pct is not None else "n/a",
-    )
-    return record
+    return buckets
 
 
 # --- formatter ------------------------------------------------------------

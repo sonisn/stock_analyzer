@@ -243,90 +243,133 @@ def check_theses(
         if frame is None or frame.empty:
             logger.warning("Thesis check: no price history for %s — skipped", pick.ticker)
             continue
-        closes = frame["Close"].dropna()
-        last = _close_on_or_before(closes, today)
-        entry = pick.entry_price or (_close_on_or_after(closes, pick.pick_date) or (None,))[0]
-        if last is None or not entry:
-            continue
-        ret = (last[0] / entry - 1) * 100
-        spy_ret = None
-        if spy_closes is not None:
-            spy_entry = _close_on_or_after(spy_closes, pick.pick_date)
-            spy_last = _close_on_or_before(spy_closes, today)
-            if spy_entry and spy_last and spy_entry[0] > 0:
-                spy_ret = (spy_last[0] / spy_entry[0] - 1) * 100
-        check = ThesisCheck(
-            ticker=pick.ticker,
-            pick_date=pick.pick_date,
-            return_pct=ret,
-            spy_return_pct=spy_ret,
-            bear_target_pct=pick.bear_target_pct,
-            bull_target_pct=pick.bull_target_pct,
-            annualized=pick.annualized,
+        check = _check_pick(
+            pick,
+            frame["Close"].dropna(),
+            spy_closes,
+            today=today,
+            revisions=eps_revisions.get(pick.ticker) or {},
+            lag_threshold_pts=lag_threshold_pts,
         )
-        excess = check.excess_pct
-        lagging = excess is not None and excess <= -lag_threshold_pts
-
-        price_concerns: list[str] = []
-        per = "/yr" if pick.annualized else ""
-        bear = (
-            None
-            if pick.bear_target_pct is None
-            else _target_to_date(pick.bear_target_pct, pick, today)
-        )
-        bull = (
-            None
-            if pick.bull_target_pct is None
-            else _target_to_date(pick.bull_target_pct, pick, today)
-        )
-        if bear is not None and ret <= bear:
-            price_concerns.append(
-                f"{ret:+.1f}% since the pick, at or past its own bear case "
-                f"({pick.bear_target_pct:+.0f}%{per})"
-            )
-        elif bull is not None and ret >= bull:
-            check.signals.append(
-                ThesisSignal(
-                    "target",
-                    f"{ret:+.1f}% since the pick, past its bull case "
-                    f"({pick.bull_target_pct:+.0f}%{per}): re-check the valuation; trim only "
-                    f"if it has grown too large a share of the portfolio",
-                )
-            )
-
-        trailing = closes.tail(_TREND_DAYS)
-        sma = float(trailing.mean()) if len(trailing) >= _TREND_DAYS else None
-        if sma is not None and last[0] < sma and lagging:
-            price_concerns.append(
-                f"Closed {(1 - last[0] / sma) * 100:.1f}% below its 200-day average "
-                f"and {excess:+.1f} pts vs SPY"
-            )
-        elif lagging:
-            check.signals.append(
-                ThesisSignal("watch", f"Lagging SPY by {-excess:.1f} pts since the pick")
-            )
-
-        if spy_closes is not None:
-            check.signals.extend(_catalyst_signals(pick, closes, spy_closes, today))
-
-        rev = eps_revisions.get(pick.ticker) or {}
-        cutting = rev.get("direction_30d") == "lowering"
-        if cutting:
-            net = rev.get("net_revisions_30d")
-            detail = f" (net {net:+d} revisions in 30d)" if isinstance(net, int) else ""
-            cut_text = f"analysts cutting EPS estimates{detail}"
-        # Price alone is WATCH for a long-term hold; a price signal plus
-        # falling estimates means the business itself is weakening.
-        if price_concerns and cutting:
-            check.signals.insert(
-                0, ThesisSignal("broken", f"{'; '.join(price_concerns)}, and {cut_text}")
-            )
-        else:
-            check.signals[:0] = [ThesisSignal("watch", c) for c in price_concerns]
-            if cutting:
-                check.signals.append(ThesisSignal("watch", cut_text[0].upper() + cut_text[1:]))
-        results.append(check)
+        if check is not None:
+            results.append(check)
     return sorted(results, key=lambda c: (_STATUS_ORDER[c.status], c.ticker))
+
+
+def _check_pick(
+    pick: OpenPick,
+    closes: Any,
+    spy_closes: Any,
+    *,
+    today: date,
+    revisions: dict[str, Any],
+    lag_threshold_pts: float,
+) -> ThesisCheck | None:
+    """One pick's thesis check, or None when there is no entry or last price."""
+    last = _close_on_or_before(closes, today)
+    entry = pick.entry_price or (_close_on_or_after(closes, pick.pick_date) or (None,))[0]
+    if last is None or not entry:
+        return None
+    ret = (last[0] / entry - 1) * 100
+    check = ThesisCheck(
+        ticker=pick.ticker,
+        pick_date=pick.pick_date,
+        return_pct=ret,
+        spy_return_pct=_spy_return_pct(spy_closes, pick, today),
+        bear_target_pct=pick.bear_target_pct,
+        bull_target_pct=pick.bull_target_pct,
+        annualized=pick.annualized,
+    )
+    price_concerns = _price_concerns(
+        check, pick, closes, last=last[0], today=today, lag_threshold_pts=lag_threshold_pts
+    )
+    if spy_closes is not None:
+        check.signals.extend(_catalyst_signals(pick, closes, spy_closes, today))
+    _add_revision_verdict(check, price_concerns, revisions)
+    return check
+
+
+def _spy_return_pct(spy_closes: Any, pick: OpenPick, today: date) -> float | None:
+    if spy_closes is None:
+        return None
+    spy_entry = _close_on_or_after(spy_closes, pick.pick_date)
+    spy_last = _close_on_or_before(spy_closes, today)
+    if spy_entry and spy_last and spy_entry[0] > 0:
+        return (spy_last[0] / spy_entry[0] - 1) * 100
+    return None
+
+
+def _price_concerns(
+    check: ThesisCheck,
+    pick: OpenPick,
+    closes: Any,
+    *,
+    last: float,
+    today: date,
+    lag_threshold_pts: float,
+) -> list[str]:
+    """Price-based concerns (past the bear case, below the 200-day while
+    lagging SPY). Softer signals — past the bull case, merely lagging —
+    go straight onto the check."""
+    ret = check.return_pct
+    excess = check.excess_pct
+    lagging = excess is not None and excess <= -lag_threshold_pts
+
+    price_concerns: list[str] = []
+    per = "/yr" if pick.annualized else ""
+    bear = (
+        None if pick.bear_target_pct is None else _target_to_date(pick.bear_target_pct, pick, today)
+    )
+    bull = (
+        None if pick.bull_target_pct is None else _target_to_date(pick.bull_target_pct, pick, today)
+    )
+    if bear is not None and ret <= bear:
+        price_concerns.append(
+            f"{ret:+.1f}% since the pick, at or past its own bear case "
+            f"({pick.bear_target_pct:+.0f}%{per})"
+        )
+    elif bull is not None and ret >= bull:
+        check.signals.append(
+            ThesisSignal(
+                "target",
+                f"{ret:+.1f}% since the pick, past its bull case "
+                f"({pick.bull_target_pct:+.0f}%{per}): re-check the valuation; trim only "
+                f"if it has grown too large a share of the portfolio",
+            )
+        )
+
+    trailing = closes.tail(_TREND_DAYS)
+    sma = float(trailing.mean()) if len(trailing) >= _TREND_DAYS else None
+    if sma is not None and last < sma and lagging:
+        price_concerns.append(
+            f"Closed {(1 - last / sma) * 100:.1f}% below its 200-day average "
+            f"and {excess:+.1f} pts vs SPY"
+        )
+    elif lagging:
+        check.signals.append(
+            ThesisSignal("watch", f"Lagging SPY by {-excess:.1f} pts since the pick")
+        )
+    return price_concerns
+
+
+def _add_revision_verdict(
+    check: ThesisCheck, price_concerns: list[str], rev: dict[str, Any]
+) -> None:
+    """Price alone is WATCH for a long-term hold; a price signal plus
+    falling estimates means the business itself is weakening."""
+    cutting = rev.get("direction_30d") == "lowering"
+    if cutting:
+        net = rev.get("net_revisions_30d")
+        detail = f" (net {net:+d} revisions in 30d)" if isinstance(net, int) else ""
+        cut_text = f"analysts cutting EPS estimates{detail}"
+    if price_concerns and cutting:
+        check.signals.insert(
+            0, ThesisSignal("broken", f"{'; '.join(price_concerns)}, and {cut_text}")
+        )
+    else:
+        check.signals[:0] = [ThesisSignal("watch", c) for c in price_concerns]
+        if cutting:
+            check.signals.append(ThesisSignal("watch", cut_text[0].upper() + cut_text[1:]))
 
 
 def thesis_report_data(checks: list[ThesisCheck]) -> list[dict[str, Any]]:
