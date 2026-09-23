@@ -237,12 +237,8 @@ class CcDataResult:
 
 def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataResult:
     """Fetch chains, eligibility, and build the CC context block for Opus."""
-    from ..data.brokerage import fetch_open_option_positions
-    from ..data.options_chain import fetch_chains
     from .cc_eligibility import (
         build_cc_context_block,
-        eligible_holdings_per_account,
-        round_lot_coverage,
     )
 
     logger.info(
@@ -258,92 +254,9 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
     )
 
     positions = state.get("holdings_positions") or {}
-    denylist = settings.options_denylist
-
-    try:
-        open_short_calls = fetch_open_option_positions()
-    except Exception as e:
-        logger.warning("open option position fetch failed: %s", e)
-        open_short_calls = {}
-
-    if open_short_calls:
-        logger.info(
-            "CC: %d ticker(s) already collateralizing short calls: %s",
-            len(open_short_calls),
-            dict(open_short_calls),
-        )
-    else:
-        logger.info("CC: no existing short-call coverage detected")
-
-    position_splits = state.get("position_splits") or {}
-    eligible = eligible_holdings_per_account(
-        position_splits,
-        open_short_calls_by_account=open_short_calls,
-        denylist=denylist,
-        options_accounts=settings.options_accounts,
-    )
-    eligible = resolve_eligible_holdings(
-        eligible=eligible,
-        holdings_technicals=state.get("holdings_technicals") or {},
-    )
-
-    n_pairs = sum(len(v) for v in eligible.values())
-    logger.info(
-        "CC eligibility: %d ticker(s) / %d (ticker, account) pair(s) eligible. Pairs: %s",
-        len(eligible),
-        n_pairs,
-        sorted((eh.ticker, eh.account) for v in eligible.values() for eh in v),
-    )
-    if not eligible:
-        logger.warning(
-            "CC: NO eligible holdings — rebalancer will produce NO WRITE_CALL "
-            "recommendations. Reasons: positions < 100 shares OR all in denylist "
-            "OR fully collateralized by existing short calls."
-        )
-
-    spots = {
-        t: (state.get("holdings_technicals", {}).get(t) or {}).get("price") or 0.0
-        for t in positions
-    }
-    writable = writable_positions(positions, spots)
-    if skipped := sorted(set(positions) - set(writable)):
-        logger.info("Round-lot coverage skips %s — not writable", ", ".join(skipped))
-    coverage = round_lot_coverage(writable, spots=spots)
-    stub_pool = sum(rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares)
-    stub_premiums = _best_in_band_premiums(coverage, spots, settings)
-
-    stub_eligible = sum(
-        1 for rec in coverage.values() if rec.stub_dollar_value >= settings.cc_min_stub_usd
-    )
-    logger.info(
-        "CC round-lot coverage: %d holding(s) have stubs, $%s total stub pool; "
-        "%d stub(s) exceed CC_MIN_STUB_USD=$%s threshold",
-        sum(1 for r in coverage.values() if r.stub_shares > 0),
-        f"{stub_pool:,.0f}",
-        stub_eligible,
-        f"{settings.cc_min_stub_usd:,.0f}",
-    )
-
-    chains = fetch_chains(
-        list(eligible),
-        dte_min=settings.cc_dte_min,
-        dte_max=settings.cc_dte_max,
-    )
-
-    chain_sources: dict[str, int] = {}
-    for c in chains.values():
-        chain_sources[c.source] = chain_sources.get(c.source, 0) + 1
-    logger.info(
-        "CC chain fetch: %d eligible ticker(s); sources: %s",
-        len(chains),
-        dict(chain_sources),
-    )
-    if chains and all(c.source == "missing" for c in chains.values()):
-        logger.error(
-            "CC: ALL chain fetches failed (SnapTrade + yfinance both miss). "
-            "Opus will see UNAVAILABLE for every ticker and won't emit "
-            "WRITE_CALL. Check yfinance connectivity + SnapTrade tier."
-        )
+    eligible = _eligible_for_calls(state, settings)
+    coverage, stub_pool, stub_premiums = _stub_coverage(state, positions, settings)
+    chains, chain_sources = _fetch_call_chains(eligible, settings)
 
     finnhub_signals = state.get("finnhub_signals") or {}
     earnings_map = earnings_dates_from_signals(eligible, finnhub_signals)
@@ -402,6 +315,117 @@ def run_cc_data_pipeline(state: dict[str, Any], settings: Settings) -> CcDataRes
             f"context block {len(block)} chars"
         ),
     )
+
+
+def _eligible_for_calls(state: dict[str, Any], settings: Settings) -> dict[str, list[Any]]:
+    """(ticker, account) pairs with 100+ shares not already backing a call."""
+    from ..data.brokerage import fetch_open_option_positions
+    from .cc_eligibility import eligible_holdings_per_account
+
+    denylist = settings.options_denylist
+
+    try:
+        open_short_calls = fetch_open_option_positions()
+    except Exception as e:
+        logger.warning("open option position fetch failed: %s", e)
+        open_short_calls = {}
+
+    if open_short_calls:
+        logger.info(
+            "CC: %d ticker(s) already collateralizing short calls: %s",
+            len(open_short_calls),
+            dict(open_short_calls),
+        )
+    else:
+        logger.info("CC: no existing short-call coverage detected")
+
+    position_splits = state.get("position_splits") or {}
+    eligible = eligible_holdings_per_account(
+        position_splits,
+        open_short_calls_by_account=open_short_calls,
+        denylist=denylist,
+        options_accounts=settings.options_accounts,
+    )
+    eligible = resolve_eligible_holdings(
+        eligible=eligible,
+        holdings_technicals=state.get("holdings_technicals") or {},
+    )
+
+    n_pairs = sum(len(v) for v in eligible.values())
+    logger.info(
+        "CC eligibility: %d ticker(s) / %d (ticker, account) pair(s) eligible. Pairs: %s",
+        len(eligible),
+        n_pairs,
+        sorted((eh.ticker, eh.account) for v in eligible.values() for eh in v),
+    )
+    if not eligible:
+        logger.warning(
+            "CC: NO eligible holdings — rebalancer will produce NO WRITE_CALL "
+            "recommendations. Reasons: positions < 100 shares OR all in denylist "
+            "OR fully collateralized by existing short calls."
+        )
+    return eligible
+
+
+def _stub_coverage(
+    state: dict[str, Any], positions: dict[str, Any], settings: Settings
+) -> tuple[dict[str, Any], float, dict[str, tuple[float, float, str]]]:
+    """Round-lot coverage of writable positions, the part-lot dollar pool,
+    and what the best call on each completed lot would pay."""
+    from .cc_eligibility import round_lot_coverage
+
+    spots = {
+        t: (state.get("holdings_technicals", {}).get(t) or {}).get("price") or 0.0
+        for t in positions
+    }
+    writable = writable_positions(positions, spots)
+    if skipped := sorted(set(positions) - set(writable)):
+        logger.info("Round-lot coverage skips %s — not writable", ", ".join(skipped))
+    coverage = round_lot_coverage(writable, spots=spots)
+    stub_pool = sum(rec.stub_dollar_value for rec in coverage.values() if rec.stub_shares)
+    stub_premiums = _best_in_band_premiums(coverage, spots, settings)
+
+    stub_eligible = sum(
+        1 for rec in coverage.values() if rec.stub_dollar_value >= settings.cc_min_stub_usd
+    )
+    logger.info(
+        "CC round-lot coverage: %d holding(s) have stubs, $%s total stub pool; "
+        "%d stub(s) exceed CC_MIN_STUB_USD=$%s threshold",
+        sum(1 for r in coverage.values() if r.stub_shares > 0),
+        f"{stub_pool:,.0f}",
+        stub_eligible,
+        f"{settings.cc_min_stub_usd:,.0f}",
+    )
+    return coverage, stub_pool, stub_premiums
+
+
+def _fetch_call_chains(
+    eligible: dict[str, list[Any]], settings: Settings
+) -> tuple[dict[str, Any], dict[str, int]]:
+    """Call chains for the eligible tickers, and a count per provider."""
+    from ..data.options_chain import fetch_chains
+
+    chains = fetch_chains(
+        list(eligible),
+        dte_min=settings.cc_dte_min,
+        dte_max=settings.cc_dte_max,
+    )
+
+    chain_sources: dict[str, int] = {}
+    for c in chains.values():
+        chain_sources[c.source] = chain_sources.get(c.source, 0) + 1
+    logger.info(
+        "CC chain fetch: %d eligible ticker(s); sources: %s",
+        len(chains),
+        dict(chain_sources),
+    )
+    if chains and all(c.source == "missing" for c in chains.values()):
+        logger.error(
+            "CC: ALL chain fetches failed (SnapTrade + yfinance both miss). "
+            "Opus will see UNAVAILABLE for every ticker and won't emit "
+            "WRITE_CALL. Check yfinance connectivity + SnapTrade tier."
+        )
+    return chains, chain_sources
 
 
 def log_rebalancer_input_estimate(
