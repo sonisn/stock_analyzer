@@ -916,7 +916,22 @@ def _pdf_premortem_panel(d: dict[str, Any], styles) -> list[Any]:
     failures = d.get("failures") or []
     if not failures and not summary:
         return []
-    flow: list[Any] = []
+    flow: list[Any] = [_pdf_premortem_banner(verdict, styles), Spacer(1, 4)]
+    if summary:
+        flow.append(
+            Paragraph(
+                f"<font size='9' color='#374151'>{html.escape(summary)}</font>",
+                styles["BodyText"],
+            )
+        )
+        flow.append(Spacer(1, 6))
+
+    for f in failures:
+        flow.extend(_pdf_premortem_failure(f, styles))
+    return flow
+
+
+def _pdf_premortem_banner(verdict: str, styles) -> Table:
     vp = _VERDICT_PALETTE_PREMORTEM.get(verdict, _VERDICT_PALETTE_PREMORTEM["proceed_with_caveat"])
     verdict_label = {
         "proceed_as_planned": "PROCEED AS PLANNED",
@@ -948,110 +963,114 @@ def _pdf_premortem_panel(d: dict[str, Any], styles) -> list[Any]:
             ]
         )
     )
-    flow.append(banner)
-    flow.append(Spacer(1, 4))
-    if summary:
-        flow.append(
-            Paragraph(
-                f"<font size='9' color='#374151'>{html.escape(summary)}</font>",
-                styles["BodyText"],
-            )
-        )
-        flow.append(Spacer(1, 6))
+    return banner
 
-    for f in failures:
-        likelihood = str(f.get("likelihood") or "medium").lower()
-        severity = str(f.get("severity") or "moderate").lower()
-        trig = str(f.get("triggering_action") or "")
-        narrative = str(f.get("failure_narrative") or "")
-        warning = str(f.get("early_warning") or "")
-        like_color = _LIKELIHOOD_COLOR.get(likelihood, "#6b7280")
-        sev_color = _SEVERITY_COLOR.get(severity, "#6b7280")
 
-        pill_row = Table(
+def _pdf_premortem_failure(f: dict[str, Any], styles) -> list[Any]:
+    """Likelihood/severity pills, the triggering action, the story, and the
+    early-warning callout for one imagined failure."""
+    flow: list[Any] = []
+    likelihood = str(f.get("likelihood") or "medium").lower()
+    severity = str(f.get("severity") or "moderate").lower()
+    trig = str(f.get("triggering_action") or "")
+    narrative = str(f.get("failure_narrative") or "")
+    warning = str(f.get("early_warning") or "")
+    like_color = _LIKELIHOOD_COLOR.get(likelihood, "#6b7280")
+    sev_color = _SEVERITY_COLOR.get(severity, "#6b7280")
+
+    pill_row = Table(
+        [
             [
-                [
-                    _pdf_pill(f"Likelihood: {likelihood}", "#fff", like_color, styles),
-                    _pdf_pill(f"Severity: {severity}", "#fff", sev_color, styles),
-                    Paragraph("", styles["BodyText"]),
-                ]
-            ],
-            colWidths=[1.5 * inch, 1.5 * inch, 3.5 * inch],
-            hAlign="LEFT",
-        )
-        pill_row.setStyle(
-            TableStyle(
-                [
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                ]
-            )
-        )
-        flow.append(pill_row)
-        flow.append(
-            Paragraph(
-                "<font size='8' color='#6b7280'><b>TRIGGERING ACTION</b></font>",
-                styles["BodyText"],
-            )
-        )
-        flow.append(
-            Paragraph(
-                f"<font size='9' color='#1f2937'><i>{html.escape(trig)}</i></font>",
-                styles["BodyText"],
-            )
-        )
-        flow.append(Spacer(1, 3))
-        flow.append(
-            Paragraph(
-                f"<font size='9' color='#1f2937'>{html.escape(narrative)}</font>",
-                styles["BodyText"],
-            )
-        )
-        flow.append(Spacer(1, 3))
-        warn_table = Table(
+                _pdf_pill(f"Likelihood: {likelihood}", "#fff", like_color, styles),
+                _pdf_pill(f"Severity: {severity}", "#fff", sev_color, styles),
+                Paragraph("", styles["BodyText"]),
+            ]
+        ],
+        colWidths=[1.5 * inch, 1.5 * inch, 3.5 * inch],
+        hAlign="LEFT",
+    )
+    pill_row.setStyle(
+        TableStyle(
             [
-                [
-                    Paragraph(
-                        f"<font size='8' color='#8a4a00'><b>Early warning:</b> "
-                        f"{html.escape(warning)}</font>",
-                        styles["BodyText"],
-                    )
-                ]
-            ],
-            colWidths=[6.5 * inch],
-            hAlign="LEFT",
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]
         )
-        warn_table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff4e0")),
-                    ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#e89c00")),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 8),
-                ]
-            )
+    )
+    flow.append(pill_row)
+    flow.append(
+        Paragraph(
+            "<font size='8' color='#6b7280'><b>TRIGGERING ACTION</b></font>",
+            styles["BodyText"],
         )
-        flow.append(warn_table)
-        flow.append(Spacer(1, 8))
+    )
+    flow.append(
+        Paragraph(
+            f"<font size='9' color='#1f2937'><i>{html.escape(trig)}</i></font>",
+            styles["BodyText"],
+        )
+    )
+    flow.append(Spacer(1, 3))
+    flow.append(
+        Paragraph(
+            f"<font size='9' color='#1f2937'>{html.escape(narrative)}</font>",
+            styles["BodyText"],
+        )
+    )
+    flow.append(Spacer(1, 3))
+    warn_table = Table(
+        [
+            [
+                Paragraph(
+                    f"<font size='8' color='#8a4a00'><b>Early warning:</b> "
+                    f"{html.escape(warning)}</font>",
+                    styles["BodyText"],
+                )
+            ]
+        ],
+        colWidths=[6.5 * inch],
+        hAlign="LEFT",
+    )
+    warn_table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#fff4e0")),
+                ("LINEBEFORE", (0, 0), (0, -1), 3, colors.HexColor("#e89c00")),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+            ]
+        )
+    )
+    flow.append(warn_table)
+    flow.append(Spacer(1, 8))
     return flow
 
 
 def _pdf_holding_review_card(d: dict[str, Any], styles) -> list[Any]:
     """PDF counterpart of `_holding_review_card_html` — ticker header
     with verdict + confidence pills, then labeled sections."""
+    position_context = str(d.get("position_context") or "")
+    flow: list[Any] = [_pdf_review_header(d, styles)]
+    if position_context:
+        flow.append(
+            Paragraph(
+                f"<font color='#6b7280' size='9'>{html.escape(position_context)}</font>",
+                styles["BodyText"],
+            )
+        )
+        flow.append(Spacer(1, 6))
+
+    flow.extend(_pdf_review_body(d, styles))
+    return flow
+
+
+def _pdf_review_header(d: dict[str, Any], styles) -> Table:
+    """Ticker plus verdict, conviction and trim pills as one 4-column row."""
     ticker = str(d.get("ticker", ""))
     verdict = str(d.get("verdict") or "HOLD").upper()
     confidence = d.get("confidence") if isinstance(d.get("confidence"), int) else None
     trim_pct = d.get("trim_pct")
-    position_context = str(d.get("position_context") or "")
-    forward_outlook = str(d.get("forward_outlook") or "")
-    reasoning = str(d.get("reasoning") or "")
-    tax_lot_plan = d.get("tax_lot_plan") or []
-    what_change = str(d.get("what_would_change_mind") or "")
-    wash_sale_notice = d.get("wash_sale_notice")
-
-    flow: list[Any] = []
 
     # Header row: ticker + pills as a 4-column Table for alignment.
     vc = _VERDICT_COLORS.get(verdict) or _VERDICT_COLORS["HOLD"]
@@ -1082,16 +1101,18 @@ def _pdf_holding_review_card(d: dict[str, Any], styles) -> list[Any]:
             ]
         )
     )
-    flow.append(header)
+    return header
 
-    if position_context:
-        flow.append(
-            Paragraph(
-                f"<font color='#6b7280' size='9'>{html.escape(position_context)}</font>",
-                styles["BodyText"],
-            )
-        )
-        flow.append(Spacer(1, 6))
+
+def _pdf_review_body(d: dict[str, Any], styles) -> list[Any]:
+    """Outlook, reasoning, tax-lot plan, catalysts, wash-sale notice and
+    what would change the reviewer's mind."""
+    forward_outlook = str(d.get("forward_outlook") or "")
+    reasoning = str(d.get("reasoning") or "")
+    tax_lot_plan = d.get("tax_lot_plan") or []
+    what_change = str(d.get("what_would_change_mind") or "")
+    wash_sale_notice = d.get("wash_sale_notice")
+    flow: list[Any] = []
 
     def _section(label: str, body: str, *, color: str = "#374151") -> None:
         if not body:

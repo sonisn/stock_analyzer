@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import html
 import math
+from collections.abc import Callable
 from datetime import date
 from typing import Any
 
@@ -429,6 +430,23 @@ def _pick_card_html(d: dict[str, Any]) -> str:
     """Render a per-pick structured card. Uses pill badges for rank /
     conviction / fragility / allocation and stacks bull + bear prose."""
     ticker = html.escape(str(d.get("ticker", "")))
+    one_liner = html.escape(str(d.get("one_liner") or ""))
+    return (
+        f"<div style='border:1px solid #e5e7eb;border-radius:8px;padding:16px;"
+        f"margin:16px 0;background:#fff'>"
+        f"<div style='display:flex;flex-wrap:wrap;align-items:center;gap:10px;"
+        f"margin-bottom:10px'>"
+        f"<h2 style='margin:0;border:none;padding:0'>{ticker}</h2>"
+        f"{_pick_pills_html(d)}"
+        f"</div>"
+        f"<div style='color:#374151;margin-bottom:6px'>{one_liner}</div>"
+        + "".join(_pick_body_html(d))
+        + "</div>"
+    )
+
+
+def _pick_pills_html(d: dict[str, Any]) -> str:
+    """Rank, conviction, fragility, allocation and consensus badges."""
     rank = d.get("rank")
     conviction = d.get("conviction")
     fragility = d.get("fragility_rank")
@@ -436,15 +454,6 @@ def _pick_card_html(d: dict[str, Any]) -> str:
     alloc_usd = d.get("allocation_usd")
     agreement_ratio = d.get("agreement_ratio")
     voting_providers = d.get("voting_providers")
-    one_liner = html.escape(str(d.get("one_liner") or ""))
-    bull = html.escape(str(d.get("bull_thesis") or ""))
-    bear = html.escape(str(d.get("bear_case") or "")) if d.get("bear_case") else ""
-    bet_on = html.escape(str(d.get("what_youre_betting_on") or ""))
-    why_over = html.escape(str(d.get("why_over_alternatives") or ""))
-    sector_concentration = html.escape(str(d.get("sector_concentration_check") or ""))
-    most_fragile = html.escape(str(d.get("most_fragile_assumption") or ""))
-    watch_metric = html.escape(str(d.get("watch_metric") or ""))
-    alloc_rationale = html.escape(str(d.get("allocation_rationale") or ""))
 
     rank_html = (
         f"<span style='background:#1f2937;color:#fff;padding:3px 10px;"
@@ -496,6 +505,19 @@ def _pick_card_html(d: dict[str, Any]) -> str:
             f"border:1px solid {border};padding:3px 10px;border-radius:12px;"
             f"font-size:12px;font-weight:600'>Consensus {n}/{total}</span>"
         )
+    return f"{rank_html}{conv_html}{frag_html}{alloc_html}{agreement_html}"
+
+
+def _pick_body_html(d: dict[str, Any]) -> list[str]:
+    """Bull and bear prose, catalysts, alternatives and sizing rationale."""
+    bull = html.escape(str(d.get("bull_thesis") or ""))
+    bear = html.escape(str(d.get("bear_case") or "")) if d.get("bear_case") else ""
+    bet_on = html.escape(str(d.get("what_youre_betting_on") or ""))
+    why_over = html.escape(str(d.get("why_over_alternatives") or ""))
+    sector_concentration = html.escape(str(d.get("sector_concentration_check") or ""))
+    most_fragile = html.escape(str(d.get("most_fragile_assumption") or ""))
+    watch_metric = html.escape(str(d.get("watch_metric") or ""))
+    alloc_rationale = html.escape(str(d.get("allocation_rationale") or ""))
 
     sections_html: list[str] = []
     if bull:
@@ -543,19 +565,7 @@ def _pick_card_html(d: dict[str, Any]) -> str:
             f"border-left:3px solid #7c3aed;font-size:13px;color:#374151'>"
             f"<b>Sizing rationale:</b> {alloc_rationale}</div>"
         )
-
-    return (
-        f"<div style='border:1px solid #e5e7eb;border-radius:8px;padding:16px;"
-        f"margin:16px 0;background:#fff'>"
-        f"<div style='display:flex;flex-wrap:wrap;align-items:center;gap:10px;"
-        f"margin-bottom:10px'>"
-        f"<h2 style='margin:0;border:none;padding:0'>{ticker}</h2>"
-        f"{rank_html}{conv_html}{frag_html}{alloc_html}{agreement_html}"
-        f"</div>"
-        f"<div style='color:#374151;margin-bottom:6px'>{one_liner}</div>"
-        + "".join(sections_html)
-        + "</div>"
-    )
+    return sections_html
 
 
 def _allocation_table_html(d: dict[str, Any]) -> str:
@@ -782,17 +792,32 @@ def _holding_review_card_html(d: dict[str, Any]) -> str:
     Replaces the monospace `preformatted` dump that used to render
     HoldingReview.full_text verbatim."""
     ticker = html.escape(str(d.get("ticker", "")))
+    position_context = html.escape(str(d.get("position_context") or ""))
+    pos_html = (
+        f"<div style='color:#6b7280;font-size:13px;margin-top:6px'>{position_context}</div>"
+        if position_context
+        else ""
+    )
+
+    return (
+        f"<div style='border:1px solid #e5e7eb;border-radius:8px;"
+        f"padding:16px;margin:16px 0;background:#fff'>"
+        f"<div style='display:flex;flex-wrap:wrap;align-items:center;"
+        f"gap:10px;margin-bottom:0'>"
+        f"<h2 style='margin:0;border:none;padding:0;font-family:"
+        f"ui-monospace,SFMono-Regular,monospace'>{ticker}</h2>"
+        + "".join(_review_pills_html(d))
+        + f"</div>{pos_html}"
+        + "".join(_review_body_html(d))
+        + "</div>"
+    )
+
+
+def _review_pills_html(d: dict[str, Any]) -> list[str]:
+    """Verdict, conviction and trim-size badges."""
     verdict = str(d.get("verdict") or "HOLD").upper()
     confidence = d.get("confidence")
     trim_pct = d.get("trim_pct")
-    position_context = html.escape(str(d.get("position_context") or ""))
-    forward_outlook = html.escape(str(d.get("forward_outlook") or ""))
-    reasoning = html.escape(str(d.get("reasoning") or ""))
-    tax_lot_plan = d.get("tax_lot_plan") or []
-    what_change = html.escape(str(d.get("what_would_change_mind") or ""))
-    wash_sale_notice = d.get("wash_sale_notice")
-
-    # Pill badges in header row.
     vc = _VERDICT_COLORS.get(verdict) or _VERDICT_COLORS["HOLD"]
     verdict_pill = (
         f"<span style='background:{vc['bg']};color:{vc['fg']};"
@@ -814,8 +839,18 @@ def _holding_review_card_html(d: dict[str, Any]) -> str:
             f"border:1px solid #e89c00;padding:3px 10px;border-radius:12px;"
             f"font-size:12px;font-weight:600'>Trim {trim_pct:.0f}%</span>"
         )
+    return pills
 
-    # Build body sections (only include the ones present).
+
+def _review_body_html(d: dict[str, Any]) -> list[str]:
+    """Outlook, reasoning, tax-lot plan, catalysts, wash-sale notice and
+    what would change the reviewer's mind — only the ones present."""
+    forward_outlook = html.escape(str(d.get("forward_outlook") or ""))
+    reasoning = html.escape(str(d.get("reasoning") or ""))
+    tax_lot_plan = d.get("tax_lot_plan") or []
+    what_change = html.escape(str(d.get("what_would_change_mind") or ""))
+    wash_sale_notice = d.get("wash_sale_notice")
+
     body_parts: list[str] = []
 
     def _section(label: str, body: str, *, color: str = "#6b7280") -> None:
@@ -865,25 +900,7 @@ def _holding_review_card_html(d: dict[str, Any]) -> str:
             f"<b style='color:#374151;font-style:normal'>"
             f"What would change my mind:</b> {what_change}</div>"
         )
-
-    pos_html = (
-        f"<div style='color:#6b7280;font-size:13px;margin-top:6px'>{position_context}</div>"
-        if position_context
-        else ""
-    )
-
-    return (
-        f"<div style='border:1px solid #e5e7eb;border-radius:8px;"
-        f"padding:16px;margin:16px 0;background:#fff'>"
-        f"<div style='display:flex;flex-wrap:wrap;align-items:center;"
-        f"gap:10px;margin-bottom:0'>"
-        f"<h2 style='margin:0;border:none;padding:0;font-family:"
-        f"ui-monospace,SFMono-Regular,monospace'>{ticker}</h2>"
-        + "".join(pills)
-        + f"</div>{pos_html}"
-        + "".join(body_parts)
-        + "</div>"
-    )
+    return body_parts
 
 
 def _rebalance_action_table_html(d: dict[str, Any]) -> str:
@@ -1020,121 +1037,116 @@ def _render_premium_deployment(data: dict) -> str:
 def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> str:
     parts: list[str] = [_HTML_HEAD]
     for s in sections:
-        if s.kind == "heading":
-            parts.append(f"<h{s.level}>{html.escape(s.text)}</h{s.level}>")
-
-        elif s.kind == "para":
-            parts.append(f"<p>{html.escape(s.text)}</p>")
-
-        elif s.kind == "preformatted":
-            parts.append(f"<pre>{html.escape(s.text)}</pre>")
-
-        elif s.kind == "blockquote":
-            parts.append(f"<blockquote>{html.escape(s.text)}</blockquote>")
-
-        elif s.kind == "image" and s.image_ticker:
-            cid = chart_cids.get(s.image_ticker)
-            if cid:
-                parts.append(f"<img src='cid:{cid}' alt='{html.escape(s.image_ticker)} chart' />")
-
-        elif s.kind == "table" and s.table_header and s.table_rows:
-            parts.append("<table><thead><tr>")
-            for h in s.table_header:
-                parts.append(f"<th>{html.escape(h)}</th>")
-            parts.append("</tr></thead><tbody>")
-            for row in s.table_rows:
-                parts.append("<tr>")
-                for cell in row:
-                    parts.append(f"<td>{html.escape(cell)}</td>")
-                parts.append("</tr>")
-            parts.append("</tbody></table>")
-
-        elif s.kind == "status_banner":
-            cs = _STATUS_COLORS.get(s.status, _STATUS_COLORS["UNKNOWN"])
-            parts.append(
-                f"<div class='banner' style='background:{cs['bg']};"
-                f"color:{cs['fg']};border-left-color:{cs['border']}'>"
-                f"{html.escape(s.text)}"
-            )
-            # Optional sub-text already in s.text using "\n" — second line as banner-sub
-            parts.append("</div>")
-
-        elif s.kind == "metric_strip" and s.metrics:
-            parts.append("<div class='metrics'>")
-            for label, value in s.metrics:
-                parts.append(
-                    f"<div class='metric'>"
-                    f"<div class='metric-label'>{html.escape(label)}</div>"
-                    f"<div class='metric-value'>{html.escape(value)}</div>"
-                    f"</div>"
-                )
-            parts.append("</div>")
-
-        elif s.kind == "holdings_dashboard" and s.holdings:
-            parts.append(
-                "<table class='dashboard'><thead><tr>"
-                "<th>Ticker</th><th>Verdict</th><th>Conf</th>"
-                "<th>P/L</th><th>Sector</th><th>Forward note</th>"
-                "</tr></thead><tbody>"
-            )
-            for h_row in s.holdings:
-                verdict = (h_row.get("verdict") or "HOLD").upper()
-                conf = h_row.get("confidence")
-                pnl = h_row.get("pnl_pct")
-                pnl_str = f"{pnl:+.1f}%" if isinstance(pnl, (int, float)) else "—"
-                pl_cls = _pl_class(pnl if isinstance(pnl, (int, float)) else None)
-                parts.append(
-                    f"<tr>"
-                    f"<td><b>{html.escape(h_row.get('ticker', ''))}</b></td>"
-                    f"<td>{_badge_html(verdict)}</td>"
-                    f"<td>{_confidence_bar_html(conf)}</td>"
-                    f"<td class='{pl_cls}'>{pnl_str}</td>"
-                    f"<td style='color:#6b7280'>{html.escape(h_row.get('sector') or '—')}</td>"
-                    f"<td style='color:#374151;font-size:12px'>{html.escape(h_row.get('note') or '')}</td>"
-                    f"</tr>"
-                )
-            parts.append("</tbody></table>")
-
-        elif s.kind == "sector_pie" and s.pie_data:
-            parts.append(_svg_pie(s.pie_data))
-
-        elif s.kind == "pick_card" and s.data:
-            parts.append(_pick_card_html(s.data))
-
-        elif s.kind == "allocation_table" and s.data:
-            parts.append(_allocation_table_html(s.data))
-
-        elif s.kind == "rebalance_action_table" and s.data:
-            parts.append(_rebalance_action_table_html(s.data))
-
-        elif s.kind == "holding_review_card" and s.data:
-            parts.append(_holding_review_card_html(s.data))
-
-        elif s.kind == "market_themes_panel" and s.data:
-            parts.append(_market_themes_panel_html(s.data))
-
-        elif s.kind == "premortem_panel" and s.data:
-            parts.append(_premortem_panel_html(s.data))
-
-        elif s.kind == "factor_tilt_panel" and s.data:
-            parts.append(_factor_tilt_panel_html(s.data))
-
-        elif s.kind == "equity_curve" and s.data:
-            parts.append(_equity_curve_svg(s.data))
-
-        elif s.kind == "bar_chart" and s.data:
-            parts.append(_bar_chart_svg(s.data))
-
-        elif s.kind == "premium_income" and s.data:
-            parts.append(_render_premium_income(s.data))
-
-        elif s.kind == "round_lot_coverage" and s.data:
-            parts.append(_render_round_lot_coverage(s.data))
-
-        elif s.kind == "premium_deployment" and s.data:
-            parts.append(_render_premium_deployment(s.data))
-
-        elif s.kind == "page_break":
-            parts.append("<hr/>")
+        render = _HTML_SECTION_RENDERERS.get(s.kind)
+        if render is not None:
+            parts.append(render(s, chart_cids))
     parts.append("</body></html>")
     return "".join(parts)
+
+
+def _image_html(s: Section, chart_cids: dict[str, str]) -> str:
+    cid = chart_cids.get(s.image_ticker) if s.image_ticker else None
+    return f"<img src='cid:{cid}' alt='{html.escape(s.image_ticker)} chart' />" if cid else ""
+
+
+def _table_html(s: Section, chart_cids: dict[str, str]) -> str:
+    if not (s.table_header and s.table_rows):
+        return ""
+    parts = ["<table><thead><tr>"]
+    for h in s.table_header:
+        parts.append(f"<th>{html.escape(h)}</th>")
+    parts.append("</tr></thead><tbody>")
+    for row in s.table_rows:
+        parts.append("<tr>")
+        for cell in row:
+            parts.append(f"<td>{html.escape(cell)}</td>")
+        parts.append("</tr>")
+    parts.append("</tbody></table>")
+    return "".join(parts)
+
+
+def _status_banner_html(s: Section, chart_cids: dict[str, str]) -> str:
+    cs = _STATUS_COLORS.get(s.status, _STATUS_COLORS["UNKNOWN"])
+    return (
+        f"<div class='banner' style='background:{cs['bg']};"
+        f"color:{cs['fg']};border-left-color:{cs['border']}'>"
+        f"{html.escape(s.text)}"
+        "</div>"
+    )
+
+
+def _metric_strip_html(s: Section, chart_cids: dict[str, str]) -> str:
+    if not s.metrics:
+        return ""
+    parts = ["<div class='metrics'>"]
+    for label, value in s.metrics:
+        parts.append(
+            f"<div class='metric'>"
+            f"<div class='metric-label'>{html.escape(label)}</div>"
+            f"<div class='metric-value'>{html.escape(value)}</div>"
+            f"</div>"
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def _holdings_dashboard_html(s: Section, chart_cids: dict[str, str]) -> str:
+    if not s.holdings:
+        return ""
+    parts = [
+        "<table class='dashboard'><thead><tr>"
+        "<th>Ticker</th><th>Verdict</th><th>Conf</th>"
+        "<th>P/L</th><th>Sector</th><th>Forward note</th>"
+        "</tr></thead><tbody>"
+    ]
+    for h_row in s.holdings:
+        verdict = (h_row.get("verdict") or "HOLD").upper()
+        conf = h_row.get("confidence")
+        pnl = h_row.get("pnl_pct")
+        pnl_str = f"{pnl:+.1f}%" if isinstance(pnl, (int, float)) else "—"
+        pl_cls = _pl_class(pnl if isinstance(pnl, (int, float)) else None)
+        parts.append(
+            f"<tr>"
+            f"<td><b>{html.escape(h_row.get('ticker', ''))}</b></td>"
+            f"<td>{_badge_html(verdict)}</td>"
+            f"<td>{_confidence_bar_html(conf)}</td>"
+            f"<td class='{pl_cls}'>{pnl_str}</td>"
+            f"<td style='color:#6b7280'>{html.escape(h_row.get('sector') or '—')}</td>"
+            f"<td style='color:#374151;font-size:12px'>{html.escape(h_row.get('note') or '')}</td>"
+            f"</tr>"
+        )
+    parts.append("</tbody></table>")
+    return "".join(parts)
+
+
+def _data_html(build: Callable[[Any], str]) -> Callable[[Section, dict[str, str]], str]:
+    """A renderer for a kind whose builder takes the section's data."""
+    return lambda s, chart_cids: build(s.data) if s.data else ""
+
+
+# One renderer per SectionKind: (section, chart_cids) -> HTML.
+_HTML_SECTION_RENDERERS: dict[str, Callable[[Section, dict[str, str]], str]] = {
+    "heading": lambda s, c: f"<h{s.level}>{html.escape(s.text)}</h{s.level}>",
+    "para": lambda s, c: f"<p>{html.escape(s.text)}</p>",
+    "preformatted": lambda s, c: f"<pre>{html.escape(s.text)}</pre>",
+    "blockquote": lambda s, c: f"<blockquote>{html.escape(s.text)}</blockquote>",
+    "image": _image_html,
+    "table": _table_html,
+    "status_banner": _status_banner_html,
+    "metric_strip": _metric_strip_html,
+    "holdings_dashboard": _holdings_dashboard_html,
+    "sector_pie": lambda s, c: _svg_pie(s.pie_data) if s.pie_data else "",
+    "pick_card": _data_html(_pick_card_html),
+    "allocation_table": _data_html(_allocation_table_html),
+    "rebalance_action_table": _data_html(_rebalance_action_table_html),
+    "holding_review_card": _data_html(_holding_review_card_html),
+    "market_themes_panel": _data_html(_market_themes_panel_html),
+    "premortem_panel": _data_html(_premortem_panel_html),
+    "factor_tilt_panel": _data_html(_factor_tilt_panel_html),
+    "equity_curve": _data_html(_equity_curve_svg),
+    "bar_chart": _data_html(_bar_chart_svg),
+    "premium_income": _data_html(_render_premium_income),
+    "round_lot_coverage": _data_html(_render_round_lot_coverage),
+    "premium_deployment": _data_html(_render_premium_deployment),
+    "page_break": lambda s, c: "<hr/>",
+}
