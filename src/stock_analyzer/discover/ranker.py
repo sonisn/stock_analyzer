@@ -314,6 +314,29 @@ class Ranker:
                 calibration_block,
             )
 
+        outputs, pick_sets = self._run_rounds(
+            analyses,
+            holdings_summary,
+            top_n,
+            macro_context,
+            track_record_block,
+            market_themes_block,
+            calibration_block,
+        )
+        return self._merge_by_majority(outputs, pick_sets)
+
+    def _run_rounds(
+        self,
+        analyses: dict[str, Any],
+        holdings_summary: str,
+        top_n: int,
+        macro_context: str,
+        track_record_block: str,
+        market_themes_block: str,
+        calibration_block: str,
+    ) -> tuple[list[RankerOutput], list[set[str]]]:
+        """One ranking pass per round while the cost cap allows; returns
+        each round's output and its set of picked tickers."""
         outputs: list[RankerOutput] = []
         pick_sets: list[set[str]] = []
         prompt_chars = sum(len(str(getattr(a, "full_text", a))) for a in analyses.values()) + sum(
@@ -355,7 +378,13 @@ class Ranker:
                 self.rounds[i][1],
                 sorted(picks),
             )
+        return outputs, pick_sets
 
+    def _merge_by_majority(
+        self, outputs: list[RankerOutput], pick_sets: list[set[str]]
+    ) -> RankerOutput:
+        """The round that best overlaps the majority-consensus set, each of
+        its picks tagged with how many rounds (and which providers) agreed."""
         n_runs = len(outputs)
         if n_runs == 1:
             return outputs[0]

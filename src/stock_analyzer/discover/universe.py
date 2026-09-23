@@ -181,6 +181,68 @@ def _tickers_from_items(items: list[dict[str, Any]]) -> Counter[str]:
     return counter
 
 
+def _entry(universe: dict[str, dict[str, Any]], ticker: str) -> dict[str, Any]:
+    return universe.setdefault(
+        ticker,
+        {"sources": [], "conviction": 0, "in_base_universe": False},
+    )
+
+
+def _add_frame(universe: dict[str, dict[str, Any]], tickers: tuple[str, ...], source: str) -> None:
+    """Names that are always eligible: the index, the watchlist, holdings."""
+    for ticker in tickers:
+        u = _entry(universe, ticker)
+        u["in_base_universe"] = True
+        if source not in u["sources"]:
+            u["sources"].append(source)
+
+
+def _add_overlay(
+    universe: dict[str, dict[str, Any]], counts: dict[str, int], source: str, *, weight: int
+) -> None:
+    """News mentions: attention, weighted into `conviction`."""
+    for ticker, n in counts.items():
+        u = _entry(universe, ticker)
+        if source not in u["sources"]:
+            u["sources"].append(source)
+        u["conviction"] += n * weight
+
+
+def _drop_unlisted(universe: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Validate against the SEC's authoritative ticker→CIK map.
+
+    The regex-based extraction catches a lot of English words (HOME, TABLE,
+    OFF, LP, LLC, etc.) that aren't real listings; this drops them before
+    they hit yfinance. Tickers with share classes appear in SEC data with a
+    dash (e.g. BRK-B); accept both BRK.B and BRK-B forms.
+    """
+    sec_tickers = load_ticker_cik_map()
+    if not sec_tickers:
+        logger.warning(
+            "SEC ticker map unavailable — keeping all %d regex-extracted "
+            "candidates; expect yfinance 404s for noise",
+            len(universe),
+        )
+        return universe
+    before = len(universe)
+    valid = set(sec_tickers.keys())
+    # Only the regex-derived names need policing. A frame entry (index /
+    # watchlist / holding) is there because a human or an index listed
+    # it, so an SEC map that is stale or fetched badly must not silently
+    # empty the sampling frame.
+    universe = {
+        t: data
+        for t, data in universe.items()
+        if data.get("in_base_universe") or t in valid or t.replace(".", "-") in valid
+    }
+    logger.info(
+        "Universe: %d candidates after SEC validation (was %d)",
+        len(universe),
+        before,
+    )
+    return universe
+
+
 def build_universe(
     watchlist: tuple[str, ...] = (),
     holdings: tuple[str, ...] = (),
@@ -201,32 +263,14 @@ def build_universe(
 
     universe: dict[str, dict[str, Any]] = {}
 
-    def _entry(ticker: str) -> dict[str, Any]:
-        return universe.setdefault(
-            ticker,
-            {"sources": [], "conviction": 0, "in_base_universe": False},
-        )
-
     # --- layer 1: the sampling frame ---
-    for ticker in frame:
-        u = _entry(ticker)
-        u["in_base_universe"] = True
-        if "index" not in u["sources"]:
-            u["sources"].append("index")
+    _add_frame(universe, frame, "index")
     # Watchlist and holdings are part of the frame by definition: the user
     # told us these matter, so they are always eligible for analysis. That
     # is an INCLUSION rule — it deliberately carries no score bonus, so the
     # ranking tests the user's prior instead of confirming it.
-    for ticker in watchlist:
-        u = _entry(ticker)
-        u["in_base_universe"] = True
-        if "watchlist" not in u["sources"]:
-            u["sources"].append("watchlist")
-    for ticker in holdings:
-        u = _entry(ticker)
-        u["in_base_universe"] = True
-        if "holding" not in u["sources"]:
-            u["sources"].append("holding")
+    _add_frame(universe, watchlist, "watchlist")
+    _add_frame(universe, holdings, "holding")
 
     # --- layer 2: the conviction overlay ---
     insider_items = fetch_insider_trades(days=30, max_results=40)
@@ -234,47 +278,10 @@ def build_universe(
 
     insider_counts = _tickers_from_items(insider_items)
     hedge_counts = _tickers_from_items(hedge_items)
+    _add_overlay(universe, insider_counts, "insider", weight=1)
+    _add_overlay(universe, hedge_counts, "billionaire", weight=2)
 
-    for ticker, n in insider_counts.items():
-        u = _entry(ticker)
-        if "insider" not in u["sources"]:
-            u["sources"].append("insider")
-        u["conviction"] += n
-    for ticker, n in hedge_counts.items():
-        u = _entry(ticker)
-        if "billionaire" not in u["sources"]:
-            u["sources"].append("billionaire")
-        u["conviction"] += n * 2
-
-    # Validate against the SEC's authoritative ticker→CIK map. The regex-based
-    # extraction catches a lot of English words (HOME, TABLE, OFF, LP, LLC, etc.)
-    # that aren't real listings; this drops them before they hit yfinance.
-    # Tickers with share classes appear in SEC data with a dash (e.g. BRK-B);
-    # accept both BRK.B and BRK-B forms.
-    sec_tickers = load_ticker_cik_map()
-    if sec_tickers:
-        before = len(universe)
-        valid = set(sec_tickers.keys())
-        # Only the regex-derived names need policing. A frame entry (index /
-        # watchlist / holding) is there because a human or an index listed
-        # it, so an SEC map that is stale or fetched badly must not silently
-        # empty the sampling frame.
-        universe = {
-            t: data
-            for t, data in universe.items()
-            if data.get("in_base_universe") or t in valid or t.replace(".", "-") in valid
-        }
-        logger.info(
-            "Universe: %d candidates after SEC validation (was %d)",
-            len(universe),
-            before,
-        )
-    else:
-        logger.warning(
-            "SEC ticker map unavailable — keeping all %d regex-extracted "
-            "candidates; expect yfinance 404s for noise",
-            len(universe),
-        )
+    universe = _drop_unlisted(universe)
 
     news_only = sum(1 for data in universe.values() if not data.get("in_base_universe"))
     logger.info(

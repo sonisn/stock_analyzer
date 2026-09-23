@@ -104,49 +104,14 @@ def run_csp_data_pipeline(
 
     `recent_picks` is [(ticker, rank, run_at), ...] from past runs; this
     run's own picks (`state["picks"]`) are added here."""
-    from ..data.brokerage import fetch_open_short_puts
-    from ..data.options_chain import fetch_chains
-    from .cc_eligibility import apply_earnings_filter
-    from .csp_eligibility import build_csp_context_block, eligible_csp_tickers, fill_put_deltas
+    from .csp_eligibility import build_csp_context_block
 
     cash = state.get("cash_balance")
     if cash is None:
         return CspDataResult(content="csp_data: cash balance unknown; puts need known cash")
 
-    try:
-        open_puts = fetch_open_short_puts()
-    except Exception as e:
-        logger.warning("open short-put fetch failed: %s", e)
-        open_puts = {}
-    reserved = sum(rec["collateral_usd"] for rec in open_puts.values())
-    account_room = _account_room(
-        state.get("account_cash") or {}, open_puts, settings.options_accounts
-    )
-    budget = sum(account_room.values()) if account_room else max(float(cash) - reserved, 0.0)
-    logger.info(
-        "CSP: cash $%s, $%s already reserved by %d open short put(s) → budget $%s %s",
-        f"{cash:,.0f}",
-        f"{reserved:,.0f}",
-        len(open_puts),
-        f"{budget:,.0f}",
-        {a: round(r) for a, r in account_room.items()},
-    )
-
-    now = date.today().isoformat()
-    picks = [(t, rank, now) for rank, t, _ in state.get("picks") or []] + list(recent_picks)
-    thesis = {c["ticker"]: c["status"] for c in state.get("thesis_checks") or []}
-    eligible = eligible_csp_tickers(
-        picks,
-        positions=state.get("holdings_positions") or {},
-        cash_budget=budget,
-        denylist=settings.options_denylist,
-        open_short_puts=open_puts,
-        thesis_status=thesis,
-        max_pct_per_put=settings.csp_max_pct_per_put,
-        max_pct_total=settings.csp_max_pct_total,
-        covered_call_tickers=_round_lot_tickers(state.get("position_splits")),
-        max_account_room=max(account_room.values()) if account_room else None,
-    )
+    open_puts, reserved, account_room, budget = _put_budget(state, settings, cash)
+    eligible = _put_candidates(state, settings, recent_picks, budget, open_puts, account_room)
     logger.info("CSP eligibility: %d candidate(s): %s", len(eligible), sorted(eligible))
     if not eligible:
         return CspDataResult(
@@ -155,36 +120,8 @@ def run_csp_data_pipeline(
             content="csp_data: no put candidates this run",
         )
 
-    chains = fetch_chains(
-        list(eligible), dte_min=settings.csp_dte_min, dte_max=settings.csp_dte_max, kind="puts"
-    )
-    earnings = _earnings_dates(
-        list(eligible), state.get("finnhub_signals") or {}, settings.discover_db_path
-    )
-    ready: dict[str, OptionChain] = {}
-    for t, chain in chains.items():
-        filtered, _ = apply_earnings_filter(chain, earnings_date=earnings.get(t))
-        ready[t] = fill_put_deltas(filtered)
-
-    # The put side had no volatility test while the call side did, so a
-    # put could be offered at an implied vol below what the stock actually
-    # realizes — selling insurance under cost. Same floor, same reasoning.
-    from .rebalance_cc import compute_iv_hv_regimes, drop_cheap_premium
-
-    cheap: dict[str, str] = {}
-    if settings.csp_min_iv_hv_ratio > 0:
-        regimes = compute_iv_hv_regimes({t: [] for t in eligible}, ready)
-        kept, cheap = drop_cheap_premium(
-            dict.fromkeys(eligible, []), regimes, min_ratio=settings.csp_min_iv_hv_ratio
-        )
-        if cheap:
-            logger.info(
-                "CSP: %d candidate(s) dropped for cheap premium: %s",
-                len(cheap),
-                ", ".join(sorted(cheap)),
-            )
-        eligible = {t: c for t, c in eligible.items() if t in kept}
-        ready = {t: c for t, c in ready.items() if t in kept}
+    chains, earnings, ready = _put_chains(eligible, state, settings)
+    eligible, ready, cheap = _drop_cheap_puts(eligible, ready, settings)
     if not eligible:
         return CspDataResult(
             cash_budget=budget,
@@ -229,6 +166,109 @@ def run_csp_data_pipeline(
             f"budget ${budget:,.0f}; context block {len(block)} chars"
         ),
     )
+
+
+def _put_budget(
+    state: dict[str, Any], settings: Settings, cash: float
+) -> tuple[dict[str, Any], float, dict[str, float], float]:
+    """(open short puts, collateral they hold, free cash per options
+    account, total cash budget for new puts)."""
+    from ..data.brokerage import fetch_open_short_puts
+
+    try:
+        open_puts = fetch_open_short_puts()
+    except Exception as e:
+        logger.warning("open short-put fetch failed: %s", e)
+        open_puts = {}
+    reserved = sum(rec["collateral_usd"] for rec in open_puts.values())
+    account_room = _account_room(
+        state.get("account_cash") or {}, open_puts, settings.options_accounts
+    )
+    budget = sum(account_room.values()) if account_room else max(float(cash) - reserved, 0.0)
+    logger.info(
+        "CSP: cash $%s, $%s already reserved by %d open short put(s) → budget $%s %s",
+        f"{cash:,.0f}",
+        f"{reserved:,.0f}",
+        len(open_puts),
+        f"{budget:,.0f}",
+        {a: round(r) for a, r in account_room.items()},
+    )
+    return open_puts, reserved, account_room, budget
+
+
+def _put_candidates(
+    state: dict[str, Any],
+    settings: Settings,
+    recent_picks: list[tuple[str, int, str]],
+    budget: float,
+    open_puts: dict[str, Any],
+    account_room: dict[str, float],
+) -> dict[str, Any]:
+    """This run's and recent runs' picks that a put could be sold on."""
+    from .csp_eligibility import eligible_csp_tickers
+
+    now = date.today().isoformat()
+    picks = [(t, rank, now) for rank, t, _ in state.get("picks") or []] + list(recent_picks)
+    thesis = {c["ticker"]: c["status"] for c in state.get("thesis_checks") or []}
+    return eligible_csp_tickers(
+        picks,
+        positions=state.get("holdings_positions") or {},
+        cash_budget=budget,
+        denylist=settings.options_denylist,
+        open_short_puts=open_puts,
+        thesis_status=thesis,
+        max_pct_per_put=settings.csp_max_pct_per_put,
+        max_pct_total=settings.csp_max_pct_total,
+        covered_call_tickers=_round_lot_tickers(state.get("position_splits")),
+        max_account_room=max(account_room.values()) if account_room else None,
+    )
+
+
+def _put_chains(
+    eligible: dict[str, Any], state: dict[str, Any], settings: Settings
+) -> tuple[dict[str, OptionChain], dict[str, Any], dict[str, OptionChain]]:
+    """(raw put chains, earnings dates, chains with earnings-window expiries
+    removed and deltas filled in)."""
+    from ..data.options_chain import fetch_chains
+    from .cc_eligibility import apply_earnings_filter
+    from .csp_eligibility import fill_put_deltas
+
+    chains = fetch_chains(
+        list(eligible), dte_min=settings.csp_dte_min, dte_max=settings.csp_dte_max, kind="puts"
+    )
+    earnings = _earnings_dates(
+        list(eligible), state.get("finnhub_signals") or {}, settings.discover_db_path
+    )
+    ready: dict[str, OptionChain] = {}
+    for t, chain in chains.items():
+        filtered, _ = apply_earnings_filter(chain, earnings_date=earnings.get(t))
+        ready[t] = fill_put_deltas(filtered)
+    return chains, earnings, ready
+
+
+def _drop_cheap_puts(
+    eligible: dict[str, Any], ready: dict[str, OptionChain], settings: Settings
+) -> tuple[dict[str, Any], dict[str, OptionChain], dict[str, str]]:
+    """The put side had no volatility test while the call side did, so a
+    put could be offered at an implied vol below what the stock actually
+    realizes — selling insurance under cost. Same floor, same reasoning."""
+    from .rebalance_cc import compute_iv_hv_regimes, drop_cheap_premium
+
+    cheap: dict[str, str] = {}
+    if settings.csp_min_iv_hv_ratio > 0:
+        regimes = compute_iv_hv_regimes({t: [] for t in eligible}, ready)
+        kept, cheap = drop_cheap_premium(
+            dict.fromkeys(eligible, []), regimes, min_ratio=settings.csp_min_iv_hv_ratio
+        )
+        if cheap:
+            logger.info(
+                "CSP: %d candidate(s) dropped for cheap premium: %s",
+                len(cheap),
+                ", ".join(sorted(cheap)),
+            )
+        eligible = {t: c for t, c in eligible.items() if t in kept}
+        ready = {t: c for t, c in ready.items() if t in kept}
+    return eligible, ready, cheap
 
 
 def _blocked_note(

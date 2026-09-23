@@ -259,34 +259,10 @@ class TradierChain:
             expirations = self._extract_expirations(payload)
             if not expirations:
                 logger.info("Tradier returned no expirations for %s", ticker)
-                return OptionChain(
-                    ticker=ticker,
-                    spot=0.0,
-                    asof=datetime.now(),
-                    calls=[],
-                    source="tradier",
-                )
-
-            today = date.today()
-            lo = today + timedelta(days=dte_min)
-            hi = today + timedelta(days=dte_max)
-            in_band: list[date] = []
-            for d_str in expirations:
-                try:
-                    d = date.fromisoformat(d_str)
-                except ValueError, TypeError:
-                    continue
-                if lo <= d <= hi:
-                    in_band.append(d)
-
+                return self._empty_chain(ticker)
+            in_band = self._expirations_in_band(expirations, dte_min, dte_max)
             if not in_band:
-                return OptionChain(
-                    ticker=ticker,
-                    spot=0.0,
-                    asof=datetime.now(),
-                    calls=[],
-                    source="tradier",
-                )
+                return self._empty_chain(ticker)
 
             # Step 2: fetch spot for filtering ITM strikes
             spot = self._fetch_spot(ticker, client) or 0.0
@@ -306,19 +282,7 @@ class TradierChain:
                     strike = _safe_float(row.get("strike")) or 0.0
                     if strike <= 0 or not _is_otm(option_type, strike, spot):
                         continue  # OTM only when spot known; else keep all
-                    greeks = row.get("greeks") or {}
-                    out.append(
-                        OptionQuote(
-                            strike=strike,
-                            expiry=expiry,
-                            bid=_safe_float(row.get("bid")) or 0.0,
-                            ask=_safe_float(row.get("ask")) or 0.0,
-                            iv=_safe_float(greeks.get("mid_iv")),
-                            delta=_safe_float(greeks.get("delta")),
-                            open_interest=_safe_int(row.get("open_interest")),
-                            volume=_safe_int(row.get("volume")),
-                        )
-                    )
+                    out.append(self._quote_from_row(row, strike, expiry))
 
             return OptionChain(
                 ticker=ticker,
@@ -328,6 +292,45 @@ class TradierChain:
                 puts=puts,
                 source="tradier",
             )
+
+    @staticmethod
+    def _empty_chain(ticker: str) -> OptionChain:
+        return OptionChain(
+            ticker=ticker,
+            spot=0.0,
+            asof=datetime.now(),
+            calls=[],
+            source="tradier",
+        )
+
+    @staticmethod
+    def _expirations_in_band(expirations: list[str], dte_min: int, dte_max: int) -> list[date]:
+        today = date.today()
+        lo = today + timedelta(days=dte_min)
+        hi = today + timedelta(days=dte_max)
+        in_band: list[date] = []
+        for d_str in expirations:
+            try:
+                d = date.fromisoformat(d_str)
+            except ValueError, TypeError:
+                continue
+            if lo <= d <= hi:
+                in_band.append(d)
+        return in_band
+
+    @staticmethod
+    def _quote_from_row(row: dict, strike: float, expiry: date) -> OptionQuote:
+        greeks = row.get("greeks") or {}
+        return OptionQuote(
+            strike=strike,
+            expiry=expiry,
+            bid=_safe_float(row.get("bid")) or 0.0,
+            ask=_safe_float(row.get("ask")) or 0.0,
+            iv=_safe_float(greeks.get("mid_iv")),
+            delta=_safe_float(greeks.get("delta")),
+            open_interest=_safe_int(row.get("open_interest")),
+            volume=_safe_int(row.get("volume")),
+        )
 
     @staticmethod
     def _extract_expirations(payload: dict) -> list[str]:

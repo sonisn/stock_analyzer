@@ -152,83 +152,22 @@ class Rebalancer:
         backlog_block: str = "",
         stub_income_block: str = "",
     ) -> RebalancePlan:
-        # Accept either the new structured form ({ticker: HoldingReview})
-        # or the legacy free-text form ({ticker: str}). For the LLM prompt
-        # we need prose, so unwrap HoldingReview.full_text.
-        reviews_block = "\n\n".join(
-            f"=== {ticker} ===\n{r.full_text if isinstance(r, HoldingReview) else r}"
-            for ticker, r in holdings_reviews.items()
-        )
-        cash_line = (
-            f"Available cash: ${cash_available:,.0f}"
-            if cash_available is not None
-            else "Available cash: unknown (size BUYs from SELL+TRIM proceeds only)"
-        )
-        if accounts_block:
-            cash_line += (
-                "\nCash by account (cash only funds BUYs, ADDs and put collateral "
-                f"in its own account):\n{accounts_block}"
-            )
-        macro_block = f"Macro regime:\n{macro_summary}\n\n" if macro_summary else ""
-        agg = aggressiveness.lower() if aggressiveness else "balanced"
-        if agg not in ("conservative", "balanced", "aggressive"):
-            logger.warning(
-                "Unknown aggressiveness=%r — defaulting to 'balanced'",
-                aggressiveness,
-            )
-            agg = "balanced"
-        history_section = (
-            f"Previous decisions (last 3 rebalance runs, oldest first):\n{history_block}\n\n"
-            if history_block
-            else ""
-        )
-        themes_section = (
-            f"Current dominant market themes (use to validate continued "
-            f"holding of theme members vs trimming positions in fading "
-            f"themes):\n{market_themes_block}\n\n"
-            if market_themes_block
-            else ""
-        )
-        cc_section = f"{cc_context_block}\n\n" if cc_context_block else ""
-        if add_on_block:
-            cc_section = (
-                "ADD-ON-WEAKNESS CANDIDATES (deterministic: HOLD >= 7, 15%+ below the "
-                "52-week high, room under the weight limit — for a long-term holder a "
-                "lower price on an intact case is a better entry; prefer these for ADDs "
-                f"when the reviews still support them):\n{add_on_block}\n\n"
-            ) + cc_section
-        csp_section = f"{csp_context_block}\n\n" if csp_context_block else ""
-        # Ahead of the other blocks: a sale that cannot be executed is
-        # worse than no sale, and this is the only input that says which
-        # shares are already spoken for.
-        obligations_section = f"{obligations_block}\n\n" if obligations_block else ""
-        # Signed orders behind a holding, and the premium a part-lot is
-        # one purchase away from earning. Both bear on trims, and neither
-        # was visible to this agent before 2026-09-20.
-        backlog_section = f"{backlog_block}\n\n" if backlog_block else ""
-        stub_income_section = f"{stub_income_block}\n\n" if stub_income_block else ""
-        harvest_section = (
-            f"TAX-LOSS HARVEST CANDIDATES (deterministic; see instructions):\n{harvest_block}\n\n"
-            if harvest_block
-            else ""
-        )
-        prompt = (
-            f"AGGRESSIVENESS: {agg}\n"
-            f"(Apply the {agg} rule set from your instructions. The "
-            f"'Tax-agnostic alternative' section is MANDATORY in any "
-            f"NO ACTION output.)\n\n"
-            f"{obligations_section}"
-            f"{backlog_section}"
-            f"{stub_income_section}"
-            f"{macro_block}"
-            f"{themes_section}"
-            f"{cc_section}"
-            f"{csp_section}"
-            f"{harvest_section}"
-            f"{cash_line}\n\n"
-            f"{history_section}"
-            f"Current holdings reviews ({len(holdings_reviews)}):\n\n{reviews_block}\n\n"
-            f"New discover picks:\n\n{picks_text}"
+        prompt, agg = _decide_prompt(
+            holdings_reviews=holdings_reviews,
+            picks_text=picks_text,
+            cash_available=cash_available,
+            macro_summary=macro_summary,
+            aggressiveness=aggressiveness,
+            history_block=history_block,
+            market_themes_block=market_themes_block,
+            cc_context_block=cc_context_block,
+            harvest_block=harvest_block,
+            csp_context_block=csp_context_block,
+            accounts_block=accounts_block,
+            add_on_block=add_on_block,
+            obligations_block=obligations_block,
+            backlog_block=backlog_block,
+            stub_income_block=stub_income_block,
         )
         logger.info(
             "Generating rebalance plan with Opus (adaptive thinking, "
@@ -244,32 +183,136 @@ class Rebalancer:
             # reasoning the run paid for, so it travels with the error
             # instead of dying in a log line.
             raise RebalancePlanUnparseable(str(e), raw_text=e.raw_text, truncated=True) from e
-        result = raw.content
-        if result is None:
+        return _parse_plan(raw.content)
+
+
+def _decide_prompt(
+    *,
+    holdings_reviews: dict[str, HoldingReview] | dict[str, str],
+    picks_text: str,
+    cash_available: float | None,
+    macro_summary: str = "",
+    aggressiveness: str = "balanced",
+    history_block: str = "",
+    market_themes_block: str = "",
+    cc_context_block: str = "",
+    harvest_block: str = "",
+    csp_context_block: str = "",
+    accounts_block: str = "",
+    add_on_block: str = "",
+    obligations_block: str = "",
+    backlog_block: str = "",
+    stub_income_block: str = "",
+) -> tuple[str, str]:
+    """The user message for the rebalancer, and the aggressiveness applied."""
+    # Accept either the new structured form ({ticker: HoldingReview})
+    # or the legacy free-text form ({ticker: str}). For the LLM prompt
+    # we need prose, so unwrap HoldingReview.full_text.
+    reviews_block = "\n\n".join(
+        f"=== {ticker} ===\n{r.full_text if isinstance(r, HoldingReview) else r}"
+        for ticker, r in holdings_reviews.items()
+    )
+    cash_line = (
+        f"Available cash: ${cash_available:,.0f}"
+        if cash_available is not None
+        else "Available cash: unknown (size BUYs from SELL+TRIM proceeds only)"
+    )
+    if accounts_block:
+        cash_line += (
+            "\nCash by account (cash only funds BUYs, ADDs and put collateral "
+            f"in its own account):\n{accounts_block}"
+        )
+    macro_block = f"Macro regime:\n{macro_summary}\n\n" if macro_summary else ""
+    agg = aggressiveness.lower() if aggressiveness else "balanced"
+    if agg not in ("conservative", "balanced", "aggressive"):
+        logger.warning(
+            "Unknown aggressiveness=%r — defaulting to 'balanced'",
+            aggressiveness,
+        )
+        agg = "balanced"
+    history_section = (
+        f"Previous decisions (last 3 rebalance runs, oldest first):\n{history_block}\n\n"
+        if history_block
+        else ""
+    )
+    themes_section = (
+        f"Current dominant market themes (use to validate continued "
+        f"holding of theme members vs trimming positions in fading "
+        f"themes):\n{market_themes_block}\n\n"
+        if market_themes_block
+        else ""
+    )
+    cc_section = f"{cc_context_block}\n\n" if cc_context_block else ""
+    if add_on_block:
+        cc_section = (
+            "ADD-ON-WEAKNESS CANDIDATES (deterministic: HOLD >= 7, 15%+ below the "
+            "52-week high, room under the weight limit — for a long-term holder a "
+            "lower price on an intact case is a better entry; prefer these for ADDs "
+            f"when the reviews still support them):\n{add_on_block}\n\n"
+        ) + cc_section
+    csp_section = f"{csp_context_block}\n\n" if csp_context_block else ""
+    # Ahead of the other blocks: a sale that cannot be executed is
+    # worse than no sale, and this is the only input that says which
+    # shares are already spoken for.
+    obligations_section = f"{obligations_block}\n\n" if obligations_block else ""
+    # Signed orders behind a holding, and the premium a part-lot is
+    # one purchase away from earning. Both bear on trims, and neither
+    # was visible to this agent before 2026-09-20.
+    backlog_section = f"{backlog_block}\n\n" if backlog_block else ""
+    stub_income_section = f"{stub_income_block}\n\n" if stub_income_block else ""
+    harvest_section = (
+        f"TAX-LOSS HARVEST CANDIDATES (deterministic; see instructions):\n{harvest_block}\n\n"
+        if harvest_block
+        else ""
+    )
+    prompt = (
+        f"AGGRESSIVENESS: {agg}\n"
+        f"(Apply the {agg} rule set from your instructions. The "
+        f"'Tax-agnostic alternative' section is MANDATORY in any "
+        f"NO ACTION output.)\n\n"
+        f"{obligations_section}"
+        f"{backlog_section}"
+        f"{stub_income_section}"
+        f"{macro_block}"
+        f"{themes_section}"
+        f"{cc_section}"
+        f"{csp_section}"
+        f"{harvest_section}"
+        f"{cash_line}\n\n"
+        f"{history_section}"
+        f"Current holdings reviews ({len(holdings_reviews)}):\n\n{reviews_block}\n\n"
+        f"New discover picks:\n\n{picks_text}"
+    )
+    return prompt, agg
+
+
+def _parse_plan(result: object) -> RebalancePlan:
+    """The structured plan, or an error that keeps whatever text came back."""
+    if result is None:
+        raise RuntimeError(
+            "Rebalancer LLM returned no content — the rebalance plan "
+            "cannot be rendered. Check provider rate limits and retry."
+        )
+    if not isinstance(result, RebalancePlan):
+        # agno returns the parsed Pydantic instance when output_schema is set;
+        # if for some reason we got a str, parse it.
+        if isinstance(result, str):
+            try:
+                result = RebalancePlan.model_validate_json(result)
+            except Exception as e:
+                # Truncation is caught above; this is malformed JSON that
+                # finished inside the budget. Keep the text all the same.
+                raise RebalancePlanUnparseable(
+                    f"Rebalancer returned a string that wasn't valid RebalancePlan JSON: {e}",
+                    raw_text=result,
+                ) from e
+        else:
             raise RuntimeError(
-                "Rebalancer LLM returned no content — the rebalance plan "
-                "cannot be rendered. Check provider rate limits and retry."
+                f"Rebalancer returned unexpected type {type(result).__name__}; "
+                "expected RebalancePlan."
             )
-        if not isinstance(result, RebalancePlan):
-            # agno returns the parsed Pydantic instance when output_schema is set;
-            # if for some reason we got a str, parse it.
-            if isinstance(result, str):
-                try:
-                    result = RebalancePlan.model_validate_json(result)
-                except Exception as e:
-                    # Truncation is caught above; this is malformed JSON that
-                    # finished inside the budget. Keep the text all the same.
-                    raise RebalancePlanUnparseable(
-                        f"Rebalancer returned a string that wasn't valid RebalancePlan JSON: {e}",
-                        raw_text=result,
-                    ) from e
-            else:
-                raise RuntimeError(
-                    f"Rebalancer returned unexpected type {type(result).__name__}; "
-                    "expected RebalancePlan."
-                )
-        if not result.full_text:
-            raise RuntimeError(
-                "Rebalancer returned a plan with empty full_text — nothing to render in the report."
-            )
-        return result
+    if not result.full_text:
+        raise RuntimeError(
+            "Rebalancer returned a plan with empty full_text — nothing to render in the report."
+        )
+    return result
