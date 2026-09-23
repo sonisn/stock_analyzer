@@ -20,7 +20,7 @@ from __future__ import annotations
 import argparse
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from dotenv import load_dotenv
 from sqlmodel import select
@@ -120,7 +120,59 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
 
     db = settings.discover_db_path
     run_id = _latest_review_run(db)
+    positions, obligations = _brokerage_positions()
+    ledger = _read_ledger(db, run_id)
 
+    # Record today's closes before grading, so the grade is computed from
+    # the record rather than from a second, possibly different, fetch.
+    tickers = sorted(
+        set(positions)
+        | {s["ticker"] for s in ledger.suggestions}
+        | {s["reinvest_into"] for s in ledger.suggestions if s["reinvest_into"]}
+        | {"SPY"}
+    )
+    record_prices(db, tickers, today=today)
+
+    fetch = stored_history(db)
+    holdings = _holding_rows(
+        positions,
+        prices_now=_latest_closes(fetch, positions, today),
+        reviews=ledger.reviews,
+        obligations=obligations,
+        books=_contracted_books(positions),
+    )
+
+    # Only for tickers the page actually references. Every run adds picks,
+    # so carrying prose for all of them would grow the file without bound
+    # and none of it would be reachable.
+    referenced = set(positions) | {s["ticker"] for s in ledger.suggestions}
+    reasoning = {t: r for t, r in _reasoning(db).items() if t in referenced}
+    graded = grade_suggestions(
+        ledger.suggestions,
+        today=today,
+        units_now={t: p["units"] for t, p in positions.items()},
+        fetch=fetch,
+    )
+    graded.sort(key=lambda g: (g["suggested_on"], g.get("id") or 0), reverse=True)
+
+    return dict(
+        generated=today.isoformat(),
+        latest_run=run_id,
+        holdings=holdings,
+        history=_review_history(ledger.history_rows, ledger.run_days),
+        views=ledger.views,
+        runs=ledger.runs,
+        record=coverage(db),
+        suggestions=[_suggestion_row(g) for g in graded],
+        holdings_ok=bool(positions),
+        reasoning=reasoning,
+        reviews={t: (r or "") for t, r in ledger.review_text.items()},
+    )
+
+
+def _brokerage_positions() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """(units and cost per ticker across accounts, covered-call obligations);
+    both empty when the brokerage is unreachable."""
     positions: dict[str, dict[str, Any]] = {}
     obligations: dict[str, dict[str, Any]] = {}
     try:
@@ -137,7 +189,21 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
         obligations = fetch_covered_call_obligations()
     except Exception as e:  # noqa: BLE001
         logger.warning("Holdings unavailable (%s) — the page will say so", e)
+    return positions, obligations
 
+
+class _Ledger(NamedTuple):
+    reviews: dict[str, tuple[str | None, int | None]]
+    review_text: dict[str, str | None]
+    history_rows: list[tuple[str, int, str | None, int | None]]
+    run_days: dict[int, str]
+    views: dict[str, Any]
+    suggestions: list[dict[str, Any]]
+    runs: list[dict[str, Any]]
+
+
+def _read_ledger(db: str, run_id: int | None) -> _Ledger:
+    """Reviews, run history, views, suggestions and recent runs."""
     with get_session(db) as session:
         # Columns, not rows: an ORM object read after the session closes
         # raises DetachedInstanceError, and nothing here needs the object.
@@ -195,32 +261,39 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
             )
             for r in session.exec(select(Run).order_by(Run.id.desc())).all()[:20]  # type: ignore[attr-defined]
         ]
+    return _Ledger(reviews, review_text, history_rows, run_days, views, suggestions, runs)
 
-    # Record today's closes before grading, so the grade is computed from
-    # the record rather than from a second, possibly different, fetch.
-    tickers = sorted(
-        set(positions)
-        | {s["ticker"] for s in suggestions}
-        | {s["reinvest_into"] for s in suggestions if s["reinvest_into"]}
-        | {"SPY"}
-    )
-    record_prices(db, tickers, today=today)
 
-    books: dict[str, dict[str, Any]] = {}
+def _contracted_books(positions: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     try:
         from ..data.backlog import batch_rpo
 
-        books = batch_rpo([t for t in positions if t.isalpha()])
+        return batch_rpo([t for t in positions if t.isalpha()])
     except Exception as e:  # noqa: BLE001
         logger.warning("Contracted books unavailable (%s)", e)
+        return {}
 
-    fetch = stored_history(db)
+
+def _latest_closes(
+    fetch: Any, positions: dict[str, dict[str, Any]], today: date
+) -> dict[str, float]:
     prices_now: dict[str, float] = {}
     for t in positions:
         frame = fetch(t, today.replace(year=today.year - 1), today)
         if frame is not None and not frame.empty:
             prices_now[t] = float(frame["Close"].iloc[-1])
+    return prices_now
 
+
+def _holding_rows(
+    positions: dict[str, dict[str, Any]],
+    *,
+    prices_now: dict[str, float],
+    reviews: dict[str, tuple[str | None, int | None]],
+    obligations: dict[str, dict[str, Any]],
+    books: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """One row per holding, largest first."""
     holdings = []
     for t, p in positions.items():
         units, cost = p["units"], p["cost"]
@@ -243,54 +316,35 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
             )
         )
     holdings.sort(key=lambda h: -(h["value"] or 0))
+    return holdings
 
+
+def _review_history(
+    history_rows: list[tuple[str, int, str | None, int | None]], run_days: dict[int, str]
+) -> dict[str, list[dict[str, Any]]]:
+    """Each holding's verdicts across runs, oldest first."""
     history: dict[str, list[dict[str, Any]]] = {}
     for t, rid, verdict, conf in history_rows:
         history.setdefault(t, []).append(
             dict(run=rid, d=run_days.get(rid, ""), v=verdict or "?", c=conf or 0)
         )
+    return history
 
-    # Only for tickers the page actually references. Every run adds picks,
-    # so carrying prose for all of them would grow the file without bound
-    # and none of it would be reachable.
-    referenced = set(positions) | {s["ticker"] for s in suggestions}
-    reasoning = {t: r for t, r in _reasoning(db).items() if t in referenced}
-    graded = grade_suggestions(
-        suggestions,
-        today=today,
-        units_now={t: p["units"] for t, p in positions.items()},
-        fetch=fetch,
-    )
-    graded.sort(key=lambda g: (g["suggested_on"], g.get("id") or 0), reverse=True)
 
+def _suggestion_row(g: dict[str, Any]) -> dict[str, Any]:
     return dict(
-        generated=today.isoformat(),
-        latest_run=run_id,
-        holdings=holdings,
-        history=history,
-        views=views,
-        runs=runs,
-        record=coverage(db),
-        suggestions=[
-            dict(
-                d=g["suggested_on"],
-                ticker=g["ticker"],
-                action=g["action"],
-                run=g.get("run_id"),
-                ret=g.get("return_pct"),
-                spy=g.get("spy_pct"),
-                swap=g.get("reinvest_into"),
-                swap_pct=g.get("reinvest_pct"),
-                edge=g.get("edge_pct"),
-                verdict=g.get("verdict"),
-                acted=g.get("acted"),
-                detail=(g.get("detail") or "")[:150],
-            )
-            for g in graded
-        ],
-        holdings_ok=bool(positions),
-        reasoning=reasoning,
-        reviews={t: (r or "") for t, r in review_text.items()},
+        d=g["suggested_on"],
+        ticker=g["ticker"],
+        action=g["action"],
+        run=g.get("run_id"),
+        ret=g.get("return_pct"),
+        spy=g.get("spy_pct"),
+        swap=g.get("reinvest_into"),
+        swap_pct=g.get("reinvest_pct"),
+        edge=g.get("edge_pct"),
+        verdict=g.get("verdict"),
+        acted=g.get("acted"),
+        detail=(g.get("detail") or "")[:150],
     )
 
 
