@@ -486,6 +486,11 @@ def test_csp_data_pipeline_offline():
         ),
         patch("stock_analyzer.data.options_chain.fetch_chains", return_value=chains) as fc,
         patch("stock_analyzer.data.earnings_calendar.next_earnings_date", return_value=None),
+        # No volatility reading: the cheap-premium floor keeps what it cannot judge.
+        patch(
+            "stock_analyzer.data.historical_volatility.fetch_realized_volatility",
+            return_value={},
+        ),
     ):
         result = rebalance_csp.run_csp_data_pipeline(state, Settings(), recent)
     assert fc.call_args.kwargs["kind"] == "puts"
@@ -618,3 +623,35 @@ def test_a_buy_that_names_its_account_still_only_charges_that_account():
     assert budget == 15_000.0
     assert room == {"Traditional IRA": 7_000.0, "HSA": 8_000.0}
     assert notes == []
+
+
+def test_cheap_put_premium_is_held_back_like_call_premium():
+    """The put pipeline's IV/HV floor read IV from call rows only; a put
+    chain has none, so the floor never fired and underpriced puts went
+    through."""
+    from stock_analyzer.config import Settings
+    from stock_analyzer.discover import rebalance_csp
+    from stock_analyzer.models.market import RealizedVolatility
+
+    state = {
+        "cash_balance": 110_000.0,
+        "picks": [(1, "NVDA", "one-liner")],
+        "holdings_positions": {},
+        "finnhub_signals": {"NVDA": {"next_earnings_date": "2027-01-01"}},
+    }
+    chains = {"NVDA": _chain()}  # puts at 35% IV
+    with (
+        patch("stock_analyzer.data.brokerage.fetch_open_short_puts", return_value={}),
+        patch("stock_analyzer.data.options_chain.fetch_chains", return_value=chains),
+        patch("stock_analyzer.data.earnings_calendar.next_earnings_date", return_value=None),
+        patch(
+            "stock_analyzer.data.historical_volatility.fetch_realized_volatility",
+            return_value={
+                "NVDA": RealizedVolatility(ticker="NVDA", hv_annualized=0.70, sample_size=250)
+            },
+        ),
+    ):
+        result = rebalance_csp.run_csp_data_pipeline(state, Settings(), [])
+    assert "NVDA" in result.cheap_premium
+    assert result.eligibility == {}
+    assert "implied volatility is below its realized volatility" in result.blocked_note

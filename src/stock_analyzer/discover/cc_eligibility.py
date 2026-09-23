@@ -167,12 +167,17 @@ def apply_earnings_filter(
 
 
 def _representative_iv_from_chain(chain: OptionChain | None) -> float | None:
-    """Average `iv` across all OTM call rows in the chain (calls within
-    our band, near-ATM-weighted by inclusion). Returns None when no
-    rows have IV data."""
-    if chain is None or not chain.calls:
+    """Average `iv` across the chain's OTM rows (within our band,
+    near-ATM-weighted by inclusion): calls when it has them, else puts.
+    Returns None when no rows have IV data.
+
+    Put chains carry only puts. Reading calls alone returned None for
+    every one of them, so the put side's cheap-premium floor
+    (CSP_MIN_IV_HV_RATIO) silently never applied."""
+    if chain is None:
         return None
-    ivs = [q.iv for q in chain.calls if q.iv is not None and q.iv > 0]
+    rows = chain.calls or chain.puts
+    ivs = [q.iv for q in rows if q.iv is not None and q.iv > 0]
     if not ivs:
         return None
     return sum(ivs) / len(ivs)
