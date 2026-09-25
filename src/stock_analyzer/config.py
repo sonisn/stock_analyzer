@@ -76,8 +76,8 @@ class Settings(BaseSettings):
     # ---- Discover pipeline (cli/discover.py) ------------------------------
     # Models per stage — Opus for big-stakes reasoning, Sonnet for
     # per-candidate analysis, Haiku for any cheap data prep.
-    discover_opus_model: str = "claude-opus-4-7"
-    discover_sonnet_model: str = "claude-sonnet-4-6"
+    discover_opus_model: str = "claude-opus-5-5"
+    discover_sonnet_model: str = "claude-sonnet-5"
     # Two-tier per-candidate analysis: the top `discover_analyst_deep_count`
     # survivors by screen score go to the Sonnet model, the rest to this
     # cheaper model (retried on Sonnet if it fails). A count of 0 or a blank
@@ -163,6 +163,10 @@ class Settings(BaseSettings):
     # different disk from `discover_db_path`.
     backup_dir: str = "~/.stock_analyzer/backups"
     backup_keep: int = 14
+    # `ops backup` also deletes log files older than this many days from
+    # LOG_DIR and the repo's cron `logs/` (every process writes its own
+    # file, so they pile up by the hundreds). 0 keeps them all.
+    log_keep_days: int = 90
     # The monthly review flags the database when it passes this size.
     history_db_warn_mb: float = 50.0
     # Ranker consensus: one round per (provider, model) pair listed here,

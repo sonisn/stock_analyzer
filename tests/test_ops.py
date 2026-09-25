@@ -35,6 +35,23 @@ def test_backup_refuses_a_missing_database(tmp_path):
         ops.backup(str(tmp_path / "nope.db"), str(tmp_path / "b"), keep=3)
 
 
+def test_prune_logs_deletes_only_old_log_files(tmp_path):
+    import os
+
+    now = datetime(2026, 9, 25)
+    old, fresh, other = tmp_path / "old.log", tmp_path / "fresh.log", tmp_path / "old.txt"
+    for f in (old, fresh, other):
+        f.write_text("x")
+    old_ts = datetime(2026, 6, 1).timestamp()
+    os.utime(old, (old_ts, old_ts))
+    os.utime(other, (old_ts, old_ts))
+    os.utime(fresh, (datetime(2026, 9, 24).timestamp(),) * 2)
+
+    assert ops.prune_logs([str(tmp_path), str(tmp_path / "missing")], 90, now=now) == 1
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["fresh.log", "old.txt"]
+    assert ops.prune_logs([str(tmp_path)], 0, now=now) == 0
+
+
 def test_alert_mails_the_tail_of_the_log(tmp_path):
     log = tmp_path / "portfolio_20260922.log"
     log.write_text("".join(f"line {i}\n" for i in range(200)) + "Traceback: boom\n")

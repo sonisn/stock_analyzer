@@ -1,7 +1,8 @@
 """`ops` — keeping the scheduled jobs honest. No LLM tokens are spent.
 
   ops alert JOB LOG STATUS   email the tail of a failed job's log
-  ops backup                 copy the database, keeping the newest BACKUP_KEEP
+  ops backup                 copy the database, keeping the newest BACKUP_KEEP,
+                             and delete logs older than LOG_KEEP_DAYS
   ops doctor                 check every key, model id and data source for free
 
 `scripts/run_job.sh` calls `alert` when a cron job exits non-zero; before
@@ -14,7 +15,7 @@ import argparse
 import os
 import sqlite3
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -73,6 +74,33 @@ def backup(db_path: str, backup_dir: str, keep: int, *, now: datetime | None = N
         old.unlink()
     logger.info("Backup: %s (%.1f MB)", dest, dest.stat().st_size / 1e6)
     return dest
+
+
+def prune_logs(log_dirs: list[str], keep_days: int, *, now: datetime | None = None) -> int:
+    """Delete `*.log` files last written more than `keep_days` ago. Returns
+    how many went. The age is the file's mtime, so a log still being
+    appended to is never a candidate."""
+    if keep_days <= 0:
+        return 0
+    cutoff = ((now or datetime.now()) - timedelta(days=keep_days)).timestamp()
+    removed = 0
+    for d in log_dirs:
+        path = Path(os.path.expanduser(d))
+        if not path.is_dir():
+            continue
+        for f in path.glob("*.log"):
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                removed += 1
+    if removed:
+        logger.info("Deleted %d log file(s) older than %d days", removed, keep_days)
+    return removed
+
+
+def _log_dirs() -> list[str]:
+    # The per-process logs (logging.py) and the per-job cron logs (run_job.sh).
+    repo_logs = Path(__file__).resolve().parents[3] / "logs"
+    return [os.getenv("LOG_DIR", "~/.stock_analyzer/logs"), str(repo_logs)]
 
 
 # --- doctor -------------------------------------------------------------------
@@ -233,7 +261,7 @@ def main(argv: list[str] | None = None) -> None:
     a.add_argument("job")
     a.add_argument("log")
     a.add_argument("status", type=int)
-    sub.add_parser("backup", help="copy the database into BACKUP_DIR")
+    sub.add_parser("backup", help="copy the database into BACKUP_DIR, prune old logs")
     sub.add_parser("doctor", help="check keys, model ids and data sources")
     args = parser.parse_args(argv)
 
@@ -246,6 +274,7 @@ def main(argv: list[str] | None = None) -> None:
         alert(settings, args.job, args.log, args.status)
     elif args.cmd == "backup":
         backup(settings.discover_db_path, settings.backup_dir, settings.backup_keep)
+        prune_logs(_log_dirs(), settings.log_keep_days)
     elif args.cmd == "doctor":
         raise SystemExit(1 if doctor(settings) else 0)
 

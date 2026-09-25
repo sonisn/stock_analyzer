@@ -13,13 +13,15 @@ from __future__ import annotations
 
 import os
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, cast
 
-from sqlalchemy import event
-from sqlalchemy.engine import Engine
+from sqlalchemy import TextClause, event
+from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.orm import Session as OrmSession
 from sqlmodel import Session, SQLModel, create_engine
 
 # Import tables module so SQLModel.metadata is populated before create_all().
@@ -28,10 +30,17 @@ from . import tables as _tables  # noqa: F401
 
 @event.listens_for(Engine, "connect")
 def _enable_sqlite_foreign_keys(dbapi_conn, _connection_record):
-    """Mirror the PRAGMA foreign_keys=ON the legacy raw-sqlite code set."""
+    """Mirror the PRAGMA foreign_keys=ON the legacy raw-sqlite code set.
+
+    Also WAL mode and a busy timeout: the daily email writes from several
+    ticker threads through one engine, and in the default rollback-journal
+    mode a writer locks out readers and a second writer fails at once with
+    "database is locked" instead of waiting its turn."""
     try:
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
+        cur.execute("PRAGMA busy_timeout=10000")
+        cur.execute("PRAGMA journal_mode=WAL")
         cur.close()
     except Exception:
         # If the DBAPI doesn't support PRAGMA (i.e. not sqlite), ignore.
@@ -135,4 +144,16 @@ def get_session(db_path: str) -> Iterator[Session]:
             raise
 
 
-__all__ = ["get_session", "reset_engines"]
+def exec_sql(
+    session: Session, statement: TextClause, params: Mapping[str, Any] | None = None
+) -> CursorResult[Any]:
+    """Run a raw `text()` statement in the session's transaction.
+
+    `session.exec(text(...))` works at runtime, but sqlmodel's overloads only
+    admit select/update/delete objects, and its `session.execute` warns that
+    it is deprecated. This calls SQLAlchemy's own `Session.execute`, which is
+    what both end up in: same transaction, same autoflush."""
+    return cast(CursorResult[Any], OrmSession.execute(session, statement, params))
+
+
+__all__ = ["exec_sql", "get_session", "reset_engines"]

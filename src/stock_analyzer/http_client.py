@@ -8,7 +8,8 @@ HTTP primitives.
 
 What the client adds on top of httpx:
 
-  - exponential-backoff retries on 408 / 429 / 5xx and network errors
+  - exponential-backoff retries (with jitter) on 408 / 429 / 5xx and
+    network errors
   - Retry-After header honoring on 429s (capped at max_backoff)
   - token-bucket rate limiting at configurable calls/min
   - typed exceptions so callers can react to AuthError vs RateLimitError
@@ -23,6 +24,7 @@ rewriting on raw HTTP loses the SDKs' response parsing for no real win.
 
 from __future__ import annotations
 
+import random
 import threading
 import time
 from typing import Any, Mapping  # noqa: UP035
@@ -94,6 +96,9 @@ class RetryPolicy(BaseModel):
     initial_backoff: float = 1.0
     max_backoff: float = 30.0
     backoff_multiplier: float = 2.0
+    # Each pause is stretched by up to this fraction at random, so threads
+    # that failed together don't all retry in the same instant.
+    jitter: float = 0.25
     # Status codes we treat as transient and retry.
     retry_statuses: tuple[int, ...] = (408, 429, 500, 502, 503, 504)
 
@@ -157,6 +162,9 @@ class HttpClient:
                 time.sleep(self._min_interval - delta)
             self._last_call_ts = time.monotonic()
 
+    def _jittered(self, seconds: float) -> float:
+        return seconds * (1.0 + random.random() * self._retry.jitter)
+
     def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         retry = self._retry
         attempt = 0
@@ -178,15 +186,16 @@ class HttpClient:
                         f"{self._name}: network error after {attempt} attempts: {e}",
                         url=url,
                     ) from e
+                wait = self._jittered(backoff)
                 logger.info(
                     "%s network error (%s) — retry %d/%d after %.1fs",
                     self._name,
                     e,
                     attempt,
                     retry.max_attempts,
-                    backoff,
+                    wait,
                 )
-                time.sleep(backoff)
+                time.sleep(wait)
                 backoff = min(backoff * retry.backoff_multiplier, retry.max_backoff)
                 continue
 
@@ -209,7 +218,8 @@ class HttpClient:
                         url=url,
                         retry_after=retry_after,
                     )
-                sleep_for = retry_after if retry_after is not None else backoff
+                # The server's Retry-After is honored as given; our own guess is jittered.
+                sleep_for = retry_after if retry_after is not None else self._jittered(backoff)
                 sleep_for = min(sleep_for, retry.max_backoff)
                 logger.info(
                     "%s 429 — retry %d/%d after %.1fs (retry-after=%s)",
@@ -230,15 +240,16 @@ class HttpClient:
                         status=resp.status_code,
                         url=url,
                     )
+                wait = self._jittered(backoff)
                 logger.info(
                     "%s %d — retry %d/%d after %.1fs",
                     self._name,
                     resp.status_code,
                     attempt,
                     retry.max_attempts,
-                    backoff,
+                    wait,
                 )
-                time.sleep(backoff)
+                time.sleep(wait)
                 backoff = min(backoff * retry.backoff_multiplier, retry.max_backoff)
                 continue
 

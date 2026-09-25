@@ -175,3 +175,11 @@ def test_schema_is_created_once_even_from_several_threads(tmp_path):
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         assert list(ex.map(touch, range(8))) == [0] * 8
+
+
+def test_connections_use_wal_and_wait_for_a_busy_writer(tmp_path):
+    from sqlalchemy import text
+
+    with get_session(str(tmp_path / "wal.db")) as session:
+        assert session.exec(text("PRAGMA journal_mode")).one()[0] == "wal"
+        assert session.exec(text("PRAGMA busy_timeout")).one()[0] == 10000
