@@ -13,7 +13,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from .tables import (
     Candidate,
@@ -268,7 +268,10 @@ def fetch_recent_holdings_history(
     # (ascending) order so the LLM reads them oldest-first.
     recent_runs = list(
         session.exec(
-            select(Run.id, Run.run_at).where(Run.kind == kind).order_by(Run.id.desc()).limit(n_runs)
+            select(Run.id, Run.run_at)
+            .where(Run.kind == kind)
+            .order_by(col(Run.id).desc())
+            .limit(n_runs)
         )
     )
     if not recent_runs:
@@ -301,8 +304,8 @@ def fetch_recent_picks(session: Session, *, n_runs: int = 3) -> list[tuple[str, 
     run_ids = list(
         session.exec(
             select(Run.id)
-            .where(Run.id.in_(select(Pick.run_id).distinct()))
-            .order_by(Run.id.desc())
+            .where(col(Run.id).in_(select(Pick.run_id).distinct()))
+            .order_by(col(Run.id).desc())
             .limit(n_runs)
         )
     )
@@ -310,9 +313,9 @@ def fetch_recent_picks(session: Session, *, n_runs: int = 3) -> list[tuple[str, 
         return []
     rows = session.exec(
         select(Pick.ticker, Pick.rank, Run.run_at)
-        .join(Run, Run.id == Pick.run_id)
-        .where(Pick.run_id.in_(run_ids))
-        .order_by(Run.id.desc(), Pick.rank)
+        .join(Run, col(Run.id) == col(Pick.run_id))
+        .where(col(Pick.run_id).in_(run_ids))
+        .order_by(col(Run.id).desc(), col(Pick.rank))
     )
     return [(t, r, at) for t, r, at in rows]
 
@@ -361,7 +364,7 @@ def fetch_suggestions(session: Session, *, start: str, end: str) -> list[Suggest
         session.exec(
             select(Suggestion)
             .where(Suggestion.suggested_on >= start, Suggestion.suggested_on <= end)
-            .order_by(Suggestion.suggested_on, Suggestion.id)
+            .order_by(col(Suggestion.suggested_on), col(Suggestion.id))
         )
     )
 

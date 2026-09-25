@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
-from ..db.session import get_session
+from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 from .catalyst_grading import MOVER_THRESHOLD_PCT, REACTION_DAYS, _window_move
 from .track_record import _close_on_or_after, _close_on_or_before, _fetch_history
@@ -108,7 +108,8 @@ def load_open_picks(
     today = today or date.today()
     earliest = (today - timedelta(days=window_days)).isoformat()
     with get_session(db_path) as session:
-        picks = session.exec(
+        picks = exec_sql(
+            session,
             text(
                 "SELECT p.run_id, p.rank, p.ticker, p.entry_price, r.run_at, p.time_horizon "
                 "FROM picks p JOIN runs r ON r.id = p.run_id "
@@ -116,14 +117,16 @@ def load_open_picks(
             ),
             params={"earliest": earliest},
         ).all()
-        scenarios = session.exec(
+        scenarios = exec_sql(
+            session,
             text(
                 "SELECT run_id, rank, label, target_return_pct FROM pick_scenarios "
                 "WHERE run_id IN (SELECT id FROM runs WHERE run_at >= :earliest)"
             ),
             params={"earliest": earliest},
         ).all()
-        catalysts = session.exec(
+        catalysts = exec_sql(
+            session,
             text(
                 "SELECT c.ticker, c.event, c.expected_date, c.direction, c.impact "
                 "FROM pick_catalysts c JOIN runs r ON r.id = c.run_id "

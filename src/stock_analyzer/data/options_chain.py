@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import math
 from datetime import date, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from ..config import Settings
 from ..http_client import HttpClient, RetryPolicy
@@ -53,14 +53,14 @@ def _is_otm(option_type: str, strike: float, spot: float) -> bool:
     return strike > spot if option_type == "call" else strike < spot
 
 
-def _safe_float(v: object) -> float | None:
+def _safe_float(v: Any) -> float | None:
     """Coerce to float, returning None for None / NaN / Inf / unparseable.
     Used at provider boundary because yfinance returns NaN for low-volume
     strikes, which crashes downstream arithmetic and int() conversion."""
     if v is None:
         return None
     try:
-        f = float(v)  # type: ignore[arg-type]
+        f = float(v)
     except TypeError, ValueError:
         return None
     if math.isnan(f) or math.isinf(f):

@@ -35,11 +35,12 @@ from ..discover_steps.helpers import (
     _RISK_FACTORS_CHARS,
     _TRANSCRIPT_CHARS,
 )
+from ..pipeline_base import PipelineBase
 
 logger = get_logger("stock_analyzer.cli.rebalance")
 
 
-class RebalanceReviewSteps:
+class RebalanceReviewSteps(PipelineBase):
     def step_review_holdings(self, step_input: StepInput) -> StepOutput:
         # `holdings_positions` deliberately carries everything, including
         # symbols no market data exists for — they are still valued and

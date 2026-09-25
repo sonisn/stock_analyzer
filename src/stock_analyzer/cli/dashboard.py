@@ -18,12 +18,13 @@ keys and the retry logic. Serve it with any static file server.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 from typing import Any, NamedTuple
 
 from dotenv import load_dotenv
-from sqlmodel import select
+from sqlmodel import col, select
 
 from ..config import Settings
 from ..db.session import get_session
@@ -44,7 +45,7 @@ logger = get_logger(__name__)
 def _latest_review_run(db_path: str) -> int | None:
     with get_session(db_path) as session:
         return session.exec(
-            select(HoldingReviewRow.run_id).order_by(HoldingReviewRow.run_id.desc())  # type: ignore[attr-defined]
+            select(HoldingReviewRow.run_id).order_by(col(HoldingReviewRow.run_id).desc())
         ).first()
 
 
@@ -62,27 +63,27 @@ def _reasoning(db_path: str) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     with get_session(db_path) as session:
         scenarios = session.exec(
-            select(
+            select(  # ty: ignore[no-matching-overload]  # sqlmodel types select() up to 4 columns
                 PickScenario.run_id,
                 PickScenario.ticker,
                 PickScenario.label,
                 PickScenario.probability,
                 PickScenario.target_return_pct,
-            ).order_by(PickScenario.run_id)
+            ).order_by(col(PickScenario.run_id))
         ).all()
         catalysts = session.exec(
-            select(
+            select(  # ty: ignore[no-matching-overload]  # sqlmodel types select() up to 4 columns
                 PickCatalyst.run_id,
                 PickCatalyst.ticker,
                 PickCatalyst.event,
                 PickCatalyst.expected_date,
                 PickCatalyst.direction,
                 PickCatalyst.impact,
-            ).order_by(PickCatalyst.run_id, PickCatalyst.seq)
+            ).order_by(col(PickCatalyst.run_id), col(PickCatalyst.seq))
         ).all()
         prose = session.exec(
             select(RunOutput.run_id, RunOutput.ranker_full, RunOutput.redteam_full).order_by(
-                RunOutput.run_id
+                col(RunOutput.run_id)
             )
         ).all()
 
@@ -195,7 +196,7 @@ def _brokerage_positions() -> tuple[dict[str, dict[str, Any]], dict[str, dict[st
 class _Ledger(NamedTuple):
     reviews: dict[str, tuple[str | None, int | None]]
     review_text: dict[str, str | None]
-    history_rows: list[tuple[str, int, str | None, int | None]]
+    history_rows: Sequence[tuple[str, int, str | None, int | None]]
     run_days: dict[int, str]
     views: dict[str, Any]
     suggestions: list[dict[str, Any]]
@@ -231,7 +232,7 @@ def _read_ledger(db: str, run_id: int | None) -> _Ledger:
                 HoldingReviewRow.run_id,
                 HoldingReviewRow.verdict,
                 HoldingReviewRow.confidence,
-            ).order_by(HoldingReviewRow.run_id)
+            ).order_by(col(HoldingReviewRow.run_id))
         ).all()
         run_days = {r_id: d[:10] for r_id, d in session.exec(select(Run.id, Run.run_at)).all()}
         views = {t: v for t, v in session.exec(select(StockView.ticker, StockView.view)).all()}
@@ -248,7 +249,7 @@ def _read_ledger(db: str, run_id: int | None) -> _Ledger:
                 reinvest_into=s.reinvest_into,
                 run_id=s.run_id,
             )
-            for s in session.exec(select(Suggestion).order_by(Suggestion.id)).all()
+            for s in session.exec(select(Suggestion).order_by(col(Suggestion.id))).all()
         ]
         runs = [
             dict(
@@ -259,7 +260,7 @@ def _read_ledger(db: str, run_id: int | None) -> _Ledger:
                 survivors=r.survivors,
                 picks=r.picks,
             )
-            for r in session.exec(select(Run).order_by(Run.id.desc())).all()[:20]  # type: ignore[attr-defined]
+            for r in session.exec(select(Run).order_by(col(Run.id).desc())).all()[:20]
         ]
     return _Ledger(reviews, review_text, history_rows, run_days, views, suggestions, runs)
 
@@ -294,7 +295,7 @@ def _holding_rows(
     books: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """One row per holding, largest first."""
-    holdings = []
+    holdings: list[dict[str, Any]] = []
     for t, p in positions.items():
         units, cost = p["units"], p["cost"]
         px = prices_now.get(t)
@@ -320,7 +321,7 @@ def _holding_rows(
 
 
 def _review_history(
-    history_rows: list[tuple[str, int, str | None, int | None]], run_days: dict[int, str]
+    history_rows: Sequence[tuple[str, int, str | None, int | None]], run_days: dict[int, str]
 ) -> dict[str, list[dict[str, Any]]]:
     """Each holding's verdicts across runs, oldest first."""
     history: dict[str, list[dict[str, Any]]] = {}

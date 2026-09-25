@@ -8,7 +8,7 @@ concentration).
 
 from __future__ import annotations
 
-from ..llm import AgnoAgent, Provider, reasoning_model_kwargs, run_with_fallback
+from ..llm import AgnoAgent, Provider, fallback_builder, reasoning_model_kwargs, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import Allocation, CorrelatedPair, SizerOutput
 
@@ -190,10 +190,8 @@ class Sizer:
             f"Bear cases:\n{bear_case_text}"
         )
         logger.info("Sizing picks (%s)", self.provider)
-        build_fallback = (
-            (lambda: _build_agent(self.fallback[0], self.fallback[1], self.effort))
-            if self.fallback and self.fallback[0] != self.provider
-            else None
+        build_fallback = fallback_builder(
+            self.fallback, self.provider, lambda p, m: _build_agent(p, m, self.effort)
         )
         result = run_with_fallback(self.agent, build_fallback, prompt).content
         if result is None:
@@ -203,6 +201,23 @@ class Sizer:
         if isinstance(result, str):
             return SizerOutput.model_validate_json(result)
         raise RuntimeError(f"Sizer returned unexpected type {type(result).__name__}.")
+
+
+def _effective_pct(a: Allocation, cash_budget: float | None) -> float | None:
+    """An allocation as a percent of new capital, whichever unit it came in;
+    None when it is in dollars and there is no budget to divide by."""
+    if a.allocation_pct is not None:
+        return a.allocation_pct
+    if a.allocation_usd is not None and cash_budget:
+        return a.allocation_usd / cash_budget * 100
+    return None
+
+
+def _resized(a: Allocation, new_pct: float, cash_budget: float | None) -> Allocation:
+    """`a` at `new_pct` of new capital, kept in the unit it was sized in."""
+    if a.allocation_pct is not None or not cash_budget:
+        return a.model_copy(update={"allocation_pct": new_pct})
+    return a.model_copy(update={"allocation_usd": new_pct / 100 * cash_budget})
 
 
 def enforce_earnings_blackout(
@@ -223,20 +238,10 @@ def enforce_earnings_blackout(
         a = by_ticker.get(ticker)
         if a is None:
             continue
-        if a.allocation_pct is not None:
-            pct = a.allocation_pct
-        elif a.allocation_usd is not None and cash_budget:
-            pct = a.allocation_usd / cash_budget * 100
-        else:
+        pct = _effective_pct(a, cash_budget)
+        if pct is None or pct <= max_pct:
             continue
-        if pct <= max_pct:
-            continue
-        update = (
-            {"allocation_pct": max_pct}
-            if a.allocation_pct is not None
-            else {"allocation_usd": max_pct / 100 * cash_budget}
-        )
-        by_ticker[ticker] = a.model_copy(update=update)
+        by_ticker[ticker] = _resized(a, max_pct, cash_budget)
         warnings.append(
             f"EARNINGS BLACKOUT: {ticker} reports {alert.get('earnings_date')} "
             f"(in {alert.get('days_until')}d) — capped at a {max_pct:.0f}% starter "
@@ -273,20 +278,13 @@ def enforce_correlation_caps(
     by_ticker = {a.ticker: a for a in output.allocations}
     warnings: list[str] = []
 
-    def _effective_pct(a: Allocation) -> float | None:
-        if a.allocation_pct is not None:
-            return a.allocation_pct
-        if a.allocation_usd is not None and cash_budget:
-            return a.allocation_usd / cash_budget * 100
-        return None
-
     for pair in pairs:
         a = by_ticker.get(pair.ticker_a)
         b = by_ticker.get(pair.ticker_b)
         if a is None or b is None:
             continue
-        pct_a = _effective_pct(a)
-        pct_b = _effective_pct(b)
+        pct_a = _effective_pct(a, cash_budget)
+        pct_b = _effective_pct(b, cash_budget)
         if pct_a is None or pct_b is None:
             continue
         combined = pct_a + pct_b
@@ -295,18 +293,8 @@ def enforce_correlation_caps(
         scale = max_combined_pct / combined
         new_pct_a = pct_a * scale
         new_pct_b = pct_b * scale
-        update_a: dict[str, float] = {}
-        update_b: dict[str, float] = {}
-        if a.allocation_pct is not None:
-            update_a["allocation_pct"] = new_pct_a
-        else:
-            update_a["allocation_usd"] = new_pct_a / 100 * cash_budget
-        if b.allocation_pct is not None:
-            update_b["allocation_pct"] = new_pct_b
-        else:
-            update_b["allocation_usd"] = new_pct_b / 100 * cash_budget
-        by_ticker[pair.ticker_a] = a.model_copy(update=update_a)
-        by_ticker[pair.ticker_b] = b.model_copy(update=update_b)
+        by_ticker[pair.ticker_a] = _resized(a, new_pct_a, cash_budget)
+        by_ticker[pair.ticker_b] = _resized(b, new_pct_b, cash_budget)
         warnings.append(
             f"CORRELATION CAP: {pair.ticker_a} + {pair.ticker_b} "
             f"({pair.shared_driver}) totaled {combined:.1f}% — scaled down to "
@@ -381,20 +369,13 @@ def enforce_sector_caps(
     warnings: list[str] = []
     holdings_total = sum(holdings_by_sector.values())
 
-    def _effective_pct(a: Allocation) -> float | None:
-        if a.allocation_pct is not None:
-            return a.allocation_pct
-        if a.allocation_usd is not None and cash_budget:
-            return a.allocation_usd / cash_budget * 100
-        return None
-
     sectors = sorted({s for t, s in pick_sectors.items() if s and t in by_ticker})
     for sector in sectors:
         pcts = {
             t: pct
             for t, s in pick_sectors.items()
             if s == sector and t in by_ticker
-            if (pct := _effective_pct(by_ticker[t])) is not None
+            if (pct := _effective_pct(by_ticker[t], cash_budget)) is not None
         }
         new_total = sum(pcts.values())
         if new_total <= 0:
@@ -421,14 +402,7 @@ def enforce_sector_caps(
             continue
         scale = limit / new_total
         for t, pct in pcts.items():
-            a = by_ticker[t]
-            new_pct = pct * scale
-            update = (
-                {"allocation_pct": new_pct}
-                if a.allocation_pct is not None
-                else {"allocation_usd": new_pct / 100 * cash_budget}
-            )
-            by_ticker[t] = a.model_copy(update=update)
+            by_ticker[t] = _resized(by_ticker[t], pct * scale, cash_budget)
         names = " + ".join(sorted(pcts))
         warnings.append(
             f"SECTOR CAP: {sector} picks ({names}) totaled {new_total:.1f}% of new "

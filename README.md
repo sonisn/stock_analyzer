@@ -107,7 +107,7 @@ and `TRADIER_*` knobs.
 ## Quickstart
 
 ```bash
-# Install (Python 3.14+, uses uv). `--extra dev` keeps pytest + ruff;
+# Install (Python 3.14+, uses uv). `--extra dev` keeps pytest, ruff + ty;
 # a plain `uv sync` removes them.
 uv sync --extra dev
 
@@ -120,6 +120,7 @@ uv run rebalance-portfolio        # review holdings + plan
 uv run analyze-portfolio          # one-off analyst-style report
 uv run analyze-insiders           # insider + political trade signals
 uv run ops doctor                 # free check of every key, model id and source
+uv run stock-analyzer --help      # every command in one list
 ```
 
 ## Required env vars
@@ -764,7 +765,7 @@ and, when the command exits non-zero, emails the log's last 80 lines
 | Command | What | No LLM |
 |---|---|---|
 | `ops doctor` | database integrity, `.env` permissions, Finnhub, FRED, SnapTrade, SMTP login, and a free model lookup for every configured (provider, model) — catches a bad key or a retired model id before a run pays for it | ✓ |
-| `ops backup` | consistent SQLite copy into `BACKUP_DIR` (default `~/.stock_analyzer/backups`, keep `BACKUP_KEEP`=14); `scripts/run_backup.sh` runs it nightly | ✓ |
+| `ops backup` | consistent SQLite copy into `BACKUP_DIR` (default `~/.stock_analyzer/backups`, keep `BACKUP_KEEP`=14), then deletes logs older than `LOG_KEEP_DAYS`=90; `scripts/run_backup.sh` runs it nightly | ✓ |
 | `scripts/update.sh` | fetches `origin/main`, runs the suite on it in a throwaway worktree, and fast-forwards only if it passes (`scripts/run_update.sh` from cron) | ✓ |
 
 The schedule lives in `scripts/crontab`; install it with `crontab scripts/crontab`.
@@ -792,16 +793,17 @@ rather than handing a half-written JSON document downstream.
 ## Tests
 
 ```bash
-uv run pytest -q
+uv run pytest -q -n 4      # -n: spread over 4 workers (pytest-xdist)
+uv run ty check src        # type check
 ```
 
-860+ tests covering the high-stakes math (tax-lot computation, verdict
+870+ tests covering the high-stakes math (tax-lot computation, verdict
 auto-repair, direction-aware and horizon-separated track-record alpha,
 beta adjustment, score validation, forecast calibration, parsers,
 section-dispatch parity HTML/PDF, multi-provider ranker consensus math,
 cross-source data reconciliation, macro-veto rules). The full suite runs
-in ~30s. CI (`.github/workflows/ci.yml`) runs ruff and the suite on every
-push and pull request.
+in ~10s (~8s with `-n 4`). CI (`.github/workflows/ci.yml`) runs ruff, ty
+and the suite on every push and pull request.
 
 `tests/conftest.py` points `Settings` at no env file and blocks outbound
 sockets for the whole suite, so a test can never read your real `.env` or

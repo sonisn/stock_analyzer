@@ -40,8 +40,10 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+from operator import attrgetter
+from typing import Any
 
-from ..db.session import get_session
+from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 from ..models.calibration import (
     CalibrationRecord,
@@ -104,11 +106,12 @@ def _load_forecasts(db_path: str, lookback_days: int) -> list[_Forecast]:
     from sqlalchemy import text
 
     cutoff = (datetime.now() - timedelta(days=lookback_days)).isoformat()
-    rows: list[tuple] = []
+    rows: list[Any] = []
     try:
         with get_session(db_path) as session:
             rows = list(
-                session.exec(
+                exec_sql(
+                    session,
                     text(
                         "SELECT r.run_at, p.run_id, p.rank, p.ticker, p.conviction, "
                         "       p.ev_pct, p.entry_price, p.time_horizon "
@@ -120,7 +123,8 @@ def _load_forecasts(db_path: str, lookback_days: int) -> list[_Forecast]:
                 )
             )
             scenario_rows = list(
-                session.exec(
+                exec_sql(
+                    session,
                     text(
                         "SELECT run_id, rank, label, probability, target_return_pct "
                         "FROM pick_scenarios"
@@ -260,7 +264,7 @@ def measure_calibration(db_path: str, *, lookback_days: int = 540) -> Calibratio
         median_ev_error_pct=(
             statistics.median([e.error_pct for e in ev_errors]) if ev_errors else None
         ),
-        ev_errors=sorted(ev_errors, key=lambda e: e.error_pct),
+        ev_errors=sorted(ev_errors, key=attrgetter("error_pct")),
         conviction_buckets=buckets,
         scenario_reliability=reliability,
     )

@@ -103,7 +103,8 @@ def _check_snaptrade(settings: Settings) -> str | None:
         )
         if not val
     ]
-    if missing:
+    user_id, user_secret = settings.snaptrade_user_id, settings.snaptrade_user_secret
+    if missing or not user_id or not user_secret:
         return f"SnapTrade env vars missing: {', '.join(missing)}"
     try:
         client = SnapTrade(
@@ -114,8 +115,8 @@ def _check_snaptrade(settings: Settings) -> str | None:
         )
         # list_user_accounts is the cheapest auth-validating call.
         resp = client.account_information.list_user_accounts(
-            user_id=settings.snaptrade_user_id,
-            user_secret=settings.snaptrade_user_secret,
+            user_id=user_id,
+            user_secret=user_secret,
         )
         # Touch the body so any deserialization error surfaces here, not later.
         _ = resp.body if hasattr(resp, "body") else resp

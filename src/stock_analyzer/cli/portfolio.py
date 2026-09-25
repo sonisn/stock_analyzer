@@ -127,7 +127,7 @@ class _LiveHealthSources:
     def sector_of(self, tickers: list[str]) -> dict[str, str]:
         from ..data.reference import profiles
 
-        return {t: p["sector"] for t, p in profiles(tickers, self.db).items() if p.get("sector")}
+        return {t: s for t, p in profiles(tickers, self.db).items() if (s := p.get("sector"))}
 
     def held_thesis_checks(self, held: set[str]) -> list[dict]:
         from ..data.eps_revisions import batch_eps_revisions

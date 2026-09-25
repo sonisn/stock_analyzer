@@ -24,6 +24,7 @@ from ...data.transactions import fetch_transaction_history, to_tax_payloads
 from ...data.transcripts import batch_transcript_snippets
 from ...discover.peers import batch_peer_comparison
 from ...logging import get_logger
+from ..pipeline_base import PipelineBase
 from .helpers import (
     _aggregate_positions,
     _build_position_splits,
@@ -32,7 +33,7 @@ from .helpers import (
 logger = get_logger("stock_analyzer.cli.rebalance")
 
 
-class RebalanceDataSteps:
+class RebalanceDataSteps(PipelineBase):
     # --- new step executors -------------------------------------------------
 
     def step_holdings_fetch(self, step_input: StepInput) -> StepOutput:

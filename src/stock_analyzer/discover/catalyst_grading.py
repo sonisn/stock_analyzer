@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from ..db.session import get_session
+from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 from .track_record import _close_on_or_before, _fetch_history
 
@@ -82,7 +82,8 @@ def _load_due(db_path: str, today: date, lookback_days: int) -> list[dict[str, A
     earliest = (today - timedelta(days=lookback_days)).isoformat()
     latest = (today - timedelta(days=REACTION_DAYS)).isoformat()
     with get_session(db_path) as session:
-        rows = session.exec(
+        rows = exec_sql(
+            session,
             text(
                 "SELECT ticker, expected_date, direction, impact FROM pick_catalysts "
                 "WHERE expected_date IS NOT NULL "

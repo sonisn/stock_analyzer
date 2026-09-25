@@ -29,7 +29,7 @@ import argparse
 from typing import Any
 
 from dotenv import load_dotenv
-from sqlmodel import select
+from sqlmodel import col, select
 
 from ..config import Settings
 from ..db.session import get_session
@@ -45,9 +45,9 @@ def load_inputs(db_path: str, run_id: int | None) -> tuple[int, dict[str, str], 
     with get_session(db_path) as session:
         if run_id is None:
             row = session.exec(
-                select(Run).where(Run.kind == "rebalance").order_by(Run.id.desc())  # type: ignore[attr-defined]
+                select(Run).where(Run.kind == "rebalance").order_by(col(Run.id).desc())
             ).first()
-            if row is None:
+            if row is None or row.id is None:
                 raise SystemExit("No rebalance run is stored yet — run rebalance-portfolio once.")
             run_id = row.id
         reviews = {

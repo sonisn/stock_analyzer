@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from sqlalchemy import func
-from sqlmodel import Session, select
+from sqlmodel import Session, col, select
 
 from .tables import HoldingReviewRow, Pick, Run
 
@@ -27,9 +27,9 @@ def fetch_recent_pick_runs_with_model(
     cutoff = (datetime.now() - timedelta(days=lookback_days)).isoformat()
     rows = session.exec(
         select(Run.run_at, Pick.ticker, Run.opus_model, Pick.voting_providers)
-        .join(Pick, Pick.run_id == Run.id)
+        .join(Pick, col(Pick.run_id) == col(Run.id))
         .where(Run.run_at >= cutoff)
-        .order_by(Run.run_at.asc())
+        .order_by(col(Run.run_at).asc())
     )
     return [(row.run_at, row.ticker, row.opus_model, row.voting_providers) for row in rows]
 
@@ -48,12 +48,12 @@ def fetch_recent_verdict_runs(
     verdict_upper = func.upper(func.coalesce(HoldingReviewRow.verdict, ""))
     rows = session.exec(
         select(Run.run_at, HoldingReviewRow.ticker)
-        .join(HoldingReviewRow, HoldingReviewRow.run_id == Run.id)
+        .join(HoldingReviewRow, col(HoldingReviewRow.run_id) == col(Run.id))
         .where(Run.run_at >= cutoff)
         .where(verdict_upper == verdict)
-        .order_by(Run.run_at.asc())
+        .order_by(col(Run.run_at).asc())
     )
-    return [(row.run_at, row.ticker) for row in rows]
+    return [(run_at, ticker) for run_at, ticker in rows]
 
 
 def fetch_recent_sell_runs(session: Session, *, lookback_days: int) -> list[tuple[str, str]]:

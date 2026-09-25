@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..llm import AgnoAgent, Provider, reasoning_model_kwargs, run_with_fallback
+from ..llm import AgnoAgent, Provider, fallback_builder, reasoning_model_kwargs, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import AnalystReport, RankerOutput
 from ..usage import BUDGET, estimate_cost
@@ -210,10 +210,8 @@ class Ranker:
         self._agents = [_build_agent(provider, model, effort) for provider, model in rounds]
 
     def _run_round(self, agent: AgnoAgent, *args: Any, **kwargs: Any) -> Any:
-        build_fallback = (
-            (lambda: _build_agent(self.fallback[0], self.fallback[1], self.effort))
-            if self.fallback and self.fallback[0] != agent.provider
-            else None
+        build_fallback = fallback_builder(
+            self.fallback, agent.provider, lambda p, m: _build_agent(p, m, self.effort)
         )
         return run_with_fallback(agent, build_fallback, *args, **kwargs)
 

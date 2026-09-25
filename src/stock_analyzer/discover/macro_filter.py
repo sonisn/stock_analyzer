@@ -14,6 +14,8 @@ regime, catching the case where it didn't weight it enough.
 
 from __future__ import annotations
 
+from typing import TypeIs
+
 from ..logging import get_logger
 from ..models.llm import RankerOutput
 
@@ -32,7 +34,7 @@ _ELEVATED_VIX = 30.0
 _MOMENTUM_RS_6MO_THRESHOLD = 0.15
 
 
-def _is_risk_off(macro_data: dict | None) -> bool:
+def _is_risk_off(macro_data: dict | None) -> TypeIs[dict]:
     if not macro_data:
         return False
     spread = macro_data.get("yield_spread_10y_2y")

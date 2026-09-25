@@ -209,7 +209,7 @@ def fetch_transaction_history(
     by_account = activities_by_account(start=start, db_path=db_path)
     # Tag each activity with its account label so lots carry the same
     # name everywhere, however the SDK shaped the nested account field.
-    activities = [
+    activities: list[dict[str, Any]] = [
         {**a, "account": {"name": label}} for label, rows in by_account.items() for a in rows
     ]
     account_id_to_name: dict[str, str] = {}

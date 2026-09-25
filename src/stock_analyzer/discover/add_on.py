@@ -71,7 +71,7 @@ def add_on_candidates(
     returns the subset whose EPS estimates are being lowered — called
     only for the few that pass the price test."""
     total = sum(values.values())
-    dipped = []
+    dipped: list[dict[str, Any]] = []
     for t, (price, high) in highs.items():
         off = (price / high - 1) * 100
         weight = values.get(t, 0.0) / total * 100 if total else 0.0

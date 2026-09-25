@@ -50,6 +50,7 @@ from ...discover.track_record import (
 from ...discover.universe import build_universe
 from ...logging import get_logger
 from ...usage import BudgetExceededError
+from ..pipeline_base import PipelineBase
 from .helpers import (
     MAX_CANDIDATES_FOR_LLM,
     _batch_news,
@@ -61,7 +62,7 @@ from .helpers import (
 logger = get_logger("stock_analyzer.cli.discover")
 
 
-class DataSteps:
+class DataSteps(PipelineBase):
     # --- step executors ------------------------------------------------
 
     def step_universe(self, step_input: StepInput) -> StepOutput:

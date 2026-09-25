@@ -9,7 +9,12 @@ supported knobs). A wrong branch here breaks a whole provider silently
 
 from __future__ import annotations
 
-from stock_analyzer.llm import AgnoAgent, reasoning_model_kwargs, run_with_fallback
+from stock_analyzer.llm import (
+    AgnoAgent,
+    fallback_builder,
+    reasoning_model_kwargs,
+    run_with_fallback,
+)
 
 
 def test_claude_kwargs_use_adaptive_thinking_and_send_no_temperature():
@@ -101,6 +106,20 @@ def test_run_with_fallback_reraises_when_no_fallback_given():
     primary = _FakeAgent("claude", "Ranker", fails=True)
     with pytest.raises(ModelProviderError):
         run_with_fallback(primary, None, "prompt")
+
+
+def test_fallback_builder_skips_a_missing_or_same_provider_fallback():
+    built = []
+
+    def build(provider, model):
+        built.append((provider, model))
+        return "agent"
+
+    assert fallback_builder(None, "claude", build) is None
+    assert fallback_builder(("claude", "claude-sonnet-5"), "claude", build) is None
+    make = fallback_builder(("gemini", "gemini-pro-latest"), "claude", build)
+    assert built == []  # built only when the primary fails
+    assert make() == "agent" and built == [("gemini", "gemini-pro-latest")]
 
 
 def test_agno_agent_accepts_openai_provider():

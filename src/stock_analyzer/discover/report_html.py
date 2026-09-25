@@ -1045,8 +1045,9 @@ def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> st
 
 
 def _image_html(s: Section, chart_cids: dict[str, str]) -> str:
-    cid = chart_cids.get(s.image_ticker) if s.image_ticker else None
-    return f"<img src='cid:{cid}' alt='{html.escape(s.image_ticker)} chart' />" if cid else ""
+    ticker = s.image_ticker
+    cid = chart_cids.get(ticker) if ticker else None
+    return f"<img src='cid:{cid}' alt='{html.escape(ticker)} chart' />" if ticker and cid else ""
 
 
 def _table_html(s: Section, chart_cids: dict[str, str]) -> str:

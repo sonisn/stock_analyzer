@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
-from agno.workflow import Workflow
+from agno.workflow import Parallel, Step, Workflow
 
 from ...data import yf_gateway
 from ...logging import get_logger
+
+if TYPE_CHECKING:
+    from ...models.llm import MarketThemes
 
 logger = get_logger("stock_analyzer.cli.discover")
 
@@ -167,11 +170,11 @@ def _format_risk_parity_block(ranker_output: object, hv_data: dict[str, Any]) ->
 
 
 def _validate_and_correct_themes(
-    themes: object,
+    themes: MarketThemes | None,
     *,
     universe_tickers: set[str],
     technicals: dict[str, Any],
-) -> object:
+) -> MarketThemes | None:
     """Anti-hallucination pass on the MarketThemes output.
 
     1. Drop member_tickers that aren't in the universe (LLM may invent
@@ -275,7 +278,7 @@ def _reconciled_strength(theme: Any, rs6_values: list[float]) -> int:
     return corrected_strength
 
 
-def _reconciled_trend(theme: Any, rs6_values: list[float]) -> str:
+def _reconciled_trend(theme: Any, rs6_values: list[float]) -> Literal["up", "flat", "down"]:
     """Reconcile trending against data: if avg rs_6mo is strongly negative,
     force 'down'; strongly positive → 'up'."""
     if not rs6_values:
@@ -387,7 +390,7 @@ def _fetch_news(ticker: str, limit: int = 3) -> list[dict[str, Any]]:
 def _batch_news(tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
     results: dict[str, list[dict[str, Any]]] = {}
     for ticker, news in yf_gateway.map_symbols(_fetch_news, tickers, workers=5):
-        results[ticker] = news
+        results[ticker] = news or []
     return results
 
 
@@ -474,3 +477,10 @@ def without_step_retries(workflow: Workflow) -> Workflow:
 
     walk(workflow.steps)
     return workflow
+
+
+def parallel(*steps: Step, name: str) -> Parallel:
+    """`Parallel(*steps, name=...)`. agno annotates the positional steps as
+    `str | list[...]` though it takes each Step on its own, so a type
+    checker rejects every correct call; the one suppression lives here."""
+    return Parallel(*steps, name=name)  # ty: ignore[invalid-argument-type]

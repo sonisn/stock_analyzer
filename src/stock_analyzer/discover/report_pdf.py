@@ -128,7 +128,7 @@ def _fit_table(
     ]
     if sum(natural) <= _TABLE_WIDTH:
         return [header, *rows], None
-    widths: list[float | None] = [None] * n
+    widths: list[float] = [0.0] * n  # every column is set below
     remaining, open_cols = _TABLE_WIDTH, list(range(n))
     while open_cols:
         share = remaining / len(open_cols)
@@ -265,11 +265,12 @@ def _pdf_sector_pie(pie_data: list[tuple[str, float]]):
     pie.height = 150
     pie.data = [v for _, v in pie_data]
     pie.labels = None
-    pie.slices.strokeWidth = 1
-    pie.slices.strokeColor = colors.white
+    # reportlab builds `slices` at runtime, so a type checker can't see it.
+    pie.slices.strokeWidth = 1  # ty: ignore[unresolved-attribute]
+    pie.slices.strokeColor = colors.white  # ty: ignore[unresolved-attribute]
     pie.innerRadiusFraction = 0.55
     for i, _ in enumerate(pie_data):
-        pie.slices[i].fillColor = colors.HexColor(_PIE_PALETTE[i % len(_PIE_PALETTE)])
+        pie.slices[i].fillColor = colors.HexColor(_PIE_PALETTE[i % len(_PIE_PALETTE)])  # ty: ignore[unresolved-attribute]
     drawing.add(pie)
 
     legend = Legend()

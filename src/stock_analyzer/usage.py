@@ -214,10 +214,10 @@ class Budget:
     def available_for(self, share: float = 1.0, *, keep_reserve: bool = True) -> float | None:
         """What a planning stage may spend: `share` of what is left after the
         final-stage reserve. None when no cap is set."""
-        left = self.remaining()
-        if left is None:
+        cap, left = self.cap, self.remaining()
+        if cap is None or left is None:
             return None
-        reserve = self.FINAL_RESERVE * self.cap if keep_reserve else 0.0
+        reserve = self.FINAL_RESERVE * cap if keep_reserve else 0.0
         return max(0.0, left - reserve) * share
 
     def note(self, message: str) -> None:
@@ -229,13 +229,14 @@ class Budget:
 
     @contextmanager
     def hold(self, stage: str, model: str, input_chars: int, output_tokens: int) -> Iterator[None]:
-        est = estimate_cost(model, input_chars, output_tokens) if self.cap else None
-        if est is None:
+        cap = self.cap
+        est = estimate_cost(model, input_chars, output_tokens) if cap else None
+        if cap is None or est is None:
             yield
             return
         with self._lock:
             projected = TRACKER.total_cost()[0] + self._pending + est
-            if projected > self.cap:
+            if projected > cap:
                 refused = True
             else:
                 refused = False

@@ -29,6 +29,7 @@ from ...discover.tax_harvest import (
 )
 from ...logging import get_logger
 from ...usage import BudgetExceededError
+from ..pipeline_base import PipelineBase
 from .helpers import (
     _build_history_block,
 )
@@ -36,7 +37,7 @@ from .helpers import (
 logger = get_logger("stock_analyzer.cli.rebalance")
 
 
-class RebalancePlanSteps:
+class RebalancePlanSteps(PipelineBase):
     def step_rebalance(self, step_input: StepInput) -> StepOutput:
         history_block = _build_history_block(self.settings.discover_db_path)
         if history_block:
@@ -174,9 +175,9 @@ class RebalancePlanSteps:
                 cc_context_block=self.state.get("cc_context_block") or "",
                 settings=self.settings,
                 spots={
-                    t: (v or {}).get("price")
+                    t: px
                     for t, v in (self.state.get("holdings_technicals") or {}).items()
-                    if (v or {}).get("price")
+                    if (px := (v or {}).get("price"))
                 },
             )
             if cc_warnings:

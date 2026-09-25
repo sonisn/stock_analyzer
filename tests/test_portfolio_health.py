@@ -158,6 +158,8 @@ def test_one_failing_stock_does_not_cancel_the_email(monkeypatch):
         return f"{'-' * 40}\n\n{t} - Fine Inc\nPrice: 1"
 
     monkeypatch.setattr(agent, "_run_ticker", run_ticker)
+    # No data phase: against the blocked network it only spent seconds on retries.
+    monkeypatch.setattr(agent, "_safe_fetch", lambda t: None)
     monkeypatch.setattr(agent, "_run_sentiment", lambda: (_ for _ in ()).throw(RuntimeError("x")))
     out = agent.run_analysis(["OK", "BAD"])
     assert "OK - Fine Inc" in out and "BAD - analysis unavailable today" in out

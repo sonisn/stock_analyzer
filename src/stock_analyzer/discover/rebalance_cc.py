@@ -5,12 +5,15 @@ from __future__ import annotations
 import contextlib
 from dataclasses import dataclass, field
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..config import Settings
 from ..logging import get_logger
 from ..models.portfolio import IvHvRegime
 from ..models.rebalance import RebalancePlan
+
+if TYPE_CHECKING:
+    from ..data.options_chain import OptionChain
 
 logger = get_logger(__name__)
 
@@ -73,10 +76,10 @@ def earnings_dates_from_signals(
 def filter_chains_by_earnings(
     chains: dict[str, Any],
     earnings_map: dict[str, date],
-) -> dict[str, object]:
+) -> dict[str, OptionChain]:
     from .cc_eligibility import apply_earnings_filter
 
-    filtered: dict[str, object] = {}
+    filtered: dict[str, OptionChain] = {}
     for ticker, chain in chains.items():
         filtered_chain, _ = apply_earnings_filter(
             chain,
@@ -203,7 +206,7 @@ def writable_positions(positions: dict[str, Any], spots: dict[str, float]) -> di
 
 def compute_iv_hv_regimes(
     eligible: dict[str, list[Any]],
-    filtered_chains: dict[str, object],
+    filtered_chains: dict[str, OptionChain],
 ) -> dict[str, IvHvRegime]:
     from ..data.historical_volatility import fetch_realized_volatility
     from .cc_eligibility import compute_iv_hv_regime
@@ -226,7 +229,7 @@ class CcDataResult:
     eligibility: dict[str, Any] = field(default_factory=dict)
     coverage: dict[str, Any] = field(default_factory=dict)
     stub_pool: float = 0.0
-    chains: dict[str, object] = field(default_factory=dict)
+    chains: dict[str, OptionChain] = field(default_factory=dict)
     iv_hv_regimes: dict[str, IvHvRegime] = field(default_factory=dict)
     # {ticker: why no call was offered on it today}
     cheap_premium: dict[str, str] = field(default_factory=dict)
@@ -507,7 +510,7 @@ def drop_cheap_premium(
 def apply_cc_plan_validation(
     plan: RebalancePlan,
     *,
-    chains: dict[str, object],
+    chains: dict[str, OptionChain],
     eligibility: dict[str, Any],
     cc_context_block: str,
     settings: Settings | None = None,

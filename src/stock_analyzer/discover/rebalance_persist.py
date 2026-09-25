@@ -16,6 +16,7 @@ from ..db.repository import (
     insert_run_outputs,
 )
 from ..logging import current_log_file, get_logger
+from ..models.rebalance import RebalancePlan
 from ..reporting.smtp import SmtpServer
 from .report import (
     parse_confidence,
@@ -191,7 +192,7 @@ def log_full_analysis(
 
 def print_rebalance_terminal(
     *,
-    plan: object | None,
+    plan: RebalancePlan | None,
     cc_block: str,
     ranker_text: str,
     sizer_text: str,
@@ -242,7 +243,7 @@ def print_rebalance_terminal(
         print(f"Log file:  {log_path}")
 
 
-def gross_premium_from_plan(plan: object | None) -> tuple[int, float]:
+def gross_premium_from_plan(plan: RebalancePlan | None) -> tuple[int, float]:
     gross_premium = 0.0
     action_count = 0
     if plan is not None:

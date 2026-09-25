@@ -27,7 +27,7 @@ from typing import Any
 
 import pandas as pd
 
-from ..db.session import get_session
+from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 from .report_sections import _split_by_ticker_blocks
 from .track_record import _close_on_or_after, _fetch_history
@@ -98,14 +98,17 @@ def load_tranches(db_path: str) -> list[Tranche]:
     from sqlalchemy import text
 
     with get_session(db_path) as session:
-        runs = session.exec(
+        runs = exec_sql(
+            session,
             text(
                 "SELECT r.id, r.run_at, o.sizer_full FROM runs r "
                 "LEFT JOIN run_outputs o ON o.run_id = r.id "
                 "WHERE r.picks > 0 ORDER BY r.id ASC"
-            )
+            ),
         ).all()
-        picks = session.exec(text("SELECT run_id, ticker FROM picks ORDER BY run_id, rank")).all()
+        picks = exec_sql(
+            session, text("SELECT run_id, ticker FROM picks ORDER BY run_id, rank")
+        ).all()
     tickers_by_run: dict[int, list[str]] = {}
     for run_id, ticker in picks:
         tickers_by_run.setdefault(run_id, []).append(ticker)

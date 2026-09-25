@@ -12,7 +12,7 @@ model's own blind spots).
 
 from __future__ import annotations
 
-from ..llm import AgnoAgent, Provider, reasoning_model_kwargs, run_with_fallback
+from ..llm import AgnoAgent, Provider, fallback_builder, reasoning_model_kwargs, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import RedTeamOutput
 
@@ -104,10 +104,8 @@ class RedTeam:
     def critique(self, picks_text: str) -> RedTeamOutput:
         prompt = f"Picks to critique:\n\n{picks_text}"
         logger.info("Red-team critique of picks (%s)", self.provider)
-        build_fallback = (
-            (lambda: _build_agent(self.fallback[0], self.fallback[1], self.effort))
-            if self.fallback and self.fallback[0] != self.provider
-            else None
+        build_fallback = fallback_builder(
+            self.fallback, self.provider, lambda p, m: _build_agent(p, m, self.effort)
         )
         result = run_with_fallback(self.agent, build_fallback, prompt).content
         if result is None:

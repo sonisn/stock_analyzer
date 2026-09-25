@@ -30,6 +30,7 @@ from ...logging import get_logger
 from ...model.ranker_model import load_latest_model, score_percentiles, screen_points
 from ...serialization import dumps_pretty
 from ...usage import BUDGET
+from ..pipeline_base import PipelineBase
 from .helpers import (
     _QUARTERLY_MDA_CHARS,
     _RISK_FACTORS_CHARS,
@@ -46,7 +47,7 @@ from .helpers import (
 logger = get_logger("stock_analyzer.cli.discover")
 
 
-class AnalysisSteps:
+class AnalysisSteps(PipelineBase):
     def step_analyst(self, step_input: StepInput) -> StepOutput:
         survivors = self.state.get("survivors") or []
         if not survivors:

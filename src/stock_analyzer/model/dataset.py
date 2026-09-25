@@ -23,6 +23,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -87,7 +88,8 @@ def download_panel(tickers: list[str], *, years: int = 6) -> PricePanel:
     if not closes:
         raise RuntimeError("No price data downloaded")
     close = pd.concat(closes, axis=1)
-    close.index = pd.DatetimeIndex(close.index).tz_localize(None).normalize()
+    # DatetimeIndex gets .normalize() by delegation, which type checkers can't see.
+    close.index = pd.DatetimeIndex(close.index).tz_localize(None).normalize()  # ty: ignore[unresolved-attribute]
     high = pd.concat(highs, axis=1).set_axis(close.index)
     volume = pd.concat(volumes, axis=1).set_axis(close.index)
     if "SPY" not in close:
@@ -104,7 +106,7 @@ def load_panel(tickers: list[str], cache_dir: str, *, years: int = 6) -> PricePa
     retrain the same day doesn't re-download ~500 symbols."""
     path = Path(os.path.expanduser(cache_dir)) / f"price_panel_{years}y.pkl"
     if path.exists() and time.time() - path.stat().st_mtime < _CACHE_MAX_AGE_HOURS * 3600:
-        cached: PricePanel = pd.read_pickle(path)
+        cached = cast(PricePanel, pd.read_pickle(path))
         if set(t.upper() for t in tickers) <= set(cached.close.columns) | {"SPY"}:
             logger.info("Using cached price panel %s", path)
             return cached
@@ -139,7 +141,7 @@ def build_dataset(
     horizon: `fwd_{h}` (excess over SPY) and `fwd_{h}_badj` (beta-neutral). Rows missing any feature are dropped; rows whose
     label is still in the future keep NaN labels (used for scoring only)."""
     feats = panel_features(panel.close, panel.high, panel.volume, panel.spy)
-    cal = feats[FEATURES[0]].index
+    cal = pd.DatetimeIndex(feats[FEATURES[0]].index)
     weekly_last = pd.Series(cal, index=cal).groupby(cal.to_period(freq)).max()
     dates = pd.DatetimeIndex(weekly_last.to_numpy())
 

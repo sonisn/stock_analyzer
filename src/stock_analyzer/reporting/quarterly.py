@@ -31,7 +31,7 @@ from typing import Any
 from sqlalchemy import text
 
 from ..db.repository import fetch_suggestions
-from ..db.session import get_session
+from ..db.session import exec_sql, get_session
 from ..discover.track_record import _close_on_or_after, _close_on_or_before, _fetch_history
 from ..logging import get_logger
 from .health import _badge, _table
@@ -129,7 +129,8 @@ def collect_suggestions(db_path: str, start: date, end: date) -> list[dict[str, 
                     "reinvest_into": s.reinvest_into,
                 },
             )
-        picks = session.exec(
+        picks = exec_sql(
+            session,
             text(
                 "SELECT p.ticker, r.run_at, p.entry_price, p.rank FROM picks p "
                 "JOIN runs r ON r.id = p.run_id "
@@ -140,11 +141,12 @@ def collect_suggestions(db_path: str, start: date, end: date) -> list[dict[str, 
         # Picks made before the ledger recorded positions: a holdings
         # review of the ticker in the 60 days up to the pick means it was
         # already owned, so "acted on" can't be read from today's position.
-        reviewed = session.exec(
+        reviewed = exec_sql(
+            session,
             text(
                 "SELECT h.ticker, substr(r.run_at, 1, 10) FROM holdings_reviews h "
                 "JOIN runs r ON r.id = h.run_id"
-            )
+            ),
         ).all()
     reviewed_on: dict[str, list[str]] = {}
     for ticker, day in reviewed:

@@ -79,15 +79,22 @@ def _reset_db_engines() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
-def _reset_yf_gateway() -> Iterator[None]:
-    """Clear the yfinance gateway's caches between tests.
+def _reset_yf_gateway(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Clear the yfinance gateway's caches between tests, and take its
+    real-time waits out.
 
     It memoizes `yf.Ticker` instances and remembers symbols Yahoo had no
     data for, both of which would otherwise leak a previous test's mock
-    (or its "unavailable" verdict) into the next one.
+    (or its "unavailable" verdict) into the next one. Its production pacing
+    (150 requests/min, so 0.4s between calls) and retry pauses made up most
+    of the suite's wall-clock time against fakes that answer instantly; a
+    test of the pacing itself sets its own rate.
     """
     from stock_analyzer.data import yf_gateway
 
+    monkeypatch.setattr(yf_gateway, "RATE_LIMIT_PER_MIN", 1_000_000)
+    monkeypatch.setattr(yf_gateway, "BASE_COOLDOWN_SECONDS", 0)
+    monkeypatch.setattr(yf_gateway, "_TRANSIENT_BACKOFF_SECONDS", 0)
     yf_gateway.reset()
     yield
     yf_gateway.reset()

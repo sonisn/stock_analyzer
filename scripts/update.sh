@@ -26,7 +26,7 @@ trap 'git worktree remove --force "$tree" >/dev/null 2>&1 || rm -rf "$tree"' EXI
 git worktree add --quiet --detach "$tree" origin/main
 
 echo "testing $target before updating"
-if ! (cd "$tree" && uv run --quiet --extra dev pytest -q -x -p no:cacheprovider); then
+if ! (cd "$tree" && uv run --quiet --extra dev pytest -q -x -p no:cacheprovider -n 4); then
     echo "tests failed on $target — staying on $(git rev-parse --short HEAD)"
     exit 1
 fi

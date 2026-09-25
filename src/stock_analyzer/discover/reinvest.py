@@ -18,7 +18,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from ..db.session import get_session
+from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -37,7 +37,8 @@ def load_pick_pool(db_path: str, *, n_runs: int = 3) -> list[dict[str, Any]]:
     portfolio — worth knowing before moving $57,770.
     """
     with get_session(db_path) as session:
-        rows = session.exec(
+        rows = exec_sql(
+            session,
             text(
                 "SELECT p.ticker, p.rank, r.run_at, c.sector, c.price, p.conviction, "
                 "       o.ranker_full "
@@ -93,8 +94,8 @@ def reinvest_ideas(
     pool: list[dict[str, Any]],
     *,
     held: set[str],
-    avoid_sectors: set[str] = frozenset(),
-    exclude: set[str] = frozenset(),
+    avoid_sectors: set[str] | frozenset[str] = frozenset(),
+    exclude: set[str] | frozenset[str] = frozenset(),
     n: int = 2,
 ) -> list[dict[str, Any]]:
     """The first `n` pool entries not held, not excluded (e.g. a broken
@@ -119,22 +120,26 @@ def sector_peers(
     if not tickers:
         return {}
     with get_session(db_path) as session:
-        rows = session.exec(
+        rows = exec_sql(
+            session,
             text(
                 "SELECT c.ticker, c.sector, c.score, c.passed_filter, c.run_id "
                 "FROM candidates c "
                 "WHERE c.sector IS NOT NULL AND c.run_id = "
                 "  (SELECT MAX(run_id) FROM candidates WHERE sector IS NOT NULL)"
-            )
+            ),
         ).all()
-        sectors = dict(
-            session.exec(
+        # Newest run last, so a ticker's latest sector wins.
+        sectors = {
+            ticker: sector
+            for ticker, sector in exec_sql(
+                session,
                 text(
                     "SELECT ticker, sector FROM candidates WHERE sector IS NOT NULL "
                     "ORDER BY run_id ASC"
-                )
-            ).all()
-        )
+                ),
+            )
+        }
     by_sector: dict[str, list[tuple[float, str]]] = {}
     for ticker, sector, score, passed, _run in rows:
         if passed and ticker not in held:

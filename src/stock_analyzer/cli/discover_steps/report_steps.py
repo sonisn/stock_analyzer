@@ -32,6 +32,7 @@ from ...discover.run_records import (
 from ...logging import current_log_file, get_logger
 from ...reporting.smtp import SmtpServer
 from ...usage import TRACKER
+from ..pipeline_base import PipelineBase
 from .helpers import (
     _log_discover_analysis,
     _save_local_pdf,
@@ -40,7 +41,7 @@ from .helpers import (
 logger = get_logger("stock_analyzer.cli.discover")
 
 
-class ReportSteps:
+class ReportSteps(PipelineBase):
     def step_refresh_dashboard(self, step_input: StepInput) -> StepOutput:
         """Rewrite the static dashboard so it reflects the run that just
         finished.

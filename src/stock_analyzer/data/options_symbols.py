@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from typing import Literal, cast
 
 # Re-export model classes from the canonical models package. Local
 # aliases preserve the legacy import path during Phase 1; Group C will
@@ -60,11 +61,10 @@ def parse_occ(symbol: str) -> ParsedOCC:
         raise OCCParseError(f"bad date in {symbol!r}: {e}") from e
     # Strike has 3 implied decimals: "00250000" = 250.000
     strike = int(strike_raw) / 1000.0
-    # Regex guarantees otype ∈ {"C","P"} but the type checker can only
-    # see `str`; the ignore is for the Literal["C","P"] assignment.
+    # The regex guarantees otype is "C" or "P"; a type checker only sees `str`.
     return ParsedOCC(
         ticker=root,
         expiry=expiry,
-        option_type=otype,
-        strike=strike,  # type: ignore[arg-type]
+        option_type=cast(Literal["C", "P"], otype),
+        strike=strike,
     )

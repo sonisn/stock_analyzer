@@ -565,7 +565,7 @@ def fetch_open_short_puts() -> dict[str, dict[str, Any]]:
     `collateral_usd` (strike × 100 × contracts) is cash the broker is
     already holding against possible assignment, so it isn't free for
     new cash-secured puts. Returns {} when SnapTrade is unavailable."""
-    out: dict[str, dict[str, float]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for account, parsed, contracts in _short_option_positions("P"):
         rec = out.setdefault(
             parsed.ticker, {"contracts": 0, "collateral_usd": 0.0, "by_account": {}}

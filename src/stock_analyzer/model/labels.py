@@ -9,14 +9,15 @@ candidates can be scored with the same yardstick as the backtest.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import text
 
-from ..db.session import get_session
+from ..db.session import exec_sql, get_session
 from ..db.tables import CandidateOutcome
 from ..logging import get_logger
 from .dataset import HORIZONS, PricePanel, download_panel
@@ -29,14 +30,17 @@ def pending_labels(db_path: str, *, only_passed: bool = False) -> pd.DataFrame:
     `only_passed` limits it to screen survivors (the per-run upkeep)."""
     where = " WHERE c.passed_filter = 1" if only_passed else ""
     with get_session(db_path) as session:
-        rows = session.exec(
+        rows = exec_sql(
+            session,
             text(
                 "SELECT c.run_id, c.ticker, r.run_at FROM candidates c "
                 "JOIN runs r ON r.id = c.run_id" + where
-            )
+            ),
         ).all()
         done = set(
-            session.exec(text("SELECT run_id, ticker, horizon_days FROM candidate_outcomes")).all()
+            exec_sql(
+                session, text("SELECT run_id, ticker, horizon_days FROM candidate_outcomes")
+            ).all()
         )
     out = [
         (run_id, ticker, datetime.fromisoformat(str(run_at)).date(), h)
@@ -71,11 +75,13 @@ def label_candidates(
     spy = panel.spy.reindex(cal)
 
     rows: list[CandidateOutcome] = []
-    for rec in pending.itertuples(index=False):
+    # itertuples rows are namedtuples of the frame's columns; checkers see bare tuples.
+    for rec in cast(Iterable[Any], pending.itertuples(index=False)):
         if rec.ticker not in close:
             continue
-        # First bar strictly after the run date, then `horizon` bars on.
-        entry_pos = int(cal.searchsorted(pd.Timestamp(rec.run_date), side="right"))
+        # First bar strictly after the run date, then `horizon` bars on. (pandas
+        # accepts a Timestamp here but doesn't annotate it.)
+        entry_pos = int(cal.searchsorted(pd.Timestamp(rec.run_date), side="right"))  # ty: ignore[no-matching-overload]
         exit_pos = entry_pos + int(rec.horizon)
         if exit_pos >= len(cal):
             continue  # window still open
@@ -111,7 +117,8 @@ def grade_shadow_scores(db_path: str, horizon: int = 21) -> dict[str, float | in
     import json
 
     with get_session(db_path) as session:
-        rows = session.exec(
+        rows = exec_sql(
+            session,
             text(
                 "SELECT c.run_id, c.score_breakdown, o.excess_pct FROM candidates c "
                 "JOIN candidate_outcomes o ON o.run_id = c.run_id AND o.ticker = c.ticker "

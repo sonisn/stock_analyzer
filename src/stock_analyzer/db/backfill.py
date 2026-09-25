@@ -21,7 +21,7 @@ import re
 
 from sqlalchemy import text
 
-from .session import get_session
+from .session import exec_sql, get_session
 
 _PICK_BLOCK = re.compile(r"^PICK\s+(\d+):\s+([A-Z][A-Z.\-]{0,5})\b", re.MULTILINE)
 _CONVICTION = re.compile(r"^Conviction \(1-10\):\s*(\d+)", re.MULTILINE)
@@ -50,14 +50,15 @@ def backfill_pick_forecasts(db_path: str) -> dict[str, int]:
     Returns how many values were filled per field."""
     filled = {"conviction": 0, "time_horizon": 0, "entry_price": 0}
     with get_session(db_path) as session:
-        rows = session.exec(
+        rows = exec_sql(
+            session,
             text(
                 "SELECT p.run_id, p.ticker, p.conviction, p.time_horizon, p.entry_price, "
                 "o.ranker_full, c.price FROM picks p "
                 "LEFT JOIN run_outputs o ON o.run_id = p.run_id "
                 "LEFT JOIN candidates c ON c.run_id = p.run_id AND c.ticker = p.ticker "
                 "WHERE p.conviction IS NULL OR p.time_horizon IS NULL OR p.entry_price IS NULL"
-            )
+            ),
         ).all()
         parsed: dict[int, dict[str, dict[str, object]]] = {}
         for run_id, ticker, conviction, horizon, entry, ranker_full, price in rows:
@@ -74,7 +75,8 @@ def backfill_pick_forecasts(db_path: str) -> dict[str, int]:
             if not updates:
                 continue
             assignments = ", ".join(f"{k} = :{k}" for k in updates)
-            session.exec(
+            exec_sql(
+                session,
                 text(f"UPDATE picks SET {assignments} WHERE run_id = :run_id AND ticker = :ticker"),
                 params={**updates, "run_id": run_id, "ticker": ticker},
             )

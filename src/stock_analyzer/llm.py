@@ -265,6 +265,20 @@ def deterministic_model_kwargs(provider: Provider) -> dict[str, Any]:
     return {"temperature": 0}
 
 
+def fallback_builder(
+    fallback: tuple[Provider, str] | None,
+    primary_provider: str,
+    build: Callable[[Provider, str], AgnoAgent],
+) -> Callable[[], AgnoAgent] | None:
+    """The `build_fallback` that `run_with_fallback` takes: builds the
+    fallback agent on demand, or None when there is no fallback or it is the
+    primary's own provider (the same outage would fail it too)."""
+    if not fallback or fallback[0] == primary_provider:
+        return None
+    provider, model = fallback
+    return lambda: build(provider, model)
+
+
 def run_with_fallback(
     primary: AgnoAgent,
     build_fallback: Callable[[], AgnoAgent] | None,

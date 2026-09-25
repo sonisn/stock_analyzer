@@ -39,7 +39,7 @@ from typing import Any
 from sqlalchemy import text
 
 from ..logging import get_logger
-from .session import get_session
+from .session import exec_sql, get_session
 
 logger = get_logger(__name__)
 
@@ -93,7 +93,8 @@ def prune_database(db_path: str, policy: RetentionPolicy, *, today: date) -> dic
     with get_session(db_path) as session:
         old_runs = "SELECT id FROM runs WHERE run_at < :cutoff"
         for table, col in _PROSE_COLUMNS:
-            n = session.exec(
+            n = exec_sql(
+                session,
                 text(
                     f"UPDATE {table} SET {col} = NULL WHERE {col} IS NOT NULL AND {col} != '' "
                     f"AND run_id IN ({old_runs})"
@@ -102,7 +103,8 @@ def prune_database(db_path: str, policy: RetentionPolicy, *, today: date) -> dic
             ).rowcount
             out["prose_fields"] = out.get("prose_fields", 0) + (n or 0)
         out["failed_candidates"] = (
-            session.exec(
+            exec_sql(
+                session,
                 text(
                     f"DELETE FROM candidates WHERE passed_filter = 0 AND run_id IN ({old_runs}) "
                     "AND NOT EXISTS (SELECT 1 FROM picks p WHERE p.run_id = candidates.run_id "
@@ -113,12 +115,14 @@ def prune_database(db_path: str, policy: RetentionPolicy, *, today: date) -> dic
             or 0
         )
         tables = {
-            r[0] for r in session.exec(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
+            r[0]
+            for r in exec_sql(session, text("SELECT name FROM sqlite_master WHERE type = 'table'"))
         }
         for table in ("workflow_session_runs", "workflow_session"):
             if table in tables:
                 out[table] = (
-                    session.exec(
+                    exec_sql(
+                        session,
                         text(f"DELETE FROM {table} WHERE created_at < :cutoff"),
                         params={"cutoff": session_cutoff},
                     ).rowcount
@@ -127,7 +131,8 @@ def prune_database(db_path: str, policy: RetentionPolicy, *, today: date) -> dic
         if "stock_views" in tables:
             # Views of stocks no longer held stop being refreshed; drop them.
             out["stale_stock_views"] = (
-                session.exec(
+                exec_sql(
+                    session,
                     text("DELETE FROM stock_views WHERE written_on < :c"),
                     params={"c": (today - timedelta(days=policy.stock_view_days)).isoformat()},
                 ).rowcount
@@ -136,7 +141,8 @@ def prune_database(db_path: str, policy: RetentionPolicy, *, today: date) -> dic
         if "ticker_reference" in tables:
             ref_cutoff = (today - timedelta(days=policy.reference_days)).isoformat()
             out["stale_reference_rows"] = (
-                session.exec(
+                exec_sql(
+                    session,
                     text(
                         "DELETE FROM ticker_reference WHERE "
                         "COALESCE(profile_updated, '') < :c AND COALESCE(earnings_updated, '') < :c"
@@ -146,7 +152,8 @@ def prune_database(db_path: str, policy: RetentionPolicy, *, today: date) -> dic
                 or 0
             )
         out["model_versions"] = (
-            session.exec(
+            exec_sql(
+                session,
                 text(
                     "DELETE FROM model_versions WHERE accepted = 0 AND id NOT IN "
                     "(SELECT id FROM model_versions ORDER BY id DESC LIMIT :keep)"

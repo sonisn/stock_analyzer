@@ -11,7 +11,13 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from ..llm import AgnoAgent, Provider, deterministic_model_kwargs, run_with_fallback
+from ..llm import (
+    AgnoAgent,
+    Provider,
+    deterministic_model_kwargs,
+    fallback_builder,
+    run_with_fallback,
+)
 from ..logging import get_logger
 from ..models.llm import HoldingReview
 from ..serialization import dumps_pretty
@@ -417,11 +423,7 @@ class Reviewer:
     def review(self, ticker: str, payload: dict[str, Any]) -> HoldingReview | None:
         prompt = f"Holding: {ticker}\n\n```json\n{dumps_pretty(payload)}\n```"
         logger.info("Reviewing holding %s", ticker)
-        build_fallback = (
-            (lambda: _build_agent(self.fallback[0], self.fallback[1]))
-            if self.fallback and self.fallback[0] != self.provider
-            else None
-        )
+        build_fallback = fallback_builder(self.fallback, self.provider, _build_agent)
         result = run_with_fallback(self.agent, build_fallback, prompt).content
         if result is None:
             logger.warning(

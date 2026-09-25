@@ -44,7 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from ..db.session import get_session
+from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 from .track_record import _close_on_or_after, _close_on_or_before, _fetch_history
 
@@ -226,7 +226,8 @@ def _load_candidates(
     try:
         with get_session(db_path) as session:
             rows = list(
-                session.exec(
+                exec_sql(
+                    session,
                     text(
                         "SELECT r.run_at, c.ticker, c.score, c.score_components, "
                         "       c.score_breakdown "

@@ -148,7 +148,7 @@ def _as_dates(index: pd.Index) -> pd.DatetimeIndex:
     idx = pd.DatetimeIndex(index)
     if idx.tz is not None:
         idx = idx.tz_localize(None)
-    return idx.normalize()
+    return idx.normalize()  # ty: ignore[unresolved-attribute]  # delegated, invisible to checkers
 
 
 def ticker_features(history: pd.DataFrame, spy_close: pd.Series) -> dict[str, float | None]:

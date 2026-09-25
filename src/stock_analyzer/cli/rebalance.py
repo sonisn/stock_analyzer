@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 
 from agno.db.sqlite import SqliteDb
-from agno.workflow import Parallel, Step, Workflow
+from agno.workflow import Step, Workflow
 from dotenv import load_dotenv
 
 from ..config import Settings
@@ -33,7 +33,7 @@ from ..logging import get_logger
 from ..preflight import PreflightError, preflight
 from ..usage import log_usage_summary
 from .discover import DiscoverPipeline
-from .discover_steps.helpers import without_step_retries
+from .discover_steps.helpers import parallel, without_step_retries
 from .rebalance_steps.data_steps import RebalanceDataSteps
 from .rebalance_steps.helpers import (
     _build_position_splits,
@@ -85,7 +85,7 @@ class RebalancePipeline(
                 db=SqliteDb(db_file=str(db_path), session_table="workflow_session"),
                 steps=[
                     Step(name="universe", executor=self.step_universe),
-                    Parallel(
+                    parallel(
                         Step(name="fundamentals", executor=self.step_fundamentals),
                         Step(name="technicals", executor=self.step_technicals),
                         Step(name="sector_rotation", executor=self.step_sector_rotation),
@@ -104,7 +104,7 @@ class RebalancePipeline(
                     Step(name="market_themes", executor=self.step_market_themes),
                     Step(name="screen", executor=self.step_screen),
                     Step(name="thesis_check", executor=self.step_thesis_check),
-                    Parallel(
+                    parallel(
                         Step(name="risk_factors", executor=self.step_risk_factors),
                         Step(name="quarterly_mda", executor=self.step_quarterly_mda),
                         Step(name="news", executor=self.step_news),

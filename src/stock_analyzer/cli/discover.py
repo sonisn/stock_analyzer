@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 
 from agno.db.sqlite import SqliteDb
-from agno.workflow import Parallel, Step, Workflow
+from agno.workflow import Step, Workflow
 from dotenv import load_dotenv
 
 from ..config import Settings
@@ -40,7 +40,7 @@ from ..preflight import PreflightError, preflight
 from ..usage import BUDGET, TRACKER, log_usage_summary, set_extra_prices
 from .discover_steps.analysis_steps import AnalysisSteps
 from .discover_steps.data_steps import DataSteps
-from .discover_steps.helpers import without_step_retries
+from .discover_steps.helpers import parallel, without_step_retries
 from .discover_steps.report_steps import ReportSteps
 
 logger = get_logger(__name__)
@@ -85,7 +85,7 @@ class DiscoverPipeline(DataSteps, AnalysisSteps, ReportSteps):
                     # Technicals first, alone among the Yahoo-backed steps: one
                     # request per name buys the trend gate, which decides who is
                     # worth the three-requests-per-name fetches below.
-                    Parallel(
+                    parallel(
                         Step(name="technicals", executor=self.step_technicals),
                         Step(name="sector_rotation", executor=self.step_sector_rotation),
                         Step(name="macro_regime", executor=self.step_macro_regime),
@@ -93,7 +93,7 @@ class DiscoverPipeline(DataSteps, AnalysisSteps, ReportSteps):
                         name="market_data",
                     ),
                     Step(name="prescreen", executor=self.step_prescreen),
-                    Parallel(
+                    parallel(
                         Step(name="fundamentals", executor=self.step_fundamentals),
                         # EPS revisions run here so the score function can pick
                         # up the +/-5 trend bonus from direction_30d.
@@ -109,7 +109,7 @@ class DiscoverPipeline(DataSteps, AnalysisSteps, ReportSteps):
                     Step(name="market_themes", executor=self.step_market_themes),
                     Step(name="screen", executor=self.step_screen),
                     Step(name="thesis_check", executor=self.step_thesis_check),
-                    Parallel(
+                    parallel(
                         Step(name="risk_factors", executor=self.step_risk_factors),
                         Step(name="quarterly_mda", executor=self.step_quarterly_mda),
                         Step(name="news", executor=self.step_news),

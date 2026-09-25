@@ -19,7 +19,13 @@ from typing import Any
 
 from ..data.fundamentals import fetch_fundamentals
 from ..data.sec_edgar import load_ticker_cik_map
-from ..llm import AgnoAgent, Provider, deterministic_model_kwargs, run_with_fallback
+from ..llm import (
+    AgnoAgent,
+    Provider,
+    deterministic_model_kwargs,
+    fallback_builder,
+    run_with_fallback,
+)
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -89,11 +95,7 @@ class PeerFinder:
             prompt += f"\nName: {name}"
         if sector:
             prompt += f"\nSector: {sector}"
-        build_fallback = (
-            (lambda: _build_agent(self.fallback[0], self.fallback[1]))
-            if self.fallback and self.fallback[0] != self.provider
-            else None
-        )
+        build_fallback = fallback_builder(self.fallback, self.provider, _build_agent)
         try:
             raw = run_with_fallback(self.agent, build_fallback, prompt).content
         except Exception as e:

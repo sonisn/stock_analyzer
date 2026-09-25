@@ -24,7 +24,7 @@ import json
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -81,10 +81,12 @@ def baseline_trend_score(frame: pd.DataFrame) -> pd.Series:
 def _daily_ic(pred: pd.Series, label: pd.Series) -> pd.Series:
     df = pd.DataFrame({"p": pred, "y": label}).dropna()
     ranks = df.groupby(level="date").rank()
-    return (
+    # One scalar per group, so apply() gives a Series; pandas types it as a frame.
+    return cast(
+        pd.Series,
         ranks.groupby(level="date")
         .apply(lambda g: g["p"].corr(g["y"]) if len(g) >= MIN_NAMES_TO_SCORE else np.nan)
-        .dropna()
+        .dropna(),
     )
 
 
@@ -123,7 +125,7 @@ def quintile_spread(pred: pd.Series, label: pd.Series) -> dict[str, float | None
 
 def walk_forward(
     data: pd.DataFrame,
-    calendar: pd.DatetimeIndex,
+    calendar: pd.Index,
     *,
     horizon: int,
     population: str = "gated",
@@ -239,11 +241,13 @@ class ActiveModel:
 
 def load_active_model(db_path: str) -> ActiveModel | None:
     """Latest ACCEPTED model version, or None (the screen then ignores it)."""
-    from sqlmodel import select
+    from sqlmodel import col, select
 
     with get_session(db_path) as session:
         row = session.exec(
-            select(ModelVersion).where(ModelVersion.accepted == 1).order_by(ModelVersion.id.desc())  # type: ignore[union-attr]
+            select(ModelVersion)
+            .where(ModelVersion.accepted == 1)
+            .order_by(col(ModelVersion.id).desc())
         ).first()
         if row is None:
             return None
@@ -256,12 +260,10 @@ def load_latest_model(db_path: str) -> ActiveModel | None:
     active = load_active_model(db_path)
     if active is not None:
         return active
-    from sqlmodel import select
+    from sqlmodel import col, select
 
     with get_session(db_path) as session:
-        row = session.exec(
-            select(ModelVersion).order_by(ModelVersion.id.desc())  # type: ignore[union-attr]
-        ).first()
+        row = session.exec(select(ModelVersion).order_by(col(ModelVersion.id).desc())).first()
         if row is None:
             return None
         return ActiveModel(

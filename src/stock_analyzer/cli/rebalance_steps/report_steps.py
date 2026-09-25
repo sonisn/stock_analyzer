@@ -26,6 +26,7 @@ from ...discover.report import (
 )
 from ...logging import get_logger
 from ...usage import TRACKER
+from ..pipeline_base import PipelineBase
 from .helpers import (
     build_email_subject,
 )
@@ -33,7 +34,7 @@ from .helpers import (
 logger = get_logger("stock_analyzer.cli.rebalance")
 
 
-class RebalanceReportSteps:
+class RebalanceReportSteps(PipelineBase):
     def step_persist_and_email_rebalance(self, step_input: StepInput) -> StepOutput:
         candidates = self.state.get("candidates") or []
         survivors = self.state.get("survivors") or []

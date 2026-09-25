@@ -219,7 +219,7 @@ def roll_suggestion(
     leg = min(legs, key=lambda x: (x["strike"], x["expiry"]))
     try:
         expiry = date.fromisoformat(str(leg["expiry"]))
-        args = {
+        args: dict[str, Any] = {
             "ticker": ticker,
             "account": str(leg.get("account") or ""),
             "contracts": int(leg.get("contracts") or 0),
