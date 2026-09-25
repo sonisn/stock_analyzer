@@ -153,6 +153,21 @@ def _safe_call(label: str, ticker: str, fn, *args, **kwargs) -> Any:
     return None
 
 
+def fetch_quote(ticker: str) -> dict[str, float | None] | None:
+    """{"price", "prev_close"} from Finnhub's real-time quote, or None
+    (no key, rate limited, or a symbol Finnhub doesn't cover: it answers
+    those with zeros rather than an error). The fallback for when Yahoo,
+    the usual source, is throttling and returns no price."""
+    client = _client()
+    if client is None:
+        return None
+    q = _safe_call("quote", ticker, client.quote, ticker.upper())
+    price = (q or {}).get("c") or 0
+    if price <= 0:
+        return None
+    return {"price": float(price), "prev_close": float((q or {}).get("pc") or 0) or None}
+
+
 def fetch_earnings_surprise(client: finnhub.Client, ticker: str) -> list[dict[str, Any]]:
     """Last 4 quarters of actual vs estimate EPS.
 

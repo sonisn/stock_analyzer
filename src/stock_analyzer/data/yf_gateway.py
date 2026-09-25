@@ -28,6 +28,10 @@ process:
   - a negative cache for symbols Yahoo has no data for (money-market
     funds like SPAXX, spot-crypto ETFs like IBIT), so a dead symbol is
     looked up once per run instead of once per step
+  - a shared daily-bars cache (`daily_bars`): the first module to want a
+    symbol's adjusted daily history fetches two years of it, and every later
+    window in the run (technicals, realized vol, track record, the daily
+    email's trends) is sliced from that one download
   - yfinance's own chatty 404 logging demoted to DEBUG
 
 Tuning knobs (env vars, all optional):
@@ -48,8 +52,10 @@ import os
 import random
 import threading
 import time
+from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
+from datetime import date, timedelta
 from typing import Any
 
 import yfinance as yf
@@ -394,6 +400,8 @@ def reset() -> None:
     """Drop caches and pacing state. For tests and long-lived processes."""
     with _ticker_lock:
         _tickers.clear()
+    with _bars_lock:
+        _bars.clear()
     with _missing_lock:
         _missing.clear()
     with _stats_lock:
@@ -521,6 +529,60 @@ def history(symbol: str, *, what: str = "history", **kwargs: Any):
     if df is None or getattr(df, "empty", False):
         return None
     return df
+
+
+# One download per symbol per run covers at least this much history, which
+# is the longest window any routine caller asks for (technicals: 2y).
+BARS_MIN_DAYS = 730
+
+_bars_lock = threading.Lock()
+# symbol -> (fetched at, first date the download asked for, frame)
+_bars: dict[str, tuple[float, date, Any]] = {}
+_bars_fetch_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
+
+
+def daily_bars(symbol: str, *, start: date, end: date | None = None, what: str = "daily_bars"):
+    """Split- and dividend-adjusted daily bars from `start` through `end`
+    (inclusive; default today), or None when Yahoo has nothing.
+
+    The technicals, realized-vol, track-record and daily-email steps each
+    wanted their own slice of the same history and fetched it separately.
+    Now the first ask downloads at least `BARS_MIN_DAYS` and the rest are
+    served from memory for `TICKER_CACHE_TTL`; an ask reaching further back
+    than the cached download replaces it with a longer one.
+    """
+    key = (symbol or "").upper()
+    today = date.today()
+    fetch_from = min(start, today - timedelta(days=BARS_MIN_DAYS))
+    # One download per symbol even when two steps ask at once.
+    with _bars_lock:
+        fetch_lock = _bars_fetch_locks[key]
+    with fetch_lock:
+        with _bars_lock:
+            entry = _bars.get(key)
+        fresh = entry is not None and time.monotonic() - entry[0] < TICKER_CACHE_TTL
+        if fresh and entry is not None and entry[1] <= start:
+            frame = entry[2]
+        else:
+            frame = history(symbol, what=what, start=fetch_from.isoformat(), auto_adjust=True)
+            if frame is None:
+                return None
+            with _bars_lock:
+                _bars[key] = (time.monotonic(), fetch_from, frame)
+    return _slice_days(frame, start, end)
+
+
+def _slice_days(frame: Any, start: date, end: date | None) -> Any:
+    import pandas as pd
+
+    if not isinstance(frame.index, pd.DatetimeIndex):
+        return frame  # nothing to slice by
+    tz = frame.index.tz
+    mask = frame.index >= pd.Timestamp(start).tz_localize(tz)
+    if end is not None:
+        mask &= frame.index < pd.Timestamp(end + timedelta(days=1)).tz_localize(tz)
+    out = frame[mask]
+    return None if out.empty else out
 
 
 def download(symbols: Iterable[str], *, what: str = "download", **kwargs: Any):

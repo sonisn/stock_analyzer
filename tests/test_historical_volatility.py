@@ -99,3 +99,17 @@ def test_fetch_realized_volatility_swallows_yf_errors():
     with patch("stock_analyzer.data.yf_gateway.yf", fake_yf):
         out = fetch_realized_volatility(["NVDA"])
     assert out == {}
+
+
+def test_hv_asks_for_a_full_year_of_trading_days(monkeypatch):
+    """The window used to be Yahoo's period="300d" — 300 *bars*. Asked for
+    as 300 calendar days it silently shrank to ~205 bars."""
+    from datetime import date, timedelta
+
+    from stock_analyzer.data import yf_gateway
+    from stock_analyzer.data.historical_volatility import fetch_realized_volatility
+
+    starts = []
+    monkeypatch.setattr(yf_gateway, "daily_bars", lambda t, *, start, what: starts.append(start))
+    fetch_realized_volatility(["NVDA"])
+    assert starts and starts[0] <= date.today() - timedelta(days=430)

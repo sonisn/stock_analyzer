@@ -259,3 +259,57 @@ def test_missing_symbol_is_still_not_retried():
 
     assert yf_gateway.call(delisted, symbol="DEAD", what="history") is None
     assert attempts["n"] == 1
+
+
+def _bars_frame(days: int):
+    import pandas as pd
+
+    idx = pd.date_range(
+        end=pd.Timestamp.today().normalize(), periods=days, freq="D", tz="America/New_York"
+    )
+    return pd.DataFrame({"Close": range(days)}, index=idx)
+
+
+def test_daily_bars_serves_every_window_from_one_download():
+    from datetime import date, timedelta
+
+    fake = MagicMock()
+    fake.history.return_value = _bars_frame(800)
+    with patch.object(yf_gateway.yf, "Ticker", return_value=fake):
+        year = yf_gateway.daily_bars("NVDA", start=date.today() - timedelta(days=365))
+        month = yf_gateway.daily_bars("nvda", start=date.today() - timedelta(days=30))
+        week_ago = date.today() - timedelta(days=7)
+        upto = yf_gateway.daily_bars("NVDA", start=week_ago - timedelta(days=3), end=week_ago)
+
+    assert fake.history.call_count == 1
+    kwargs = fake.history.call_args.kwargs
+    assert kwargs["auto_adjust"] is True
+    assert date.fromisoformat(kwargs["start"]) <= date.today() - timedelta(days=730)
+    assert len(year) == 366 and len(month) == 31
+    assert len(upto) == 4 and upto.index[-1].date() == week_ago  # end is inclusive
+
+
+def test_daily_bars_refetches_for_a_longer_window():
+    from datetime import date, timedelta
+
+    fake = MagicMock()
+    fake.history.return_value = _bars_frame(1200)
+    with patch.object(yf_gateway.yf, "Ticker", return_value=fake):
+        yf_gateway.daily_bars("NVDA", start=date.today() - timedelta(days=30))
+        far = date.today() - timedelta(days=1000)
+        yf_gateway.daily_bars("NVDA", start=far)
+        yf_gateway.daily_bars("NVDA", start=far + timedelta(days=10))
+
+    assert fake.history.call_count == 2
+    assert fake.history.call_args.kwargs["start"] == far.isoformat()
+
+
+def test_daily_bars_is_none_when_yahoo_has_nothing():
+    from datetime import date
+
+    import pandas as pd
+
+    fake = MagicMock()
+    fake.history.return_value = pd.DataFrame()
+    with patch.object(yf_gateway.yf, "Ticker", return_value=fake):
+        assert yf_gateway.daily_bars("NVDA", start=date.today()) is None

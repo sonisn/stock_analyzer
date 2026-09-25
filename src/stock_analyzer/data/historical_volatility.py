@@ -16,6 +16,7 @@ ticker. Batched callers should expect ~1 sec per ticker.
 from __future__ import annotations
 
 import math
+from datetime import date, timedelta
 
 from ..logging import get_logger
 from ..models.market import RealizedVolatility
@@ -71,14 +72,20 @@ def fetch_realized_volatility(
 
     from . import yf_gateway
 
+    # `lookback_days` counts trading days (it was Yahoo's `period="300d"`,
+    # which is 300 bars); a calendar year holds ~252 of them.
+    trading_days = max(lookback_days + 30, 300)
+    start = date.today() - timedelta(days=trading_days * 365 // 252 + 10)
+
+    def _bars(t: str):
+        return yf_gateway.daily_bars(t, start=start, what="historical_volatility")
+
     out: dict[str, RealizedVolatility] = {}
+    # Fetched on the gateway's bounded pool (usually memory hits: the
+    # technicals step already downloaded these), then computed in order.
+    frames = dict(yf_gateway.map_symbols(_bars, tickers))
     for t in tickers:
-        df = yf_gateway.history(
-            t,
-            what="historical_volatility",
-            period=f"{max(lookback_days + 30, 300)}d",
-            auto_adjust=True,
-        )
+        df = frames.get(t)
         if df is None or df.empty:
             logger.info("HV fetch returned no data for %s", t)
             continue

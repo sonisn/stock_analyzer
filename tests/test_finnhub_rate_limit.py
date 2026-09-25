@@ -69,3 +69,28 @@ def test_rate_limit_sets_a_shared_cooldown(monkeypatch: pytest.MonkeyPatch):
     fh._cool_down(1)
     assert fh._cooldown_until > before
     fh._cooldown_until = 0.0
+
+
+def test_fetch_quote_reads_price_and_skips_uncovered_symbols(monkeypatch: pytest.MonkeyPatch):
+    class _Client:
+        def quote(self, symbol):
+            return {"c": 265.63, "pc": 260.0} if symbol == "BE" else {"c": 0, "pc": 0}
+
+    monkeypatch.setattr(fh, "_client", lambda: _Client())
+    assert fh.fetch_quote("be") == {"price": 265.63, "prev_close": 260.0}
+    assert fh.fetch_quote("SPAXX") is None
+
+    monkeypatch.setattr(fh, "_client", lambda: None)  # no API key
+    assert fh.fetch_quote("BE") is None
+
+
+def test_daily_email_price_falls_back_to_finnhub_when_yahoo_has_none(monkeypatch):
+    from stock_analyzer.data import ticker, yf_gateway
+
+    monkeypatch.setattr(yf_gateway, "ticker_call", lambda *a, **k: k.get("default"))
+    monkeypatch.setattr(yf_gateway, "call", lambda *a, **k: None)
+    monkeypatch.setattr(yf_gateway, "daily_bars", lambda *a, **k: None)
+    monkeypatch.setattr(fh, "fetch_quote", lambda s: {"price": 100.0, "prev_close": 98.0})
+
+    data = ticker.fetch_ticker_data("BE")
+    assert data["price_value"] == 100.0

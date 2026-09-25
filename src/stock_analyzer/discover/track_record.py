@@ -48,7 +48,7 @@ from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import pandas as pd
 
@@ -144,13 +144,7 @@ def _fetch_history(ticker: str, start: date, end: date) -> pd.DataFrame | None:
     try:
         from ..data import yf_gateway
 
-        df = yf_gateway.history(
-            ticker,
-            what="track_record.history",
-            start=start.isoformat(),
-            end=(end + timedelta(days=1)).isoformat(),
-            auto_adjust=True,
-        )
+        df = yf_gateway.daily_bars(ticker, start=start, end=end, what="track_record.history")
         if df is None or df.empty:
             return None
         df = df.copy()
@@ -273,7 +267,9 @@ def _score_decision(
     return rows, None
 
 
-def _unmeasurable(decision: _Decision, reason: str) -> UnmeasurableDecision:
+def _unmeasurable(
+    decision: _Decision, reason: Literal["too_young", "no_price_data"]
+) -> UnmeasurableDecision:
     return UnmeasurableDecision(
         ticker=decision.ticker,
         pick_date=decision.pick_date,

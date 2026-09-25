@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import date, timedelta
 from typing import Any
 
 import pandas as pd
@@ -38,14 +39,16 @@ _SPY_FETCHED_AT: float = 0.0
 _SPY_LOCK = threading.Lock()
 
 
+def _two_years_ago() -> date:
+    return date.today() - timedelta(days=730)
+
+
 def _spy_history() -> pd.DataFrame | None:
     global _SPY_HISTORY, _SPY_FETCHED_AT
     with _SPY_LOCK:
         age = time.monotonic() - _SPY_FETCHED_AT
         if _SPY_HISTORY is None or age >= _SPY_CACHE_TTL_SECONDS:
-            fetched = yf_gateway.history(
-                "SPY", what="technicals.spy", period="2y", auto_adjust=True
-            )
+            fetched = yf_gateway.daily_bars("SPY", start=_two_years_ago(), what="technicals.spy")
             if fetched is None:
                 logger.warning("Failed to fetch SPY history — relative strength unavailable")
             _SPY_HISTORY = fetched if fetched is not None else pd.DataFrame()
@@ -155,7 +158,7 @@ def _volume_trend(history: pd.DataFrame) -> float | None:
 
 
 def fetch_technicals(ticker: str) -> dict[str, Any] | None:
-    hist = yf_gateway.history(ticker, what="technicals", period="2y", auto_adjust=True)
+    hist = yf_gateway.daily_bars(ticker, start=_two_years_ago(), what="technicals")
     if hist is None or hist.empty:
         return None
 

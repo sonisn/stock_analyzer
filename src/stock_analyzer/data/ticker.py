@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 import yfinance as yf
@@ -119,11 +120,23 @@ def fetch_ticker_data(symbol: str) -> dict[str, Any]:
 
     price = info.get("currentPrice") or info.get("regularMarketPrice")
     prev_close = info.get("previousClose")
+    if not price:
+        # Yahoo throttled or dropped the quote; without one, valuation falls
+        # back to the broker's price, which can be days stale.
+        from .finnhub import fetch_quote
+
+        quote = fetch_quote(symbol)
+        if quote:
+            logger.info("%s: no Yahoo price — using Finnhub's quote", symbol)
+            price = quote["price"]
+            prev_close = prev_close or quote["prev_close"]
     pct_today = (
         (price - prev_close) / prev_close * 100 if price is not None and prev_close else None
     )
 
-    hist = yf_gateway.history(symbol, what="ticker.history", period="1y")
+    hist = yf_gateway.daily_bars(
+        symbol, start=date.today() - timedelta(days=365), what="ticker.history"
+    )
 
     low_52 = info.get("fiftyTwoWeekLow")
     high_52 = info.get("fiftyTwoWeekHigh")
