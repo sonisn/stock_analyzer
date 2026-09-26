@@ -43,7 +43,14 @@ def _bars(first: date, last: date, *, close_from: float = 100.0, events: dict | 
     return frame
 
 
-def _seed(symbol: str, frame: pd.DataFrame, requested_from: date, *, age_s: float = 86400):
+# Synced four days ago: always before the last final close, whatever the
+# day. A one-day age counted as current from Saturday afternoon to Monday
+# afternoon, so these tests failed every weekend — and blocked Monday's
+# 08:30 update, which runs the suite first.
+_STALE_S = 4 * 86400
+
+
+def _seed(symbol: str, frame: pd.DataFrame, requested_from: date, *, age_s: float = _STALE_S):
     bar_store.save(symbol, frame, requested_from, checked_at=time.time() - age_s)
 
 
