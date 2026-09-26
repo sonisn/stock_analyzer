@@ -75,8 +75,19 @@ def test_doctor_counts_failures_without_stopping(capsys):
     with (
         patch.object(ops, "_data_checks", return_value=[("A", lambda: "fine"), ("B", boom)]),
         patch.object(ops, "_llm_checks", return_value=[("C", boom)]),
+        patch.object(ops, "_disk_checks", return_value=[]),
     ):
         assert ops.doctor(object()) == 2
     out = capsys.readouterr().out
     assert "ok    A: fine" in out
     assert "FAIL  B: RuntimeError: no key" in out
+
+
+def test_disk_space_fails_below_ten_percent_or_fifty_gb():
+    from stock_analyzer.cli.ops import disk_space_problem
+
+    tb = 1e12
+    assert disk_space_problem(int(3 * tb), int(2 * tb)) is None
+    assert "only 250 GB free" in disk_space_problem(int(3 * tb), int(0.25 * tb))  # < 10%
+    assert disk_space_problem(int(0.4 * tb), int(60e9)) is None  # 15%, over the floor
+    assert disk_space_problem(int(0.4 * tb), int(45e9)) is not None  # under 50 GB

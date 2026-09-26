@@ -3,7 +3,8 @@
   ops alert JOB LOG STATUS   email the tail of a failed job's log
   ops backup                 copy the database, keeping the newest BACKUP_KEEP,
                              and delete logs older than LOG_KEEP_DAYS
-  ops doctor                 check every key, model id and data source for free
+  ops doctor                 check every key, model id and data source for free,
+                             and free space on the disks the data lives on
 
 `scripts/run_job.sh` calls `alert` when a cron job exits non-zero; before
 it existed a failed job was silent until someone noticed an email missing.
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sqlite3
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -106,6 +108,56 @@ def _log_dirs() -> list[str]:
 # --- doctor -------------------------------------------------------------------
 
 Check = tuple[str, Callable[[], str]]
+
+# Free space below this share of a disk, or below the floor, fails the
+# doctor so there is time to buy a disk: a full disk fails every SQLite
+# write (and anything else on it — the data disk also holds the photos).
+DISK_MIN_FREE_PCT = 10.0
+DISK_MIN_FREE_GB = 50.0
+
+
+def disk_space_problem(total: int, free: int) -> str | None:
+    """Why this much free space is too little, or None when it's fine."""
+    need = max(total * DISK_MIN_FREE_PCT / 100, DISK_MIN_FREE_GB * 1e9)
+    if free >= need:
+        return None
+    return (
+        f"only {free / 1e9:,.0f} GB free of {total / 1e9:,.0f} GB "
+        f"(want {need / 1e9:,.0f} GB: {DISK_MIN_FREE_PCT:.0f}% of the disk, "
+        f"never under {DISK_MIN_FREE_GB:.0f} GB)"
+    )
+
+
+def _disk_checks(settings: Settings) -> list[Check]:
+    """One check per disk the database, its backups and the bar store sit
+    on (a disk holding several is checked once)."""
+    from ..data.bar_store import store_dir
+
+    places = {
+        "database": Path(os.path.expanduser(settings.discover_db_path)).parent,
+        "backups": Path(os.path.expanduser(settings.backup_dir)),
+    }
+    bars = store_dir()
+    if bars is not None:
+        places["price cache"] = bars
+    by_disk: dict[int, tuple[Path, list[str]]] = {}
+    for label, path in places.items():
+        while not path.exists() and path != path.parent:
+            path = path.parent  # a backup dir not created yet: check its disk
+        dev = path.stat().st_dev
+        by_disk.setdefault(dev, (path, []))[1].append(label)
+
+    def check_for(path: Path) -> Callable[[], str]:
+        def check() -> str:
+            usage = shutil.disk_usage(path)
+            problem = disk_space_problem(usage.total, usage.free)
+            if problem:
+                raise RuntimeError(problem)
+            return f"{usage.free / 1e9:,.0f} GB free of {usage.total / 1e9:,.0f} GB ({path})"
+
+        return check
+
+    return [(f"Disk ({', '.join(labels)})", check_for(path)) for path, labels in by_disk.values()]
 
 
 def _llm_checks(settings: Settings) -> list[Check]:
@@ -243,7 +295,7 @@ def _data_checks(settings: Settings) -> list[Check]:
 def doctor(settings: Settings) -> int:
     """Run every check; returns how many failed."""
     failed = 0
-    for name, check in [*_data_checks(settings), *_llm_checks(settings)]:
+    for name, check in [*_data_checks(settings), *_disk_checks(settings), *_llm_checks(settings)]:
         try:
             detail = check()
             print(f"  ok    {name}: {detail}")
