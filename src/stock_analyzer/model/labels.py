@@ -25,18 +25,20 @@ from .dataset import HORIZONS, PricePanel, download_panel
 logger = get_logger(__name__)
 
 
-def pending_labels(db_path: str, *, only_passed: bool = False) -> pd.DataFrame:
+def pending_labels(
+    db_path: str, *, only_passed: bool = False, only_picks: bool = False
+) -> pd.DataFrame:
     """(run_id, ticker, run_date, horizon) rows that have no outcome yet;
-    `only_passed` limits it to screen survivors (the per-run upkeep)."""
-    where = " WHERE c.passed_filter = 1" if only_passed else ""
+    `only_passed` limits it to screen survivors (the per-run upkeep),
+    `only_picks` to the top picks (the daily email's scorecard)."""
+    if only_picks:
+        sql = "SELECT p.run_id, p.ticker, r.run_at FROM picks p JOIN runs r ON r.id = p.run_id"
+    else:
+        where = " WHERE c.passed_filter = 1" if only_passed else ""
+        sql = "SELECT c.run_id, c.ticker, r.run_at FROM candidates c JOIN runs r ON r.id = c.run_id"
+        sql += where
     with get_session(db_path) as session:
-        rows = exec_sql(
-            session,
-            text(
-                "SELECT c.run_id, c.ticker, r.run_at FROM candidates c "
-                "JOIN runs r ON r.id = c.run_id" + where
-            ),
-        ).all()
+        rows = exec_sql(session, text(sql)).all()
         done = set(
             exec_sql(
                 session, text("SELECT run_id, ticker, horizon_days FROM candidate_outcomes")
@@ -56,9 +58,10 @@ def label_candidates(
     *,
     fetch_panel: Callable[[list[str]], PricePanel] | None = None,
     only_passed: bool = False,
+    only_picks: bool = False,
 ) -> int:
     """Write every outcome whose window has closed; returns rows written."""
-    pending = pending_labels(db_path, only_passed=only_passed)
+    pending = pending_labels(db_path, only_passed=only_passed, only_picks=only_picks)
     # A window needs 1 + horizon trading days; ~7/5 calendar days each plus
     # a holiday margin. Skip rows that cannot have closed so a routine run
     # doesn't download prices for hundreds of names it can't label yet.

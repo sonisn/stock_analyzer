@@ -31,7 +31,7 @@ from .features import FEATURES, panel_features
 
 logger = get_logger(__name__)
 
-HORIZONS: tuple[int, ...] = (21, 63)  # trading days ≈ 1 and 3 months
+HORIZONS: tuple[int, ...] = (21, 63, 126)  # trading days ≈ 1, 3 and 6 months
 
 # What the training set carries labels for. A year is here because the
 # portfolio is held for three to five: margins and leverage have no

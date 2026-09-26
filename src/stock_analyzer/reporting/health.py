@@ -26,7 +26,10 @@ between rebalance runs:
   - reinvestment ideas: whenever a line suggests selling, it names where
     the money could go — a recent discover pick not held, outside any
     over-cap sector (discover/reinvest.py), or for a tax-loss sale a
-    same-sector swap that keeps the exposure.
+    same-sector swap that keeps the exposure;
+  - pick scorecard: the discover picks graded six months on, one cohort
+    per month picked, against SPY over the same days
+    (discover/pick_scorecard.py).
 
 Each check is isolated: one that fails is listed as unavailable and the
 rest still render.
@@ -59,6 +62,7 @@ class PortfolioHealth:
     income: dict[str, Any] = field(default_factory=dict)
     earnings_results: list[dict[str, Any]] = field(default_factory=list)
     add_on: list[dict[str, Any]] = field(default_factory=list)
+    pick_scorecard: dict[str, Any] = field(default_factory=dict)
     sector_by_ticker: dict[str, str] = field(default_factory=dict)
     values: dict[str, float] = field(default_factory=dict)  # ticker -> market value
     units: dict[str, float] = field(default_factory=dict)  # ticker -> shares held
@@ -202,6 +206,7 @@ def build_portfolio_health(
     income: Callable[[dict[str, float], dict[str, float]], dict[str, Any]] | None = None,
     add_on: Callable[..., list[dict[str, Any]]] | None = None,
     earnings_results: Callable[[], list[dict[str, Any]]] | None = None,
+    pick_scorecard: Callable[[], dict[str, Any]] | None = None,
 ) -> PortfolioHealth:
     """`reinvest(held, over_cap_sectors, n)` returns up to `n` ranked ideas
     for sale proceeds; it is only called when something suggests a sale."""
@@ -277,6 +282,12 @@ def build_portfolio_health(
             health.reinvest = reinvest(set(tickers), over, min(sales, 3))
 
     attempt("reinvestment ideas", ideas)
+
+    def scorecard() -> None:
+        if pick_scorecard is not None:
+            health.pick_scorecard = pick_scorecard()
+
+    attempt("pick scorecard", scorecard)
     return health
 
 
@@ -424,6 +435,7 @@ def render_health_html(h: PortfolioHealth) -> str:
         _reinvest_html(h),
         _earnings_results_html(h),
         _upcoming_earnings_html(h),
+        _pick_scorecard_html(h),
     ]
     if not any(alerts):
         parts.append("<p>No drawdown, thesis, sector or tax-loss alerts today.</p>")
@@ -551,6 +563,44 @@ def _add_on_html(h: PortfolioHealth) -> str:
             for a in h.add_on
         ],
     )
+
+
+def _pick_scorecard_html(h: PortfolioHealth) -> str:
+    sc = h.pick_scorecard
+    if not sc or not (sc["cohorts"] or sc["maturing"] or sc["unmeasured"]):
+        return ""
+    parts = ["<h3>Pick scorecard: six months after each pick</h3>"]
+    rows = sc["cohorts"] + ([sc["overall"]] if sc["overall"] else [])
+    if rows:
+        parts.append(
+            _table(
+                ["Picked", "Picks", "Avg return", "SPY", "vs SPY", "Beat SPY"],
+                [
+                    [
+                        html.escape(c["cohort"]),
+                        str(c["picks"]),
+                        f"{c['return_pct']:+.1f}%",
+                        f"{c['spy_pct']:+.1f}%",
+                        f"<b>{c['excess_pct']:+.1f}%</b>",
+                        f"{c['beat_spy']:.0%}",
+                    ]
+                    for c in rows
+                ],
+            )
+        )
+    notes = []
+    if sc["maturing"]:
+        notes.append(
+            f"{sc['maturing']} pick{'s' if sc['maturing'] != 1 else ''} still inside "
+            f"the six months; next results around {sc['next_due']:%b} {sc['next_due'].day}"
+        )
+    if sc["unmeasured"]:
+        notes.append("no price to grade " + ", ".join(sc["unmeasured"]) + " (delisted or renamed?)")
+    if notes:
+        parts.append(
+            '<p style="font-size:13px;color:#6b7280">' + html.escape("; ".join(notes)) + ".</p>"
+        )
+    return "".join(parts)
 
 
 def _income_html(h: PortfolioHealth) -> str:

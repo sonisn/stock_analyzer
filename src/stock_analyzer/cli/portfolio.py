@@ -99,6 +99,7 @@ def portfolio_health(
             income=src.income,
             add_on=src.add_on,
             earnings_results=src.earnings_results if ticker_data else None,
+            pick_scorecard=src.pick_scorecard,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Portfolio health block failed (%s) — sending the email without it", e)
@@ -209,6 +210,15 @@ class _LiveHealthSources:
         if not recent:
             return []
         return with_revisions(recent, batch_eps_revisions([r["ticker"] for r in recent]))
+
+    def pick_scorecard(self) -> dict:
+        from ..discover.pick_scorecard import pick_scorecard
+        from ..model.labels import label_candidates
+
+        # Only the picks: a few dozen names from the bar store, not the
+        # hundreds of screened candidates the monthly model review labels.
+        label_candidates(self.db, only_picks=True)
+        return pick_scorecard(self.db)
 
     def reinvest(self, held: set[str], over_cap: set[str], n: int) -> list[dict]:
         from ..discover.reinvest import load_pick_pool, reinvest_ideas, with_sector_bias
