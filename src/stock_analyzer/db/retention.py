@@ -24,7 +24,10 @@ TRIM — only data nothing reads back at full fidelity:
     a stock that is no longer held stops being refreshed, and a view older
     than that is rewritten on sight anyway;
   - model versions beyond the newest `keep_models` (accepted ones are kept);
-  - log files and cached price panels untouched for `file_days`.
+  - log files and cached price panels untouched for `file_days`;
+  - stored daily bars (`data/bar_store.py`) no run has read in
+    `BAR_STORE_DAYS` — longer than `file_days`, because the model's
+    15-year panel is read only once a month.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from ..data.bar_store import store_dir as bar_store_dir
 from ..logging import get_logger
 from .session import exec_sql, get_session
 
@@ -165,6 +169,10 @@ def prune_database(db_path: str, policy: RetentionPolicy, *, today: date) -> dic
     return out
 
 
+# Stored bars are rewritten on every sync; a file this old belongs to a
+# symbol nothing asks about any more.
+BAR_STORE_DAYS = 90
+
 # Files this app writes, per directory; nothing else in them is touched.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
@@ -234,6 +242,11 @@ def run_history_upkeep(
 
     def files() -> None:
         report.trimmed["old_files"] = prune_files(file_targets, policy.file_days)
+        bars = bar_store_dir()
+        if bars is not None:
+            report.trimmed["old_bar_files"] = prune_files(
+                [(bars, "*.parquet"), (bars, "*.tmp")], BAR_STORE_DAYS
+            )
 
     def compact_and_measure() -> None:
         freed = compact_if_worth_it(db_path, min_free_pct=policy.vacuum_min_free_pct)

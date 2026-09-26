@@ -34,6 +34,9 @@ from collections.abc import Iterator
 # happens during collection — set it before that so test runs don't fill
 # the real ~/.stock_analyzer/logs with hundreds of tiny log files.
 os.environ["LOG_DIR"] = tempfile.mkdtemp(prefix="stock-analyzer-test-logs-")
+# The on-disk bar store would carry one test's bars into the next; tests
+# that exercise it point YF_BARS_DIR at their own tmp_path.
+os.environ["YF_BARS_DIR"] = "off"
 
 import pytest
 

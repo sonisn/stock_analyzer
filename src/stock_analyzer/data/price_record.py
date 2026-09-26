@@ -152,33 +152,21 @@ def coverage(db_path: str) -> dict[str, Any]:
 
 
 def backfill_from_panel(db_path: str, tickers: list[str], *, days: int = 400) -> int:
-    """Seed the record from the cached price panel so grading has history
-    from day one instead of starting blind. Cache-only — no network."""
-    import os
-    from pathlib import Path
+    """Seed the record from the on-disk bar store so grading has history
+    from day one instead of starting blind. Store-only — no network."""
+    from . import bar_store
 
     added = 0
     start = (date.today() - timedelta(days=days)).isoformat()
-    for name in ("price_panel_15y.pkl", "price_panel_6y.pkl", "price_panel_5y.pkl"):
-        path = Path(os.path.expanduser("~/.stock_analyzer/cache")) / name
-        if not path.exists():
-            continue
-        panel = pd.read_pickle(path)
-        close = panel.close
-        with get_session(db_path) as session:
-            for ticker in {t.upper() for t in tickers} | {"SPY"}:
-                series = (
-                    panel.spy.dropna()
-                    if ticker == "SPY"
-                    else (close[ticker].dropna() if ticker in close.columns else None)
-                )
-                if series is None or series.empty:
-                    continue
-                for stamp, value in series.items():
-                    day = pd.Timestamp(stamp).date().isoformat()
-                    if day >= start and value and value > 0:
-                        added += store_close(session, ticker, day, float(value))
-            session.commit()
-        break
-    logger.info("Price record: backfilled %d close(s) from the cached panel", added)
+    with get_session(db_path) as session:
+        for ticker in {t.upper() for t in tickers} | {"SPY"}:
+            stored = bar_store.load(ticker)
+            if stored is None or "Close" not in stored.frame:
+                continue
+            for stamp, value in stored.frame["Close"].dropna().items():
+                day = pd.Timestamp(stamp).date().isoformat()
+                if day >= start and value and value > 0:
+                    added += store_close(session, ticker, day, float(value))
+        session.commit()
+    logger.info("Price record: backfilled %d close(s) from the bar store", added)
     return added

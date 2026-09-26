@@ -32,6 +32,8 @@ process:
     symbol's adjusted daily history fetches two years of it, and every later
     window in the run (technicals, realized vol, track record, the daily
     email's trends) is sliced from that one download
+  - an on-disk bar store under both (`data/bar_store.py`): later runs ask
+    Yahoo only for the days since the last stored bar
   - yfinance's own chatty 404 logging demoted to DEBUG
 
 Tuning knobs (env vars, all optional):
@@ -61,6 +63,7 @@ from typing import Any
 import yfinance as yf
 
 from ..logging import get_logger
+from . import bar_store
 
 logger = get_logger(__name__)
 
@@ -316,6 +319,10 @@ _stats = {
     "transient": 0,
     "missing": 0,
     "failed": 0,
+    # Daily bars served from the on-disk store without asking Yahoo, and
+    # stored histories extended by a short download instead of a full one.
+    "bars_stored": 0,
+    "bars_extended": 0,
 }
 
 
@@ -338,7 +345,7 @@ def log_stats(context: str = "") -> None:
     logger.info(
         "yfinance%s: %d call(s), %d retried, %d rate-limit pause(s), "
         "%d dropped connection(s), %d unavailable symbol(s), %d failure(s); "
-        "ending rate %.0f/min",
+        "bars: %d from disk, %d extended; ending rate %.0f/min",
         f" [{context}]" if context else "",
         s["calls"],
         s["retries"],
@@ -346,6 +353,8 @@ def log_stats(context: str = "") -> None:
         s["transient"],
         s["missing"],
         s["failed"],
+        s["bars_stored"],
+        s["bars_extended"],
         s["rate_per_min"],
     )
 
@@ -541,7 +550,14 @@ _bars: dict[str, tuple[float, date, Any]] = {}
 _bars_fetch_locks: defaultdict[str, threading.Lock] = defaultdict(threading.Lock)
 
 
-def daily_bars(symbol: str, *, start: date, end: date | None = None, what: str = "daily_bars"):
+def daily_bars(
+    symbol: str,
+    *,
+    start: date,
+    end: date | None = None,
+    what: str = "daily_bars",
+    remember: bool = True,
+):
     """Split- and dividend-adjusted daily bars from `start` through `end`
     (inclusive; default today), or None when Yahoo has nothing.
 
@@ -549,7 +565,9 @@ def daily_bars(symbol: str, *, start: date, end: date | None = None, what: str =
     wanted their own slice of the same history and fetched it separately.
     Now the first ask downloads at least `BARS_MIN_DAYS` and the rest are
     served from memory for `TICKER_CACHE_TTL`; an ask reaching further back
-    than the cached download replaces it with a longer one.
+    than the cached download replaces it with a longer one. Underneath the
+    memory cache, `bar_store` keeps the history on disk between runs.
+    `remember=False` skips the memory cache (the model's 15-year panel).
     """
     key = (symbol or "").upper()
     today = date.today()
@@ -564,12 +582,152 @@ def daily_bars(symbol: str, *, start: date, end: date | None = None, what: str =
         if fresh and entry is not None and entry[1] <= start:
             frame = entry[2]
         else:
-            frame = history(symbol, what=what, start=fetch_from.isoformat(), auto_adjust=True)
+            frame = _synced_bars(symbol, fetch_from, what)
             if frame is None:
                 return None
-            with _bars_lock:
-                _bars[key] = (time.monotonic(), fetch_from, frame)
+            if remember:
+                with _bars_lock:
+                    _bars[key] = (time.monotonic(), fetch_from, frame)
     return _slice_days(frame, start, end)
+
+
+def _synced_bars(symbol: str, fetch_from: date, what: str):
+    """Bars from `fetch_from`, from the store where it is current, extended
+    by a short download where it is not, downloaded whole otherwise."""
+    stored = bar_store.load(symbol)
+    if stored is not None and stored.requested_from <= fetch_from and not stored.frame.empty:
+        if bar_store.is_current(stored, TICKER_CACHE_TTL):
+            _bump("bars_stored")
+            return bar_store.trim(stored.frame, fetch_from)
+        since = bar_store.overlap_start(stored.frame)
+        delta = history(symbol, what=what, start=since.isoformat(), auto_adjust=True)
+        if delta is None:
+            logger.warning(
+                "%s: no new bars from Yahoo — using stored bars through %s",
+                symbol,
+                stored.frame.index[-1].date(),
+            )
+            return bar_store.trim(stored.frame, fetch_from)
+        reason = bar_store.needs_full_refetch(stored.frame, delta)
+        if reason is None:
+            merged = bar_store.extend(stored.frame, delta)
+            bar_store.save(symbol, merged, stored.requested_from)
+            _bump("bars_extended")
+            return bar_store.trim(merged, fetch_from)
+        logger.info("%s: %s — downloading its history again", symbol, reason)
+        # Keep the stored coverage: a 15-year file stays 15 years.
+        fetch_from = min(fetch_from, stored.requested_from)
+    frame = history(symbol, what=what, start=fetch_from.isoformat(), auto_adjust=True)
+    if frame is None:
+        if stored is not None and not stored.frame.empty:
+            logger.warning("%s: download failed — using stored bars", symbol)
+            return bar_store.trim(stored.frame, fetch_from)
+        return None
+    bar_store.save(symbol, frame, fetch_from)
+    return frame
+
+
+# Symbols per yf.download request in `daily_bars_many`.
+_DOWNLOAD_CHUNK = 100
+
+
+def daily_bars_many(symbols: Iterable[str], *, start: date, what: str = "daily_bars_many"):
+    """`daily_bars` for a universe at once: {symbol: bars from `start`}.
+
+    The same store and the same rules, but the downloads are batched — one
+    paced `yf.download` per 100 symbols for the new days of every stored
+    history, and one per 100 for the histories that must come down whole.
+    Symbols Yahoo has nothing for are left out. Nothing is kept in memory.
+    """
+    wanted = sorted({s.upper() for s in symbols if s})
+    out: dict[str, Any] = {}
+    to_extend: dict[str, bar_store.StoredBars] = {}
+    whole: list[str] = []
+    stored_all: dict[str, bar_store.StoredBars] = {}
+    for sym in wanted:
+        stored = bar_store.load(sym)
+        if stored is None or stored.requested_from > start or stored.frame.empty:
+            whole.append(sym)
+            continue
+        stored_all[sym] = stored
+        if bar_store.is_current(stored, TICKER_CACHE_TTL):
+            _bump("bars_stored")
+            out[sym] = bar_store.trim(stored.frame, start)
+        elif bar_store.overlap_start(stored.frame) < date.today() - timedelta(days=60):
+            whole.append(sym)  # months stale: a short download would not be short
+        else:
+            to_extend[sym] = stored
+
+    if to_extend:
+        since = min(bar_store.overlap_start(s.frame) for s in to_extend.values())
+        deltas = _download_split(list(to_extend), since, what)
+        for sym, stored in to_extend.items():
+            delta = deltas.get(sym)
+            if delta is None:
+                logger.warning("%s: no new bars from Yahoo — using stored bars", sym)
+                out[sym] = bar_store.trim(stored.frame, start)
+                continue
+            reason = bar_store.needs_full_refetch(stored.frame, delta)
+            if reason is not None:
+                logger.info("%s: %s — downloading its history again", sym, reason)
+                whole.append(sym)
+                continue
+            merged = bar_store.extend(stored.frame, delta)
+            bar_store.save(sym, merged, stored.requested_from)
+            _bump("bars_extended")
+            out[sym] = bar_store.trim(merged, start)
+
+    if whole:
+        fetch_from = min([start, *(stored_all[s].requested_from for s in whole if s in stored_all)])
+        frames = _download_split(whole, fetch_from, what)
+        for sym in whole:
+            frame = frames.get(sym)
+            if frame is None:
+                if sym in stored_all:
+                    out[sym] = bar_store.trim(stored_all[sym].frame, start)
+                continue
+            bar_store.save(sym, frame, fetch_from)
+            out[sym] = bar_store.trim(frame, start)
+    return out
+
+
+def _download_split(symbols: list[str], start: date, what: str) -> dict[str, Any]:
+    """Batched adjusted bars from `start`, split into one frame per symbol
+    in the shape `Ticker.history` returns (same columns, same timezone)."""
+    import pandas as pd
+
+    out: dict[str, Any] = {}
+    for i in range(0, len(symbols), _DOWNLOAD_CHUNK):
+        chunk = symbols[i : i + _DOWNLOAD_CHUNK]
+        frame = download(
+            chunk,
+            what=what,
+            start=start.isoformat(),
+            auto_adjust=True,
+            actions=True,
+            group_by="ticker",
+            ignore_tz=False,
+            threads=True,
+        )
+        if frame is None or frame.empty:
+            continue
+        multi = isinstance(frame.columns, pd.MultiIndex)
+        for sym in chunk:
+            if multi:
+                if sym not in frame.columns.get_level_values(0):
+                    continue
+                part = frame[sym]
+            elif len(chunk) == 1:
+                part = frame
+            else:
+                continue
+            part = part.dropna(subset=["Close"]) if "Close" in part else part.dropna(how="all")
+            if part.empty:
+                continue
+            part = part.copy()
+            part.columns.name = None
+            out[sym] = part
+    return out
 
 
 def _slice_days(frame: Any, start: date, end: date | None) -> Any:

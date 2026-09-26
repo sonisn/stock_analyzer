@@ -19,11 +19,8 @@ with a price nobody could trade at.
 
 from __future__ import annotations
 
-import os
-import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import cast
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -44,8 +41,6 @@ HORIZONS: tuple[int, ...] = (21, 63)  # trading days ≈ 1 and 3 months
 # `candidate_outcomes` — a 252-day outcome row takes a year to mature and
 # that is a separate decision from what the model may train on.
 DATASET_HORIZONS: tuple[int, ...] = (*HORIZONS, 252)
-_CHUNK = 100
-_CACHE_MAX_AGE_HOURS = 20
 
 
 @dataclass
@@ -56,42 +51,27 @@ class PricePanel:
     spy: pd.Series
 
 
-def _field(frame: pd.DataFrame, name: str) -> pd.DataFrame:
-    if isinstance(frame.columns, pd.MultiIndex):
-        level = 0 if name in frame.columns.get_level_values(0) else 1
-        return frame.xs(name, axis=1, level=level)
-    return frame[[name]]
-
-
 def download_panel(tickers: list[str], *, years: int = 6) -> PricePanel:
-    """Dividend-adjusted daily bars for `tickers` + SPY, in chunks of 100
-    per yf.download call (each call is one paced request)."""
+    """Dividend-adjusted daily bars for `tickers` + SPY.
+
+    Served from the on-disk bar store (`data/bar_store.py`): the first run
+    downloads each symbol's history, later runs only the days since.
+    """
     symbols = sorted({t.upper() for t in tickers} | {"SPY"})
-    closes, highs, volumes = [], [], []
-    for i in range(0, len(symbols), _CHUNK):
-        chunk = symbols[i : i + _CHUNK]
-        frame = yf_gateway.download(
-            chunk,
-            what="model.panel",
-            period=f"{years}y",
-            auto_adjust=True,
-            group_by="column",
-            threads=True,
-        )
-        if frame is None or frame.empty:
-            logger.warning("Price download returned nothing for %d symbols", len(chunk))
-            continue
-        closes.append(_field(frame, "Close"))
-        highs.append(_field(frame, "High"))
-        volumes.append(_field(frame, "Volume"))
-        logger.info("Downloaded %d/%d symbols", min(i + _CHUNK, len(symbols)), len(symbols))
-    if not closes:
+    start = date.today() - timedelta(days=round(years * 365.25))
+    frames = yf_gateway.daily_bars_many(symbols, start=start, what="model.panel")
+    logger.info("Price panel: %d/%d symbols", len(frames), len(symbols))
+    if not frames:
         raise RuntimeError("No price data downloaded")
-    close = pd.concat(closes, axis=1)
+
+    def field(name: str) -> pd.DataFrame:
+        return pd.DataFrame({sym: f[name] for sym, f in frames.items() if name in f})
+
+    close = field("Close")
     # DatetimeIndex gets .normalize() by delegation, which type checkers can't see.
     close.index = pd.DatetimeIndex(close.index).tz_localize(None).normalize()  # ty: ignore[unresolved-attribute]
-    high = pd.concat(highs, axis=1).set_axis(close.index)
-    volume = pd.concat(volumes, axis=1).set_axis(close.index)
+    high = field("High").set_axis(close.index)
+    volume = field("Volume").set_axis(close.index)
     if "SPY" not in close:
         raise RuntimeError("SPY missing from the price download")
     spy = close.pop("SPY")
@@ -101,19 +81,11 @@ def download_panel(tickers: list[str], *, years: int = 6) -> PricePanel:
     return PricePanel(close, high[close.columns], volume[close.columns], spy)
 
 
-def load_panel(tickers: list[str], cache_dir: str, *, years: int = 6) -> PricePanel:
-    """download_panel, cached as a pickle for `_CACHE_MAX_AGE_HOURS` so a
-    retrain the same day doesn't re-download ~500 symbols."""
-    path = Path(os.path.expanduser(cache_dir)) / f"price_panel_{years}y.pkl"
-    if path.exists() and time.time() - path.stat().st_mtime < _CACHE_MAX_AGE_HOURS * 3600:
-        cached = cast(PricePanel, pd.read_pickle(path))
-        if set(t.upper() for t in tickers) <= set(cached.close.columns) | {"SPY"}:
-            logger.info("Using cached price panel %s", path)
-            return cached
-    panel = download_panel(tickers, years=years)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pd.to_pickle(panel, path)
-    return panel
+def load_panel(tickers: list[str], cache_dir: str | None = None, *, years: int = 6) -> PricePanel:
+    """download_panel. `cache_dir` is unused: the panel used to be pickled
+    there, and is now assembled from the bar store instead."""
+    del cache_dir
+    return download_panel(tickers, years=years)
 
 
 def forward_returns(panel: PricePanel, horizon: int) -> tuple[pd.DataFrame, pd.Series]:
