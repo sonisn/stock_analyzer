@@ -16,7 +16,7 @@ from typing import Annotated, Literal
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from .llm import Provider
+from .providers import Provider
 
 Aggressiveness = Literal["conservative", "balanced", "aggressive"]
 

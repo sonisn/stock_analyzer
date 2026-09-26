@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import Any
 
 from agno.agent import Agent
 from agno.exceptions import (
@@ -18,11 +18,10 @@ from agno.run.base import RunStatus
 from pydantic import BaseModel
 
 from .logging import get_logger
+from .providers import Provider
 from .usage import BUDGET, TRACKER
 
 logger = get_logger(__name__)
-
-Provider = Literal["claude", "gemini", "openai"]
 
 _MODEL_REGISTRY: dict[Provider, type] = {
     "claude": Claude,
