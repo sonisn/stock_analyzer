@@ -349,6 +349,29 @@ class EarningsEvent(SQLModel, table=True):
     decided_on: str | None = None  # ISO date status left "pending"
 
 
+class ForecastSnapshot(SQLModel, table=True):
+    """What analysts expected of a tracked stock on one day
+    (data/forecast_snapshots.py). Yahoo keeps only 90 days of estimate
+    history; this keeps all of it, point in time, so a model can one day
+    learn from revisions without seeing the future. Append-only, about
+    175 rows per weekday (~4 MB a year); never pruned."""
+
+    __tablename__ = "forecast_snapshots"
+
+    ticker: str = Field(primary_key=True)
+    day: str = Field(primary_key=True)  # ISO date the snapshot was taken
+    price: float | None = None
+    eps_current_year: float | None = None  # consensus EPS, current fiscal year
+    eps_next_year: float | None = None
+    revenue_current_year: float | None = None
+    revenue_next_year: float | None = None
+    analysts: int | None = None
+    target_mean: float | None = None
+    target_high: float | None = None
+    target_low: float | None = None
+    recommendation_mean: float | None = None  # 1 strong buy .. 5 sell
+
+
 class StockView(SQLModel, table=True):
     """The daily email's latest long-term view per stock, reused until
     something changes (see agents/stock_views.py). One row per ticker,
@@ -369,6 +392,7 @@ class StockView(SQLModel, table=True):
 
 __all__ = [
     "EarningsEvent",
+    "ForecastSnapshot",
     "StockView",
     "BrokerageActivity",
     "TickerReference",

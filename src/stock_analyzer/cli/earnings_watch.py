@@ -1,9 +1,12 @@
-"""`earnings-watch` — the nightly earnings-standout check.
+"""`earnings-watch` — the nightly earnings-standout check and forecast snapshot.
 
 Records the day's clear beats across the US market, measures how the
 market took them, and confirms the ones analysts then revised up
 (discover/earnings_standouts.py). Standouts show up in the next daily
-email and in the next discover run's universe. No LLM calls, no email.
+email and in the next discover run's universe. Then stores today's
+analyst forecasts for every tracked stock (data/forecast_snapshots.py).
+No LLM calls, no email. Either half failing still runs the other, and
+the job exits non-zero so the cron wrapper sends an alert.
 """
 
 from __future__ import annotations
@@ -18,6 +21,7 @@ from ..config import Settings
 from ..data import bar_store, finnhub, yf_gateway
 from ..data.earnings_history import fetch_track_record
 from ..data.eps_revisions import fetch_estimate_change
+from ..data.forecast_snapshots import record_snapshots, tracked_tickers
 from ..data.sec_edgar import load_ticker_cik_map
 from ..db.session import exec_sql, get_session
 from ..discover.earnings_standouts import recent_standouts, watch
@@ -47,6 +51,23 @@ def main() -> None:
         for s in recent_standouts(db, days=30):
             print(s)
         return
+    failed = []
+    try:
+        _watch(db)
+    except Exception:
+        logger.exception("Earnings watch failed")
+        failed.append("earnings watch")
+    try:
+        today = date.today()
+        record_snapshots(db, today=today, tickers=tracked_tickers(db, today=today))
+    except Exception:
+        logger.exception("Forecast snapshot failed")
+        failed.append("forecast snapshot")
+    if failed:
+        raise SystemExit(f"failed: {', '.join(failed)}")
+
+
+def _watch(db: str) -> None:
     watch(
         db,
         today=date.today(),

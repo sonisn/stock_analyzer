@@ -739,9 +739,14 @@ The daily email's **scorecard** grades every discover pick and every
 standout six months (126 trading days) on against SPY, one row per month,
 a ticker picked or shown on several days of the same month counted once.
 
+The same nightly job then stores that day's analyst forecasts for every
+tracked stock (`forecast_snapshots`, about 3.5 minutes of paced Yahoo
+requests). Yahoo keeps only 90 days of estimate history; this keeps all
+of it.
+
 `ops doctor` runs Sunday evenings from cron (`scripts/run_doctor.sh`) and
-alerts on a revoked key, a failed login or a retired model id before
-Monday's paid runs.
+alerts on a revoked key, a failed login, a retired model id or a disk
+running low (under 10% free, or under 50 GB) before Monday's paid runs.
 
 ## Screen price rules
 
@@ -825,6 +830,7 @@ runs don't re-download it:
 | `ticker_reference` | sector / industry / name (refreshed after 30 days) and next earnings date (after 3 days, or once it has passed) | one row per stock, overwritten; unused rows dropped after 365 days |
 | `stock_views` | the daily email's latest long-term view per stock, plus the headlines already sent | one row per holding, overwritten (links capped at 40); dropped 90 days after the last refresh |
 | `portfolio_snapshots`, `suggestions` | daily value, advice ledger | one row per day / per advice |
+| `forecast_snapshots` | each weekday night, analysts' consensus for every tracked stock (~175: holdings, a year of picks, recent screen survivors, standouts): EPS and revenue for this and next fiscal year, analyst count, price targets, recommendation — point in time, so revisions can become model features without look-ahead | ~175 rows per weekday (~4 MB/year); kept forever |
 | `earnings_events` | clear earnings beats anywhere in the market and reports by past picks, with the reaction, the revision and the verdict (`earnings-watch`) | tens of rows a week in earnings season; dropped after 365 days |
 
 Tax lots, cash flows and dividends read the stored activity history, so a
