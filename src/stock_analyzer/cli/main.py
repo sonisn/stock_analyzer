@@ -23,6 +23,7 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
     "model-review": ("model_review", "model-review", "monthly model review email"),
     "quarterly-review": ("quarterly_review", "quarterly-review", "quarterly suggestions review"),
     "tax-planner": ("tax_planner", "tax-planner", "year-end tax plan"),
+    "plan-check": ("plan_check", "plan-check", "asset location + goal projection"),
     "train-model": ("train_model", "train-model", "train the forward-return model"),
     "validate-screen": ("validate_screen", "validate-screen", "does the screen score predict?"),
     "score-attribution": ("score_attribution", "score-attribution", "which score parts earn"),

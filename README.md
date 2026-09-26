@@ -176,6 +176,13 @@ summary logged at the end of a run.
 - `FINNHUB_RATE_LIMIT_PER_MIN` (55) — under the 60/min free-tier ceiling
 - `DISCOVER_MAX_SCREEN_CANDIDATES` (250) — cap on names that reach the
   per-ticker fundamentals + EPS fetches, after the trend gate
+- `YF_BARS_DIR` (`~/.stock_analyzer/cache/bars`) — the on-disk daily-bar
+  store (`data/bar_store.py`), one Parquet file per symbol. Outside market
+  hours, bars synced after the last close are served with no request;
+  otherwise only the days since the last stored bar are downloaded, and a
+  new dividend or split (which rewrites adjusted history) downloads the
+  symbol's whole history again. `off` disables it. Files no run has read
+  in 90 days are pruned.
 
 ## Architecture
 
@@ -724,6 +731,35 @@ worked out — each suggestion and discover pick against SPY, sales against
 their suggested replacement, and whether you acted on it — followed by
 today's portfolio health. `--force` runs it any day; `--print` prints the
 HTML instead of emailing.
+
+## Plan check: asset location and goal projection
+
+`uv run plan-check` (`--print` to print instead of emailing; the same two
+sections are in the quarterly review). No LLM calls.
+
+**Goal projection.** Odds of reaching `GOAL_TARGET_USD` by `GOAL_DATE` (or
+in `GOAL_HORIZON_YEARS`, 5), from 10,000 futures built out of 12-month
+blocks of the current holdings' own monthly history (15 years from the bar
+store; SPY's months stand in for younger stocks, money-market funds count
+as cash). The holdings' swings are kept but every month is centred on
+`GOAL_EXPECTED_RETURN` (7%/yr) — past returns of stocks held because they
+rose are not a forecast. Shows the bad / middle / good case, the same money
+in SPY on the same draws, the odds of a 30%+ fall on the way, and the
+monthly contribution that would make the odds 75%. Contributions default to
+last year's median month of deposits and payroll plan purchases (one-off
+lumps like a rollover don't count); `GOAL_MONTHLY_CONTRIBUTION` overrides.
+
+**Asset location.** Accounts are taxable, tax-deferred (Traditional IRA,
+401(k)) or tax-free (Roth, HSA). For each holding: what it costs in tax a
+year in a taxable account — trailing dividends (REITs at the short-term
+rate) plus option premium written there in the last year (short-term).
+Suggests swaps that keep the portfolio the same — sell the costly stock in
+taxable and buy the cheap one there, the reverse in the IRA — only when
+the yearly saving (`ASSET_LOCATION_MIN_DRAG_USD`, $150) pays back the tax
+on the taxable sale within `ASSET_LOCATION_MAX_BREAKEVEN_YEARS` (3). A
+loss leg carries the wash-sale date: buying the same stock in an IRA within
+30 days of a loss sale loses the loss for good. Also flags premium written
+in taxable on a stock an IRA holds 100+ shares of.
 
 ## Year-end tax planner
 

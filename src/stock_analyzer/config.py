@@ -11,6 +11,7 @@ Override behavior with env vars or a `.env` file at the project root.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Annotated, Literal
 
 from pydantic import AliasChoices, Field, field_validator
@@ -274,6 +275,26 @@ class Settings(BaseSettings):
     # Accounts approved to sell puts (comma-separated labels as the
     # reports show them). Empty = every account. HSAs and some IRAs can't.
     options_accounts: Annotated[tuple[str, ...], NoDecode] = ()
+
+    # ---- Plan check: asset location + goal projection ---------------------
+    # What the portfolio should be worth, and by when. With no target the
+    # projection still shows the likely range; with no date it looks
+    # `goal_horizon_years` ahead (the portfolio is held for 3-5 years).
+    goal_target_usd: float | None = None
+    goal_date: date | None = None
+    goal_horizon_years: float = 5.0
+    # Monthly money added. Unset = the last 12 months' deposits and payroll
+    # plan purchases, averaged.
+    goal_monthly_contribution: float | None = None
+    # The projection keeps the holdings' own historical swings but centres
+    # them on this nominal annual return: the past returns of stocks held
+    # because they went up are not a forecast of their future ones.
+    goal_expected_return: float = 0.07
+    # A holding's yearly tax cost in a taxable account must reach this
+    # before moving it is suggested, and the tax paid to move it must be
+    # earned back within `asset_location_max_breakeven_years`.
+    asset_location_min_drag_usd: float = 150.0
+    asset_location_max_breakeven_years: float = 3.0
 
     # ---- Tradier options data (primary chain provider) -------------------
     tradier_api_key: str | None = None

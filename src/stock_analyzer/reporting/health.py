@@ -362,6 +362,10 @@ _BADGE = {
     "MISSED": ("#9c1010", "#fde4e4"),
     "ADD ON DIP": ("#0e6432", "#e6f4ea"),
     "EARNINGS CUT": ("#9c1010", "#fde4e4"),
+    "ON TRACK": ("#0e6432", "#e6f4ea"),
+    "AT RISK": ("#8a4a00", "#fff4e0"),
+    "OFF TRACK": ("#9c1010", "#fde4e4"),
+    "TAX": ("#8a4a00", "#fff4e0"),
 }
 
 

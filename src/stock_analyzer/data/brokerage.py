@@ -18,6 +18,11 @@ logger = get_logger(__name__)
 
 
 TaxStatus = Literal["taxable", "tax_advantaged"]
+# Finer than TaxStatus, for deciding what belongs where: tax-deferred money
+# (Traditional IRA, 401(k)) is taxed as income when withdrawn, tax-free
+# money (Roth, HSA spent on medical costs) never is.
+AccountKind = Literal["taxable", "tax_deferred", "tax_free"]
+_TAX_FREE_PATTERNS = ("ROTH", "HSA", "TFSA")
 
 
 # Substring patterns that flag a name as a tax-advantaged account when
@@ -112,6 +117,19 @@ def classify_tax_status(account_type: str | None, account_name: str | None) -> T
             if _name_token_match(upper_name, pattern):
                 return "tax_advantaged"
     return "taxable"
+
+
+def classify_account_kind(account_type: str | None, account_name: str | None) -> AccountKind:
+    """taxable / tax_deferred / tax_free, on the same evidence as
+    `classify_tax_status`: Roth, HSA and TFSA accounts grow tax-free, every
+    other tax-advantaged account is tax-deferred."""
+    if classify_tax_status(account_type, account_name) == "taxable":
+        return "taxable"
+    for text in (account_type, account_name):
+        upper = (text or "").upper()
+        if any(_name_token_match(upper, p) for p in _TAX_FREE_PATTERNS):
+            return "tax_free"
+    return "tax_deferred"
 
 
 def _client() -> SnapTrade:
@@ -399,6 +417,7 @@ def fetch_account_meta() -> dict[str, dict[str, Any]]:
             "type": account_type,
             "institution": account.get("institution_name"),
             "tax_status": classify_tax_status(account_type, account_name),
+            "kind": classify_account_kind(account_type, account_name),
         }
     n_advantaged = sum(1 for m in out.values() if m["tax_status"] == "tax_advantaged")
     logger.info(

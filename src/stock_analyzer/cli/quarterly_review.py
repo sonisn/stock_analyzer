@@ -1,6 +1,7 @@
 """`quarterly-review` — first trading day of each quarter: how last
 quarter's advice worked out, plus today's portfolio health, emailed.
-No LLM calls; brokerage positions and yfinance prices only.
+No LLM calls; brokerage positions and yfinance prices only. Also carries
+the plan check (goal projection + asset location, see `plan-check`).
 
 Cron (scripts/run_quarterly_review.sh) fires on the first seven days of
 Jan/Apr/Jul/Oct; the command itself exits unless today is the quarter's
@@ -81,6 +82,19 @@ def options_section(settings: Settings, *, start: date, end: date, label: str) -
         return ""
 
 
+def plan_section(settings: Settings, holdings: dict, today: date) -> str:
+    """Goal projection and asset location (see `plan-check`). Never blocks
+    the review."""
+    from .plan_check import build_plan_check
+
+    try:
+        check = build_plan_check(settings, holdings, today=today)
+        return check.goal_html + check.asset_html
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Plan-check section failed (%s)", e)
+        return ""
+
+
 def build_review(settings: Settings, today: date) -> tuple[str, str]:
     """(subject, HTML) for the quarter before `today`."""
     from ..data.brokerage import fetch_portfolio_holdings
@@ -120,6 +134,7 @@ def build_review(settings: Settings, today: date) -> tuple[str, str]:
         health_html=health_html,
         performance_html=performance_section(settings, start=start, today=today),
         options_html=options_section(settings, start=start, end=end, label=label),
+        plan_html=plan_section(settings, holdings, today),
     )
     scored = [g for g in graded if g["edge_pct"] is not None]
     good = sum(1 for g in scored if g["edge_pct"] >= 0)

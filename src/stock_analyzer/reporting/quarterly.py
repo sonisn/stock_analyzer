@@ -383,6 +383,7 @@ def render_quarterly_html(
     health_html: str = "",
     performance_html: str = "",
     options_html: str = "",
+    plan_html: str = "",
 ) -> str:
     from .html import _wrap_html
 
@@ -395,6 +396,8 @@ def render_quarterly_html(
         parts.append(performance_html)
     if options_html:
         parts.append(options_html)
+    if plan_html:
+        parts.append(plan_html)
     if not graded:
         parts.append("<p>No suggestions were recorded last quarter.</p>")
     else:
