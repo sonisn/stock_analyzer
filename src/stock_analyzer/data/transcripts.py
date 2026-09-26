@@ -15,13 +15,11 @@ Graceful degradation: any failure returns None and the pipeline keeps going.
 
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from tavily import TavilyClient
-
 from ..logging import get_logger
+from . import web_search
 
 logger = get_logger(__name__)
 
@@ -40,11 +38,10 @@ TRANSCRIPT_DOMAINS: list[str] = [
 def fetch_transcript_snippet(ticker: str) -> dict[str, Any] | None:
     """Search Tavily for the latest earnings call transcript, return a
     capped snippet of the narrative. None if nothing useful found."""
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
+    if not web_search.available():
         return None
 
-    client = TavilyClient(api_key=api_key)
+    client = web_search.WebSearch()
     query = f"{ticker} most recent earnings call transcript guidance"
     try:
         resp = client.search(

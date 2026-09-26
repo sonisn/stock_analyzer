@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from tavily import TavilyClient
-
 from ..logging import get_logger
+from . import web_search
 
 _TAVILY_MAX_WORKERS = 5
 
@@ -24,12 +22,11 @@ INSIDER_DOMAINS: list[str] = [
 
 def fetch_insider_trades(days: int = 5, max_results: int = 20) -> list[dict[str, Any]]:
     """Fetch recent insider trade coverage, biased to InsiderMonkey + OpenInsider."""
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        logger.warning("TAVILY_API_KEY not set; insider fetch returns empty")
+    if not web_search.available():
+        logger.warning("no EXA_API_KEY or TAVILY_API_KEY; insider fetch returns empty")
         return []
 
-    client = TavilyClient(api_key=api_key)
+    client = web_search.WebSearch()
     queries = [
         "insider buying SEC Form 4 recent transactions",
         "CEO CFO insider stock purchase this week",

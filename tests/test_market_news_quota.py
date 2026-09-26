@@ -10,7 +10,7 @@ def test_an_exhausted_tavily_plan_is_news_not_a_fault(monkeypatch, caplog):
     from stock_analyzer.data import market_news
 
     class _OutOfQuota:
-        def __init__(self, api_key):
+        def __init__(self, api_key=None):
             pass
 
         def search(self, **_):
@@ -19,7 +19,7 @@ def test_an_exhausted_tavily_plan_is_news_not_a_fault(monkeypatch, caplog):
             )
 
     monkeypatch.setenv("TAVILY_API_KEY", "k")
-    monkeypatch.setattr(market_news, "TavilyClient", _OutOfQuota)
+    monkeypatch.setattr(market_news.web_search, "WebSearch", _OutOfQuota)
     with caplog.at_level(logging.INFO, logger="stock_analyzer.data.market_news"):
         assert market_news._tavily_market_news(max_results=10) == []
     warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
@@ -32,7 +32,7 @@ def test_an_exhausted_tavily_plan_is_news_not_a_fault(monkeypatch, caplog):
             raise RuntimeError("connection reset")
 
     caplog.clear()
-    monkeypatch.setattr(market_news, "TavilyClient", _Broken)
+    monkeypatch.setattr(market_news.web_search, "WebSearch", _Broken)
     with caplog.at_level(logging.INFO, logger="stock_analyzer.data.market_news"):
         market_news._tavily_market_news(max_results=10)
     assert sum(r.levelno >= logging.WARNING for r in caplog.records) == 3

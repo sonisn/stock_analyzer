@@ -16,17 +16,15 @@ for tickers that fall through.
 
 from __future__ import annotations
 
-import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlparse
 
-from tavily import TavilyClient
-
 from ..logging import get_logger
 from . import finnhub as finnhub_data
+from . import web_search
 from .market_news import PREMIUM_NEWS_DOMAINS
 
 logger = get_logger(__name__)
@@ -84,7 +82,7 @@ def fetch_ticker_news(
     *,
     days: int = 30,
     max_results: int = 6,
-    client: TavilyClient | None = None,
+    client: web_search.WebSearch | None = None,
 ) -> list[dict[str, Any]]:
     """Recent dated Tavily news for one ticker, newest first, each with an `id`.
 
@@ -92,10 +90,9 @@ def fetch_ticker_news(
     stop calling Tavily instead of failing once per ticker; any other error
     returns []."""
     if client is None:
-        api_key = os.getenv("TAVILY_API_KEY")
-        if not api_key:
+        if not web_search.available():
             return []
-        client = TavilyClient(api_key=api_key)
+        client = web_search.WebSearch()
 
     def _search(domains: list[str] | None) -> list[dict[str, Any]] | None:
         kwargs: dict[str, Any] = {
@@ -160,11 +157,10 @@ def batch_ticker_news(
     """{ticker: [news item, ...]} for every ticker (Tavily, then Finnhub)."""
     if not tickers:
         return {}
-    tavily_key = os.getenv("TAVILY_API_KEY")
-    tavily = TavilyClient(api_key=tavily_key) if tavily_key else None
+    tavily = web_search.client()
     finnhub_client = finnhub_data._client()
     if tavily is None and finnhub_client is None:
-        logger.warning("Neither TAVILY_API_KEY nor FINNHUB_API_KEY set; catalyst news is empty")
+        logger.warning("No EXA_API_KEY, TAVILY_API_KEY or FINNHUB_API_KEY; catalyst news is empty")
         return {t: [] for t in tickers}
     names = names or {}
     quota_hit = threading.Event()

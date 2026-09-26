@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from tavily import TavilyClient
-
 from ..logging import get_logger
+from . import web_search
 
 _TAVILY_MAX_WORKERS = 3
 # A plan that is out of calls says so on every query, every run, forever.
@@ -74,16 +72,15 @@ def _finnhub_market_news(*, max_results: int, hours: int = 36) -> list[dict]:
 
 
 def _tavily_market_news(*, max_results: int) -> list[dict]:
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        logger.warning("TAVILY_API_KEY not set; skipping Tavily market news")
+    if not web_search.available():
+        logger.warning("no EXA_API_KEY or TAVILY_API_KEY; skipping Tavily market news")
         return []
     queries = [
         "US stock market today S&P 500 Nasdaq Dow",
         "US economy CPI jobs Fed interest rates this week",
         "geopolitical news affecting US markets today",
     ]
-    client = TavilyClient(api_key=api_key)
+    client = web_search.WebSearch()
     quota_hit: list[str] = []
 
     def _search(q: str) -> dict[str, Any] | None:

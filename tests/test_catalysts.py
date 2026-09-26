@@ -118,11 +118,7 @@ def test_quota_error_raises_instead_of_returning_empty():
 
 def _use_fakes(monkeypatch, tavily=None, finnhub_news=None):
     """Wire batch_ticker_news to fakes. finnhub_news: {ticker: raw items}."""
-    if tavily is None:
-        monkeypatch.delenv("TAVILY_API_KEY", raising=False)
-    else:
-        monkeypatch.setenv("TAVILY_API_KEY", "test")
-        monkeypatch.setattr(ticker_news, "TavilyClient", lambda api_key: tavily)
+    monkeypatch.setattr(ticker_news.web_search, "client", lambda: tavily)
     monkeypatch.setattr(ticker_news, "_TAVILY_MAX_WORKERS", 1)
     finnhub_calls: list[str] = []
     if finnhub_news is None:

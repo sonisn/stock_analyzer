@@ -780,6 +780,17 @@ Current-member samples flatter every group equally (stocks that fell out
 of the index are missing), so the gaps between groups are the result,
 not the levels.
 
+### Web search: Exa first, Tavily second
+
+News, catalyst, transcript and coverage searches go through one client
+(`data/web_search.py`): Exa first (its $10 monthly credit is ~1,400
+searches with article text, at most 10 requests a second), Tavily's free
+1,000 a month when Exa's credit is spent or a call fails, and Finnhub for
+company news when both are out. Nothing is billed past the free tiers.
+Each run logs one line of what it searched and spent. If Exa calls fail
+with a connection error, check the AdGuard allow rule
+(`@@||exa.ai^$important`) first.
+
 `ops doctor` runs Sunday evenings from cron (`scripts/run_doctor.sh`) and
 alerts on a revoked key, a failed login, a retired model id, Yahoo
 prices or estimates no longer coming back, or a disk running low (under 10% free, or under 50 GB) before Monday's paid runs.

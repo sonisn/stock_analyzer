@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from tavily import TavilyClient
-
 from ..logging import get_logger
+from . import web_search
 
 _TAVILY_MAX_WORKERS = 5
 
@@ -64,12 +62,11 @@ def fetch_hedge_fund_trades(days: int = 5, max_results: int = 20) -> list[dict[s
     13F filings lag actual trades by up to 45 days; press coverage and
     activist letters are more timely than the filings themselves.
     """
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        logger.warning("TAVILY_API_KEY not set; hedge fund fetch returns empty")
+    if not web_search.available():
+        logger.warning("no EXA_API_KEY or TAVILY_API_KEY; hedge fund fetch returns empty")
         return []
 
-    client = TavilyClient(api_key=api_key)
+    client = web_search.WebSearch()
     queries = [
         "Warren Buffett Berkshire Hathaway recent stock buy sell",
         "Bill Ackman Pershing Square new position",

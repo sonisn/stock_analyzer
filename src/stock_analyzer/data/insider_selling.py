@@ -10,15 +10,13 @@ selling on a candidate is a major red signal the ranker should weigh.
 
 from __future__ import annotations
 
-import os
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from tavily import TavilyClient
-
 from ..discover.universe import _extract_tickers
 from ..logging import get_logger
+from . import web_search
 
 logger = get_logger(__name__)
 
@@ -33,11 +31,10 @@ INSIDER_DOMAINS: list[str] = [
 
 
 def fetch_insider_selling_coverage(days: int = 14, max_results: int = 20) -> list[dict[str, Any]]:
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        logger.warning("TAVILY_API_KEY not set; insider-selling fetch returns empty")
+    if not web_search.available():
+        logger.warning("no EXA_API_KEY or TAVILY_API_KEY; insider-selling fetch returns empty")
         return []
-    client = TavilyClient(api_key=api_key)
+    client = web_search.WebSearch()
     queries = [
         "large insider selling SEC Form 4 recent",
         "CEO CFO insider stock sale this week",

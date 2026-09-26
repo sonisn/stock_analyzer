@@ -304,6 +304,7 @@ def _data_checks(settings: Settings) -> list[Check]:
         ("FRED", fred_check),
         ("SnapTrade", snaptrade_check),
         ("SMTP", smtp_check),
+        ("Exa", key_only("EXA_API_KEY")),
         ("Tavily", key_only("TAVILY_API_KEY")),
         ("chart-img", key_only("CHART_IMG_API_KEY")),
     ]

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from tavily import TavilyClient
-
 from ..logging import get_logger
+from . import web_search
 
 # Concurrency cap for Tavily fan-out. Stays well within rate limits across
 # Tavily plans while still parallelizing the bulk of the wall-clock cost.
@@ -58,12 +56,11 @@ def fetch_political_trades(days: int = 5, max_results: int = 20) -> list[dict[st
     Note: STOCK Act disclosures lag the actual trade by up to 45 days, so even
     "last 5 days of articles" will reference older trade dates.
     """
-    api_key = os.getenv("TAVILY_API_KEY")
-    if not api_key:
-        logger.warning("TAVILY_API_KEY not set; political fetch returns empty")
+    if not web_search.available():
+        logger.warning("no EXA_API_KEY or TAVILY_API_KEY; political fetch returns empty")
         return []
 
-    client = TavilyClient(api_key=api_key)
+    client = web_search.WebSearch()
     queries = [
         "Nancy Pelosi recent stock trade disclosure",
         "Tommy Tuberville recent stock trade disclosure",
