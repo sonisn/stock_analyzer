@@ -84,3 +84,27 @@ def test_exa_is_paced_at_ten_a_second_and_optional(monkeypatch):
     assert ws.WebSearch().search(query="x") == {"results": []}
     monkeypatch.delenv("TAVILY_API_KEY")
     assert ws.client() is None
+
+
+def test_llm_sees_facts_not_page_furniture():
+    """Callers keep ~400 characters; they must be the story, not the page."""
+    text = (
+        "Bloom Energy Stock Forecast — BE Jumps 7%\n# Bloom Energy Stock Forecast — BE Jumps 7%\n"
+        "Published: 2026-09-25T12:12:55+00:00 Source: tradingnews.com\n## Story\n"
+        "Oracle reaffirmed the 2.4 GW deal."
+    )
+    assert ws.clean_text(text, "Bloom Energy Stock Forecast — BE Jumps 7%") == (
+        "Oracle reaffirmed the 2.4 GW deal."
+    )
+    nav = {
+        "title": "Deployment Is In Trouble",
+        "text": "Skip to content Menu S&P 500 7,680.50 ...",
+        "highlights": ["Project Jupiter's pipeline slipped to February 2027."],
+    }
+    assert ws._content(nav).startswith("Project Jupiter's pipeline slipped to February 2027.")
+    same = {
+        "title": "t",
+        "text": "The quarter beat. More detail.",
+        "highlights": ["The quarter beat."],
+    }
+    assert ws._content(same) == "The quarter beat. More detail."  # no repeat
