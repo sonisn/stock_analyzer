@@ -655,3 +655,56 @@ def test_cheap_put_premium_is_held_back_like_call_premium():
     assert "NVDA" in result.cheap_premium
     assert result.eligibility == {}
     assert "implied volatility is below its realized volatility" in result.blocked_note
+
+
+# --- yield floor and earnings standouts ---------------------------------------
+
+
+def test_puts_below_the_yield_floor_never_reach_the_rebalancer():
+    from types import SimpleNamespace
+
+    from stock_analyzer.discover.rebalance_csp import _drop_low_yield_puts, annualized_yield_pct
+
+    rich = _q(145.0, -0.15)  # $2.00 mid on $145 for 35 days ≈ 14.4%/yr
+    thin = rich.model_copy(update={"strike": 140.0, "bid": 0.40, "ask": 0.60})  # ≈ 3.7%/yr
+    assert annualized_yield_pct(rich, TODAY) == pytest.approx(2.0 / 145 * 365 / 35 * 100)
+    settings = SimpleNamespace(csp_min_annualized_yield_pct=10.0)
+    eligible = {"NVDA": _cand(), "AMD": _cand("AMD")}
+    ready = {"NVDA": _chain(puts=[rich, thin]), "AMD": _chain("AMD", puts=[thin])}
+
+    kept, chains = _drop_low_yield_puts(eligible, ready, settings, today=TODAY)
+    assert list(kept) == ["NVDA"]  # AMD had nothing worth the cash
+    assert [q.strike for q in chains["NVDA"].puts] == [145.0]
+    off = SimpleNamespace(csp_min_annualized_yield_pct=0.0)
+    assert _drop_low_yield_puts(eligible, ready, off, today=TODAY)[0] == eligible
+
+
+def test_a_put_the_money_market_would_beat_is_dropped_from_the_plan():
+    from stock_analyzer.discover.rebalance_csp import _drop_low_yield_writes
+
+    days = 35
+    expiry = (date.today() + timedelta(days=days)).isoformat()
+    good = _put().model_copy(update={"expiry": expiry})  # $2 on $145
+    poor = _put("AMD", strike=140.0).model_copy(
+        update={"expiry": expiry, "est_premium_per_share": 0.5}
+    )
+    plan, warnings = _drop_low_yield_writes(_plan([good, poor]), 10.0)
+    assert [p.ticker for p in plan.csp_writes] == ["NVDA"]
+    assert "AMD" in warnings[0] and "below the 10% floor" in warnings[0]
+
+
+def test_earnings_standouts_are_put_candidates_and_say_so():
+    from stock_analyzer.discover.csp_eligibility import _format_candidate_block
+
+    out = eligible_csp_tickers(
+        [("NVDA", 1, "2026-09-17T00:00:00")],
+        positions={},
+        cash_budget=100_000.0,
+        denylist=("bad",),
+        standouts={"GOOD": "2026-09-18", "BAD": "2026-09-18", "NVDA": "2026-09-01"},
+    )
+    assert list(out) == ["GOOD", "NVDA"]  # newest first; the denylist still applies
+    assert out["GOOD"].source == "earnings_standout"
+    assert out["NVDA"].source == "pick"  # its pick is newer than its standout
+    block = _format_candidate_block(out["GOOD"], chain=_chain("GOOD"), rows=[], earnings_date=None)
+    assert "earnings standout confirmed 2026-09-18" in block

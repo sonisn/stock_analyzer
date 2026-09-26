@@ -14,7 +14,7 @@ from typing import Any
 
 from ..config import Settings
 from ..logging import get_logger
-from ..models.market import OptionChain
+from ..models.market import OptionChain, OptionQuote
 from ..models.portfolio import CspCandidate
 from ..models.rebalance import RebalancePlan
 from .rebalance_cc import earnings_dates_from_signals
@@ -103,7 +103,9 @@ def run_csp_data_pipeline(
     and build the CASH-SECURED PUT CONTEXT block for the rebalancer.
 
     `recent_picks` is [(ticker, rank, run_at), ...] from past runs; this
-    run's own picks (`state["picks"]`) are added here."""
+    run's own picks (`state["picks"]`) and recent earnings standouts are
+    added here. Strikes below CSP_MIN_ANNUALIZED_YIELD_PCT never reach the
+    rebalancer: the cash is better left in the money market."""
     from .csp_eligibility import build_csp_context_block
 
     cash = state.get("cash_balance")
@@ -122,6 +124,23 @@ def run_csp_data_pipeline(
 
     chains, earnings, ready = _put_chains(eligible, state, settings)
     eligible, ready, cheap = _drop_cheap_puts(eligible, ready, settings)
+    if eligible:
+        before = set(eligible)
+        eligible, ready = _drop_low_yield_puts(eligible, ready, settings, today=date.today())
+        if not eligible:
+            floor = settings.csp_min_annualized_yield_pct
+            return CspDataResult(
+                cash_budget=budget,
+                account_room=account_room,
+                cheap_premium=cheap,
+                blocked_note=(
+                    f"No cash-secured put pays enough: none of {', '.join(sorted(before))} "
+                    f"has a strike in the delta band whose premium reaches {floor:.0f}% a "
+                    "year on the cash it ties up, so the cash stays in the money market "
+                    "(CSP_MIN_ANNUALIZED_YIELD_PCT)."
+                ),
+                content=f"csp_data: all {len(before)} candidate(s) below the yield floor",
+            )
     if not eligible:
         return CspDataResult(
             cash_budget=budget,
@@ -204,8 +223,19 @@ def _put_candidates(
     open_puts: dict[str, Any],
     account_room: dict[str, float],
 ) -> dict[str, Any]:
-    """This run's and recent runs' picks that a put could be sold on."""
+    """This run's and recent runs' picks, and recent earnings standouts,
+    that a put could be sold on."""
     from .csp_eligibility import eligible_csp_tickers
+    from .earnings_standouts import DISCOVER_DAYS, recent_standouts
+
+    try:
+        standouts = {
+            s["ticker"]: s["decided_on"]
+            for s in recent_standouts(settings.discover_db_path, days=DISCOVER_DAYS)
+        }
+    except Exception as e:  # noqa: BLE001 — extra candidates, not a requirement
+        logger.info("CSP: earnings standouts unavailable (%s)", e)
+        standouts = {}
 
     now = date.today().isoformat()
     picks = [(t, rank, now) for rank, t, _ in state.get("picks") or []] + list(recent_picks)
@@ -221,6 +251,7 @@ def _put_candidates(
         max_pct_total=settings.csp_max_pct_total,
         covered_call_tickers=_round_lot_tickers(state.get("position_splits")),
         max_account_room=max(account_room.values()) if account_room else None,
+        standouts=standouts,
     )
 
 
@@ -244,6 +275,36 @@ def _put_chains(
         filtered, _ = apply_earnings_filter(chain, earnings_date=earnings.get(t))
         ready[t] = fill_put_deltas(filtered)
     return chains, earnings, ready
+
+
+def annualized_yield_pct(q: OptionQuote, today: date) -> float | None:
+    """Mid-quote premium as a yearly percent of the strike (the collateral
+    per share); None for an expired or unpriced quote."""
+    days = (q.expiry - today).days
+    mid = (q.bid + q.ask) / 2.0 if (q.bid > 0 and q.ask > 0) else max(q.bid, q.ask)
+    if days <= 0 or q.strike <= 0 or mid <= 0:
+        return None
+    return mid / q.strike * 365.0 / days * 100.0
+
+
+def _drop_low_yield_puts(
+    eligible: dict[str, Any], ready: dict[str, OptionChain], settings: Settings, *, today: date
+) -> tuple[dict[str, Any], dict[str, OptionChain]]:
+    """Keep only strikes worth the cash they tie up (CSP_MIN_ANNUALIZED_YIELD_PCT),
+    and only candidates left with at least one. The rebalancer never sees a
+    put the money market would beat."""
+    floor = settings.csp_min_annualized_yield_pct
+    if floor <= 0:
+        return eligible, ready
+    kept: dict[str, OptionChain] = {}
+    for t, chain in ready.items():
+        puts = [q for q in chain.puts if (annualized_yield_pct(q, today) or 0.0) >= floor]
+        if puts:
+            kept[t] = chain.model_copy(update={"puts": puts})
+    dropped = sorted(set(eligible) - set(kept))
+    if dropped:
+        logger.info("CSP: below the %.0f%%/yr yield floor: %s", floor, ", ".join(dropped))
+    return {t: c for t, c in eligible.items() if t in kept}, kept
 
 
 def _drop_cheap_puts(
@@ -357,6 +418,8 @@ def apply_csp_plan_validation(
         max_pct_total=settings.csp_max_pct_total,
         account_room=room if account_room else None,
     )
+    plan, low = _drop_low_yield_writes(plan, settings.csp_min_annualized_yield_pct)
+    warnings.extend(low)
     if plan.csp_writes and notes:
         warnings.append("put cash check approximate: " + "; ".join(notes))
     for cp in plan.csp_writes:
@@ -371,6 +434,25 @@ def apply_csp_plan_validation(
             f"{cp.cash_reserved:,.0f}",
         )
     return plan, warnings
+
+
+def _drop_low_yield_writes(plan: RebalancePlan, floor: float) -> tuple[RebalancePlan, list[str]]:
+    """The rebalancer only sees strikes above the floor, but it can still
+    name one of its own; a put the money market would beat is dropped."""
+    if floor <= 0 or not plan.csp_writes:
+        return plan, []
+    keep, warnings = [], []
+    for cp in plan.csp_writes:
+        days = (date.fromisoformat(cp.expiry) - date.today()).days
+        pct = cp.est_premium_per_share / cp.strike * 365.0 / days * 100.0 if days > 0 else 0.0
+        if cp.strike > 0 and pct < floor:
+            warnings.append(
+                f"SELL_PUT {cp.ticker} ${cp.strike:g}P {cp.expiry} dropped: "
+                f"{pct:.1f}%/yr on the collateral is below the {floor:.0f}% floor"
+            )
+            continue
+        keep.append(cp)
+    return plan.model_copy(update={"csp_writes": keep}), warnings
 
 
 def csp_report_data(plan: RebalancePlan | None, *, cash_budget: float) -> dict[str, Any] | None:

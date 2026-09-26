@@ -638,8 +638,10 @@ def _cash_secured_puts(
 ========================================================================
 CASH-SECURED PUTS (when a CASH-SECURED PUT CONTEXT block is present)
 ========================================================================
-The block lists recent discover picks the user doesn't own in a round
-lot. Selling a put pays premium now; if the stock closes below the
+The block lists recent discover picks and earnings standouts (companies
+that beat, were rewarded and were revised up) the user doesn't own in a
+round lot. Every strike listed already pays enough on its collateral to
+beat leaving the cash in the money market. Selling a put pays premium now; if the stock closes below the
 strike at expiry the user buys 100 shares per contract at the strike
 (a lower price than today's), which the covered-call side then works.
 Posture: PREMIUM HARVEST — assignment should be the exception.

@@ -57,6 +57,7 @@ def eligible_csp_tickers(
     max_candidates: int = 8,
     covered_call_tickers: set[str] | None = None,
     max_account_room: float | None = None,
+    standouts: dict[str, str] | None = None,
 ) -> dict[str, CspCandidate]:
     """Filter recent picks down to tickers you could sell a put on.
 
@@ -72,6 +73,10 @@ def eligible_csp_tickers(
     Everything is dropped when `cash_budget` <= 0: a put that isn't fully
     cash-secured is a margin trade, not this strategy.
 
+    `standouts` ({ticker: ISO day confirmed}) adds recent earnings
+    standouts as candidates, dated by that day and ranked after any pick
+    of the same day; the same drops apply.
+
     At most `max_candidates` are kept, newest run first, then best rank.
     """
     if cash_budget <= 0:
@@ -80,8 +85,11 @@ def eligible_csp_tickers(
     open_puts = open_short_puts or {}
     thesis = thesis_status or {}
 
+    standout_rank = 1 + max((rank for _, rank, _ in picks), default=0)
+    from_standout = {t.upper() for t in standouts or {}}
+    entries = [*picks, *((t, standout_rank, d) for t, d in (standouts or {}).items())]
     latest: dict[str, tuple[str, int]] = {}
-    for ticker, rank, run_at in picks:
+    for ticker, rank, run_at in entries:
         t = ticker.upper()
         prev = latest.get(t)
         if prev is None or (run_at, -rank) > (prev[0], -prev[1]):
@@ -114,6 +122,9 @@ def eligible_csp_tickers(
             shares_held=max(shares, 0),
             thesis_status=status,
             max_csp_cash=round(min(per_put_cap, total_cap), 2),
+            source="earnings_standout"
+            if ticker in from_standout and rank == standout_rank
+            else "pick",
         )
         if len(out) >= max_candidates:
             break
@@ -191,9 +202,13 @@ def _format_candidate_block(
 ) -> str:
     held = f", you hold {c.shares_held} shares" if c.shares_held else ""
     thesis = f", thesis {c.thesis_status}" if c.thesis_status else ""
+    origin = (
+        f"earnings standout confirmed {c.last_pick_run_at}"
+        if c.source == "earnings_standout"
+        else f"picked rank {c.last_pick_rank} on {c.last_pick_run_at}"
+    )
     lines = [
-        f"TICKER: {c.ticker}  (picked rank {c.last_pick_rank} on "
-        f"{c.last_pick_run_at}{thesis}{held})",
+        f"TICKER: {c.ticker}  ({origin}{thesis}{held})",
         f"  Spot:                    ${chain.spot:,.2f}",
         f"  Max collateral per put:  ${c.max_csp_cash:,.0f}",
     ]

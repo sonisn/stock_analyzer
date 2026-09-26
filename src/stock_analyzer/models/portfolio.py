@@ -227,7 +227,8 @@ class IvHvRegime(BaseModel):
 
 
 class CspCandidate(BaseModel):
-    """A recent discover pick you could sell a cash-secured put on this run.
+    """A recent discover pick or earnings standout you could sell a
+    cash-secured put on this run.
 
     `max_csp_cash` is the most collateral (strike × 100 × contracts) one
     put on it may tie up: the per-put cap, or less when the total cap has
@@ -241,6 +242,9 @@ class CspCandidate(BaseModel):
     shares_held: int  # < 100 — a round lot routes to covered calls instead
     thesis_status: str | None = None  # thesis tracker status, when known
     max_csp_cash: float
+    # "pick" (a discover pick) or "earnings_standout" (discover/earnings_standouts.py);
+    # for a standout, last_pick_run_at is the day it was confirmed.
+    source: str = "pick"
 
 
 __all__ = [

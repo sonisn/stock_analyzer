@@ -265,6 +265,11 @@ class Settings(BaseSettings):
     # premium is the entire return. A missing vol reading keeps the
     # candidate: an unknown IV is not evidence of a cheap one.
     csp_min_iv_hv_ratio: float = 1.0
+    # A put ties up strike x 100 of cash that would otherwise earn the money
+    # market rate. Only offer strikes whose premium, annualized on that
+    # collateral, is at least this (percent): below it the cash is better
+    # left where it is. Mid-quote premium; 10 is about twice a money fund.
+    csp_min_annualized_yield_pct: float = 10.0
     # Rewrite the static dashboard at the end of a run, so the page and the
     # email never disagree about what was decided. Off makes the page
     # change only on its own schedule.
