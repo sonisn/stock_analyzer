@@ -691,6 +691,12 @@ def daily_bars_many(symbols: Iterable[str], *, start: date, what: str = "daily_b
     return out
 
 
+def daily_closes(symbols: Iterable[str], start: date, what: str = "daily_closes") -> dict[str, Any]:
+    """{symbol: adjusted close Series from `start`}, through `daily_bars_many`."""
+    bars = daily_bars_many(symbols, start=start, what=what)
+    return {s: f["Close"] for s, f in bars.items() if f is not None and "Close" in f}
+
+
 def _download_split(symbols: list[str], start: date, what: str) -> dict[str, Any]:
     """Batched adjusted bars from `start`, split into one frame per symbol
     in the shape `Ticker.history` returns (same columns, same timezone)."""

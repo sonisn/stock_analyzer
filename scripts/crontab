@@ -22,5 +22,9 @@
 35   13,14   1-7  1,4,7,10  *    NY_AT=09:35 /home/sonisnehal/stock_analyzer/scripts/run_quarterly_review.sh
 # 8:40 AM NY, Dec 1-7: year-end tax planner (acts only on December's first trading day).
 40   12,13   1-7  12        *    NY_AT=08:40 /home/sonisnehal/stock_analyzer/scripts/run_tax_planner.sh
+# 10:00 PM NY, weekdays (UTC Tue-Sat): earnings-standout check, no LLM, no email.
+0    2,3     *    *         2-6  NY_AT=22:00 /home/sonisnehal/stock_analyzer/scripts/run_earnings_watch.sh
+# 8:00 PM NY, Sundays (UTC Mon): health check of keys, logins and model ids; alerts on failure.
+0    0,1     *    *         1    NY_AT=20:00 /home/sonisnehal/stock_analyzer/scripts/run_doctor.sh
 # 2:00 AM NY, nightly: database backup to ~/.stock_analyzer/backups (keeps 14).
 0    6,7     *    *         *    NY_AT=02:00 /home/sonisnehal/stock_analyzer/scripts/run_backup.sh

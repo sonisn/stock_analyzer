@@ -322,6 +322,33 @@ class PortfolioAgent:
         )
         return block
 
+    def idea_view(self, ticker: str, data: dict) -> str:
+        """The long-term view for a stock that isn't held (an earnings
+        standout), written and reused under the same rules as a holding's:
+        one model call the first time, then only when the price moves or
+        the view ages out."""
+        from .stock_views import last_earnings_event, load_view, refresh_reason, save_view
+
+        today = date.today()
+        stored = load_view(self.db_path, ticker)
+        reason = refresh_reason(
+            stored,
+            price=data.get("price_value"),
+            reported_on=last_earnings_event(data, today),
+            today=today,
+            max_age_days=self.view_max_age_days,
+            move_pct=self.view_move_pct,
+        )
+        if reason is None and stored is not None:
+            return stored.view
+        logger.info("Writing long-term view for standout %s (%s)", ticker, reason)
+        view = (
+            self.ticker_agent.run(f"Ticker data:\n```json\n{dumps_prompt(data)}\n```").content or ""
+        ).strip()
+        if view:
+            save_view(self.db_path, ticker, view=view, price=data.get("price_value"), today=today)
+        return view
+
     def _build_position_block(self, ticker: str, current_price_str: str | None) -> dict | None:
         pos = self._positions_by_ticker.get(ticker)
         if not pos:

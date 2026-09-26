@@ -8,6 +8,11 @@ more than anything else in this module:
   watchlist and current holdings. A filter can only remove names the frame
   already contained, so the frame sets the ceiling on pick quality.
 
+  EARNINGS STANDOUTS — companies that beat, were rewarded and were revised
+  up in the last DISCOVER_DAYS (discover/earnings_standouts.py). Added to
+  the frame like the watchlist: eligible, with no score bonus, so the
+  screen judges them on the same terms and the source can be graded.
+
   CONVICTION OVERLAY — which of those names the press has been talking
   about: recent insider-buying coverage and hedge-fund/billionaire
   coverage, extracted from article text by regex. These ADD a conviction
@@ -248,6 +253,7 @@ def build_universe(
     holdings: tuple[str, ...] = (),
     *,
     base_universe: tuple[str, ...] | None = None,
+    standouts: tuple[str, ...] = (),
 ) -> dict[str, dict[str, Any]]:
     """Return {ticker: {sources, conviction, in_base_universe}}.
 
@@ -271,6 +277,7 @@ def build_universe(
     # ranking tests the user's prior instead of confirming it.
     _add_frame(universe, watchlist, "watchlist")
     _add_frame(universe, holdings, "holding")
+    _add_frame(universe, standouts, "earnings_standout")
 
     # --- layer 2: the conviction overlay ---
     insider_items = fetch_insider_trades(days=30, max_results=40)
@@ -285,13 +292,14 @@ def build_universe(
 
     news_only = sum(1 for data in universe.values() if not data.get("in_base_universe"))
     logger.info(
-        "Universe: %d total — frame %d (index %d + watchlist %d + holdings %d), "
-        "news-only %d. Overlay: insider %d, billionaire %d.",
+        "Universe: %d total — frame %d (index %d + watchlist %d + holdings %d "
+        "+ earnings standouts %d), news-only %d. Overlay: insider %d, billionaire %d.",
         len(universe),
         len(universe) - news_only,
         len(frame),
         len(watchlist),
         len(holdings),
+        len(standouts),
         news_only,
         len(insider_counts),
         len(hedge_counts),

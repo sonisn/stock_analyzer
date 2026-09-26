@@ -168,6 +168,39 @@ def fetch_quote(ticker: str) -> dict[str, float | None] | None:
     return {"price": float(price), "prev_close": float((q or {}).get("pc") or 0) or None}
 
 
+def fetch_earnings_calendar(start: date, end: date) -> list[dict[str, Any]]:
+    """Every US company reporting between `start` and `end`, one request:
+    [{ticker, date, hour, eps_estimate, eps_actual, revenue_estimate,
+    revenue_actual}]. Actuals are None until the company has reported;
+    `hour` is "bmo" (before the open), "amc" (after the close) or "".
+    Empty on no key or any failure."""
+    client = _client()
+    if client is None:
+        return []
+    raw = _safe_call(
+        "earnings_calendar",
+        "*",
+        client.earnings_calendar,
+        _from=start.isoformat(),
+        to=end.isoformat(),
+        symbol="",
+        international=False,
+    )
+    return [
+        {
+            "ticker": r["symbol"].upper(),
+            "date": r.get("date"),
+            "hour": r.get("hour") or "",
+            "eps_estimate": r.get("epsEstimate"),
+            "eps_actual": r.get("epsActual"),
+            "revenue_estimate": r.get("revenueEstimate"),
+            "revenue_actual": r.get("revenueActual"),
+        }
+        for r in (raw or {}).get("earningsCalendar") or []
+        if r.get("symbol") and r.get("date")
+    ]
+
+
 def fetch_earnings_surprise(client: finnhub.Client, ticker: str) -> list[dict[str, Any]]:
     """Last 4 quarters of actual vs estimate EPS.
 

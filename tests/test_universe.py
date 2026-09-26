@@ -28,6 +28,7 @@ def _build(
     hedge: list[dict] | None = None,
     watchlist: tuple[str, ...] = (),
     holdings: tuple[str, ...] = (),
+    standouts: tuple[str, ...] = (),
     sec_map: dict[str, int] | None = None,
     frame: tuple[str, ...] = _FRAME,
 ):
@@ -40,7 +41,9 @@ def _build(
             return_value=_SEC_MAP if sec_map is None else sec_map,
         ),
     ):
-        return uni.build_universe(watchlist=watchlist, holdings=holdings, base_universe=frame)
+        return uni.build_universe(
+            watchlist=watchlist, holdings=holdings, base_universe=frame, standouts=standouts
+        )
 
 
 def _item(text: str) -> dict:
@@ -65,6 +68,17 @@ def test_watchlist_and_holdings_join_the_frame():
     assert "watchlist" in out["TSLA"]["sources"]
     assert out["BRK-B"]["in_base_universe"] is True
     assert "holding" in out["BRK-B"]["sources"]
+
+
+def test_earnings_standouts_join_the_frame_without_score():
+    """An off-index standout becomes eligible; the screen, not the source
+    label, decides whether it is any good."""
+    from stock_analyzer.discover.screen import _score_conviction
+
+    out = _build(standouts=("TSLA",))
+    assert out["TSLA"]["in_base_universe"] is True
+    assert out["TSLA"]["sources"] == ["earnings_standout"]
+    assert _score_conviction(out["TSLA"])[0] == 0
 
 
 def test_watchlist_membership_adds_no_conviction():

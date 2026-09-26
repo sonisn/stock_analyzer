@@ -245,7 +245,7 @@ class Suggestion(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     suggested_on: str = Field(index=True)  # ISO date
     source: str  # "daily" | "rebalance"
-    action: str  # SELL / TRIM / TAX_LOSS / REVIEW / BUY / ADD / WRITE_CALL / SELL_PUT
+    action: str  # SELL / TRIM / TAX_LOSS / REVIEW / BUY / ADD / WRITE_CALL / SELL_PUT / STANDOUT
     ticker: str = Field(index=True)
     detail: str = ""
     price: float | None = None  # price when suggested, when known
@@ -320,6 +320,35 @@ class TickerReference(SQLModel, table=True):
     earnings_updated: str | None = None  # ISO date next_earnings was fetched
 
 
+class EarningsEvent(SQLModel, table=True):
+    """One quarterly/annual report worth following (discover/earnings_standouts.py):
+    a clear beat anywhere in the market, or any report by a past pick.
+    Other reporters are never stored, and rows age out after a year, so
+    the table stays small."""
+
+    __tablename__ = "earnings_events"
+
+    ticker: str = Field(primary_key=True)
+    report_date: str = Field(primary_key=True)  # ISO date
+    hour: str = ""  # "bmo" / "amc" / "" (unknown)
+    eps_estimate: float | None = None
+    eps_actual: float | None = None
+    revenue_estimate: float | None = None
+    revenue_actual: float | None = None
+    # Two-session move around the report minus SPY's, percent.
+    reaction_pct: float | None = None
+    # Change in next-year consensus EPS over the 30 days after, fraction.
+    revision_pct: float | None = None
+    # The year before: EPS beats in the prior quarters, and revenue growth
+    # over the same quarter a year earlier, percent. Filled at the last gate.
+    prior_beats: int | None = None
+    prior_quarters: int | None = None
+    revenue_yoy_pct: float | None = None
+    # "pending" until decided, then "standout" or "no".
+    status: str = Field(default="pending", index=True)
+    decided_on: str | None = None  # ISO date status left "pending"
+
+
 class StockView(SQLModel, table=True):
     """The daily email's latest long-term view per stock, reused until
     something changes (see agents/stock_views.py). One row per ticker,
@@ -339,6 +368,7 @@ class StockView(SQLModel, table=True):
 
 
 __all__ = [
+    "EarningsEvent",
     "StockView",
     "BrokerageActivity",
     "TickerReference",

@@ -27,6 +27,10 @@ between rebalance runs:
     the money could go — a recent discover pick not held, outside any
     over-cap sector (discover/reinvest.py), or for a tax-loss sale a
     same-sector swap that keeps the exposure;
+  - earnings standouts: companies anywhere in the US market that beat,
+    were rewarded and then revised up, confirmed by the nightly
+    `earnings-watch` (discover/earnings_standouts.py), each with a chart
+    and a long-term view;
   - pick scorecard: the discover picks graded six months on, one cohort
     per month picked, against SPY over the same days
     (discover/pick_scorecard.py).
@@ -63,6 +67,9 @@ class PortfolioHealth:
     earnings_results: list[dict[str, Any]] = field(default_factory=list)
     add_on: list[dict[str, Any]] = field(default_factory=list)
     pick_scorecard: dict[str, Any] = field(default_factory=dict)
+    # Confirmed earnings standouts; the daily job hangs "details" (market
+    # data, "chart_cid", "view") on each it can.
+    standouts: list[dict[str, Any]] = field(default_factory=list)
     sector_by_ticker: dict[str, str] = field(default_factory=dict)
     values: dict[str, float] = field(default_factory=dict)  # ticker -> market value
     units: dict[str, float] = field(default_factory=dict)  # ticker -> shares held
@@ -207,6 +214,7 @@ def build_portfolio_health(
     add_on: Callable[..., list[dict[str, Any]]] | None = None,
     earnings_results: Callable[[], list[dict[str, Any]]] | None = None,
     pick_scorecard: Callable[[], dict[str, Any]] | None = None,
+    standouts: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> PortfolioHealth:
     """`reinvest(held, over_cap_sectors, n)` returns up to `n` ranked ideas
     for sale proceeds; it is only called when something suggests a sale."""
@@ -288,6 +296,12 @@ def build_portfolio_health(
             health.pick_scorecard = pick_scorecard()
 
     attempt("pick scorecard", scorecard)
+
+    def beats() -> None:
+        if standouts is not None:
+            health.standouts = standouts()
+
+    attempt("earnings standouts", beats)
     return health
 
 
@@ -435,6 +449,7 @@ def render_health_html(h: PortfolioHealth) -> str:
         _reinvest_html(h),
         _earnings_results_html(h),
         _upcoming_earnings_html(h),
+        render_standouts_html(h),
         _pick_scorecard_html(h),
     ]
     if not any(alerts):
@@ -567,14 +582,26 @@ def _add_on_html(h: PortfolioHealth) -> str:
 
 def _pick_scorecard_html(h: PortfolioHealth) -> str:
     sc = h.pick_scorecard
+    if not sc:
+        return ""
+    parts = [
+        _scorecard_block(sc, "Discover picks", "Picked", "pick"),
+        _scorecard_block(sc.get("standouts") or {}, "Earnings standouts", "Shown", "standout"),
+    ]
+    if not any(parts):
+        return ""
+    return "<h3>Scorecard: six months after each idea</h3>" + "".join(parts)
+
+
+def _scorecard_block(sc: dict[str, Any], title: str, when: str, noun: str) -> str:
     if not sc or not (sc["cohorts"] or sc["maturing"] or sc["unmeasured"]):
         return ""
-    parts = ["<h3>Pick scorecard: six months after each pick</h3>"]
+    parts = [f"<h4>{html.escape(title)}</h4>"]
     rows = sc["cohorts"] + ([sc["overall"]] if sc["overall"] else [])
     if rows:
         parts.append(
             _table(
-                ["Picked", "Picks", "Avg return", "SPY", "vs SPY", "Beat SPY"],
+                [when, "Count", "Avg return", "SPY", "vs SPY", "Beat SPY"],
                 [
                     [
                         html.escape(c["cohort"]),
@@ -591,7 +618,7 @@ def _pick_scorecard_html(h: PortfolioHealth) -> str:
     notes = []
     if sc["maturing"]:
         notes.append(
-            f"{sc['maturing']} pick{'s' if sc['maturing'] != 1 else ''} still inside "
+            f"{sc['maturing']} {noun}{'s' if sc['maturing'] != 1 else ''} still inside "
             f"the six months; next results around {sc['next_due']:%b} {sc['next_due'].day}"
         )
     if sc["unmeasured"]:
@@ -742,6 +769,98 @@ def render_backlog_html(h: PortfolioHealth) -> str:
     return "".join(parts)
 
 
+def _pct(v: float | None) -> str:
+    return "—" if v is None else f"{v:+.1f}%"
+
+
+def render_standouts_html(h: PortfolioHealth) -> str:
+    """Companies that beat, were rewarded and were revised up — found
+    across the whole market, so most are not held."""
+    if not h.standouts:
+        return ""
+    parts = [
+        "<h3>Earnings standouts</h3>",
+        '<p style="font-size:13px;color:#6b7280">Beat on EPS and revenue, the market '
+        "rewarded it, analysts then raised next year's EPS estimate, and it is not a "
+        "lone blip: it beat the quarter before too, with revenue up on a year ago. "
+        "An idea to look at, not a buy signal: it still has to fit a 3-5 year hold."
+        "</p>",
+        _table(
+            [
+                "Ticker",
+                "Reported",
+                "EPS vs est.",
+                "Revenue vs est.",
+                "Reaction vs SPY",
+                "Next-year EPS est. (30d)",
+                "Beat the quarter before",
+                "Revenue vs year ago",
+            ],
+            [
+                [
+                    html.escape(s["ticker"]) + (" (held)" if s["ticker"] in h.values else ""),
+                    html.escape(s["report_date"]),
+                    _pct(s.get("eps_surprise_pct")),
+                    _pct(s.get("revenue_surprise_pct")),
+                    _pct(s.get("reaction_pct")),
+                    f"<b>{_pct(s.get('revision_pct'))}</b>",
+                    ("yes" if s["prior_beats"] else "no") if s.get("prior_quarters") else "—",
+                    _pct(s.get("revenue_yoy_pct")),
+                ]
+                for s in h.standouts
+            ],
+        ),
+    ]
+    for s in h.standouts:
+        data = s.get("details")
+        if data:
+            parts.append(_stock_detail_html(s["ticker"], data))
+    return "".join(parts)
+
+
+def _stock_detail_html(ticker: str, data: dict[str, Any]) -> str:
+    """Name, price facts, trends, chart and (when written) the long-term
+    view — the look a holding's block gets."""
+    name = data.get("name") or ticker
+    bits = []
+    for label, key in (
+        ("Price", "price"),
+        ("Today", "pct_today"),
+        ("52w range", "range_52w"),
+        ("P/E", "pe"),
+        ("Analyst target", "analyst_target"),
+        ("Dividend", "dividend_yield"),
+    ):
+        value = data.get(key)
+        if value:
+            bits.append(f"{label} {html.escape(str(value))}")
+    trends = [
+        f"{label} {html.escape(str(data[key]))}"
+        for label, key in (
+            ("1mo", "trend_1mo"),
+            ("3mo", "trend_3mo"),
+            ("6mo", "trend_6mo"),
+            ("1yr", "trend_1yr"),
+        )
+        if data.get(key)
+    ]
+    parts = [f"<h4>{html.escape(ticker)} — {html.escape(str(name))}</h4>"]
+    if data.get("reason"):
+        parts.append(f"<p>{html.escape(str(data['reason']))}</p>")
+    if bits:
+        parts.append(f'<p style="font-size:13px;color:#374151">{" · ".join(bits)}</p>')
+    if trends:
+        parts.append(f'<p style="font-size:13px;color:#6b7280">Trend: {" · ".join(trends)}</p>')
+    if data.get("chart_cid"):
+        parts.append(
+            f'<img src="cid:{html.escape(str(data["chart_cid"]))}" '
+            f'alt="{html.escape(ticker)} chart" style="max-width:100%">'
+        )
+    if data.get("view"):
+        parts.append(f"<p><b>Long-term view:</b> {html.escape(str(data['view']))}</p>")
+    return "".join(parts)
+
+
 def render_idea_details_html(h: PortfolioHealth) -> str:
     """The same look at a suggested stock that a holding gets.
 
@@ -755,41 +874,7 @@ def render_idea_details_html(h: PortfolioHealth) -> str:
         return ""
     parts = ["<h3>Ideas for new money</h3>"]
     for ticker, data in h.idea_details.items():
-        name = data.get("name") or ticker
-        bits = []
-        for label, key in (
-            ("Price", "price"),
-            ("Today", "pct_today"),
-            ("52w range", "range_52w"),
-            ("P/E", "pe"),
-            ("Analyst target", "analyst_target"),
-            ("Dividend", "dividend_yield"),
-        ):
-            value = data.get(key)
-            if value:
-                bits.append(f"{label} {html.escape(str(value))}")
-        trends = [
-            f"{label} {html.escape(str(data[key]))}"
-            for label, key in (
-                ("1mo", "trend_1mo"),
-                ("3mo", "trend_3mo"),
-                ("6mo", "trend_6mo"),
-                ("1yr", "trend_1yr"),
-            )
-            if data.get(key)
-        ]
-        parts.append(f"<h4>{html.escape(ticker)} — {html.escape(str(name))}</h4>")
-        if data.get("reason"):
-            parts.append(f"<p>{html.escape(str(data['reason']))}</p>")
-        if bits:
-            parts.append(f'<p style="font-size:13px;color:#374151">{" · ".join(bits)}</p>')
-        if trends:
-            parts.append(f'<p style="font-size:13px;color:#6b7280">Trend: {" · ".join(trends)}</p>')
-        if data.get("chart_cid"):
-            parts.append(
-                f'<img src="cid:{html.escape(str(data["chart_cid"]))}" '
-                f'alt="{html.escape(ticker)} chart" style="max-width:100%">'
-            )
+        parts.append(_stock_detail_html(ticker, data))
     return "".join(parts)
 
 
@@ -1381,6 +1466,31 @@ def suggestion_rows(h: PortfolioHealth, *, today: str) -> list[dict[str, Any]]:
                 "price": h.values[t] / units if units and t in h.values else None,
                 "units_held": units,
                 "reinvest_into": i["reinvest_into"],
+            }
+        )
+    # An earnings standout not held is an idea the email put in front of the
+    # user; kept so it can be graded like a pick (quarterly review, and the
+    # daily scorecard six months on). The ledger keeps one row per day, and
+    # both graders use the first.
+    for st in h.standouts:
+        t = st["ticker"]
+        if t in h.values:
+            continue
+        rows.append(
+            {
+                "suggested_on": today,
+                "source": "daily",
+                "action": "STANDOUT",
+                "ticker": t,
+                "detail": (
+                    f"Earnings standout: EPS {_pct(st.get('eps_surprise_pct'))} and revenue "
+                    f"{_pct(st.get('revenue_surprise_pct'))} vs estimates, "
+                    f"{_pct(st.get('reaction_pct'))} vs SPY on the report, next-year EPS "
+                    f"estimate {_pct(st.get('revision_pct'))}"
+                ),
+                "price": None,
+                "units_held": None,
+                "reinvest_into": None,
             }
         )
     return rows

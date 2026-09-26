@@ -28,6 +28,7 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
     "validate-screen": ("validate_screen", "validate-screen", "does the screen score predict?"),
     "score-attribution": ("score_attribution", "score-attribution", "which score parts earn"),
     "replay-rebalance": ("replay_rebalance", "replay-rebalance", "re-run a stored rebalance plan"),
+    "earnings-watch": ("earnings_watch", "earnings-watch", "nightly earnings-standout check"),
     "ops": ("ops", "ops", "backup / doctor / alert"),
 }
 

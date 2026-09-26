@@ -91,9 +91,20 @@ class DataSteps(PipelineBase):
                 e,
             )
 
+        try:
+            from ...discover.earnings_standouts import DISCOVER_DAYS, recent_standouts
+
+            standouts = tuple(
+                s["ticker"]
+                for s in recent_standouts(self.settings.discover_db_path, days=DISCOVER_DAYS)
+            )
+        except Exception as e:  # noqa: BLE001 — an idea source, not a requirement
+            logger.info("Earnings standouts unavailable for the universe (%s)", e)
+            standouts = ()
         universe = build_universe(
             watchlist=self.settings.discover_watchlist,
             holdings=holdings_tickers,
+            standouts=standouts,
         )
         if not universe:
             raise RuntimeError(

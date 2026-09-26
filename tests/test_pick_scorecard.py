@@ -121,11 +121,12 @@ def test_scorecard_renders_in_the_health_block():
     }
     health = build_portfolio_health({}, pick_scorecard=lambda: sc)
     body = render_health_html(health)
-    assert "Pick scorecard" in body and "May 2026" in body and "-8.0%" in body
+    assert "Scorecard: six months after each idea" in body and "Discover picks" in body
+    assert "May 2026" in body and "-8.0%" in body
     assert "18 picks still inside the six months; next results around Mar 22" in body
 
     quiet = build_portfolio_health(
         {},
         pick_scorecard=lambda: {**sc, "cohorts": [], "maturing": 0, "next_due": None},
     )
-    assert "Pick scorecard" not in render_health_html(quiet)
+    assert "Scorecard" not in render_health_html(quiet)

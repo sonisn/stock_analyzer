@@ -32,6 +32,11 @@ from ..reporting.smtp import SmtpServer
 
 logger = get_logger(__name__)
 
+# Earnings standouts in the daily email: confirmed in the last N days, at
+# most this many (each not held costs one long-term view, written once).
+STANDOUT_EMAIL_DAYS = 5
+MAX_STANDOUTS = 3
+
 
 def _build_agent(settings: Settings) -> PortfolioAgent:
     return PortfolioAgent(
@@ -100,6 +105,7 @@ def portfolio_health(
             add_on=src.add_on,
             earnings_results=src.earnings_results if ticker_data else None,
             pick_scorecard=src.pick_scorecard,
+            standouts=src.standouts,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Portfolio health block failed (%s) — sending the email without it", e)
@@ -212,13 +218,21 @@ class _LiveHealthSources:
         return with_revisions(recent, batch_eps_revisions([r["ticker"] for r in recent]))
 
     def pick_scorecard(self) -> dict:
-        from ..discover.pick_scorecard import pick_scorecard
+        from ..discover.pick_scorecard import pick_scorecard, standout_scorecard
         from ..model.labels import label_candidates
 
         # Only the picks: a few dozen names from the bar store, not the
         # hundreds of screened candidates the monthly model review labels.
         label_candidates(self.db, only_picks=True)
-        return pick_scorecard(self.db)
+        card = pick_scorecard(self.db)
+        card["standouts"] = standout_scorecard(self.db, yf_gateway.daily_closes)
+        return card
+
+    def standouts(self) -> list[dict]:
+        from ..discover.earnings_standouts import recent_standouts
+
+        # Confirmed in the last few days: each shows in about three emails.
+        return recent_standouts(self.db, days=STANDOUT_EMAIL_DAYS)[:MAX_STANDOUTS]
 
     def reinvest(self, held: set[str], over_cap: set[str], n: int) -> list[dict]:
         from ..discover.reinvest import load_pick_pool, reinvest_ideas, with_sector_bias
@@ -256,6 +270,39 @@ def attach_idea_details(health) -> list[str]:
             continue
         health.idea_details[ticker] = {**data, "reason": reasons.get(ticker)}
     return [t for t in tickers if t in health.idea_details]
+
+
+def attach_standout_details(health, agent: PortfolioAgent) -> list[str]:
+    """Market data and a long-term view for each earnings standout not
+    held (a held one already has its own block). Returns their tickers.
+
+    Separate from DAILY_EMAIL_NEW_IDEAS: standouts are a filtered handful
+    confirmed by results, forecasts and the price, asked for in their own
+    right. The view is one model call per new standout, reused after.
+    """
+    from ..data.ticker import fetch_ticker_data
+
+    if health is None:
+        return []
+    out = []
+    for s in health.standouts:
+        ticker = s["ticker"]
+        if ticker in health.values:
+            continue
+        try:
+            data = fetch_ticker_data(ticker)
+        except Exception as e:  # noqa: BLE001 — one standout's data is not the email
+            logger.warning("No market data for standout %s (%s)", ticker, e)
+            continue
+        if not data:
+            continue
+        try:
+            data["view"] = agent.idea_view(ticker, data)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Long-term view for standout %s failed (%s)", ticker, e)
+        s["details"] = data
+        out.append(ticker)
+    return out
 
 
 def held_backlog(tickers: list[str]) -> dict:
@@ -561,12 +608,17 @@ def main() -> None:
     # trends and valuation. Without it an idea is a ticker and a
     # sentence, which is not enough to act on.
     ideas = attach_idea_details(health) if settings.daily_email_new_ideas else []
-    charts = fetch_charts(tickers + [t for t in ideas if t not in tickers])
+    standouts = attach_standout_details(health, agent)
+    extra = [t for t in dict.fromkeys(ideas + standouts) if t not in tickers]
+    charts = fetch_charts(tickers + extra)
     chart_cids = {t: _chart_cid(t) for t in charts}
     inline_images = {_chart_cid(t): data for t, data in charts.items()}
     for ticker in ideas:
         if ticker in charts and health is not None:
             health.idea_details[ticker]["chart_cid"] = _chart_cid(ticker)
+    for s in health.standouts if health is not None else []:
+        if s.get("details") and s["ticker"] in charts:
+            s["details"]["chart_cid"] = _chart_cid(s["ticker"])
 
     subject, body = build_email(result, health, chart_cids)
     SmtpServer().send_email(

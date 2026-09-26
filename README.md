@@ -701,6 +701,48 @@ which way analysts have moved estimates since. Cuts raise an **EARNINGS
 CUT** item for a thesis re-check and are logged to the suggestions ledger
 as a REVIEW; steady or rising estimates say the long-term case holds.
 
+## Earnings standouts and the six-month scorecard
+
+`earnings-watch` runs nightly (10 PM New York, no LLM, no email) and looks
+across the whole US market for companies whose results **clearly beat**
+(EPS 5%+ and revenue 1%+ over estimates, $250M+ quarterly revenue), that
+the market **rewarded** (3%+ better than SPY over the two sessions around
+the report) and whose analysts then **raised** next year's EPS estimate
+(3%+ over 30 days, checked a week after) — and only when it is **not a
+lone blip**: it also beat the quarter before, and revenue is above the
+same quarter a year ago (Yahoo's EPS history and quarterly income
+statement, fetched only for names that passed everything else). One
+quarter rather than a year on purpose: a company that has just turned the
+corner is what a six-month idea is looking for, and the daily analysis
+digs further once the name is in front of it. One Finnhub earnings-calendar
+request lists every reporter; the price reaction comes from the bar store
+the revision from Yahoo's `eps_trend` and the track record from Yahoo's
+earnings history, so a typical night makes a handful of requests. Only beats and past picks are stored
+(`earnings_events`), and a missed night is caught up.
+
+The price is the tiebreak because sources disagree on what "EPS" is:
+Finnhub and FMP gave Costco's September 2026 quarter as a miss and a beat.
+On its first run TD SYNNEX beat EPS by 20% and revenue by 13% and fell 9%
+against SPY — dropped.
+
+A confirmed standout shows in the next few daily emails with the numbers,
+a chart and a long-term view (one model call per new standout, reused
+after), whatever `DAILY_EMAIL_NEW_IDEAS` says, and joins the discover
+universe for 60 days — eligible like a watchlist name, with no score
+bonus, so the screen judges it on the same terms.
+
+Each standout the email shows (and you don't hold) is recorded in the
+suggestions ledger as a `STANDOUT`, graded by the quarterly review, and
+graded again six months on in the daily email's scorecard.
+
+The daily email's **scorecard** grades every discover pick and every
+standout six months (126 trading days) on against SPY, one row per month,
+a ticker picked or shown on several days of the same month counted once.
+
+`ops doctor` runs Sunday evenings from cron (`scripts/run_doctor.sh`) and
+alerts on a revoked key, a failed login or a retired model id before
+Monday's paid runs.
+
 ## Screen price rules
 
 `DISCOVER_TREND_GATE=soft` (default) only rejects names more than 40% below
@@ -783,6 +825,7 @@ runs don't re-download it:
 | `ticker_reference` | sector / industry / name (refreshed after 30 days) and next earnings date (after 3 days, or once it has passed) | one row per stock, overwritten; unused rows dropped after 365 days |
 | `stock_views` | the daily email's latest long-term view per stock, plus the headlines already sent | one row per holding, overwritten (links capped at 40); dropped 90 days after the last refresh |
 | `portfolio_snapshots`, `suggestions` | daily value, advice ledger | one row per day / per advice |
+| `earnings_events` | clear earnings beats anywhere in the market and reports by past picks, with the reaction, the revision and the verdict (`earnings-watch`) | tens of rows a week in earnings season; dropped after 365 days |
 
 Tax lots, cash flows and dividends read the stored activity history, so a
 purchase older than the brokerage API's window no longer drops out of lot

@@ -119,4 +119,23 @@ def batch_eps_revisions(tickers: list[str]) -> dict[str, dict[str, Any]]:
     return results
 
 
-__all__ = ["fetch_eps_revisions", "batch_eps_revisions"]
+def fetch_estimate_change(ticker: str, period: str = "+1y") -> float | None:
+    """How much the consensus EPS estimate for `period` (default next
+    fiscal year) has moved over the last 30 days, as a fraction: 0.05 is
+    raised 5%. From yfinance's `Ticker.eps_trend`, which carries the
+    estimate as it stood 7/30/60/90 days ago — no stored history needed.
+    None when either value is missing or the base is not positive (a
+    loss-making year's percentage change means nothing)."""
+    trend = yf_gateway.ticker_call(ticker, "eps_trend", lambda t: t.eps_trend)
+    if trend is None or trend.empty or period not in trend.index:
+        return None
+    try:
+        now, before = float(trend.loc[period, "current"]), float(trend.loc[period, "30daysAgo"])
+    except KeyError, TypeError, ValueError:
+        return None
+    if pd.isna(now) or pd.isna(before) or before <= 0:
+        return None
+    return now / before - 1
+
+
+__all__ = ["fetch_eps_revisions", "batch_eps_revisions", "fetch_estimate_change"]

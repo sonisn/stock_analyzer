@@ -234,7 +234,10 @@ def _score_trend(
 # holding are eligibility facts, so they must not inflate source diversity —
 # otherwise every watchlist name scores higher than an identical non-watchlist
 # one and the ranking confirms the user's prior instead of testing it.
-_NON_EVIDENCE_SOURCES = frozenset({"index", "watchlist", "holding"})
+# An earnings standout IS evidence, but the same evidence the trend score
+# already rewards (rising EPS revisions); counting it here too would score
+# it twice.
+_NON_EVIDENCE_SOURCES = frozenset({"index", "watchlist", "holding", "earnings_standout"})
 
 
 def _score_conviction(u: dict[str, Any]) -> tuple[float, dict[str, float]]:
