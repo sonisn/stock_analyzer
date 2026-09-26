@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 
-from stock_analyzer.serialization import dumps_compact, dumps_pretty, finite, loads
+from stock_analyzer.serialization import dumps_compact, dumps_pretty, dumps_prompt, finite, loads
 
 NAN, INF = float("nan"), float("inf")
 
@@ -53,3 +53,17 @@ def test_unserializable_values_fall_back_to_str_rather_than_raising():
 def test_loads_takes_str_and_bytes():
     assert loads('{"a":1}') == {"a": 1}
     assert loads(b'{"a":1}') == {"a": 1}
+
+
+def test_prompt_json_has_no_indentation_or_float_noise():
+    """Whitespace and 15-digit floats are tokens paid for on every call."""
+    payload = {"pe": 31.456789012345, "margin": 0.123456789, "cap": 4.2e12, "n": [1, 2]}
+    assert (
+        dumps_prompt(payload) == '{"pe":31.4568,"margin":0.123457,"cap":4200000000000.0,"n":[1,2]}'
+    )
+
+
+def test_prompt_json_is_valid_even_with_missing_numbers():
+    """The pretty fallback wrote bare NaN into the prompt; this writes null."""
+    out = dumps_prompt({"a": NAN, "b": (INF, 1.5), "c": "text"})
+    assert json.loads(out) == {"a": None, "b": [None, 1.5], "c": "text"}

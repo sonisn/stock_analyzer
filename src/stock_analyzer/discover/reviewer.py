@@ -20,7 +20,7 @@ from ..llm import (
 )
 from ..logging import get_logger
 from ..models.llm import HoldingReview
-from ..serialization import dumps_pretty
+from ..serialization import dumps_prompt
 
 logger = get_logger(__name__)
 
@@ -421,7 +421,7 @@ class Reviewer:
         self.agent = _build_agent(provider, model)
 
     def review(self, ticker: str, payload: dict[str, Any]) -> HoldingReview | None:
-        prompt = f"Holding: {ticker}\n\n```json\n{dumps_pretty(payload)}\n```"
+        prompt = f"Holding: {ticker}\n\n```json\n{dumps_prompt(payload)}\n```"
         logger.info("Reviewing holding %s", ticker)
         build_fallback = fallback_builder(self.fallback, self.provider, _build_agent)
         result = run_with_fallback(self.agent, build_fallback, prompt).content

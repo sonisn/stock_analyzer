@@ -10,7 +10,7 @@ from ..data.market_news import fetch_market_sentiment_news
 from ..data.ticker import fetch_ticker_data
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
-from ..serialization import dumps_pretty
+from ..serialization import dumps_prompt
 from .news_reranker import NewsReranker
 from .stock_views import is_equity
 
@@ -308,7 +308,7 @@ class PortfolioAgent:
                 today=today,
             )
         else:
-            prompt = f"Ticker data:\n```json\n{dumps_pretty(data)}\n```"
+            prompt = f"Ticker data:\n```json\n{dumps_prompt(data)}\n```"
             logger.info("Writing long-term view for %s (%s)", ticker, reason)
             view = (self.ticker_agent.run(prompt).content or "").strip()
             if not view:

@@ -28,7 +28,7 @@ from ...discover.tax_harvest import (
     format_harvest_block,
 )
 from ...logging import get_logger
-from ...serialization import dumps_pretty
+from ...serialization import dumps_prompt
 from ...usage import BUDGET, estimate_cost
 from ..discover_steps.helpers import (
     _QUARTERLY_MDA_CHARS,
@@ -104,7 +104,7 @@ class RebalanceReviewSteps(PipelineBase):
         if available is None or not haiku:
             return sonnet
         est = sum(
-            estimate_cost(sonnet, len(dumps_pretty(p)) + len(REVIEWER_INSTRUCTIONS), 2000) or 0.0
+            estimate_cost(sonnet, len(dumps_prompt(p)) + len(REVIEWER_INSTRUCTIONS), 2000) or 0.0
             for p in payloads.values()
         )
         if est <= available:

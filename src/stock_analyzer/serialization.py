@@ -61,6 +61,30 @@ def dumps_compact(payload: Any) -> str:
     return orjson.dumps(finite(payload), default=str).decode("utf-8")
 
 
+def _trimmed(payload: Any) -> Any:
+    """finite(), plus floats cut to six significant digits: 0.123456789
+    reads the same to a model as 0.123457 and costs fewer tokens."""
+    if isinstance(payload, float):
+        if payload != payload or payload in (float("inf"), float("-inf")):
+            return None
+        return float(f"{payload:.6g}")
+    if isinstance(payload, dict):
+        return {k: _trimmed(v) for k, v in payload.items()}
+    if isinstance(payload, (list, tuple)):
+        return [_trimmed(v) for v in payload]
+    return payload
+
+
+def dumps_prompt(payload: Any) -> str:
+    """JSON for an LLM prompt: no indentation, no float noise, valid always.
+
+    Indentation and 15-digit floats are tokens the model reads and we pay
+    for on every per-ticker call, with nothing gained; and the NaN fallback
+    of `dumps_pretty` put bare `NaN` tokens (not JSON) into the prompt.
+    """
+    return orjson.dumps(_trimmed(payload), default=str).decode("utf-8")
+
+
 def loads(raw: str | bytes) -> Any:
     """orjson.loads, which takes str and bytes alike."""
     return orjson.loads(raw)

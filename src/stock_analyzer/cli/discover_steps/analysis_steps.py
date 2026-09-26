@@ -28,7 +28,7 @@ from ...discover.sizer import (
 )
 from ...logging import get_logger
 from ...model.ranker_model import load_latest_model, score_percentiles, screen_points
-from ...serialization import dumps_pretty
+from ...serialization import dumps_prompt
 from ...usage import BUDGET
 from ..pipeline_base import PipelineBase
 from .helpers import (
@@ -156,7 +156,7 @@ class AnalysisSteps(PipelineBase):
         deep_tickers = {c["ticker"] for c in survivors[:deep_count]}
         keep, deep_tickers, cuts = plan_under_budget(
             [c["ticker"] for c in survivors],
-            {t: len(dumps_pretty(p)) for t, p in payloads.items()},
+            {t: len(dumps_prompt(p)) for t, p in payloads.items()},
             deep_tickers,
             self.settings.discover_sonnet_model,
             self.settings.discover_haiku_model if light is not None else None,
