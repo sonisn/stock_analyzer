@@ -349,6 +349,25 @@ class EarningsEvent(SQLModel, table=True):
     decided_on: str | None = None  # ISO date status left "pending"
 
 
+class AnalystAction(SQLModel, table=True):
+    """One analyst's rating or price-target action on a stock that reported
+    a result worth following (data/analyst_actions.py, filled by the nightly
+    earnings watch for recorded earnings events): who acted, when, and how.
+    Kept from 90 days before the report on; tens of rows per stock."""
+
+    __tablename__ = "analyst_actions"
+
+    ticker: str = Field(primary_key=True)
+    graded_at: str = Field(primary_key=True)  # ISO timestamp of the action
+    firm: str = Field(primary_key=True)
+    action: str = ""  # up / down / init / main (maintained) / reit
+    to_grade: str = ""
+    from_grade: str = ""
+    target_action: str = ""  # Raises / Lowers / Maintains / Announces / ...
+    target: float | None = None
+    prior_target: float | None = None
+
+
 class ForecastSnapshot(SQLModel, table=True):
     """What analysts expected of a tracked stock on one day
     (data/forecast_snapshots.py). Yahoo keeps only 90 days of estimate
@@ -391,6 +410,7 @@ class StockView(SQLModel, table=True):
 
 
 __all__ = [
+    "AnalystAction",
     "EarningsEvent",
     "ForecastSnapshot",
     "StockView",

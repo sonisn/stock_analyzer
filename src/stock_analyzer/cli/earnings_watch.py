@@ -19,6 +19,7 @@ from sqlalchemy import text
 
 from ..config import Settings
 from ..data import bar_store, finnhub, yf_gateway
+from ..data.analyst_actions import fetch_analyst_actions
 from ..data.earnings_history import fetch_track_record
 from ..data.eps_revisions import fetch_estimate_change
 from ..data.forecast_snapshots import record_snapshots, tracked_tickers
@@ -76,6 +77,7 @@ def _watch(db: str) -> None:
         closes=lambda symbols, start: yf_gateway.daily_closes(symbols, start, "earnings_watch"),
         estimate_change=fetch_estimate_change,
         track_record=fetch_track_record,
+        analyst_actions=fetch_analyst_actions,
         picks=_past_picks(db),
         listed=set(load_ticker_cik_map()),
     )

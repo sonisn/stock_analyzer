@@ -61,6 +61,9 @@ KEEP_DAYS = 365
 # How long a standout stays in the discover universe: the drift it trades
 # on plays out over weeks to a few months.
 DISCOVER_DAYS = 60
+# Analyst actions are kept from this long before a report: coverage and
+# target moves going in are the context for the ones after it.
+ANALYST_CONTEXT_DAYS = 90
 
 Closes = Callable[[list[str], date], dict[str, pd.Series]]
 # (ticker, report day, this quarter's revenue) -> data/earnings_history.fetch_track_record
@@ -242,6 +245,8 @@ def recent_standouts(db_path: str, *, days: int, today: date | None = None) -> l
             ),
             params={"since": since},
         ).all()
+    from ..data.analyst_actions import summarize
+
     out, seen = [], set()
     for t, day, eps_est, eps, rev_est, rev, react, revision, decided, beats, quarters, yoy in rows:
         if t in seen:
@@ -259,9 +264,36 @@ def recent_standouts(db_path: str, *, days: int, today: date | None = None) -> l
                 "prior_beats": beats,
                 "prior_quarters": quarters,
                 "revenue_yoy_pct": yoy,
+                # What analysts did from the report on (analyst_actions).
+                "analysts": summarize(db_path, t, since=date.fromisoformat(day)),
             }
         )
     return out
+
+
+def track_analysts(
+    db_path: str, fetch: Callable[[str], list[dict[str, Any]]], *, today: date
+) -> int:
+    """Store analyst actions for every event still being followed (pending,
+    or a standout of the last DISCOVER_DAYS), from ANALYST_CONTEXT_DAYS
+    before its report on. One request per stock; returns rows added."""
+    from ..data.analyst_actions import record_actions
+
+    since = (today - timedelta(days=DISCOVER_DAYS)).isoformat()
+    with get_session(db_path) as session:
+        rows = exec_sql(
+            session,
+            text(
+                "SELECT ticker, MIN(report_date) FROM earnings_events "
+                "WHERE status IN ('pending', 'standout') AND report_date >= :s GROUP BY ticker"
+            ),
+            params={"s": since},
+        ).all()
+    added = 0
+    for ticker, first in rows:
+        start = date.fromisoformat(first) - timedelta(days=ANALYST_CONTEXT_DAYS)
+        added += record_actions(db_path, ticker, fetch(ticker), since=start)
+    return added
 
 
 def prune(db_path: str, *, today: date) -> int:
@@ -286,8 +318,10 @@ def watch(
     track_record: TrackRecord,
     picks: set[str],
     listed: set[str],
+    analyst_actions: Callable[[str], list[dict[str, Any]]] | None = None,
 ) -> dict[str, Any]:
-    """One night: record new reports, measure reactions, settle what can be."""
+    """One night: record new reports, measure reactions, settle what can be,
+    and store what analysts have done on the stocks still followed."""
     rows = calendar(today - timedelta(days=LOOKBACK_DAYS), today)
     summary: dict[str, Any] = {
         "reported": sum(r.get("eps_actual") is not None for r in rows),
@@ -295,12 +329,16 @@ def watch(
         "reactions": measure_reactions(db_path, closes, last_final=last_final),
     }
     summary["standouts"] = decide(db_path, estimate_change, track_record, today=today)
+    if analyst_actions is not None:
+        summary["analyst_actions"] = track_analysts(db_path, analyst_actions, today=today)
     summary["pruned"] = prune(db_path, today=today)
     logger.info(
-        "Earnings watch: %d reported, %d recorded, %d reactions measured, standouts: %s",
+        "Earnings watch: %d reported, %d recorded, %d reactions measured, "
+        "%d analyst actions stored, standouts: %s",
         summary["reported"],
         summary["recorded"],
         summary["reactions"],
+        summary.get("analyst_actions", 0),
         ", ".join(summary["standouts"]) or "none",
     )
     return summary

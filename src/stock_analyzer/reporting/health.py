@@ -52,6 +52,7 @@ logger = get_logger(__name__)
 
 DRAWDOWN_REVIEW_PCT = -20.0  # discover/rebalance_holdings.flag_drawdown_reviews
 EARNINGS_DAYS = 7
+MAX_ANALYST_LINES = 6  # per standout, newest first
 
 
 @dataclass
@@ -795,6 +796,7 @@ def render_standouts_html(h: PortfolioHealth) -> str:
                 "Next-year EPS est. (30d)",
                 "Beat the quarter before",
                 "Revenue vs year ago",
+                "Analysts since report",
             ],
             [
                 [
@@ -806,6 +808,7 @@ def render_standouts_html(h: PortfolioHealth) -> str:
                     f"<b>{_pct(s.get('revision_pct'))}</b>",
                     ("yes" if s["prior_beats"] else "no") if s.get("prior_quarters") else "—",
                     _pct(s.get("revenue_yoy_pct")),
+                    _analysts_cell(s.get("analysts")),
                 ]
                 for s in h.standouts
             ],
@@ -815,7 +818,46 @@ def render_standouts_html(h: PortfolioHealth) -> str:
         data = s.get("details")
         if data:
             parts.append(_stock_detail_html(s["ticker"], data))
+        parts.append(_analyst_actions_html(s))
     return "".join(parts)
+
+
+def _analysts_cell(a: dict[str, Any] | None) -> str:
+    """'5 raised, 1 upgrade' — or a plain 'none' when no analyst has acted
+    since the report (worth knowing: nobody has done the work yet)."""
+    if not a or not a.get("count"):
+        return "none"
+    bits = [
+        f"{a[k]} {label}"
+        for k, label in (
+            ("raised", "raised"),
+            ("lowered", "lowered"),
+            ("upgrades", "upgrade"),
+            ("downgrades", "downgrade"),
+            ("initiated", "new"),
+        )
+        if a.get(k)
+    ]
+    avg = a.get("avg_target_change_pct")
+    if avg is not None:
+        bits.append(f"targets {avg:+.0f}% avg")
+    return html.escape(", ".join(bits) or f"{a['count']} maintained")
+
+
+def _analyst_actions_html(s: dict[str, Any]) -> str:
+    from ..data.analyst_actions import describe
+
+    actions = (s.get("analysts") or {}).get("actions") or []
+    if not actions:
+        return ""
+    shown = actions[:MAX_ANALYST_LINES]
+    more = len(actions) - len(shown)
+    lines = "".join(f"<li>{html.escape(describe(a))}</li>" for a in shown)
+    tail = f"<li>and {more} more</li>" if more > 0 else ""
+    return (
+        f'<p style="font-size:13px;margin-bottom:2px"><b>{html.escape(s["ticker"])}: analyst '
+        f'actions since the report</b></p><ul style="font-size:13px;margin-top:0">{lines}{tail}</ul>'
+    )
 
 
 def _stock_detail_html(ticker: str, data: dict[str, Any]) -> str:

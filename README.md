@@ -725,6 +725,13 @@ Finnhub and FMP gave Costco's September 2026 quarter as a miss and a beat.
 On its first run TD SYNNEX beat EPS by 20% and revenue by 13% and fell 9%
 against SPY — dropped.
 
+For every report it is still following, the job also stores what Wall
+Street's analysts did (`analyst_actions`, from Yahoo's upgrade/downgrade
+log: firm, rating, old and new price target), from 90 days before the
+report on. A standout's row in the email says what they did since —
+"5 raised, 1 upgrade, targets +39% avg" — with the actions listed, or
+"none" when no analyst has touched it yet.
+
 A confirmed standout shows in the next few daily emails with the numbers,
 a chart and a long-term view (one model call per new standout, reused
 after), whatever `DAILY_EMAIL_NEW_IDEAS` says, and joins the discover
@@ -745,8 +752,8 @@ requests). Yahoo keeps only 90 days of estimate history; this keeps all
 of it.
 
 `ops doctor` runs Sunday evenings from cron (`scripts/run_doctor.sh`) and
-alerts on a revoked key, a failed login, a retired model id or a disk
-running low (under 10% free, or under 50 GB) before Monday's paid runs.
+alerts on a revoked key, a failed login, a retired model id, Yahoo
+prices or estimates no longer coming back, or a disk running low (under 10% free, or under 50 GB) before Monday's paid runs.
 
 ## Screen price rules
 
@@ -830,6 +837,7 @@ runs don't re-download it:
 | `ticker_reference` | sector / industry / name (refreshed after 30 days) and next earnings date (after 3 days, or once it has passed) | one row per stock, overwritten; unused rows dropped after 365 days |
 | `stock_views` | the daily email's latest long-term view per stock, plus the headlines already sent | one row per holding, overwritten (links capped at 40); dropped 90 days after the last refresh |
 | `portfolio_snapshots`, `suggestions` | daily value, advice ledger | one row per day / per advice |
+| `analyst_actions` | rating and price-target actions by firm for stocks with a followed earnings report, from 90 days before it | tens of rows per stock |
 | `forecast_snapshots` | each weekday night, analysts' consensus for every tracked stock (~175: holdings, a year of picks, recent screen survivors, standouts): EPS and revenue for this and next fiscal year, analyst count, price targets, recommendation — point in time, so revisions can become model features without look-ahead | ~175 rows per weekday (~4 MB/year); kept forever |
 | `earnings_events` | clear earnings beats anywhere in the market and reports by past picks, with the reaction, the revision and the verdict (`earnings-watch`) | tens of rows a week in earnings season; dropped after 365 days |
 
