@@ -596,6 +596,60 @@ def fetch_open_short_puts() -> dict[str, dict[str, Any]]:
     return out
 
 
+def fetch_option_values() -> dict[str, float] | None:
+    """{account label: market value of its open option positions} at the
+    broker's mark — negative for written (short) options, which are what it
+    would cost to buy them back. Accounts without options are left out.
+    None when SnapTrade can't be read, so a caller can tell "no options"
+    from "don't know".
+
+    `fetch_portfolio_holdings` skips option rows, so a portfolio total built
+    from it alone counted premium received (it sits in cash) but never the
+    obligation that came with it — $11,746 of open calls on 2026-09-25.
+    """
+    try:
+        user_id, user_secret = _credentials()
+        client = _client()
+        accounts = (
+            _unwrap(
+                client.account_information.list_user_accounts(
+                    user_id=user_id, user_secret=user_secret
+                )
+            )
+            or []
+        )
+    except Exception as e:
+        logger.warning("Could not read option positions (%s)", e)
+        return None
+    labels = account_labels(accounts)
+    out: dict[str, float] = {}
+    for account in accounts:
+        account_id = _field(account, "id")
+        if not account_id:
+            continue
+        try:
+            positions = _positions_from_response(
+                client.account_information.get_all_account_positions(
+                    user_id=user_id, user_secret=user_secret, account_id=account_id
+                )
+            )
+        except Exception as e:
+            logger.warning("Could not read option positions for %s (%s)", account_id, e)
+            return None
+        total = 0.0
+        for pos in positions:
+            symbol = _extract_ticker(pos)
+            if not isinstance(symbol, str) or not is_option_symbol(symbol):
+                continue
+            # SnapTrade marks options per share; a contract is 100 shares.
+            total += (
+                (_to_float(pos.get("units")) or 0.0) * (_to_float(pos.get("price")) or 0.0) * 100
+            )
+        if total:
+            out[labels[str(account_id)]] = round(total, 2)
+    return out
+
+
 def fetch_covered_call_obligations() -> dict[str, dict[str, Any]]:
     """{ticker: what the short calls on it oblige you to}, with strikes.
 

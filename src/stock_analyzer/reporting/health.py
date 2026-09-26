@@ -127,6 +127,32 @@ def is_cash_like(ticker: str, price: float | None) -> bool:
     return value is not None and abs(value - 1.0) <= _CASH_NAV_TOLERANCE
 
 
+def cash_net_of_sweep(
+    holdings: dict[str, list[dict[str, Any]]],
+    cash: dict[str, float],
+) -> dict[str, float]:
+    """Each account's cash, less a sweep fund the broker ALSO lists as a
+    position.
+
+    Fidelity reports its core money-market position (SPAXX) both as a
+    holding and as the account's cash balance, so holdings + cash counted
+    it twice — $20,846 on 2026-09-25, 4% of the portfolio. When the cash
+    balance covers the cash-like positions, they are the same dollars and
+    the cash side is reduced; a broker whose cash is a separate, smaller
+    balance is left alone.
+    """
+    out: dict[str, float] = {}
+    for account, amount in cash.items():
+        sweep = sum(
+            float(h.get("units") or 0) * float(h.get("price") or 0)
+            for h in holdings.get(account, [])
+            if is_cash_like(str(h.get("ticker") or ""), h.get("price"))
+        )
+        amount = float(amount)
+        out[account] = round(amount - sweep, 2) if sweep > 0 and amount >= sweep - 1.0 else amount
+    return out
+
+
 def aggregate_positions(
     holdings: dict[str, list[dict[str, Any]]],
     prices: dict[str, float] | None = None,

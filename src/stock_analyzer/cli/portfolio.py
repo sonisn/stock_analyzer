@@ -337,8 +337,12 @@ def snapshot_account_values(
     cash: dict[str, float],
     *,
     prices: dict[str, float] | None = None,
+    options: dict[str, float] | None = None,
 ) -> dict[str, dict[str, float]]:
-    """{account label: {"value", "cash"}} for every account in either feed.
+    """{account label: {"value", "cash"[, "options"]}} for every account in
+    either feed. `cash` should already be net of a sweep held as a position
+    (`reporting.health.cash_net_of_sweep`); `options` is the market value of
+    open option positions, negative when written.
 
     Every account is listed, including the empty ones: an account worth
     nothing today still has to be known to have been there, or the day it
@@ -351,6 +355,12 @@ def snapshot_account_values(
         out[label] = {"value": round(value, 2), "cash": 0.0}
     for label, amount in cash.items():
         out.setdefault(label, {"value": 0.0, "cash": 0.0})["cash"] = round(float(amount), 2)
+    if options is not None:
+        # Written for every account, 0 included: a stored "options" key is
+        # how performance tells "measured, none open" from "not measured".
+        for label in out.keys() | options.keys():
+            entry = out.setdefault(label, {"value": 0.0, "cash": 0.0})
+            entry["options"] = round(float(options.get(label, 0.0)), 2)
     return out
 
 
@@ -360,26 +370,32 @@ def record_portfolio_snapshot(
     *,
     prices: dict[str, float] | None = None,
 ) -> None:
-    """Today's total value (holdings + cash) for the portfolio-vs-SPY
-    comparison. Skipped, not guessed, when cash can't be read."""
-    from ..data.brokerage import fetch_account_cash
+    """Today's total value — holdings, open options at their mark, and cash
+    not already counted as a sweep holding — for the portfolio-vs-SPY
+    comparison. Skipped, not guessed, when cash or options can't be read."""
+    from ..data.brokerage import fetch_account_cash, fetch_option_values
     from ..db.repository import record_snapshot
     from ..db.session import get_session
-    from ..reporting.health import aggregate_positions
+    from ..reporting.health import aggregate_positions, cash_net_of_sweep
 
     try:
-        cash = fetch_account_cash()
-        if not cash:
+        raw_cash = fetch_account_cash()
+        if not raw_cash:
             logger.warning("No cash balance readable — portfolio snapshot skipped today")
             return
+        options = fetch_option_values()
+        if options is None:
+            logger.warning("Option positions unreadable — portfolio snapshot skipped today")
+            return
+        cash = cash_net_of_sweep(holdings, raw_cash)
         value = sum(p["value"] for p in aggregate_positions(holdings, prices).values())
         with get_session(settings.discover_db_path) as session:
             record_snapshot(
                 session,
                 day=date.today().isoformat(),
-                holdings_value=value,
+                holdings_value=value + sum(options.values()),
                 cash=sum(cash.values()),
-                accounts=snapshot_account_values(holdings, cash, prices=prices),
+                accounts=snapshot_account_values(holdings, cash, prices=prices, options=options),
             )
     except Exception as e:  # noqa: BLE001
         logger.warning("Could not record today's portfolio snapshot (%s)", e)

@@ -74,16 +74,31 @@ def account_change_flows(
             continue
         amount = sum(_account_total(v) for k, v in after.items() if k not in before)
         amount -= sum(_account_total(v) for k, v in before.items() if k not in after)
+        # Open options began to be valued on 2026-09-26; the first snapshot
+        # that measures them for an account moved the total by their value
+        # without anything having happened to the portfolio.
+        amount += sum(
+            float(v.get("options") or 0)
+            for k, v in after.items()
+            if k in before
+            and isinstance(v, dict)
+            and "options" in v
+            and not (isinstance(before[k], dict) and "options" in before[k])
+        )
         if round(amount, 2):
             out.append((day, round(amount, 2)))
     return out
 
 
 def _account_total(entry: Any) -> float:
-    """Holdings + cash for one stored account entry, tolerating a bare
-    number from an older writer."""
+    """Holdings + open options + cash for one stored account entry,
+    tolerating a bare number from an older writer."""
     if isinstance(entry, dict):
-        return float(entry.get("value") or 0) + float(entry.get("cash") or 0)
+        return (
+            float(entry.get("value") or 0)
+            + float(entry.get("options") or 0)
+            + float(entry.get("cash") or 0)
+        )
     try:
         return float(entry)
     except ValueError, TypeError:
