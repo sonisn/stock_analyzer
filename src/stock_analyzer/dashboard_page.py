@@ -69,6 +69,9 @@ svg{display:block;width:100%;height:auto;overflow:visible}
 .viewtext{font-size:13px;color:var(--ink2);line-height:1.6;margin-top:10px;
  border-left:2px solid var(--s1);padding-left:12px}
 .bar{height:7px;border-radius:4px;background:var(--s1)}
+th.sort{cursor:pointer;user-select:none}
+th.sort:hover{color:var(--ink2)}
+th.sort::after{content:attr(data-arrow);color:var(--s1)}
 @media (max-width:640px){.hide-s{display:none}}
 """
 
@@ -88,10 +91,32 @@ function theme(t){document.documentElement.dataset.theme=t;try{localStorage.setI
 try{const s=localStorage.getItem(T); if(s) theme(s);}catch(e){}
 $('#tbtn').onclick=()=>theme(document.documentElement.dataset.theme==='dark'?'light':'dark');
 
+/* sortable tables: click a header to sort, again to reverse. Numbers sort
+   largest first, words A-Z; blanks always go last whichever way. */
+function sortable(tbody, rows, render, keys, numeric){
+  const ths=$(tbody).closest('table').querySelectorAll('th');
+  let by=null, dir=1;
+  const blank=v=>v===null||v===undefined||v==='';
+  function draw(){
+    const out = by===null ? rows : [...rows].sort((a,b)=>{
+      const x=keys[by](a), y=keys[by](b);
+      if(blank(x)||blank(y)) return blank(x)-blank(y);
+      return (x<y?-1:x>y?1:0)*dir;});
+    render(out);
+    ths.forEach((th,i)=>th.dataset.arrow = i===by ? (dir>0?' \u25b2':' \u25bc') : '');
+  }
+  ths.forEach((th,i)=>{ if(!keys[i]) return; th.classList.add('sort'); th.title='Sort';
+    th.onclick=()=>{ if(by===i) dir=-dir; else {by=i; dir=numeric.includes(i)?-1:1;} draw(); };});
+  draw();
+}
+const VERDICT_RANK={'SELL':3,'TRIM':2,'HOLD':1};
+const GRADE_RANK={'good call':3,'too early':2,'missed':1};
+
 /* holdings table */
 function verdictPill(v){if(!v) return '<span class="dim">—</span>';
   const k=String(v).toLowerCase();return `<span class="pill ${k}">${esc(v)}</span>`}
-$('#holdings').innerHTML = D.holdings.map(h=>`
+function renderHoldings(rows){
+$('#holdings').innerHTML = rows.map(h=>`
  <tr data-t="${h.ticker}">
   <td><b>${esc(h.ticker)}</b></td>
   <td>${verdictPill(h.verdict)} <span class="dim">${h.conf?h.conf+'/10':''}</span></td>
@@ -100,8 +125,11 @@ $('#holdings').innerHTML = D.holdings.map(h=>`
   <td class="num hide-s">${h.book===null?'<span class="dim">—</span>':`<span class="${cls(h.book)}">${pct(h.book)}</span>`}</td>
   <td class="num hide-s">${h.calls?`${h.calls} <span class="dim">(${h.free} free)</span>`:'<span class="dim">—</span>'}</td>
  </tr>`).join('');
-
 document.querySelectorAll('#holdings tr').forEach(tr=>tr.onclick=()=>show(tr.dataset.t));
+}
+sortable('#holdings', D.holdings, renderHoldings,
+  [h=>h.ticker, h=>VERDICT_RANK[h.verdict]??null, h=>h.value, h=>h.pl, h=>h.book, h=>h.calls||null],
+  [1,2,3,4,5]);
 
 /* ticker drill-down: confidence over runs */
 function show(t){
@@ -143,7 +171,8 @@ const num = v => v===null||v===undefined ? '<span class="dim">—</span>'
 const vpill = v => v==='good call' ? '<span class="pill" style="color:var(--good);border-color:currentColor">good call</span>'
   : v==='missed' ? '<span class="pill" style="color:var(--bad);border-color:currentColor">missed</span>'
   : v==='too early' ? '<span class="pill dim">too early</span>' : '<span class="dim">—</span>';
-$('#sugg').innerHTML = D.suggestions.map(s=>`<tr data-t="${s.ticker}">
+function renderSugg(rows){
+$('#sugg').innerHTML = rows.map(s=>`<tr data-t="${s.ticker}">
   <td class="dim">${esc(s.d)}${s.run?`<div style="font-size:11px">run ${s.run}</div>`:''}</td>
   <td><b>${esc(s.ticker)}</b><div class="dim" style="font-size:11px">${esc(s.action)}</div></td>
   <td class="num">${num(s.ret)}</td>
@@ -152,8 +181,12 @@ $('#sugg').innerHTML = D.suggestions.map(s=>`<tr data-t="${s.ticker}">
   <td class="num">${num(s.edge)}</td>
   <td>${vpill(s.verdict)}</td>
   <td class="dim hide-s">${esc(s.acted)}</td></tr>`).join('');
-
 document.querySelectorAll('#sugg tr').forEach(tr=>tr.onclick=()=>why(tr.dataset.t));
+}
+sortable('#sugg', D.suggestions, renderSugg,
+  [s=>s.d, s=>s.ticker, s=>s.ret, s=>s.spy, s=>s.swap_pct, s=>s.edge,
+   s=>GRADE_RANK[s.verdict]??null, s=>s.acted],
+  [0,2,3,4,5,6]);
 
 /* why a ticker was advised: scenarios, bull, bear, catalysts */
 function why(t){
@@ -208,10 +241,13 @@ function scen(rows){
 }
 
 /* runs */
-$('#runs').innerHTML = D.runs.map(r=>`<tr>
+const renderRuns = rows => $('#runs').innerHTML = rows.map(r=>`<tr>
   <td class="dim">#${r.id}</td><td>${esc(r.kind)}</td><td class="dim">${esc(r.d)}</td>
   <td class="num">${r.universe_size||'—'}</td><td class="num">${r.survivors||'—'}</td>
   <td class="num">${r.picks||'—'}</td></tr>`).join('');
+sortable('#runs', D.runs, renderRuns,
+  [r=>r.id, r=>r.kind, r=>r.d, r=>r.universe_size||null, r=>r.survivors||null, r=>r.picks||null],
+  [0,2,3,4,5]);
 
 if(D.holdings.length) show(D.holdings[0].ticker);
 """
@@ -249,7 +285,7 @@ def render_page(data: dict[str, Any]) -> str:
 
 <div class="card">
  <h2>Holdings</h2>
- <p class="note">Click a row for its full review history. “Book” is the SEC-filed
+ <p class="note">Click a row for its full review history, a column header to sort. “Book” is the SEC-filed
   contracted order book year over year — a dash means the company doesn’t tag it,
   not that it has none.</p>
  <table><thead><tr><th>Ticker</th><th>Verdict</th><th class="num">Value</th>
@@ -276,7 +312,8 @@ def render_page(data: dict[str, Any]) -> str:
   <th class="num hide-s">SPY</th><th class="hide-s">Replaced by</th>
   <th class="num">Edge</th><th>Verdict</th><th class="hide-s">Acted</th></tr></thead>
  <tbody id="sugg"></tbody></table>
- <p class="note" style="margin-top:12px">Click any row for the reasoning behind it.</p></div>
+ <p class="note" style="margin-top:12px">Click any row for the reasoning behind it,
+  a column header to sort (again to reverse).</p></div>
 
 <div class="card" id="why">
  <h2><span id="wt"></span> — why</h2>
