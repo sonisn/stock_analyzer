@@ -13,8 +13,9 @@ and, for a sale, next to the stock it was suggested to switch into:
     graded as holding — good when the stock then beat SPY;
   - WRITE_CALL / SELL_PUT: the underlying's move is shown; the option's
     own outcome isn't reconstructed;
-  - STANDOUT (an earnings standout the daily email showed): a good call
-    when the stock then beat SPY.
+  - STANDOUT / INSIDER_BUYS (an earnings standout or insider-buying
+    cluster the daily email showed): a good call when the stock then beat
+    SPY.
 
 A suggestion repeated on several days is graded once, from the first day.
 "Acted on?" compares today's position with the one held when suggested.
@@ -273,6 +274,7 @@ GROUPS = (
     ("Thesis re-checks (hold unless broken)", lambda g: g["action"] == "REVIEW"),
     ("Option ideas", lambda g: g["action"] in OPTIONS),
     ("Earnings standouts", lambda g: g["action"] == "STANDOUT"),
+    ("Insider-buying clusters", lambda g: g["action"] == "INSIDER_BUYS"),
 )
 
 

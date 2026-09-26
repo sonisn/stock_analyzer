@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from dotenv import load_dotenv
 
@@ -106,6 +106,7 @@ def portfolio_health(
             earnings_results=src.earnings_results if ticker_data else None,
             pick_scorecard=src.pick_scorecard,
             standouts=src.standouts,
+            insider_clusters=src.insider_clusters,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Portfolio health block failed (%s) — sending the email without it", e)
@@ -218,15 +219,26 @@ class _LiveHealthSources:
         return with_revisions(recent, batch_eps_revisions([r["ticker"] for r in recent]))
 
     def pick_scorecard(self) -> dict:
-        from ..discover.pick_scorecard import pick_scorecard, standout_scorecard
+        from ..discover.pick_scorecard import pick_scorecard, suggestion_scorecard
         from ..model.labels import label_candidates
 
         # Only the picks: a few dozen names from the bar store, not the
         # hundreds of screened candidates the monthly model review labels.
         label_candidates(self.db, only_picks=True)
         card = pick_scorecard(self.db)
-        card["standouts"] = standout_scorecard(self.db, yf_gateway.daily_closes)
+        card["standouts"] = suggestion_scorecard(self.db, yf_gateway.daily_closes)
+        card["insider"] = suggestion_scorecard(
+            self.db, yf_gateway.daily_closes, action="INSIDER_BUYS"
+        )
         return card
+
+    def insider_clusters(self) -> list[dict]:
+        from ..data.insider_buying import clusters
+
+        # New in the last few days, as for standouts; a cluster stands for
+        # 90 days and would otherwise fill every email for three months.
+        since = (date.today() - timedelta(days=STANDOUT_EMAIL_DAYS)).isoformat()
+        return [c for c in clusters(self.db, today=date.today()) if c["formed_on"] >= since]
 
     def standouts(self) -> list[dict]:
         from ..discover.earnings_standouts import recent_standouts

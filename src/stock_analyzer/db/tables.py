@@ -245,7 +245,7 @@ class Suggestion(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     suggested_on: str = Field(index=True)  # ISO date
     source: str  # "daily" | "rebalance"
-    action: str  # SELL / TRIM / TAX_LOSS / REVIEW / BUY / ADD / WRITE_CALL / SELL_PUT / STANDOUT
+    action: str  # SELL / TRIM / TAX_LOSS / REVIEW / BUY / ADD / WRITE_CALL / SELL_PUT / STANDOUT / INSIDER_BUYS
     ticker: str = Field(index=True)
     detail: str = ""
     price: float | None = None  # price when suggested, when known
@@ -349,6 +349,22 @@ class EarningsEvent(SQLModel, table=True):
     decided_on: str | None = None  # ISO date status left "pending"
 
 
+class InsiderBuy(SQLModel, table=True):
+    """One open-market purchase (Form 4, code P) by an insider of a watched
+    company (data/insider_buying.py). Purchases only — sales are routine —
+    and pruned after INSIDER_KEEP_DAYS, so a few hundred rows a year."""
+
+    __tablename__ = "insider_buys"
+
+    ticker: str = Field(primary_key=True)
+    filing_id: str = Field(primary_key=True)  # SEC accession number
+    name: str = Field(primary_key=True)
+    filed: str = Field(index=True)  # ISO date the Form 4 was filed
+    traded: str = ""  # ISO date of the purchase
+    shares: float = 0.0
+    price: float | None = None
+
+
 class AnalystAction(SQLModel, table=True):
     """One analyst's rating or price-target action on a stock that reported
     a result worth following (data/analyst_actions.py, filled by the nightly
@@ -389,6 +405,14 @@ class ForecastSnapshot(SQLModel, table=True):
     target_high: float | None = None
     target_low: float | None = None
     recommendation_mean: float | None = None  # 1 strong buy .. 5 sell
+    # From the same quote summary, no extra request. Free short-interest
+    # history is patchy, so this is where ours starts (FINRA's twice-monthly
+    # figure, as Yahoo shows it).
+    short_pct_float: float | None = None  # fraction of the float sold short
+    short_ratio: float | None = None  # days to cover at average volume
+    shares_outstanding: float | None = None
+    institutions_pct: float | None = None  # fraction held by institutions
+    insiders_pct: float | None = None
 
 
 class StockView(SQLModel, table=True):
@@ -411,6 +435,7 @@ class StockView(SQLModel, table=True):
 
 __all__ = [
     "AnalystAction",
+    "InsiderBuy",
     "EarningsEvent",
     "ForecastSnapshot",
     "StockView",

@@ -52,7 +52,13 @@ def test_stores_one_row_per_ticker_per_day(tmp_path):
 def test_fetch_reads_yahoo_shapes(monkeypatch):
     trend = pd.DataFrame({"current": [4.9, 5.1, 22.8, 24.9]}, index=["0q", "+1q", "0y", "+1y"])
     revenue = pd.DataFrame({"avg": [3.3e9, 3.6e9, 12.7e9, 16.2e9]}, index=trend.index)
-    info = {"currentPrice": 199.4, "targetMeanPrice": 241.0, "numberOfAnalystOpinions": 28}
+    info = {
+        "currentPrice": 199.4,
+        "targetMeanPrice": 241.0,
+        "numberOfAnalystOpinions": 28,
+        "shortPercentOfFloat": 0.021,
+        "shortRatio": 1.4,
+    }
     answers = {"info": info, "eps_trend": trend, "revenue_estimate": revenue}
     monkeypatch.setattr(
         fs.yf_gateway, "ticker_call", lambda t, what, fn, default=None: answers[what]
@@ -61,6 +67,9 @@ def test_fetch_reads_yahoo_shapes(monkeypatch):
     assert row["eps_current_year"] == 22.8 and row["eps_next_year"] == 24.9
     assert row["revenue_next_year"] == 16.2e9 and row["analysts"] == 28
     assert row["target_mean"] == 241.0 and row["recommendation_mean"] is None
+    assert row["short_pct_float"] == 0.021 and row["short_ratio"] == 1.4
 
-    answers.update(info={"currentPrice": 1.0}, eps_trend=None, revenue_estimate=None)
+    answers.update(
+        info={"currentPrice": 1.0, "sharesOutstanding": 5e9}, eps_trend=None, revenue_estimate=None
+    )
     assert fs.fetch_forecast("SPAXX") is None

@@ -1,12 +1,15 @@
-"""`earnings-watch` — the nightly earnings-standout check and forecast snapshot.
+"""`earnings-watch` — the nightly earnings-standout check, forecast snapshot
+and insider-buying check.
 
 Records the day's clear beats across the US market, measures how the
 market took them, and confirms the ones analysts then revised up
 (discover/earnings_standouts.py). Standouts show up in the next daily
 email and in the next discover run's universe. Then stores today's
-analyst forecasts for every tracked stock (data/forecast_snapshots.py).
-No LLM calls, no email. Either half failing still runs the other, and
-the job exits non-zero so the cron wrapper sends an alert.
+analyst forecasts for every tracked stock (data/forecast_snapshots.py),
+and the open-market insider purchases at every S&P 500 and tracked
+company (data/insider_buying.py). No LLM calls, no email. A part that
+fails doesn't stop the others, and the job exits non-zero so the cron
+wrapper sends an alert.
 """
 
 from __future__ import annotations
@@ -18,12 +21,13 @@ from dotenv import load_dotenv
 from sqlalchemy import text
 
 from ..config import Settings
-from ..data import bar_store, finnhub, yf_gateway
+from ..data import bar_store, finnhub, insider_buying, yf_gateway
 from ..data.analyst_actions import fetch_analyst_actions
 from ..data.earnings_history import fetch_track_record
 from ..data.eps_revisions import fetch_estimate_change
 from ..data.forecast_snapshots import record_snapshots, tracked_tickers
 from ..data.sec_edgar import load_ticker_cik_map
+from ..data.universe_base import load_base_universe
 from ..db.session import exec_sql, get_session
 from ..discover.earnings_standouts import recent_standouts, watch
 from ..logging import get_logger
@@ -64,6 +68,13 @@ def main() -> None:
     except Exception:
         logger.exception("Forecast snapshot failed")
         failed.append("forecast snapshot")
+    try:
+        today = date.today()
+        watched = list(dict.fromkeys([*load_base_universe(), *tracked_tickers(db, today=today)]))
+        insider_buying.watch(db, today=today, tickers=watched)
+    except Exception:
+        logger.exception("Insider-buying check failed")
+        failed.append("insider buying")
     if failed:
         raise SystemExit(f"failed: {', '.join(failed)}")
 

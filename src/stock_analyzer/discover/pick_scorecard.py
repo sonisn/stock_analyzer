@@ -14,8 +14,9 @@ A pick whose window has closed with no outcome (no price — usually a
 delisting, the worst result a pick can have) is counted as unmeasured,
 not dropped and not left "maturing" forever.
 
-The earnings standouts the daily email showed get the same card
-(`standout_scorecard`), from the first close after the email.
+The earnings standouts and insider-buying clusters the daily email showed
+get the same card (`suggestion_scorecard`), from the first close after
+the email.
 
 No LLM calls. Picks read stored outcomes (`label_candidates(only_picks=True)`
 writes them first); standouts read closes from the bar store.
@@ -81,21 +82,28 @@ def pick_scorecard(
     return _summarize(entries, horizon=horizon, today=today or date.today())
 
 
-def standout_scorecard(
-    db_path: str, closes: Closes, *, horizon: int = HORIZON_DAYS, today: date | None = None
+def suggestion_scorecard(
+    db_path: str,
+    closes: Closes,
+    *,
+    action: str = "STANDOUT",
+    horizon: int = HORIZON_DAYS,
+    today: date | None = None,
 ) -> dict[str, Any]:
-    """The same card for the earnings standouts the daily email showed (the
-    STANDOUT rows of `suggestions`): entry at the first close after the
-    email, exit `horizon` sessions later, against SPY over the same bars.
-    Prices come from `closes` (the bar store), not a stored label."""
+    """The same card for ideas the daily email showed, by their `suggestions`
+    action (STANDOUT: earnings standouts; INSIDER_BUYS: insider-buying
+    clusters): entry at the first close after the email, exit `horizon`
+    sessions later, against SPY over the same bars. Prices come from
+    `closes` (the bar store), not a stored label."""
     today = today or date.today()
     with get_session(db_path) as session:
         rows = exec_sql(
             session,
             text(
-                "SELECT ticker, MIN(suggested_on) FROM suggestions WHERE action = 'STANDOUT' "
+                "SELECT ticker, MIN(suggested_on) FROM suggestions WHERE action = :a "
                 "GROUP BY ticker, substr(suggested_on, 1, 7) ORDER BY 2"
             ),
+            params={"a": action},
         ).all()
     if not rows:
         return _summarize([], horizon=horizon, today=today)

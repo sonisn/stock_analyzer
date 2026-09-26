@@ -31,6 +31,8 @@ between rebalance runs:
     were rewarded and then revised up, confirmed by the nightly
     `earnings-watch` (discover/earnings_standouts.py), each with a chart
     and a long-term view;
+  - insider buying: companies where 2+ insiders bought on the open market
+    in the last 90 days, shown when the cluster forms (data/insider_buying.py);
   - pick scorecard: the discover picks graded six months on, one cohort
     per month picked, against SPY over the same days
     (discover/pick_scorecard.py).
@@ -71,6 +73,8 @@ class PortfolioHealth:
     # Confirmed earnings standouts; the daily job hangs "details" (market
     # data, "chart_cid", "view") on each it can.
     standouts: list[dict[str, Any]] = field(default_factory=list)
+    # New insider-buying clusters (data/insider_buying.clusters rows).
+    insider_clusters: list[dict[str, Any]] = field(default_factory=list)
     sector_by_ticker: dict[str, str] = field(default_factory=dict)
     values: dict[str, float] = field(default_factory=dict)  # ticker -> market value
     units: dict[str, float] = field(default_factory=dict)  # ticker -> shares held
@@ -216,6 +220,7 @@ def build_portfolio_health(
     earnings_results: Callable[[], list[dict[str, Any]]] | None = None,
     pick_scorecard: Callable[[], dict[str, Any]] | None = None,
     standouts: Callable[[], list[dict[str, Any]]] | None = None,
+    insider_clusters: Callable[[], list[dict[str, Any]]] | None = None,
 ) -> PortfolioHealth:
     """`reinvest(held, over_cap_sectors, n)` returns up to `n` ranked ideas
     for sale proceeds; it is only called when something suggests a sale."""
@@ -303,6 +308,12 @@ def build_portfolio_health(
             health.standouts = standouts()
 
     attempt("earnings standouts", beats)
+
+    def insiders() -> None:
+        if insider_clusters is not None:
+            health.insider_clusters = insider_clusters()
+
+    attempt("insider buying", insiders)
     return health
 
 
@@ -451,6 +462,7 @@ def render_health_html(h: PortfolioHealth) -> str:
         _earnings_results_html(h),
         _upcoming_earnings_html(h),
         render_standouts_html(h),
+        render_insider_clusters_html(h),
         _pick_scorecard_html(h),
     ]
     if not any(alerts):
@@ -588,6 +600,7 @@ def _pick_scorecard_html(h: PortfolioHealth) -> str:
     parts = [
         _scorecard_block(sc, "Discover picks", "Picked", "pick"),
         _scorecard_block(sc.get("standouts") or {}, "Earnings standouts", "Shown", "standout"),
+        _scorecard_block(sc.get("insider") or {}, "Insider-buying clusters", "Shown", "cluster"),
     ]
     if not any(parts):
         return ""
@@ -820,6 +833,33 @@ def render_standouts_html(h: PortfolioHealth) -> str:
             parts.append(_stock_detail_html(s["ticker"], data))
         parts.append(_analyst_actions_html(s))
     return "".join(parts)
+
+
+def render_insider_clusters_html(h: PortfolioHealth) -> str:
+    """Several insiders buying their own stock with their own money."""
+    if not h.insider_clusters:
+        return ""
+    return (
+        "<h3>Insider buying</h3>"
+        '<p style="font-size:13px;color:#6b7280">Two or more executives or directors each '
+        "bought $10,000+ on the open market in the last 90 days. Over 2015-2026, S&amp;P 500 "
+        "stocks like this beat SPY by about 9.5% on average over the next year (median +3%), against "
+        "about 3% with no buying — promising, not proven, and graded in the scorecard "
+        "below. An idea to look at, not a buy signal.</p>"
+        + _table(
+            ["Ticker", "Insiders buying", "Bought", "Who"],
+            [
+                [
+                    html.escape(c["ticker"]) + (" (held)" if c["ticker"] in h.values else ""),
+                    str(c["buyers"]),
+                    _money(c["value_usd"]),
+                    html.escape(", ".join(c["names"][:4]))
+                    + (f" and {len(c['names']) - 4} more" if len(c["names"]) > 4 else ""),
+                ]
+                for c in h.insider_clusters
+            ],
+        )
+    )
 
 
 def _analysts_cell(a: dict[str, Any] | None) -> str:
@@ -1529,6 +1569,25 @@ def suggestion_rows(h: PortfolioHealth, *, today: str) -> list[dict[str, Any]]:
                     f"{_pct(st.get('revenue_surprise_pct'))} vs estimates, "
                     f"{_pct(st.get('reaction_pct'))} vs SPY on the report, next-year EPS "
                     f"estimate {_pct(st.get('revision_pct'))}"
+                ),
+                "price": None,
+                "units_held": None,
+                "reinvest_into": None,
+            }
+        )
+    for c in h.insider_clusters:
+        t = c["ticker"]
+        if t in h.values:
+            continue
+        rows.append(
+            {
+                "suggested_on": today,
+                "source": "daily",
+                "action": "INSIDER_BUYS",
+                "ticker": t,
+                "detail": (
+                    f"{c['buyers']} insiders bought {_money(c['value_usd'])} on the open "
+                    f"market in 90 days: {', '.join(c['names'][:4])}"
                 ),
                 "price": None,
                 "units_held": None,

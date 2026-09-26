@@ -236,8 +236,11 @@ def _score_trend(
 # one and the ranking confirms the user's prior instead of testing it.
 # An earnings standout IS evidence, but the same evidence the trend score
 # already rewards (rising EPS revisions); counting it here too would score
-# it twice.
-_NON_EVIDENCE_SOURCES = frozenset({"index", "watchlist", "holding", "earnings_standout"})
+# it twice. An insider cluster is evidence too, but not yet proven enough
+# to score (data/insider_buying.py): eligible, graded live, no bonus.
+_NON_EVIDENCE_SOURCES = frozenset(
+    {"index", "watchlist", "holding", "earnings_standout", "insider_cluster"}
+)
 
 
 def _score_conviction(u: dict[str, Any]) -> tuple[float, dict[str, float]]:

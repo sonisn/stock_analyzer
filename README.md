@@ -751,6 +751,35 @@ tracked stock (`forecast_snapshots`, about 3.5 minutes of paced Yahoo
 requests). Yahoo keeps only 90 days of estimate history; this keeps all
 of it.
 
+### Insider buying — and what was tested and left out
+
+The history test covers S&P 500 members; the nightly check covers the
+S&P 500 plus every tracked stock (holdings, a year of picks, recent screen
+survivors, standouts) — about 520 companies. It checks each for
+open-market purchases by insiders (Form 4, code P, from Finnhub — about
+ten minutes at the free tier's pace) and stores them (`insider_buys`).
+When two or more different insiders have each bought $10,000+ within 90
+days (the floor drops plan and dividend-reinvestment buys, and made the
+history test slightly stronger), the
+daily email shows it the day the cluster forms, discover treats the stock
+as eligible (no score bonus), and the suggestions ledger records it so
+the quarterly review and the six-month scorecard grade it.
+
+Everything added here was tested on 2015-2026 history first (S&P 500
+current members, month-ends, point in time by SEC filing date, forward
+6- and 12-month return vs SPY, t-statistics corrected for overlapping
+windows):
+
+| Signal | 12-month result | Verdict |
+|---|---|---|
+| 2+ insiders buying $10,000+ each in 90 days | +9.5% vs SPY on average (median +3.0%), against +3.2% (median −1.4%) with none; IC +0.020, t 2.07 at 6 months / 1.85 at 12, same sign both halves | **used** — as eligibility and a graded idea, not a score, until live results confirm it |
+| Net share issuance (buybacks vs dilution) | IC −0.030, t −1.2; the heaviest issuers did best | not used |
+| Analyst target raises / upgrades (3 months) | IC −0.01 to 0.00, \|t\| < 1.4 | display only |
+
+Current-member samples flatter every group equally (stocks that fell out
+of the index are missing), so the gaps between groups are the result,
+not the levels.
+
 `ops doctor` runs Sunday evenings from cron (`scripts/run_doctor.sh`) and
 alerts on a revoked key, a failed login, a retired model id, Yahoo
 prices or estimates no longer coming back, or a disk running low (under 10% free, or under 50 GB) before Monday's paid runs.
@@ -837,8 +866,9 @@ runs don't re-download it:
 | `ticker_reference` | sector / industry / name (refreshed after 30 days) and next earnings date (after 3 days, or once it has passed) | one row per stock, overwritten; unused rows dropped after 365 days |
 | `stock_views` | the daily email's latest long-term view per stock, plus the headlines already sent | one row per holding, overwritten (links capped at 40); dropped 90 days after the last refresh |
 | `portfolio_snapshots`, `suggestions` | daily value, advice ledger | one row per day / per advice |
+| `insider_buys` | open-market purchases (Form 4, code P) at S&P 500 and tracked companies | a few hundred rows a year; dropped after 400 days |
 | `analyst_actions` | rating and price-target actions by firm for stocks with a followed earnings report, from 90 days before it | tens of rows per stock |
-| `forecast_snapshots` | each weekday night, analysts' consensus for every tracked stock (~175: holdings, a year of picks, recent screen survivors, standouts): EPS and revenue for this and next fiscal year, analyst count, price targets, recommendation — point in time, so revisions can become model features without look-ahead | ~175 rows per weekday (~4 MB/year); kept forever |
+| `forecast_snapshots` | each weekday night, analysts' consensus for every tracked stock (~175: holdings, a year of picks, recent screen survivors, standouts): EPS and revenue for this and next fiscal year, analyst count, price targets, recommendation — plus short interest (share of float, days to cover), shares outstanding and ownership from the same request — point in time, so revisions and short interest can become model features without look-ahead | ~175 rows per weekday (~4 MB/year); kept forever |
 | `earnings_events` | clear earnings beats anywhere in the market and reports by past picks, with the reaction, the revision and the verdict (`earnings-watch`) | tens of rows a week in earnings season; dropped after 365 days |
 
 Tax lots, cash flows and dividends read the stored activity history, so a
@@ -872,7 +902,10 @@ matches — no edits at daylight-saving changes:
 30 13,14 * * 1-5 NY_AT=09:30 /path/to/stock_analyzer/scripts/run_portfolio.sh
 ```
 
-The weekly insider email pairs the news-based summary with open-market
+The insider email (`analyze-insiders`, no longer scheduled: congressional
+trades show no edge since the STOCK Act and are disclosed up to 45 days
+late; insider buying clusters now come from the nightly job) pairs the
+news-based summary with open-market
 Form 4 buys and sells filed on your holdings and watchlist (Finnhub, no
 LLM). When every news search fails — e.g. the Tavily quota is spent — the
 email says so instead of arriving empty, and when every source fails it is

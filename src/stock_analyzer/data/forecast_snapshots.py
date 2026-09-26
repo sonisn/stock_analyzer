@@ -31,6 +31,19 @@ from . import yf_gateway
 logger = get_logger(__name__)
 
 MAX_TICKERS = 250
+# A row is kept only when at least one of these is known: a fund with a
+# price and a share count but no analyst coverage has nothing to track.
+_FORECASTS = (
+    "eps_current_year",
+    "eps_next_year",
+    "revenue_current_year",
+    "revenue_next_year",
+    "analysts",
+    "target_mean",
+    "target_high",
+    "target_low",
+    "recommendation_mean",
+)
 _FIELDS = (
     "price",
     "eps_current_year",
@@ -42,6 +55,11 @@ _FIELDS = (
     "target_high",
     "target_low",
     "recommendation_mean",
+    "short_pct_float",
+    "short_ratio",
+    "shares_outstanding",
+    "institutions_pct",
+    "insiders_pct",
 )
 
 
@@ -99,8 +117,13 @@ def fetch_forecast(ticker: str) -> dict[str, Any] | None:
         "target_high": _num(info, "targetHighPrice"),
         "target_low": _num(info, "targetLowPrice"),
         "recommendation_mean": _num(info, "recommendationMean"),
+        "short_pct_float": _num(info, "shortPercentOfFloat"),
+        "short_ratio": _num(info, "shortRatio"),
+        "shares_outstanding": _num(info, "sharesOutstanding"),
+        "institutions_pct": _num(info, "heldPercentInstitutions"),
+        "insiders_pct": _num(info, "heldPercentInsiders"),
     }
-    forecasts = [v for k, v in row.items() if k != "price"]
+    forecasts = [row[k] for k in _FORECASTS]
     return row if any(v is not None for v in forecasts) else None
 
 

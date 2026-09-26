@@ -3,6 +3,7 @@ except the market-themes pass."""
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from agno.workflow.types import StepInput, StepOutput
@@ -101,10 +102,20 @@ class DataSteps(PipelineBase):
         except Exception as e:  # noqa: BLE001 — an idea source, not a requirement
             logger.info("Earnings standouts unavailable for the universe (%s)", e)
             standouts = ()
+        try:
+            from ...data.insider_buying import clusters
+
+            insider = tuple(
+                c["ticker"] for c in clusters(self.settings.discover_db_path, today=date.today())
+            )
+        except Exception as e:  # noqa: BLE001 — an idea source, not a requirement
+            logger.info("Insider clusters unavailable for the universe (%s)", e)
+            insider = ()
         universe = build_universe(
             watchlist=self.settings.discover_watchlist,
             holdings=holdings_tickers,
             standouts=standouts,
+            insider_clusters=insider,
         )
         if not universe:
             raise RuntimeError(

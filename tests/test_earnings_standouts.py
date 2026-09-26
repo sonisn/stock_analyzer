@@ -198,7 +198,7 @@ def test_track_record_reads_the_year_before_the_report():
 
 def test_a_shown_standout_is_recorded_and_graded_six_months_on(tmp_path):
     from stock_analyzer.db.repository import record_suggestions
-    from stock_analyzer.discover.pick_scorecard import standout_scorecard
+    from stock_analyzer.discover.pick_scorecard import suggestion_scorecard
     from stock_analyzer.reporting.health import suggestion_rows
 
     held = {"Brokerage": [{"ticker": "HELD", "units": 1, "price": 10.0}]}
@@ -223,7 +223,7 @@ def test_a_shown_standout_is_recorded_and_graded_six_months_on(tmp_path):
         flat = pd.Series(100.0, index=idx)
         return {s: (flat if s == "SPY" else up) for s in symbols if s != "NEW"}
 
-    card = standout_scorecard(db, closes, today=date(2026, 9, 26))
+    card = suggestion_scorecard(db, closes, today=date(2026, 9, 26))
     (jan,) = card["cohorts"]
     assert (jan["cohort"], jan["picks"]) == ("Jan 2026", 1)  # two days, one decision
     entry = 100 + idx.get_loc(pd.Timestamp("2026-01-06"))  # first close after the email
