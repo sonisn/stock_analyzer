@@ -12,8 +12,11 @@
 30   12,13   *    *         1-5  NY_AT=08:30 /home/sonisnehal/stock_analyzer/scripts/run_update.sh
 # 9:30 AM NY, weekdays: daily portfolio email.
 30   13,14   *    *         1-5  NY_AT=09:30 /home/sonisnehal/stock_analyzer/scripts/run_portfolio.sh
-# 9:35 AM NY, Mondays: insider / congressional / Form 4 email.
-35   13,14   *    *         1    NY_AT=09:35 /home/sonisnehal/stock_analyzer/scripts/run_insiders.sh
+# (The Monday insider / congressional email is no longer scheduled, 2026-09-26:
+# congressional trades show no edge after the STOCK Act and arrive up to 45
+# days late, and it spent a dozen Tavily searches a week. Tested insider
+# buying clusters come from the nightly job instead. `uv run analyze-insiders`
+# still works by hand.)
 # 4:15 PM NY, weekdays: static dashboard, after the 4:00 PM close so the day's prices are final.
 15   20,21   *    *         1-5  NY_AT=16:15 /home/sonisnehal/stock_analyzer/scripts/run_dashboard.sh
 # 11:00 AM NY, 1st of the month: model review email.
@@ -22,7 +25,7 @@
 35   13,14   1-7  1,4,7,10  *    NY_AT=09:35 /home/sonisnehal/stock_analyzer/scripts/run_quarterly_review.sh
 # 8:40 AM NY, Dec 1-7: year-end tax planner (acts only on December's first trading day).
 40   12,13   1-7  12        *    NY_AT=08:40 /home/sonisnehal/stock_analyzer/scripts/run_tax_planner.sh
-# 10:00 PM NY, weekdays (UTC Tue-Sat): earnings-standout check + forecast snapshot, no LLM, no email.
+# 10:00 PM NY, weekdays (UTC Tue-Sat): earnings standouts + forecast snapshot + insider buying, no LLM, no email.
 0    2,3     *    *         2-6  NY_AT=22:00 /home/sonisnehal/stock_analyzer/scripts/run_earnings_watch.sh
 # 8:00 PM NY, Sundays (UTC Mon): health check of keys, logins, model ids and disk space; alerts on failure.
 0    0,1     *    *         1    NY_AT=20:00 /home/sonisnehal/stock_analyzer/scripts/run_doctor.sh
