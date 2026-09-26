@@ -234,6 +234,22 @@ def _data_checks(settings: Settings) -> list[Check]:
         )
         return f"{len(accounts or [])} account(s)"
 
+    def yahoo_check() -> str:
+        """The most-used source, unofficial and able to break without notice:
+        prices (bars, quotes) and analyst estimates are separate endpoints,
+        and either can fail while the other works."""
+        from ..data import yf_gateway
+
+        bars = yf_gateway.ticker_call("SPY", "doctor", lambda t: t.history(period="5d"))
+        if bars is None or bars.empty:
+            raise RuntimeError("no SPY price history — daily prices and the bar store are stuck")
+        trend = yf_gateway.ticker_call("AAPL", "doctor", lambda t: t.eps_trend)
+        if trend is None or trend.empty:
+            raise RuntimeError(
+                "no AAPL EPS trend — estimates, revisions, standouts and snapshots are blind"
+            )
+        return f"SPY {float(bars['Close'].iloc[-1]):.2f}; AAPL next-year EPS estimate ok"
+
     def smtp_check() -> str:
         import smtplib
 
@@ -283,6 +299,7 @@ def _data_checks(settings: Settings) -> list[Check]:
     return [
         ("Database", database_check),
         (".env permissions", env_file_check),
+        ("Yahoo", yahoo_check),
         ("Finnhub", finnhub_check),
         ("FRED", fred_check),
         ("SnapTrade", snaptrade_check),
