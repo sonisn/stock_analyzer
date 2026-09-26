@@ -357,9 +357,6 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--open", action="store_true", help="print the path when done")
     args = parser.parse_args(argv)
 
-    from ..market_time import use_market_timezone
-
-    use_market_timezone()
     load_dotenv()
     settings = Settings.from_env()
     data = collect(settings, today=date.today())

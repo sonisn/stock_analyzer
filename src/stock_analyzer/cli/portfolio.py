@@ -466,9 +466,6 @@ def _chart_cid(ticker: str) -> str:
 
 
 def main() -> None:
-    from ..market_time import use_market_timezone
-
-    use_market_timezone()
     load_dotenv()
     # Pacing knobs live in the environment, and these modules are
     # imported before `.env` is loaded — re-read them now.

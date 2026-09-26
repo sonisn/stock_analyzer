@@ -43,9 +43,6 @@ def _section(title: str, fn) -> str:
 
 
 def main(argv: list[str] | None = None) -> None:
-    from ..market_time import use_market_timezone
-
-    use_market_timezone()
     import argparse
 
     parser = argparse.ArgumentParser(prog="model-review", description=__doc__.split("\n\n")[0])

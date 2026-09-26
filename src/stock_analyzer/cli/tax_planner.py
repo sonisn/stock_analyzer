@@ -96,9 +96,6 @@ def build_plan(settings: Settings, today: date) -> tuple[str, str]:
 def main(argv: list[str] | None = None) -> None:
     import argparse
 
-    from ..market_time import use_market_timezone
-
-    use_market_timezone()
     parser = argparse.ArgumentParser(prog="tax-planner", description=__doc__.split("\n\n")[0])
     parser.add_argument("--force", action="store_true", help="run on any day")
     parser.add_argument(

@@ -67,9 +67,6 @@ def _point_in_time(args, universe: list[str], panel, settings):
 
 
 def main(argv: list[str] | None = None) -> None:
-    from ..market_time import use_market_timezone
-
-    use_market_timezone()
     load_dotenv()
     parser = argparse.ArgumentParser(prog="train-model", description=__doc__.split("\n\n")[0])
     parser.add_argument("--horizon", type=int, default=63, choices=DATASET_HORIZONS)

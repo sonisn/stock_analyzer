@@ -265,9 +265,6 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("doctor", help="check keys, model ids and data sources")
     args = parser.parse_args(argv)
 
-    from ..market_time import use_market_timezone
-
-    use_market_timezone()
     load_dotenv()
     settings = Settings.from_env()
     if args.cmd == "alert":

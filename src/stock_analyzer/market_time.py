@@ -2,8 +2,8 @@
 
 The server clock is UTC while cron fires on New York time, so a manual run
 after ~8 pm Eastern would otherwise stamp picks, suggestions, earnings
-countdowns and email subjects with tomorrow's date. Each CLI calls
-`use_market_timezone()` first; `date.today()` / `datetime.now()` then
+countdowns and email subjects with tomorrow's date. Importing the package
+calls `use_market_timezone()` first; `date.today()` / `datetime.now()` then
 mean the New York calendar day everywhere. MARKET_TZ overrides it.
 """
 

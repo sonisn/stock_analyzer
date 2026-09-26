@@ -38,9 +38,6 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
 
-    from ..market_time import use_market_timezone
-
-    use_market_timezone()
     load_dotenv()
     db = Settings.from_env().discover_db_path
     for horizon in [args.horizon] if args.horizon else [21, 63]:

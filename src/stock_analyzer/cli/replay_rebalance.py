@@ -72,9 +72,6 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--out", default=None, help="write the plan text here")
     args = parser.parse_args(argv)
 
-    from ..market_time import use_market_timezone
-
-    use_market_timezone()
     load_dotenv()
     settings = Settings.from_env()
     run_id, reviews, ranker_text = load_inputs(settings.discover_db_path, args.run)
