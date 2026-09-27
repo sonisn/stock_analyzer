@@ -161,6 +161,14 @@ class Settings(BaseSettings):
     # check on held former picks, sector weight vs the cap, tax-loss
     # harvesting candidates, earnings this week. No LLM calls.
     portfolio_health: bool = True
+    # Alerts between the weekly emails, from the after-close snapshot
+    # (reporting/drop_alert.py): a holding falling more than this many of
+    # its own usual daily moves (~7 a year on the 2026 holdings, where a
+    # flat 5% would have been ~200), and a written call's strike coming
+    # within this percent of the price.
+    holding_alerts: bool = True
+    holding_alert_sigmas: float = 3.0
+    holding_alert_call_pct: float = 5.0
     # Whether the daily email proposes stocks you do NOT own: the "Ideas
     # for new money" blocks and the "reinvest the proceeds in X" tail on
     # a sale line. Off leaves every action on a current holding intact —

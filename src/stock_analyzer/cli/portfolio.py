@@ -3,9 +3,11 @@
 The email goes out weekly (Wednesday morning, scripts/crontab): the
 holdings are kept 6-12 months and more, and a daily email was mostly
 noise. `--snapshot-only` runs every weekday after the close instead:
-the portfolio's value at the day's closes, no model calls and no email,
-so the performance, vs-SPY and goal-pace history stays daily and a
-deposit is still told apart from a gain.
+the portfolio's value at the day's closes, no model calls, so the
+performance, vs-SPY and goal-pace history stays daily and a deposit is
+still told apart from a gain. It emails only on the rare day a holding
+falls far past its usual move or a written call nears its strike
+(reporting/drop_alert.py).
 """
 
 from __future__ import annotations
@@ -614,23 +616,101 @@ def _chart_cid(ticker: str) -> str:
     return "chart-" + ticker.replace(".", "-").replace("/", "-")
 
 
-def closing_quotes(tickers: list[str], *, today: date) -> dict[str, float]:
-    """{ticker: latest close} from the bar store (one batched download for
-    whatever it lacks)."""
-    closes = yf_gateway.daily_closes(tickers, today - timedelta(days=10), what="snapshot")
-    return {t.upper(): float(c["Close"][-1]) for t, c in closes.items() if c.height}
+def closing_series(tickers: list[str], *, today: date) -> dict[str, list[tuple[date, float]]]:
+    """{ticker: [(day, close), ...]} for ~4 months, from the bar store (one
+    batched download for whatever it lacks) — enough for a holding's usual
+    daily move as well as today's close."""
+    closes = yf_gateway.daily_closes(tickers, today - timedelta(days=130), what="snapshot")
+    return {
+        t.upper(): list(zip(c["date"].to_list(), c["Close"].to_list(), strict=True))
+        for t, c in closes.items()
+        if c.height
+    }
+
+
+def _thesis_checks(db: str, held: set[str]) -> list[dict]:
+    """The stored-pick thesis check for `held` (INTACT/WATCH/BROKEN/...)."""
+    from ..data.eps_revisions import batch_eps_revisions
+    from ..discover.thesis_tracker import check_theses, load_open_picks, thesis_report_data
+
+    picks = [p for p in load_open_picks(db) if p.ticker in held]
+    if not picks:
+        return []
+    revisions = batch_eps_revisions([p.ticker for p in picks])
+    return thesis_report_data(check_theses(picks, eps_revisions=revisions))
+
+
+def holding_alerts(
+    settings: Settings,
+    tickers: list[str],
+    series: dict[str, list[tuple[date, float]]],
+    *,
+    today: date,
+) -> None:
+    """Email the day's unusual drops and covered calls nearing their strike
+    (reporting/drop_alert.py). Silent on an ordinary day."""
+    from ..data.brokerage import fetch_covered_call_obligations
+    from ..data.reference import profiles
+    from ..discover.ibd_ratings import SECTOR_ETFS, SEMIS_INDUSTRY
+    from ..reporting.drop_alert import add_context, build_alert, find_calls_near_strike, find_drops
+
+    drops = find_drops(
+        {t: series[t] for t in tickers if t in series},
+        today=today,
+        sigmas=settings.holding_alert_sigmas,
+    )
+    try:
+        calls = fetch_covered_call_obligations()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Covered calls unreadable for the alert check (%s)", e)
+        calls = {}
+    near = find_calls_near_strike(
+        calls, series, today=today, within_pct=settings.holding_alert_call_pct
+    )
+    if drops:
+        db = settings.discover_db_path
+        dropped = [d.ticker for d in drops]
+        sectors = profiles(dropped, db)
+        etf_for = {
+            t: "SMH"
+            if p.get("industry") == SEMIS_INDUSTRY
+            else SECTOR_ETFS.get(p.get("sector") or "")
+            for t, p in sectors.items()
+        }
+        etf_for = {t: e for t, e in etf_for.items() if e}
+        series = {**series, **closing_series(sorted(set(etf_for.values())), today=today)}
+        thesis = {c["ticker"]: c for c in _thesis_checks(db, set(dropped))}
+        add_context(drops, series, db=db, sectors=sectors, etf_for=etf_for, thesis=thesis)
+    alert = build_alert(drops, near)
+    if alert is None:
+        logger.info("Holding alerts: nothing unusual today")
+        return
+    subject, body = alert
+    if not settings.email_to:
+        print(subject)
+        return
+    SmtpServer().send_email(settings.email_to, subject, body, content_type="html")
+    logger.info("Holding alert sent: %s", subject)
 
 
 def snapshot_only(settings: Settings, *, today: date) -> None:
-    """Record today's portfolio value at the closing prices. No model calls,
-    no email."""
+    """Record today's portfolio value at the closing prices, then check for
+    an unusual drop worth an email. No model calls."""
     holdings = fetch_portfolio_holdings()
     tickers, _ = listed_tickers(holdings)
-    prices, notes = reconcile_prices(holdings, closing_quotes(tickers, today=today))
+    series = closing_series([*tickers, "SPY"], today=today)
+    quotes = {t: bars[-1][1] for t, bars in series.items() if t in tickers}
+    prices, notes = reconcile_prices(holdings, quotes)
     for note in notes:
         logger.info("Snapshot price note: %s", note)
     record_portfolio_snapshot(settings, holdings, prices=prices)
     logger.info("Portfolio snapshot recorded for %s (%d holdings)", today, len(tickers))
+    if not settings.holding_alerts:
+        return
+    try:
+        holding_alerts(settings, tickers, series, today=today)
+    except Exception as e:  # noqa: BLE001 — the snapshot is already stored
+        logger.warning("Holding alert check failed (%s)", e)
 
 
 def main() -> None:
@@ -640,7 +720,7 @@ def main() -> None:
     parser.add_argument(
         "--snapshot-only",
         action="store_true",
-        help="record today's portfolio value at the close; no analysis, no email",
+        help="record today's portfolio value at the close; email only an unusual drop",
     )
     args = parser.parse_args()
     load_dotenv()
