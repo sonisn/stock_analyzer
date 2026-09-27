@@ -29,6 +29,11 @@ _PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-sonnet-5": (2.0, 10.0),
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
+    # OpenRouter: the dearest fp8 host's rate (reads route to fp8 hosts,
+    # cheapest first), so the pre-call cap estimate errs high. The client
+    # records the billed cost OpenRouter returns. (2026-09-27)
+    "z-ai/glm-5.3": (1.4, 4.4),
+    "z-ai/glm-5.3-flash": (0.15, 0.6),
 }
 # Cache reads bill at ~0.1x the input rate, 5-minute cache writes at 1.25x.
 _CACHE_READ_MULT = 0.1

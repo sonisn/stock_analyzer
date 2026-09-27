@@ -586,7 +586,53 @@ class StockNews(SQLModel, table=True):
     snippet: str | None = None
 
 
+class OpenRouterSpend(SQLModel, table=True):
+    """What OpenRouter billed, per day, model and stage — the ledger the
+    daily cap is checked against (openrouter.py). A few rows a day."""
+
+    __tablename__ = "openrouter_spend"
+
+    day: str = Field(primary_key=True)  # ISO date, UTC (OpenRouter bills in UTC)
+    model: str = Field(primary_key=True)
+    stage: str = Field(primary_key=True)
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+
+
+class FilingFacts(SQLModel, table=True):
+    """Structured facts read out of a 10-Q/10-K/20-F by an open model
+    (agents/filing_reader.py), each with a supporting quote checked against
+    the filing text. Tier "A" (stocks acted on) keeps its two newest
+    filings, so a quarter can be compared with the one before; tier "B"
+    (the rest of the universe) keeps one. ~5 KB a row."""
+
+    __tablename__ = "filing_facts"
+
+    accession: str = Field(primary_key=True)
+    ticker: str = Field(index=True)
+    tier: str = "B"
+    form: str = ""
+    filed_on: str = ""  # ISO date
+    period_end: str | None = None  # ISO date the filing reports on
+    url: str = ""
+    read_on: str = ""  # ISO date
+    reader_model: str = ""
+    provider: str | None = None  # the host that served the read
+    facts: str = ""  # JSON, the reader's answer
+    quotes_checked: int = 0
+    quotes_found: int = 0  # found verbatim (normalised) in the filing text
+    flagged: bool = False
+    flag_reasons: str = ""  # "; "-joined
+    # The bulk model whose flagged read this one replaced, if any.
+    escalated_from: str | None = None
+    cost_usd: float = 0.0
+
+
 __all__ = [
+    "FilingFacts",
+    "OpenRouterSpend",
     "StockNews",
     "IbdSector",
     "IbdHistory",

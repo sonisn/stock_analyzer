@@ -82,6 +82,7 @@ score-attribution = "stock_analyzer.cli.score_attribution:main"
 ops = "stock_analyzer.cli.ops:main"
 earnings-watch = "stock_analyzer.cli.earnings_watch:main"
 ibd-ratings = "stock_analyzer.cli.ibd:main"
+read-filings = "stock_analyzer.cli.filings:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -258,3 +258,206 @@ def batch_quarterly_mda(tickers: list[str]) -> dict[str, dict[str, Any]]:
             if r:
                 results[ticker] = r
     return results
+
+
+# --- whole filings for the filing reader (agents/filing_reader.py) ----------
+# The reader wants more than the 6k-char excerpts above: the full MD&A and
+# the risk-factor section, with table rows kept as rows so a backlog or
+# segment figure still reads as "label | value".
+
+_DROP_BLOCKS_RE = re.compile(r"<(ix:header|script|style|head)\b.*?</\1>", re.IGNORECASE | re.DOTALL)
+_BREAK_RE = re.compile(r"<br\s*/?>|</(?:p|div|tr|li|h\d|table)>", re.IGNORECASE)
+_CELL_RE = re.compile(r"</t[dh]>", re.IGNORECASE)
+_SPACES_RE = re.compile(r"[ \t\xa0]+")
+
+
+def filing_text(raw_html: str) -> str:
+    """Readable text of a filing: one line per paragraph or table row,
+    cells joined by " | ", inline-XBRL header dropped."""
+    body = _DROP_BLOCKS_RE.sub(" ", raw_html)
+    body = _BREAK_RE.sub("\n", body)
+    body = _CELL_RE.sub(" | ", body)
+    body = html.unescape(_TAG_RE.sub(" ", body))
+    lines = []
+    for line in body.split("\n"):
+        line = _SPACES_RE.sub(" ", line).strip(" |")
+        # A row of empty cells or a lone page number is layout, not text.
+        if len(line) > 3 and not line.isdigit():
+            lines.append(line)
+    return "\n".join(lines)
+
+
+# Section headers by form. Each is searched from its LAST match, since the
+# first is usually the table of contents; a section runs to the first end
+# marker after it.
+# "Item 2.", "ITEM 2 —", "Item 2. | Management" (a table cell) all appear
+# in real filings.
+_SEP = r"[\s.:|\-\u2013\u2014]*"
+
+
+def _loose(word: str) -> str:
+    """`word`, allowing one stray space between letters: filings styled
+    letter by letter come out as "RIS K FACTORS" once tags are stripped."""
+    return r"\s?".join(re.escape(ch) for ch in word)
+
+
+_L = {
+    w: _loose(w)
+    for w in (
+        "management",
+        "discussion",
+        "quantitative",
+        "controls",
+        "risk",
+        "factors",
+        "unregistered",
+        "defaults",
+        "other",
+        "exhibits",
+        "financial",
+        "unresolved",
+        "cybersecurity",
+        "properties",
+        "operating",
+        "directors",
+        "information",
+    )
+}
+
+
+_ITEM = r"i\s?t\s?e\s?m"  # "Ite m 2." happens too
+_HEADING = r"^\W*(?:part\s+i+\W*)?"
+_SECTIONS: dict[str, dict[str, tuple[str, tuple[str, ...]]]] = {
+    "10-Q": {
+        "mda": (
+            rf"{_ITEM}\s*2{_SEP}{_L['management']}.{{0,5}}s?\s+{_L['discussion']}",
+            (rf"{_ITEM}\s*3{_SEP}{_L['quantitative']}", rf"{_ITEM}\s*4{_SEP}{_L['controls']}"),
+        ),
+        "risks": (
+            rf"{_ITEM}\s*1a{_SEP}{_L['risk']}\s+{_L['factors']}",
+            (
+                rf"{_ITEM}\s*2{_SEP}{_L['unregistered']}",
+                rf"{_ITEM}\s*3{_SEP}{_L['defaults']}",
+                rf"{_ITEM}\s*5{_SEP}{_L['other']}",
+                rf"{_ITEM}\s*6{_SEP}{_L['exhibits']}",
+            ),
+        ),
+    },
+    # Foreign private issuers' annual report: Item 5 is their MD&A, and
+    # the risk factors sit under Item 3 as "D. Risk Factors".
+    "20-F": {
+        "mda": (
+            rf"{_ITEM}\s*5{_SEP}{_L['operating']}\s+and\s+{_L['financial']}\s+review",
+            (rf"{_ITEM}\s*6{_SEP}{_L['directors']}",),
+        ),
+        "risks": (
+            rf"(?:{_ITEM}\s*3{_SEP})?d{_SEP}{_L['risk']}\s+{_L['factors']}",
+            (rf"{_ITEM}\s*4{_SEP}{_L['information']}", rf"{_ITEM}\s*4a{_SEP}{_L['unresolved']}"),
+        ),
+    },
+    "10-K": {
+        "mda": (
+            rf"{_ITEM}\s*7{_SEP}{_L['management']}.{{0,5}}s?\s+{_L['discussion']}",
+            (rf"{_ITEM}\s*7a{_SEP}{_L['quantitative']}", rf"{_ITEM}\s*8{_SEP}{_L['financial']}"),
+        ),
+        "risks": (
+            rf"{_ITEM}\s*1a{_SEP}{_L['risk']}\s+{_L['factors']}",
+            (
+                rf"{_ITEM}\s*1b{_SEP}{_L['unresolved']}",
+                rf"{_ITEM}\s*1c{_SEP}{_L['cybersecurity']}",
+                rf"{_ITEM}\s*2{_SEP}{_L['properties']}",
+            ),
+        ),
+    },
+}
+
+
+# When no numbered heading leads to a real section: a short line that IS the
+# section's title, with no "Item" before it. Some filings number only the
+# table of contents (DRVN, DBD), so the numbered match finds the contents
+# line and nothing after it.
+_UNNUMBERED = {
+    "mda": rf"{_L['management']}.{{0,5}}s?\s+{_L['discussion']}\s+and\s+analysis[^\n]{{0,100}}$",
+}
+_UNNUMBERED_ENDS = (
+    rf"{_L['quantitative']}\s+and\s+qualitative\s+disclosures?[^\n]{{0,80}}$",
+    rf"{_L['controls']}\s+and\s+procedures[^\n]{{0,40}}$",
+)
+
+
+def _cut(text: str, head: str, ends: tuple[str, ...]) -> str | None:
+    """The text after the LAST `head` that is followed by a real section
+    (a 10-Q's "Item 1A" in Part II often just points at the 10-K), up to
+    the first end marker. Headings start a line: "see Item 3 - Quantitative
+    ... included in" mid-sentence is a cross-reference, and ending there
+    cut Hershey's MD&A to 3k characters."""
+    flags = re.IGNORECASE | re.MULTILINE
+    enders = [re.compile(_HEADING + end, flags) for end in ends]
+    for m in reversed(list(re.finditer(_HEADING + head, text, flags))):
+        stop = len(text)
+        for e in enders:
+            found = e.search(text, m.end())
+            if found:
+                stop = min(stop, found.start())
+        section = text[m.end() : stop].strip()
+        if len(section) >= 400:
+            return section
+    return None
+
+
+def filing_sections(text: str, form: str, *, max_chars: dict[str, int]) -> dict[str, str]:
+    """{"mda": ..., "risks": ...} cut from a filing's text, each capped at
+    `max_chars[name]`. A section whose header isn't found (or is under a
+    few hundred characters, i.e. only a cross-reference) is left out."""
+    out: dict[str, str] = {}
+    for name, (head, ends) in _SECTIONS.get(form.replace("/A", ""), {}).items():
+        section = _cut(text, head, ends)
+        if section is None and name in _UNNUMBERED:
+            section = _cut(text, _UNNUMBERED[name], (*ends, *_UNNUMBERED_ENDS))
+        if section:
+            out[name] = section[: max_chars.get(name, 40_000)]
+    return out
+
+
+def latest_filing(
+    ticker: str, forms: tuple[str, ...] = ("10-Q", "10-K", "20-F")
+) -> dict[str, Any] | None:
+    """The newest filing of `forms`: accession, form, filed_on, period_end
+    and the primary document's URL. None when the ticker has no CIK or the
+    SEC is unreachable."""
+    cik = _load_ticker_map().get(ticker.upper())
+    if cik is None:
+        return None
+    try:
+        sub = _HTTP.get_json(_SUBMISSIONS_URL.format(cik=cik))
+    except HttpClientError as e:
+        logger.warning("SEC submissions fetch failed for %s: %s", ticker, e)
+        return None
+    recent = sub.get("filings", {}).get("recent", {})
+    for form, acc, doc, filed, period in zip(
+        recent.get("form", []),
+        recent.get("accessionNumber", []),
+        recent.get("primaryDocument", []),
+        recent.get("filingDate", []),
+        recent.get("reportDate", []),
+        strict=False,
+    ):
+        if form in forms:
+            return {
+                "ticker": ticker.upper(),
+                "cik": cik,
+                "accession": acc,
+                "form": form,
+                "filed_on": filed,
+                "period_end": period or None,
+                "url": f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}/{doc}",
+            }
+    return None
+
+
+def fetch_filing_text(url: str) -> str | None:
+    try:
+        return filing_text(_HTTP.get(url).text)
+    except HttpClientError as e:
+        logger.warning("SEC filing fetch failed (%s): %s", url, e)
+        return None

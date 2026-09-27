@@ -21,7 +21,9 @@ from ..models.llm import Catalyst
 
 logger = get_logger(__name__)
 
-_FIXED_SOURCES = frozenset({"quarterly_mda", "earnings_transcript", "earnings_calendar"})
+_FIXED_SOURCES = frozenset(
+    {"sec_filing", "quarterly_mda", "earnings_transcript", "earnings_calendar"}
+)
 
 
 def _parse_date(value: str) -> date | None:

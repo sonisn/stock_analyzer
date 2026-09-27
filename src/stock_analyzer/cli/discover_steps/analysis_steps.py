@@ -8,6 +8,7 @@ from typing import Any
 from agno.workflow.types import StepInput, StepOutput
 
 from ...data.brokerage import fetch_portfolio_holdings
+from ...data.filing_evidence import evidence_packs, prefer_pack
 from ...data.fundamentals import batch_fundamentals
 from ...discover.analyst import Analyst, analyze_tiered, plan_under_budget
 from ...discover.catalysts import repair_catalysts
@@ -93,10 +94,20 @@ class AnalysisSteps(PipelineBase):
         finnhub_signals = self.state.get("finnhub_signals", {})
         eps_revisions = self.state.get("eps_revisions", {})
 
+        # SEC filing facts read nightly (cli/filings.py) stand in for the
+        # raw 10-Q/10-K excerpts, unless this run fetched a newer filing.
+        packs = evidence_packs(self.settings.discover_db_path, [c["ticker"] for c in survivors])
+
         payloads: dict[str, dict[str, Any]] = {}
         for c in survivors:
             ticker = c["ticker"]
             fh = finnhub_signals.get(ticker) or {}
+            mda = self.state.get("quarterly_mda", {}).get(ticker) or {}
+            filing = (
+                packs.get(ticker)
+                if prefer_pack(packs.get(ticker), mda.get("filing_date"))
+                else None
+            )
             # Prefer Finnhub's Form 4 record when available; fall back to
             # the Tavily news-mention count for tickers Finnhub doesn't cover.
             insider_activity: Any = fh.get("insider_activity") or {
@@ -137,14 +148,13 @@ class AnalysisSteps(PipelineBase):
                 # IBD-style ratings and the sector's direction (cli/ibd.py).
                 "market_leadership": self._leadership_ratings().get(ticker),
                 "share_trades": share_trades.get(ticker),
-                "risk_factors_10k": _trim(
-                    (risk_factors.get(ticker) or {}).get("risk_factors"),
-                    _RISK_FACTORS_CHARS,
+                "sec_filing": filing,
+                "risk_factors_10k": ""
+                if filing
+                else _trim(
+                    (risk_factors.get(ticker) or {}).get("risk_factors"), _RISK_FACTORS_CHARS
                 ),
-                "quarterly_mda": _trim(
-                    (self.state.get("quarterly_mda", {}).get(ticker) or {}).get("mda"),
-                    _QUARTERLY_MDA_CHARS,
-                ),
+                "quarterly_mda": "" if filing else _trim(mda.get("mda"), _QUARTERLY_MDA_CHARS),
                 "peers": self.state.get("peer_comparison", {}).get(ticker),
                 "earnings_transcript": _trim(
                     (self.state.get("earnings_transcripts", {}).get(ticker) or {}).get("snippet"),

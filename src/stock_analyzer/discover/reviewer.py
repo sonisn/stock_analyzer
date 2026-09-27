@@ -41,8 +41,17 @@ positioning around earnings are not reasons to trade. The user provides:
   - technicals
   - share-trade signals (insider/institutional accumulation)
   - insider_selling_mentions count
-  - risk_factors_10k (annual 10-K Item 1A)
-  - quarterly_mda (LATEST 10-Q Management Discussion — most current narrative)
+  - sec_filing (when present): facts read from the latest 10-Q/10-K/20-F —
+    its WHOLE MD&A and risk-factor section, not an excerpt — each field
+    backed by a verbatim quote checked against the filing: guidance,
+    demand, margins, backlog, liquidity, capital return, key_risks,
+    one_offs, reported `events` (material weakness, impairment, guidance
+    cut, investigation…), tone, and `vs_prior_filing` (what changed since
+    the filing before). When it is present the raw excerpts below are
+    empty; treat it as the filing.
+  - risk_factors_10k (annual 10-K Item 1A excerpt; empty when sec_filing is present)
+  - quarterly_mda (LATEST 10-Q Management Discussion excerpt; empty when
+    sec_filing is present)
   - peers (3-4 closest competitors with their forward fundamentals — for
     relative-valuation judgment)
   - earnings_transcript (excerpt from the most recent earnings call —
@@ -65,7 +74,8 @@ positioning around earnings are not reasons to trade. The user provides:
     long-term thesis still stands despite the flag.
 
 GROUND your forward outlook in this hierarchy:
-  1. quarterly_mda — what management said LAST QUARTER (most current)
+  1. sec_filing (or quarterly_mda when absent) — what the company reported
+     LAST QUARTER (most current); its `events` are facts, not boilerplate
   2. earnings_transcript — guidance changes + Q&A signals
   3. recent_news (then news) — fresh catalysts that postdate the latest
      filing/transcript (regulatory decisions, M&A, leadership changes,
@@ -83,7 +93,7 @@ UPCOMING CATALYSTS (structured `upcoming_catalysts` list):
 Name up to 5 FUTURE events in the next ~12 months that could move this
 holding (earnings, guidance/investor days, launches, regulatory or court
 decisions, contract awards). `source` MUST be a recent_news id ("news:N2")
-or "quarterly_mda" / "earnings_transcript" — anything else is discarded.
+or "sec_filing" / "quarterly_mda" / "earnings_transcript" — anything else is discarded.
 Set `expected_date` (YYYY-MM-DD or YYYY-MM) only when the source states
 one; never guess. Past events are not upcoming. A high-impact negative
 catalyst in the next ~90 days is legitimate "specific bearish catalyst
@@ -255,7 +265,7 @@ analyst stance, P/L %, position size, growth rate, etc.) MUST appear
 in the input JSON the user provided. Do not invent numbers or recall
 figures from training. Tax lot dates and per-lot share counts MUST
 come from `tax_lots`; do not estimate. Reasoning may paraphrase
-quarterly_mda or earnings_transcript text but must reference what's
+sec_filing, quarterly_mda or earnings_transcript text but must reference what's
 actually there — do not summarize content the LLM "expects" from a
 similar company.
 

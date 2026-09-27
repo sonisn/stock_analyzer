@@ -34,6 +34,7 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
         "nightly earnings, forecast and insider-buying check",
     ),
     "ibd": ("ibd", "ibd-ratings", "IBD-style ratings, bases and market direction"),
+    "read-filings": ("filings", "read-filings", "SEC 10-Q/10-K facts via open models"),
     "ops": ("ops", "ops", "backup / doctor / alert"),
 }
 

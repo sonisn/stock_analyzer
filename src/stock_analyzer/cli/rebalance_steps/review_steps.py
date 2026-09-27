@@ -7,6 +7,7 @@ from typing import Any
 
 from agno.workflow.types import StepInput, StepOutput
 
+from ...data.filing_evidence import evidence_packs
 from ...db.repository import fetch_recent_picks
 from ...db.session import get_session
 from ...discover.catalysts import repair_catalysts
@@ -70,6 +71,7 @@ class RebalanceReviewSteps(PipelineBase):
             news=self.state.get("news") or {},
             recent_news=self.state.get("recent_news") or {},
             thesis_checks=self.state.get("thesis_checks") or [],
+            filing_packs=evidence_packs(self.settings.discover_db_path, sorted(analyzable)),
             risk_factors_chars=_RISK_FACTORS_CHARS,
             quarterly_mda_chars=_QUARTERLY_MDA_CHARS,
             transcript_chars=_TRANSCRIPT_CHARS,

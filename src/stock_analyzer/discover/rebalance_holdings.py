@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..data.filing_evidence import prefer_pack
 from ..logging import get_logger
 from ..models.llm import HoldingReview
 from .tax_lot_helper import enrich_tax_lots_with_impact
@@ -47,8 +48,10 @@ def build_holding_review_payloads(
     transcript_chars: int,
     recent_news: dict[str, list[dict[str, Any]]] | None = None,
     thesis_checks: list[dict[str, Any]] | None = None,
+    filing_packs: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     recent_news = recent_news or {}
+    filing_packs = filing_packs or {}
     thesis_by_ticker = {c["ticker"]: c for c in thesis_checks or []}
     payloads: dict[str, dict[str, Any]] = {}
     for ticker, pos in positions.items():
@@ -63,6 +66,9 @@ def build_holding_review_payloads(
             "mention_count": insider_selling.get(ticker, 0),
         }
         splits_info = position_splits.get(ticker) or {}
+        mda = holdings_quarterly_mda.get(ticker) or {}
+        pack = filing_packs.get(ticker)
+        filing = pack if prefer_pack(pack, mda.get("filing_date")) else None
         payloads[ticker] = {
             "position": {
                 "units": units,
@@ -85,14 +91,12 @@ def build_holding_review_payloads(
             "analyst_price_targets": fh.get("price_targets") or {},
             "eps_revisions": eps_revisions.get(ticker) or {},
             "share_trades": share_trades.get(ticker),
-            "risk_factors_10k": _trim(
-                (rfs.get(ticker) or {}).get("risk_factors"),
-                risk_factors_chars,
-            ),
-            "quarterly_mda": _trim(
-                (holdings_quarterly_mda.get(ticker) or {}).get("mda"),
-                quarterly_mda_chars,
-            ),
+            # SEC filing facts read nightly stand in for the raw excerpts.
+            "sec_filing": filing,
+            "risk_factors_10k": ""
+            if filing
+            else _trim((rfs.get(ticker) or {}).get("risk_factors"), risk_factors_chars),
+            "quarterly_mda": "" if filing else _trim(mda.get("mda"), quarterly_mda_chars),
             "peers": holdings_peers.get(ticker),
             "earnings_transcript": _trim(
                 (holdings_transcripts.get(ticker) or {}).get("snippet"),

@@ -336,6 +336,39 @@ def test_holding_payload_includes_recent_news():
     assert payloads["AAPL"]["recent_news"] == [{"id": "N1", "title": "x"}]
 
 
+def test_holding_payload_uses_the_filing_pack_unless_the_run_has_a_newer_10q():
+    def build(mda_filed):
+        return build_holding_review_payloads(
+            positions={"AAPL": {"avg_buy_price": 100.0, "units": 1, "cost_basis": 100.0}},
+            fund={},
+            tech={"AAPL": {"price": 110.0}},
+            rfs={"AAPL": {"risk_factors": "boilerplate risk " * 50}},
+            insider_selling={},
+            finnhub_signals={},
+            eps_revisions={},
+            position_splits={},
+            account_meta={},
+            tax_lots_raw={},
+            share_trades={},
+            holdings_quarterly_mda={
+                "AAPL": {"mda": "safe harbour " * 50, "filing_date": mda_filed}
+            },
+            holdings_peers={},
+            holdings_transcripts={},
+            news={},
+            risk_factors_chars=100,
+            quarterly_mda_chars=100,
+            transcript_chars=10,
+            filing_packs={"AAPL": {"filed_on": "2026-08-01", "summary": "Services +15%"}},
+        )["AAPL"]
+
+    current = build("2026-08-01")
+    assert current["sec_filing"]["summary"] == "Services +15%"
+    assert current["quarterly_mda"] == "" and current["risk_factors_10k"] == ""
+    newer = build("2026-09-20")
+    assert newer["sec_filing"] is None and newer["quarterly_mda"].startswith("safe harbour")
+
+
 def test_cards_render_catalysts_in_html_and_pdf():
     catalysts = catalysts_to_dicts([_cat(event="FDA panel vote", direction="uncertain")])
     sections = [

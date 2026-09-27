@@ -40,6 +40,16 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("GOOGLE_API_KEY", "GEMINI_API_KEY"),
     )
     openai_api_key: str | None = None
+    # OpenRouter serves the open models that READ SEC filings (never
+    # decide; final verdicts stay on Claude/Gemini/OpenAI). The reader
+    # takes the stocks acted on (holdings, picks, shortlist, leaders); the
+    # bulk model the rest of the universe, escalating serious events to the
+    # reader. The daily cap covers every OpenRouter call of the day, across
+    # processes (table `openrouter_spend`), so a loop can't run up a bill.
+    openrouter_api_key: str | None = None
+    openrouter_reader_model: str = "z-ai/glm-5.3"
+    openrouter_bulk_model: str = "z-ai/glm-5.3-flash"
+    openrouter_daily_cap_usd: float = 2.0
 
     # ---- LLM selection ----------------------------------------------------
     # `llm_provider` + `llm_model` are the defaults used by every agent.
