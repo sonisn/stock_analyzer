@@ -304,3 +304,16 @@ def test_evidence_pack_is_compact_and_shows_what_changed(tmp_path):
     assert not prefer_pack(p, "2026-09-01")  # the run fetched a newer 10-Q
     assert not prefer_pack(None, None)
     assert evidence_packs(str(tmp_path / "empty.db"), ["ABC"]) == {}
+
+
+def test_tier_a_includes_the_shortlist_of_rebalance_runs(tmp_path):
+    from stock_analyzer.db.tables import Run, Scorecard
+
+    db = str(tmp_path / "t.db")
+    with get_session(db) as s:
+        for i, kind in enumerate(("discover", "rebalance", "rebalance", "rebalance"), start=1):
+            s.add(
+                Run(id=i, run_at=f"2026-09-2{i}", kind=kind, universe_size=1, survivors=1, picks=0)
+            )
+            s.add(Scorecard(run_id=i, ticker=f"T{i}"))
+    assert sorted(filings.analyzed_recently(db)) == ["T2", "T3", "T4"]

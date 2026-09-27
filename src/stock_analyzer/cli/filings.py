@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
+from sqlalchemy import text
 from sqlmodel import col, select
 
 from ..agents.filing_reader import (
@@ -47,7 +48,7 @@ from ..config import Settings
 from ..data.forecast_snapshots import tracked_tickers
 from ..data.sec_edgar import fetch_filing_text, filing_sections, latest_filing
 from ..data.universe_base import all_us_2b
-from ..db.session import get_session
+from ..db.session import exec_sql, get_session
 from ..db.tables import FilingFacts
 from ..logging import get_logger
 from ..openrouter import OpenRouter, client_from_settings, parse_json_object, spent_today
@@ -72,14 +73,33 @@ COMPARE_FIELDS = (
 Prepared = tuple[dict[str, Any], dict[str, str]]
 
 
+def analyzed_recently(db: str, runs: int = 3) -> list[str]:
+    """Stocks the Analyst scored in the last `runs` runs, discover or
+    rebalance — the shortlist the deciding models actually saw.
+    `tracked_tickers` counts discover runs only, so a rebalance-only
+    routine left its survivors on the bulk reader (2026-09-27)."""
+    with get_session(db) as session:
+        rows = exec_sql(
+            session,
+            text(
+                "SELECT DISTINCT ticker FROM scorecards WHERE run_id IN "
+                "(SELECT id FROM runs ORDER BY id DESC LIMIT :n)"
+            ),
+            {"n": runs},
+        ).all()
+    return [r[0].upper() for r in rows if r[0]]
+
+
 def tier_a(settings: Settings, *, today: date) -> list[str]:
-    """Holdings, recent picks, the latest discover survivors, earnings
-    standouts and the market leaders fed to discover."""
+    """Holdings, recent picks, the latest discover survivors, the recent
+    Analyst shortlists, earnings standouts and the market leaders."""
     from .ibd import top_leaders
 
     db = settings.discover_db_path
     leaders = top_leaders(db, settings.discover_ibd_leaders, today=today)
-    return list(dict.fromkeys([*tracked_tickers(db, today=today), *leaders]))
+    return list(
+        dict.fromkeys([*tracked_tickers(db, today=today), *analyzed_recently(db), *leaders])
+    )
 
 
 def _stored(db: str) -> dict[str, str]:
