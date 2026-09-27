@@ -1,7 +1,9 @@
 """Holding alerts between the weekly emails: the rare days worth a look.
 
 Run from the silent after-close snapshot (cli/portfolio.py --snapshot-only).
-Two triggers, both from the day's closes, no model calls:
+Two price triggers, both from the day's closes, no model calls — plus a
+held stock's new SEC filings (reporting/filing_alert.py), in the same
+email:
 
   1. a holding falls more than DROP_SIGMAS times its own usual daily move
      (the standard deviation of its last 60 daily returns). A flat "down
@@ -166,14 +168,26 @@ def _call_block(c: CallNear) -> str:
     )
 
 
-def build_alert(drops: list[Drop], calls: list[CallNear]) -> tuple[str, str] | None:
-    """(subject, html body), or None when there is nothing to say."""
-    if not drops and not calls:
+def build_alert(
+    drops: list[Drop],
+    calls: list[CallNear],
+    filings: list[dict[str, Any]] | None = None,
+) -> tuple[str, str] | None:
+    """(subject, html body), or None when there is nothing to say.
+    `filings` are a holding's new SEC filings (reporting/filing_alert.py)."""
+    from .filing_alert import filing_block, subject_part
+
+    filings = filings or []
+    if not drops and not calls and not filings:
         return None
     parts = [f"{d.ticker} {d.change_pct:+.0f}%" for d in drops]
     parts += [f"{c.ticker} near call strike" for c in calls]
+    parts += [subject_part(f) for f in filings]
     subject = "Holding alert: " + ", ".join(parts)
     body = ["<html><body style='font-family:sans-serif;max-width:640px'>"]
+    if filings:
+        body.append("<h3>New SEC filings</h3>")
+        body += [filing_block(f) for f in filings]
     if drops:
         body.append("<h3>Unusual drops</h3>")
         body += [_drop_block(d) for d in drops]

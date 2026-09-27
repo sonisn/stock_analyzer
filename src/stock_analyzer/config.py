@@ -169,6 +169,10 @@ class Settings(BaseSettings):
     holding_alerts: bool = True
     holding_alert_sigmas: float = 3.0
     holding_alert_call_pct: float = 5.0
+    # A held stock's new 10-Q/10-K or material 8-K (results, restatement,
+    # executive change…), read on OPENROUTER_READER_MODEL the evening it
+    # appears and put in the same alert email (reporting/filing_alert.py).
+    holding_filing_alerts: bool = True
     # Whether the daily email proposes stocks you do NOT own: the "Ideas
     # for new money" blocks and the "reinvest the proceeds in X" tail on
     # a sale line. Off leaves every action on a current holding intact —

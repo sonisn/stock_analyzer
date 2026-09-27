@@ -461,3 +461,87 @@ def fetch_filing_text(url: str) -> str | None:
     except HttpClientError as e:
         logger.warning("SEC filing fetch failed (%s): %s", url, e)
         return None
+
+
+# --- a holding's new filings (reporting/filing_alert.py) --------------------
+
+
+def filings_since(
+    ticker: str,
+    since: date,
+    *,
+    forms: tuple[str, ...] = ("10-Q", "10-K", "20-F", "8-K"),
+) -> list[dict[str, Any]]:
+    """Filings of `forms` dated `since` or later, oldest first, each with
+    its accession, 8-K item codes ("2.02", "5.02", …) and primary-document
+    URL. [] on any failure: a missed day is picked up by the next run."""
+    cik = _load_ticker_map().get(ticker.upper())
+    if cik is None:
+        return []
+    try:
+        sub = _HTTP.get_json(_SUBMISSIONS_URL.format(cik=cik))
+    except HttpClientError as e:
+        logger.warning("SEC submissions fetch failed for %s: %s", ticker, e)
+        return []
+    recent = sub.get("filings", {}).get("recent", {})
+    out = []
+    for form, acc, doc, filed, period, items in zip(
+        recent.get("form", []),
+        recent.get("accessionNumber", []),
+        recent.get("primaryDocument", []),
+        recent.get("filingDate", []),
+        recent.get("reportDate", []),
+        recent.get("items", []),
+        strict=False,
+    ):
+        if form not in forms or not filed or filed < since.isoformat():
+            continue
+        out.append(
+            {
+                "ticker": ticker.upper(),
+                "cik": cik,
+                "accession": acc,
+                "form": form,
+                "filed_on": filed,
+                "period_end": period or None,
+                "items": [i.strip() for i in (items or "").split(",") if i.strip()],
+                "url": f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}/{doc}",
+            }
+        )
+    return sorted(out, key=lambda f: f["filed_on"])
+
+
+_EX99_RE = re.compile(r"ex-?99", re.IGNORECASE)
+
+
+def exhibit_99_text(filing: dict[str, Any]) -> str | None:
+    """The text of an 8-K's press release — Exhibit 99, where an earnings
+    8-K's guidance is — or None when it has none. Found by name ("ex99",
+    "ex-99.1"); failing that, the largest other document in the filing
+    (NVIDIA files it as "q2fy27pr.htm")."""
+    folder, primary = filing["url"].rsplit("/", 1)
+    try:
+        index = _HTTP.get_json(f"{folder}/index.json")
+    except HttpClientError as e:
+        logger.info("No filing index for %s (%s)", filing["accession"], e)
+        return None
+    docs = [
+        i
+        for i in index.get("directory", {}).get("item", [])
+        if i.get("name", "").lower().endswith((".htm", ".html"))
+        and i["name"] != primary
+        and not re.fullmatch(r"R\d+\.html?", i["name"])  # XBRL viewer pages
+    ]
+    named = sorted(i["name"] for i in docs if _EX99_RE.search(i["name"]))
+    if named:
+        return fetch_filing_text(f"{folder}/{named[0]}")
+    if not docs:
+        return None
+
+    def size(i: dict[str, Any]) -> int:
+        try:
+            return int(i.get("size") or 0)
+        except ValueError:
+            return 0
+
+    return fetch_filing_text(f"{folder}/{max(docs, key=size)['name']}")

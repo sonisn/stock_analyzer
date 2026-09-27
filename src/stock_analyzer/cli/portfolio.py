@@ -6,8 +6,9 @@ noise. `--snapshot-only` runs every weekday after the close instead:
 the portfolio's value at the day's closes, no model calls, so the
 performance, vs-SPY and goal-pace history stays daily and a deposit is
 still told apart from a gain. It emails only on the rare day a holding
-falls far past its usual move or a written call nears its strike
-(reporting/drop_alert.py).
+falls far past its usual move, a written call nears its strike
+(reporting/drop_alert.py), or a holding files a 10-Q/10-K or a material
+8-K (reporting/filing_alert.py, read on GLM-5.3 the same evening).
 """
 
 from __future__ import annotations
@@ -640,6 +641,32 @@ def _thesis_checks(db: str, held: set[str]) -> list[dict]:
     return thesis_report_data(check_theses(picks, eps_revisions=revisions))
 
 
+def holding_filings(settings: Settings, tickers: list[str], *, today: date) -> list[dict]:
+    """The holdings' SEC filings not read yet, read now on the reader model
+    (reporting/filing_alert.py). [] without an OpenRouter key, or on any
+    failure — the price alerts still go out."""
+    from ..openrouter import client_from_settings
+    from ..reporting.filing_alert import new_holding_filings, summary_line
+
+    client = client_from_settings(settings)
+    if client is None or not settings.holding_filing_alerts:
+        return []
+    try:
+        found = new_holding_filings(
+            client,
+            settings.discover_db_path,
+            tickers,
+            today=today,
+            model=settings.openrouter_reader_model,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Holding filing check failed (%s)", e)
+        return []
+    for item in found:
+        logger.info("New holding filing: %s", summary_line(item))
+    return found
+
+
 def holding_alerts(
     settings: Settings,
     tickers: list[str],
@@ -681,7 +708,8 @@ def holding_alerts(
         series = {**series, **closing_series(sorted(set(etf_for.values())), today=today)}
         thesis = {c["ticker"]: c for c in _thesis_checks(db, set(dropped))}
         add_context(drops, series, db=db, sectors=sectors, etf_for=etf_for, thesis=thesis)
-    alert = build_alert(drops, near)
+    filings = holding_filings(settings, tickers, today=today)
+    alert = build_alert(drops, near, filings)
     if alert is None:
         logger.info("Holding alerts: nothing unusual today")
         return

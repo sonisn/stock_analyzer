@@ -270,3 +270,93 @@ def read_filing(
         cost_usd=cost,
         provider=provider,
     )
+
+
+# --- 8-Ks: the filings that can't wait for the weekly read ------------------
+
+# The 8-K items worth an email on a stock you hold. Routine ones —
+# shareholder votes (5.07), Reg FD slides (7.01), debt paperwork (2.03),
+# "other events" (8.01) alone — are left to the weekly email.
+MATERIAL_8K_ITEMS = {
+    "1.01": "material agreement",
+    "1.02": "agreement terminated",
+    "1.03": "bankruptcy",
+    "2.01": "acquisition or sale completed",
+    "2.02": "results",
+    "2.05": "restructuring",
+    "2.06": "impairment",
+    "3.01": "delisting notice",
+    "4.01": "auditor change",
+    "4.02": "restatement",
+    "5.02": "executive change",
+}
+EIGHTK_CHARS = {"body": 20_000, "exhibit": 40_000}
+
+EIGHTK_INSTRUCTIONS = """\
+You summarize a US company's 8-K (a report of a material event) and its
+attached press release for a long-term (3-5 year) shareholder. You do NOT
+give advice. Report only what the filing says.
+
+Every "quote" must be copied VERBATIM from the text you are given — one
+sentence or table row, at most 40 words. Quotes are checked by machine.
+Use "" when there is nothing to quote.
+
+Return ONE JSON object, no prose:
+{
+  "headline": "<=15 words: what happened",
+  "what_happened": "<=60 words",
+  "guidance": {"direction": "raised|maintained|lowered|withdrawn|initiated|none_given",
+               "detail": "<=30 words", "quote": "..."},
+  "numbers": [{"metric": "e.g. revenue", "value": "...", "vs_prior": "e.g. +22% y/y",
+               "quote": "..."}],                     (at most 5; results only)
+  "events": [{"issue": "<=25 words", "category": "{categories}",
+              "severity": "high|medium", "quote": "..."}],
+  "tone": "positive|neutral|cautious|negative"
+}
+"events" are facts an owner must not miss (see the categories); a routine
+filing has none. An executive departure is "medium" unless the filing
+ties it to a disagreement, an investigation or the results.\
+""".replace("{categories}", "|".join(CAVEAT_CATEGORIES))
+
+
+def eightk_prompt(filing: dict[str, Any], body: str, exhibit: str | None) -> str:
+    items = ", ".join(f"{i} ({MATERIAL_8K_ITEMS.get(i, 'other')})" for i in filing["items"])
+    parts = [
+        f"Company: {filing['ticker']}  Form: 8-K  Filed: {filing['filed_on']}  Items: {items}",
+        "=== 8-K ===\n" + body[: EIGHTK_CHARS["body"]],
+    ]
+    if exhibit:
+        parts.append("=== EXHIBIT 99 (press release) ===\n" + exhibit[: EIGHTK_CHARS["exhibit"]])
+    return "\n\n".join(parts)
+
+
+@dataclass
+class EightKRead:
+    filing: dict[str, Any]
+    model: str
+    summary: dict[str, Any] | None
+    quotes_checked: int = 0
+    quotes_found: int = 0
+    cost_usd: float = 0.0
+
+
+def read_8k(
+    client: OpenRouter,
+    filing: dict[str, Any],
+    body: str,
+    exhibit: str | None,
+    *,
+    model: str,
+) -> EightKRead:
+    prompt = eightk_prompt(filing, body, exhibit)
+    reply = client.complete(
+        "EightKReader",
+        model,
+        EIGHTK_INSTRUCTIONS,
+        prompt,
+        max_tokens=READER_MAX_TOKENS,
+        extra=READER_EXTRA,
+    )
+    summary = parse_json_object(reply.text)
+    checked, found, _ = check_quotes(summary, normalise(prompt)) if summary else (0, 0, [])
+    return EightKRead(filing, model, summary, checked, found, reply.cost_usd)

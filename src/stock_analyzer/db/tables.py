@@ -630,7 +630,28 @@ class FilingFacts(SQLModel, table=True):
     cost_usd: float = 0.0
 
 
+class EightKAlert(SQLModel, table=True):
+    """A material 8-K on a held stock, read and emailed the evening it was
+    found (reporting/filing_alert.py). Also what stops it being emailed
+    twice. A hundred-odd small rows a year."""
+
+    __tablename__ = "eightk_alerts"
+
+    accession: str = Field(primary_key=True)
+    ticker: str = Field(index=True)
+    filed_on: str = ""
+    items: str = ""  # comma-joined 8-K item codes
+    url: str = ""
+    read_on: str = ""
+    reader_model: str = ""
+    summary: str = ""  # JSON
+    quotes_checked: int = 0
+    quotes_found: int = 0
+    cost_usd: float = 0.0
+
+
 __all__ = [
+    "EightKAlert",
     "FilingFacts",
     "OpenRouterSpend",
     "StockNews",

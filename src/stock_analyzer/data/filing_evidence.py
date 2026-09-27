@@ -36,7 +36,9 @@ def _line(field: dict[str, Any] | None, key: str = "direction") -> str | None:
     detail = (field.get("detail") or "").strip()
     if key == "change" and field.get("value_usd_millions") is not None:
         detail = f"{detail} (${field['value_usd_millions']:,}M)".strip()
-    if head in (None, "not_disclosed", "none_given", "unclear") and not detail:
+    # "none given" / "not disclosed" is the filing saying nothing: leave the
+    # field out rather than spend the deciding models' tokens on it.
+    if head in ("not_disclosed", "none_given") or (head in (None, "unclear") and not detail):
         return None
     return f"{head}: {detail}" if head and detail else (head or detail)
 
