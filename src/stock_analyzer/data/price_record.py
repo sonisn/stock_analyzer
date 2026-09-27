@@ -18,7 +18,7 @@ thousand rows.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import polars as pl
@@ -58,17 +58,31 @@ def missing_today(db_path: str, tickers: list[str], *, today: date | None = None
     return sorted(wanted - have)
 
 
+def _closed(day: str, now: datetime | None) -> bool:
+    """Whether `day`'s close is final (bar_store's 4:30 PM New York rule)."""
+    from .bar_store import last_final_close
+
+    return last_final_close(now or datetime.now(UTC)).date().isoformat() == day
+
+
 def record_prices(
     db_path: str,
     tickers: list[str],
     *,
     today: date | None = None,
     fetch: Any = None,
+    now: datetime | None = None,
 ) -> dict[str, float]:
-    """Store today's close for any ticker missing one. Returns what was
+    """Store today's close for any ticker missing one, once it is final. Returns what was
     stored. Never raises: a missing price is a gap in the record, not a
     reason to fail the run that called it."""
     day = (today or date.today()).isoformat()
+    if fetch is None and not _closed(day, now):
+        # Before 4:30 PM New York time (or on a weekend) the latest close is
+        # an earlier session's; stored under `day` it would read as today's
+        # and block the real close from being recorded after the bell.
+        logger.info("Price record: %s has no final close yet — nothing recorded", day)
+        return {}
     todo = missing_today(db_path, tickers, today=today)
     if not todo:
         logger.info("Price record: already complete for %s", day)
@@ -90,7 +104,7 @@ def record_prices(
                     bars = frames.closes(
                         frames.bars_from_pandas(closes[[sym]].rename(columns={sym: "Close"}))
                     )
-                    if bars is not None:
+                    if bars is not None and bars.height:  # a symbol with no data is skipped
                         out[sym] = float(bars["Close"][-1])
             return out
 

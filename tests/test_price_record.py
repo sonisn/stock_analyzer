@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from stock_analyzer.data.price_record import (
     coverage,
     missing_today,
@@ -143,3 +145,21 @@ def test_advice_too_young_to_have_an_outcome_says_so(tmp_path: Path):
     row = grade_suggestions([item], today=TODAY, units_now={}, fetch=stored_history(db))[0]
     assert row["verdict"] == "too early"
     assert VERDICT_MIN_AGE_DAYS >= 21
+
+
+def test_nothing_is_recorded_before_the_days_close_is_final(monkeypatch, tmp_path):
+    """At 6 AM (or on a Sunday) the latest close is an earlier session's:
+    stored under today it would block the real close after the bell."""
+    from datetime import UTC, datetime
+
+    from stock_analyzer.data import price_record, yf_gateway
+
+    monkeypatch.setattr(
+        yf_gateway, "download", lambda *a, **k: pytest.fail("no fetch before the close")
+    )
+    db = str(tmp_path / "p.db")
+    monday = date(2026, 9, 28)
+    six_am = datetime(2026, 9, 28, 10, 0, tzinfo=UTC)  # 6:00 AM New York
+    assert price_record.record_prices(db, ["NVDA"], today=monday, now=six_am) == {}
+    sunday = datetime(2026, 9, 27, 18, 0, tzinfo=UTC)
+    assert price_record.record_prices(db, ["NVDA"], today=date(2026, 9, 27), now=sunday) == {}
