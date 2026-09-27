@@ -511,7 +511,8 @@ def filings_since(
     return sorted(out, key=lambda f: f["filed_on"])
 
 
-_EX99_RE = re.compile(r"ex-?99", re.IGNORECASE)
+# "ex99", "ex-99.1", "exhibit991" (Tesla) all name the press release.
+_EX99_RE = re.compile(r"ex(?:hibit)?[-_]?99", re.IGNORECASE)
 
 
 def exhibit_99_text(filing: dict[str, Any]) -> str | None:
@@ -531,6 +532,7 @@ def exhibit_99_text(filing: dict[str, Any]) -> str | None:
         if i.get("name", "").lower().endswith((".htm", ".html"))
         and i["name"] != primary
         and not re.fullmatch(r"R\d+\.html?", i["name"])  # XBRL viewer pages
+        and "-index" not in i["name"]  # EDGAR's own index pages
     ]
     named = sorted(i["name"] for i in docs if _EX99_RE.search(i["name"]))
     if named:

@@ -158,3 +158,19 @@ def test_press_release_without_an_ex99_name_is_the_largest_other_document(monkey
     monkeypatch.setattr(sec_edgar, "fetch_filing_text", lambda url: url.rsplit("/", 1)[1])
     f = {"url": "https://www.sec.gov/Archives/edgar/data/1/2/nvda-20260826.htm", "accession": "a"}
     assert sec_edgar.exhibit_99_text(f) == "q2fy27pr.htm"
+
+
+def test_tesla_names_its_press_release_exhibit991(monkeypatch):
+    listing = {
+        "directory": {
+            "item": [
+                {"name": "0001628280-26-049213-index.html", "size": ""},
+                {"name": "exhibit991.htm", "size": "52312"},
+                {"name": "tsla-20260722.htm", "size": "30000"},
+            ]
+        }
+    }
+    monkeypatch.setattr(sec_edgar._HTTP, "get_json", lambda url: listing)
+    monkeypatch.setattr(sec_edgar, "fetch_filing_text", lambda url: url.rsplit("/", 1)[1])
+    f = {"url": "https://www.sec.gov/Archives/edgar/data/1/2/tsla-20260722.htm", "accession": "a"}
+    assert sec_edgar.exhibit_99_text(f) == "exhibit991.htm"
