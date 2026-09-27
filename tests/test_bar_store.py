@@ -12,9 +12,10 @@ from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
+import polars as pl
 import pytest
 
-from stock_analyzer.data import bar_store, yf_gateway
+from stock_analyzer.data import bar_store, frames, yf_gateway
 
 TZ = "America/New_York"
 
@@ -28,6 +29,7 @@ def _store(tmp_path, monkeypatch: pytest.MonkeyPatch):
 
 
 def _bars(first: date, last: date, *, close_from: float = 100.0, events: dict | None = None):
+    """What yfinance's history returns: pandas, on a timezone-aware index."""
     idx = pd.date_range(first, last, freq="D", tz=TZ, name="Date")
     frame = pd.DataFrame(
         {
@@ -51,7 +53,14 @@ _STALE_S = 4 * 86400
 
 
 def _seed(symbol: str, frame: pd.DataFrame, requested_from: date, *, age_s: float = _STALE_S):
-    bar_store.save(symbol, frame, requested_from, checked_at=time.time() - age_s)
+    """Store a yfinance-shaped frame the way the gateway would."""
+    bars = frames.bars_from_pandas(frame)
+    assert bars is not None
+    bar_store.save(symbol, bars, requested_from, checked_at=time.time() - age_s)
+
+
+def _close_on(frame: pl.DataFrame, day: date) -> float:
+    return frame.filter(pl.col("date") == day)["Close"][0]
 
 
 TODAY = date.today()
@@ -85,7 +94,7 @@ def test_a_later_run_downloads_only_the_new_days():
     assert fake.history.call_count == 1
     assert fake.history.call_args.kwargs["start"] == since.isoformat()
     expected = _bars(FROM, TODAY)
-    assert list(out["Close"]) == list(expected["Close"])
+    assert out["Close"].to_list() == list(expected["Close"])
     assert yf_gateway.stats()["bars_extended"] == 1
 
 
@@ -115,8 +124,8 @@ def test_a_new_dividend_or_split_downloads_the_whole_history(event):
 
     assert fake.history.call_count == 2
     assert fake.history.call_args.kwargs["start"] == FROM.isoformat()
-    assert out["Close"].iloc[0] == 90.0
-    assert bar_store.load("KO").frame["Close"].iloc[0] == 90.0
+    assert out["Close"][0] == 90.0
+    assert bar_store.load("KO").frame["Close"][0] == 90.0
 
 
 def test_an_event_already_stored_does_not_refetch_every_day():
@@ -157,7 +166,8 @@ def test_the_last_stored_bar_may_change():
     with patch.object(yf_gateway.yf, "Ticker", return_value=fake):
         out = yf_gateway.daily_bars("AAPL", start=FROM)
     assert fake.history.call_count == 1
-    assert out.loc[stored.index[-1], "Close"] == delta.loc[stored.index[-1], "Close"]
+    last_stored = TODAY - timedelta(days=3)
+    assert _close_on(out, last_stored) == delta.loc[stored.index[-1], "Close"]
 
 
 def test_yahoo_down_serves_the_stored_bars():
@@ -165,7 +175,7 @@ def test_yahoo_down_serves_the_stored_bars():
     fake = _fake_history([pd.DataFrame()])
     with patch.object(yf_gateway.yf, "Ticker", return_value=fake):
         out = yf_gateway.daily_bars("NVDA", start=TODAY - timedelta(days=30))
-    assert out is not None and out.index[-1].date() == TODAY - timedelta(days=3)
+    assert out is not None and out["date"][-1] == TODAY - timedelta(days=3)
 
 
 def test_a_longer_window_than_stored_downloads_it():
@@ -218,7 +228,7 @@ def test_batch_extends_stored_symbols_in_one_request_and_downloads_new_ones():
         out = yf_gateway.daily_bars_many(["aaa", "BBB"], start=start)
 
     assert calls == [(["AAA"], since.isoformat()), (["BBB"], start.isoformat())]
-    assert list(out["AAA"]["Close"]) == list(_bars(start, TODAY)["Close"])
+    assert out["AAA"]["Close"].to_list() == list(_bars(start, TODAY)["Close"])
     assert len(out["BBB"]) == len(_bars(start, TODAY))
     assert bar_store.load("BBB") is not None
 
@@ -237,7 +247,7 @@ def test_batch_refetches_a_symbol_with_a_new_split():
     responses = iter([_download_frame({"AAA": split}), _download_frame({"AAA": full})])
     with patch.object(yf_gateway.yf, "download", side_effect=lambda *a, **k: next(responses)):
         out = yf_gateway.daily_bars_many(["AAA"], start=start)
-    assert out["AAA"]["Close"].iloc[0] == 25.0
+    assert out["AAA"]["Close"][0] == 25.0
 
 
 # --- when stored bars are as new as a download ------------------------------
@@ -252,7 +262,7 @@ def _at(y, m, d, hh, mm):
 
 
 def _synced(ts: float) -> bar_store.StoredBars:
-    return bar_store.StoredBars(frame=pd.DataFrame(), requested_from=FROM, checked_at=ts)
+    return bar_store.StoredBars(frame=pl.DataFrame(), requested_from=FROM, checked_at=ts)
 
 
 def test_synced_after_the_close_is_current_all_evening_and_weekend():

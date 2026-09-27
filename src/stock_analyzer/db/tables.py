@@ -349,6 +349,34 @@ class EarningsEvent(SQLModel, table=True):
     decided_on: str | None = None  # ISO date status left "pending"
 
 
+class FundPosition(SQLModel, table=True):
+    """One stock position of a tracked hedge fund at a quarter end, from its
+    13F filing (data/hedge_funds_13f.py). Common stock only (no options),
+    the last FUND_KEEP_PERIODS quarters per fund: ~22 funds x ~60 positions."""
+
+    __tablename__ = "fund_positions"
+
+    cik: str = Field(primary_key=True)
+    period: str = Field(primary_key=True)  # ISO quarter-end date
+    cusip: str = Field(primary_key=True)
+    ticker: str | None = Field(default=None, index=True)
+    shares: float = 0.0
+    value_usd: float = 0.0
+    filed: str = ""  # ISO date the 13F was filed
+    accession: str = ""
+
+
+class CusipTicker(SQLModel, table=True):
+    """CUSIP -> ticker, from OpenFIGI, cached forever (a CUSIP never moves).
+    `ticker` None means OpenFIGI had no US common stock for it."""
+
+    __tablename__ = "cusip_tickers"
+
+    cusip: str = Field(primary_key=True)
+    ticker: str | None = None
+    checked_on: str = ""
+
+
 class InsiderBuy(SQLModel, table=True):
     """One open-market purchase (Form 4, code P) by an insider of a watched
     company (data/insider_buying.py). Purchases only — sales are routine —
@@ -435,6 +463,8 @@ class StockView(SQLModel, table=True):
 
 __all__ = [
     "AnalystAction",
+    "CusipTicker",
+    "FundPosition",
     "InsiderBuy",
     "EarningsEvent",
     "ForecastSnapshot",

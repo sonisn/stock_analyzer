@@ -107,6 +107,7 @@ def portfolio_health(
             pick_scorecard=src.pick_scorecard,
             standouts=src.standouts,
             insider_clusters=src.insider_clusters,
+            fund_moves=src.fund_moves,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Portfolio health block failed (%s) — sending the email without it", e)
@@ -231,6 +232,11 @@ class _LiveHealthSources:
             self.db, yf_gateway.daily_closes, action="INSIDER_BUYS"
         )
         return card
+
+    def fund_moves(self, tickers: list[str]) -> dict[str, list[dict]]:
+        from ..data.hedge_funds_13f import changes
+
+        return changes(self.db, tickers)
 
     def insider_clusters(self) -> list[dict]:
         from ..data.insider_buying import clusters

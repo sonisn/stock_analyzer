@@ -16,11 +16,11 @@ from __future__ import annotations
 
 import argparse
 
-import pandas as pd
+import polars as pl
 from dotenv import load_dotenv
 
 from ..config import Settings
-from ..data.universe_base import load_base_universe
+from ..data.universe_base import sp500
 from ..logging import get_logger
 from ..model.dataset import DATASET_HORIZONS, build_dataset, load_panel
 from ..model.fundamental_features import FUNDAMENTAL_FEATURES
@@ -49,19 +49,19 @@ def _point_in_time(args, universe: list[str], panel, settings):
         to_frame,
     )
 
-    calendar = panel.close.index
-    dates = pd.DatetimeIndex(sorted({d for d in calendar}))
+    dates = sorted(set(panel.close["date"].to_list()))
     # Five years back from the end of the price panel, or its start.
-    start = max(dates.min().date(), (dates.max() - timedelta(days=365 * 5)).date())
-    as_of_dates = month_ends(start, dates.max().date())
+    start = max(dates[0], dates[-1] - timedelta(days=365 * 5))
+    as_of_dates = month_ends(start, dates[-1])
     print(f"Point-in-time fundamentals: {len(as_of_dates)} monthly as-of dates from {start}")
     history = fetch_history(universe, as_of_dates, cache_dir=settings.model_cache_dir)
     if not history:
         print("No point-in-time fundamentals available — training on prices alone")
         return None
     frame = to_frame(history)
-    aligned = align_to_dates(frame, dates, sorted(panel.close.columns))
-    covered = aligned.notna().any(axis=1).mean() * 100
+    aligned = align_to_dates(frame, dates, sorted(panel.tickers))
+    reported = pl.any_horizontal(pl.col(list(FUNDAMENTAL_FEATURES)).is_not_nan())
+    covered = aligned.select(reported.mean()).item() * 100
     print(f"  {len(history)} dates fetched, {covered:.0f}% of rows covered before median fill")
     return fill_cross_section(aligned)
 
@@ -93,18 +93,18 @@ def main(argv: list[str] | None = None) -> None:
         n = label_candidates(settings.discover_db_path)
         print(f"Candidate outcomes labeled this run: {n}")
 
-    universe = list(load_base_universe())
+    universe = list(sp500())  # the model's training universe
     panel = load_panel(universe, settings.model_cache_dir, years=args.years)
     data = build_dataset(panel, fundamentals=_point_in_time(args, universe, panel, settings))
     extra = [c for c in FUNDAMENTAL_FEATURES if c in data.columns]
     print(
-        f"Training set: {len(data):,} weekly rows, {data.index.get_level_values('ticker').nunique()} "
+        f"Training set: {data.height:,} weekly rows, {data['ticker'].n_unique()} "
         f"tickers, {int(data['gated'].sum()):,} passing the trend gate"
         + (f", {len(extra)} point-in-time fundamental feature(s)" if extra else "")
     )
     result = walk_forward(
         data,
-        panel.spy.dropna().index,
+        panel.calendar(),
         horizon=args.horizon,
         population=args.population,
         label_kind=args.label,

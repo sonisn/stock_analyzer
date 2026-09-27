@@ -24,11 +24,13 @@ import json
 import math
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, cast
+from typing import Any
 
 import numpy as np
-import pandas as pd
+import polars as pl
+from dateutil.relativedelta import relativedelta
 
+from ..data.frames import DATE
 from ..db.session import get_session
 from ..db.tables import ModelVersion
 from ..discover.screen import _score_trend
@@ -55,10 +57,16 @@ class ModelResult:
     fold_coefficients: list[dict[str, float]] = field(default_factory=list)
 
 
-def rank_center(frame: pd.DataFrame, cols: list[str]) -> pd.DataFrame:
+def _rank_pct(col: pl.Expr) -> pl.Expr:
+    """pandas' groupby-rank(pct=True) per date: average rank over the count
+    of present values; missing stays missing."""
+    c = col.fill_nan(None)
+    return c.rank("average").over(DATE) / c.count().over(DATE)
+
+
+def rank_center(frame: pl.DataFrame, cols: list[str]) -> pl.DataFrame:
     """Per-date percentile rank minus 0.5; missing values sit at 0."""
-    ranked = frame[cols].groupby(level="date").rank(pct=True) - 0.5
-    return ranked.fillna(0.0)
+    return frame.select([(_rank_pct(pl.col(c)) - 0.5).fill_null(0.0).alias(c) for c in cols])
 
 
 def fit_ridge(x: np.ndarray, y: np.ndarray, alpha: float = RIDGE_ALPHA) -> np.ndarray:
@@ -67,123 +75,175 @@ def fit_ridge(x: np.ndarray, y: np.ndarray, alpha: float = RIDGE_ALPHA) -> np.nd
     return np.linalg.solve(x.T @ x + lam * np.eye(k), x.T @ y)
 
 
-def baseline_trend_score(frame: pd.DataFrame) -> pd.Series:
+def baseline_trend_score(frame: pl.DataFrame) -> np.ndarray:
     """The screen's price-only trend points (screen._score_trend without the
     EPS-revision term, which has no history) for every row."""
-    records = frame[["rs_6mo", "dist_from_52w_high", "volume_trend_20_60", "weekly_rsi"]]
-    return pd.Series(
-        [_score_trend(r)[0] for r in records.to_dict("records")],
-        index=frame.index,
-        dtype=float,
+    records = frame.select("rs_6mo", "dist_from_52w_high", "volume_trend_20_60", "weekly_rsi")
+    return np.array([_score_trend(r)[0] for r in records.to_dicts()], dtype=float)
+
+
+def _daily_ic(dates: np.ndarray, pred: np.ndarray, label: np.ndarray) -> pl.DataFrame:
+    """(date, ic): per date with 5+ names, the rank correlation of `pred`
+    with `label`. Rows missing either are left out first."""
+    df = pl.DataFrame({DATE: dates, "p": pred, "y": label}).filter(
+        pl.col("p").is_not_nan() & pl.col("y").is_not_nan()
     )
-
-
-def _daily_ic(pred: pd.Series, label: pd.Series) -> pd.Series:
-    df = pd.DataFrame({"p": pred, "y": label}).dropna()
-    ranks = df.groupby(level="date").rank()
-    # One scalar per group, so apply() gives a Series; pandas types it as a frame.
-    return cast(
-        pd.Series,
-        ranks.groupby(level="date")
-        .apply(lambda g: g["p"].corr(g["y"]) if len(g) >= MIN_NAMES_TO_SCORE else np.nan)
-        .dropna(),
+    ranked = df.with_columns(
+        pl.col("p").rank("average").over(DATE).alias("rp"),
+        pl.col("y").rank("average").over(DATE).alias("ry"),
     )
+    out = (
+        ranked.group_by(DATE)
+        .agg(pl.len().alias("n"), pl.corr("rp", "ry").alias("ic"))
+        .filter((pl.col("n") >= MIN_NAMES_TO_SCORE) & pl.col("ic").is_not_null())
+        .filter(pl.col("ic").is_not_nan())
+        .sort(DATE)
+    )
+    return out.select(DATE, "ic")
 
 
-def ic_stats(ic: pd.Series, horizon: int) -> dict[str, float | int | None]:
+def ic_stats(ic: pl.DataFrame | np.ndarray, horizon: int) -> dict[str, float | int | None]:
     """Mean weekly IC, its IR, and a t-statistic that counts overlapping
     weekly labels as ~horizon/5 times fewer independent observations."""
-    n = len(ic)
-    if n < 3 or ic.std() == 0:
+    values = ic["ic"].to_numpy() if isinstance(ic, pl.DataFrame) else np.asarray(ic, float)
+    n = len(values)
+    sd = float(values.std(ddof=1)) if n > 1 else 0.0
+    if n < 3 or sd == 0:
         return {"ic_mean": None, "ic_ir": None, "t_stat": None, "hit_rate": None, "weeks": n}
     overlap = max(1.0, horizon / 5.0)
     n_eff = n / overlap
+    mean = float(values.mean())
     return {
-        "ic_mean": float(ic.mean()),
-        "ic_ir": float(ic.mean() / ic.std()),
-        "t_stat": float(ic.mean() / ic.std() * math.sqrt(n_eff)),
-        "hit_rate": float((ic > 0).mean()),
+        "ic_mean": mean,
+        "ic_ir": float(mean / sd),
+        "t_stat": float(mean / sd * math.sqrt(n_eff)),
+        "hit_rate": float((values > 0).mean()),
         "weeks": n,
     }
 
 
-def quintile_spread(pred: pd.Series, label: pd.Series) -> dict[str, float | None]:
+def _quintiles(ranks: np.ndarray) -> np.ndarray:
+    """pd.qcut(ranks, 5, labels=False) + 1: equal-count bins, right-closed,
+    the lowest edge included."""
+    edges = np.quantile(ranks, [0.0, 0.2, 0.4, 0.6, 0.8, 1.0])
+    return np.searchsorted(edges[1:-1], ranks, side="left") + 1
+
+
+def quintile_spread(
+    dates: np.ndarray, pred: np.ndarray, label: np.ndarray
+) -> dict[str, float | None]:
     """Mean forward excess return of each score quintile (Q5 = best), and
     the top-minus-bottom spread, averaged over weeks."""
-    df = pd.DataFrame({"p": pred, "y": label}).dropna()
-    if df.empty:
-        return {"spread": None}
-    df["q"] = df.groupby(level="date")["p"].transform(
-        lambda s: pd.qcut(s.rank(method="first"), 5, labels=False) + 1 if len(s) >= 5 else np.nan
+    df = pl.DataFrame({DATE: dates, "p": pred, "y": label}).filter(
+        pl.col("p").is_not_nan() & pl.col("y").is_not_nan()
     )
-    by_q = df.dropna(subset=["q"]).groupby(["date", "q"])["y"].mean().unstack()
-    means = by_q.mean()
-    out: dict[str, float | None] = {f"q{int(q)}": float(v) for q, v in means.items()}
-    out["spread"] = float((by_q[5] - by_q[1]).mean()) if 5 in by_q and 1 in by_q else None
+    if df.is_empty():
+        return {"spread": None}
+    parts = []
+    for (day,), g in df.group_by(DATE, maintain_order=True):
+        if g.height < 5:
+            continue
+        ranks = g["p"].rank("ordinal").to_numpy().astype(float)
+        parts.append(g.with_columns(pl.Series("q", _quintiles(ranks)), pl.lit(day).alias(DATE)))
+    if not parts:
+        return {"spread": None}
+    by_q = pl.concat(parts).group_by(DATE, "q").agg(pl.col("y").mean())
+    wide = by_q.pivot(on="q", index=DATE, values="y")
+    qs = sorted(int(c) for c in wide.columns if c != DATE)
+    out: dict[str, float | None] = {
+        f"q{q}": float(wide[str(q)].drop_nulls().to_numpy().mean()) for q in qs
+    }
+    if 5 in qs and 1 in qs:
+        diff = (wide["5"] - wide["1"]).drop_nulls().to_numpy()
+        out["spread"] = float(diff.mean()) if len(diff) else None
+    else:
+        out["spread"] = None
     return out
 
 
+def _as_days(values) -> np.ndarray:
+    if isinstance(values, pl.DataFrame):
+        values = values[DATE]
+    if isinstance(values, pl.Series):
+        values = values.to_numpy()
+    return np.asarray(values).astype("datetime64[D]")
+
+
 def walk_forward(
-    data: pd.DataFrame,
-    calendar: pd.Index,
+    data: pl.DataFrame,
+    calendar,
     *,
     horizon: int,
     population: str = "gated",
     label_kind: str = "excess",
 ) -> ModelResult:
+    """`calendar` is the trading days (SPY's), as dates."""
     label = f"fwd_{horizon}" if label_kind == "excess" else f"fwd_{horizon}_badj"
-    frame = data[data["gated"]] if population == "gated" else data
+    frame = data.filter(pl.col("gated")) if population == "gated" else data
     # Fundamentals join the feature set only when the dataset carries
     # them, so a price-only run behaves exactly as it did before.
     features = [*FEATURES, *(c for c in FUNDAMENTAL_FEATURES if c in data.columns)]
-    x_all = rank_center(frame, features)
-    labeled = frame[label].notna()
-    y_all = (frame[label].groupby(level="date").rank(pct=True) - 0.5).where(labeled)
+    x_all = rank_center(frame, features).to_numpy()
+    label_values = frame[label].to_numpy().astype(float)
+    labeled = ~np.isnan(label_values)
+    y_all = frame.select((_rank_pct(pl.col(label)) - 0.5).alias("y"))["y"].to_numpy()
+    y_all = np.where(labeled, y_all.astype(float), np.nan)
 
-    dates = frame.index.get_level_values("date")
+    dates = _as_days(frame)
+    cal = _as_days(calendar)
     # A training row is usable for a test block only once its label window
     # (next bar + horizon bars) has closed before the block begins.
-    pos = calendar.searchsorted(dates)
-    label_end = calendar[np.minimum(pos + 1 + horizon, len(calendar) - 1)]
+    pos = np.searchsorted(cal, dates)
+    label_end = cal[np.minimum(pos + 1 + horizon, len(cal) - 1)]
 
-    first = dates.min()
-    start = first + pd.DateOffset(years=MIN_TRAIN_YEARS)
-    last_labeled = dates[labeled.to_numpy()].max()
-    preds: list[pd.Series] = []
+    first = dates.min().astype(object)
+    start = first + relativedelta(years=MIN_TRAIN_YEARS)
+    last_labeled = dates[labeled].max().astype(object)
+    pred_rows: list[np.ndarray] = []
+    pred_vals: list[np.ndarray] = []
     fold_coefs: list[dict[str, float]] = []
     while start <= last_labeled:
-        end = start + pd.DateOffset(months=TEST_MONTHS)
-        train = (label_end < start) & labeled.to_numpy()
-        test = (dates >= start) & (dates < end)
+        end = start + relativedelta(months=TEST_MONTHS)
+        s64, e64 = np.datetime64(start), np.datetime64(end)
+        train = (label_end < s64) & labeled
+        test = (dates >= s64) & (dates < e64)
         if train.sum() > 1000 and test.any():
-            w = fit_ridge(x_all[train].to_numpy(), y_all[train].to_numpy())
+            w = fit_ridge(x_all[train], y_all[train])
             fold_coefs.append(dict(zip(features, map(float, w), strict=True)))
-            preds.append(pd.Series(x_all[test].to_numpy() @ w, index=x_all[test].index))
+            rows = np.flatnonzero(test)
+            pred_rows.append(rows)
+            pred_vals.append(x_all[rows] @ w)
         start = end
-    if not preds:
+    if not pred_rows:
         raise RuntimeError("Not enough history for a walk-forward test")
-    oos = pd.concat(preds)
-    oos_label = frame.loc[oos.index, label]
-    base = baseline_trend_score(frame.loc[oos.index])
+    rows = np.concatenate(pred_rows)
+    oos = np.concatenate(pred_vals)
+    oos_dates = dates[rows]
+    oos_label = label_values[rows]
+    oos_frame = frame[rows.tolist()]
+    base = baseline_trend_score(oos_frame)
 
-    model_ic = _daily_ic(oos, oos_label)
-    base_ic = _daily_ic(base, oos_label)
+    model_ic = _daily_ic(oos_dates, oos, oos_label)
+    base_ic = _daily_ic(oos_dates, base, oos_label)
     per_feature = {
-        name: ic_stats(_daily_ic(frame.loc[oos.index, name], oos_label), horizon)["ic_mean"]
+        name: ic_stats(
+            _daily_ic(oos_dates, oos_frame[name].to_numpy().astype(float), oos_label), horizon
+        )["ic_mean"]
         for name in features
     }
     m, b = ic_stats(model_ic, horizon), ic_stats(base_ic, horizon)
-    diff = ic_stats((model_ic - base_ic).dropna(), horizon)
+    both = model_ic.join(base_ic, on=DATE, how="inner", suffix="_b")
+    diff = ic_stats((both["ic"] - both["ic_b"]).to_numpy(), horizon)
     metrics = {
         "horizon_days": horizon,
         "population": population,
         "label": label_kind,
-        "rows": int(len(frame)),
-        "oos_rows": int(oos_label.notna().sum()),
-        "oos_start": str(oos.index.get_level_values("date").min().date()),
-        "oos_end": str(oos.index.get_level_values("date").max().date()),
-        "model": {**m, **quintile_spread(oos, oos_label)},
-        "baseline_trend_score": {**b, **quintile_spread(base, oos_label)},
+        "rows": int(frame.height),
+        "oos_rows": int((~np.isnan(oos_label)).sum()),
+        "oos_start": str(oos_dates.min()),
+        "oos_end": str(oos_dates.max()),
+        "model": {**m, **quintile_spread(oos_dates, oos, oos_label)},
+        "baseline_trend_score": {**b, **quintile_spread(oos_dates, base, oos_label)},
         "model_minus_baseline": diff,
         "feature_ic": per_feature,
     }
@@ -196,15 +256,15 @@ def walk_forward(
     )
 
     # Final weights: every labeled row, for use from here on.
-    w = fit_ridge(x_all[labeled].to_numpy(), y_all[labeled].to_numpy())
-    labeled_dates = dates[labeled.to_numpy()]
+    w = fit_ridge(x_all[labeled], y_all[labeled])
+    labeled_dates = dates[labeled]
     return ModelResult(
         horizon=horizon,
         population=population,
         coefficients=dict(zip(features, map(float, w), strict=True)),
         metrics=metrics,
-        train_start=str(labeled_dates.min().date()),
-        train_end=str(labeled_dates.max().date()),
+        train_start=str(labeled_dates.min()),
+        train_end=str(labeled_dates.max()),
         accepted=accepted,
         fold_coefficients=fold_coefs,
     )
@@ -280,12 +340,23 @@ def score_percentiles(
     if len(features_by_ticker) < MIN_NAMES_TO_SCORE:
         return {}
     names = list(model.coefficients)
-    frame = pd.DataFrame.from_dict(features_by_ticker, orient="index").reindex(columns=names)
-    frame.index = pd.MultiIndex.from_product([["today"], frame.index], names=["date", "ticker"])
-    x = rank_center(frame.astype(float), names)
-    raw = x.to_numpy() @ np.array([model.coefficients[n] for n in names])
-    pct = pd.Series(raw, index=frame.index.get_level_values("ticker")).rank(pct=True) * 100
-    return {t: float(v) for t, v in pct.items()}
+    tickers = list(features_by_ticker)
+    frame = pl.DataFrame(
+        {
+            DATE: ["today"] * len(tickers),
+            **{
+                n: [
+                    float("nan") if (v := features_by_ticker[t].get(n)) is None else float(v)
+                    for t in tickers
+                ]
+                for n in names
+            },
+        }
+    )
+    x = rank_center(frame, names).to_numpy()
+    raw = x @ np.array([model.coefficients[n] for n in names])
+    pct = pl.Series(raw).rank("average").to_numpy() / len(raw) * 100
+    return {t: float(v) for t, v in zip(tickers, pct, strict=True)}
 
 
 def screen_points(percentile: float) -> float:

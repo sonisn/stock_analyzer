@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
 from sqlalchemy import text
 
 from stock_analyzer.db.repository import (
@@ -26,6 +25,7 @@ from stock_analyzer.reporting.quarterly import (
     render_quarterly_html,
     summarize,
 )
+from tests.bars import bars, bdays
 
 TODAY = date(2026, 10, 1)
 
@@ -54,14 +54,14 @@ def test_previous_quarter():
 
 def _prices(path: dict[str, tuple[float, float]]):
     """fetch() stub: each ticker moves linearly from a to b over Q3."""
-    idx = pd.bdate_range(date(2026, 6, 1), TODAY)
+    idx = bdays(date(2026, 6, 1), TODAY)
 
     def fetch(ticker, start, end):
         if ticker not in path:
             return None
         a, b = path[ticker]
         n = len(idx) - 1
-        return pd.DataFrame({"Close": [a + (b - a) * i / n for i in range(len(idx))]}, index=idx)
+        return bars(idx, {"Close": [a + (b - a) * i / n for i in range(len(idx))]})
 
     return fetch
 

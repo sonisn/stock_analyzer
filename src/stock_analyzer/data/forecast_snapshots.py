@@ -20,13 +20,13 @@ from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any
 
-import pandas as pd
+import polars as pl
 from sqlalchemy import text
 
 from ..db.session import exec_sql, get_session
 from ..db.tables import ForecastSnapshot
 from ..logging import get_logger
-from . import yf_gateway
+from . import frames, yf_gateway
 
 logger = get_logger(__name__)
 
@@ -86,25 +86,30 @@ def tracked_tickers(db_path: str, *, today: date) -> list[str]:
     return out[:MAX_TICKERS]
 
 
-def _cell(frame: Any, row: str, col: str) -> float | None:
+def _cell(table: pl.DataFrame | None, row: str, col: str) -> float | None:
+    v = frames.cell(table, row, col)
     try:
-        v = frame.loc[row, col]
-    except KeyError, AttributeError, TypeError:
+        f = float(v)
+    except TypeError, ValueError:
         return None
-    return None if v is None or pd.isna(v) else float(v)
+    return None if f != f else f
 
 
 def _num(info: dict[str, Any], key: str) -> float | None:
     v = info.get(key)
-    return float(v) if isinstance(v, int | float) and not pd.isna(v) else None
+    return float(v) if isinstance(v, int | float) and v == v else None
 
 
 def fetch_forecast(ticker: str) -> dict[str, Any] | None:
     """Today's consensus for `ticker`, or None when Yahoo has no forecast
     at all (a money-market fund, an unknown symbol)."""
     info = yf_gateway.ticker_call(ticker, "info", lambda t: t.info, default={}) or {}
-    trend = yf_gateway.ticker_call(ticker, "eps_trend", lambda t: t.eps_trend)
-    revenue = yf_gateway.ticker_call(ticker, "revenue_estimate", lambda t: t.revenue_estimate)
+    trend = frames.table_from_pandas(
+        yf_gateway.ticker_call(ticker, "eps_trend", lambda t: t.eps_trend)
+    )
+    revenue = frames.table_from_pandas(
+        yf_gateway.ticker_call(ticker, "revenue_estimate", lambda t: t.revenue_estimate)
+    )
     analysts = _num(info, "numberOfAnalystOpinions")
     row = {
         "price": _num(info, "currentPrice") or _num(info, "regularMarketPrice"),

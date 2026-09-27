@@ -27,6 +27,7 @@ from dotenv import load_dotenv
 from sqlmodel import col, select
 
 from ..config import Settings
+from ..data import frames
 from ..db.session import get_session
 from ..db.tables import (
     HoldingReviewRow,
@@ -280,9 +281,9 @@ def _latest_closes(
 ) -> dict[str, float]:
     prices_now: dict[str, float] = {}
     for t in positions:
-        frame = fetch(t, today.replace(year=today.year - 1), today)
-        if frame is not None and not frame.empty:
-            prices_now[t] = float(frame["Close"].iloc[-1])
+        closes = frames.closes(fetch(t, today.replace(year=today.year - 1), today))
+        if closes is not None:
+            prices_now[t] = float(closes["Close"][-1])
     return prices_now
 
 

@@ -29,13 +29,15 @@ Results are cached to disk per as-of date, so a retrain spends nothing.
 
 from __future__ import annotations
 
+import calendar
 import json
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
+import polars as pl
 
 from ..data import wisesheets
+from ..data.frames import DATE
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -92,8 +94,15 @@ def _store(
 
 def month_ends(start: date, end: date) -> list[date]:
     """One as-of date per month over the span, month-end."""
-    stamps = pd.date_range(start=start, end=end, freq="ME")
-    return [d.date() for d in stamps]
+    out: list[date] = []
+    y, m = start.year, start.month
+    while True:
+        last = date(y, m, calendar.monthrange(y, m)[1])
+        if last > end:
+            return out
+        if last >= start:
+            out.append(last)
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
 
 
 def fetch_history(
@@ -165,53 +174,54 @@ def fetch_history(
     return {d: v for d, v in out.items() if v}
 
 
-def to_frame(history: dict[date, dict[str, dict[str, float]]]) -> pd.DataFrame:
-    """Long frame indexed (date, ticker) with one column per ratio."""
-    rows = []
-    for as_of, by_ticker in sorted(history.items()):
-        for ticker, ratios in by_ticker.items():
-            rows.append({"date": pd.Timestamp(as_of), "ticker": ticker, **ratios})
+def to_frame(history: dict[date, dict[str, dict[str, float]]]) -> pl.DataFrame:
+    """Long frame (date, ticker, one column per ratio), sorted by date then
+    ticker; a ratio nobody reported is NaN."""
+    rows = [
+        {
+            DATE: as_of,
+            "ticker": ticker,
+            **{f: float(ratios.get(f, float("nan"))) for f in FUNDAMENTAL_FEATURES},
+        }
+        for as_of, by_ticker in history.items()
+        for ticker, ratios in by_ticker.items()
+    ]
+    schema = {DATE: pl.Date, "ticker": pl.String, **dict.fromkeys(FUNDAMENTAL_FEATURES, pl.Float64)}
     if not rows:
-        return pd.DataFrame(columns=["date", "ticker", *FUNDAMENTAL_FEATURES]).set_index(
-            ["date", "ticker"]
-        )
-    frame = pd.DataFrame(rows).set_index(["date", "ticker"]).sort_index()
-    for column in FUNDAMENTAL_FEATURES:
-        # float("nan"), not pd.NA: the column has to cast to float64, and
-        # NAType does not. A ratio nobody reported is a missing number.
-        if column not in frame:
-            frame[column] = float("nan")
-    return frame[list(FUNDAMENTAL_FEATURES)].astype("float64")
+        return pl.DataFrame(schema=schema)
+    return pl.DataFrame(rows, schema=schema).sort([DATE, "ticker"])
 
 
-def align_to_dates(
-    fundamentals: pd.DataFrame, dates: pd.DatetimeIndex, tickers: list[str]
-) -> pd.DataFrame:
+def align_to_dates(fundamentals: pl.DataFrame, dates, tickers: list[str]) -> pl.DataFrame:
     """Carry each month's figures forward onto the model's weekly dates.
 
     A filing stays the latest known fact until the next one lands, so the
     value is held forward — never interpolated, and never pulled backward
-    from a month that had not happened yet.
+    from a month that had not happened yet. Each ratio carries its own
+    last reported value: a filing that omits one does not blank it.
+    Rows are every (date, ticker), dates first, in the order given.
     """
-    if fundamentals.empty:
-        return pd.DataFrame(index=pd.MultiIndex.from_product([dates, tickers]))
-    wide = {
-        column: fundamentals[column]
-        .unstack("ticker")
-        .reindex(columns=tickers)
-        .sort_index()
-        .reindex(fundamentals.index.get_level_values("date").unique().union(dates))
-        .ffill()
-        .reindex(dates)
-        for column in FUNDAMENTAL_FEATURES
-    }
-    stacked = {name: frame.stack(future_stack=True) for name, frame in wide.items()}
-    out = pd.DataFrame(stacked)
-    out.index.names = ["date", "ticker"]
-    return out
+    days = pl.Series(DATE, list(dates), dtype=pl.Date)
+    grid = pl.DataFrame({DATE: days}).join(
+        pl.DataFrame({"ticker": tickers}), how="cross", maintain_order="left_right"
+    )
+    if fundamentals.is_empty():
+        return grid
+    out = grid.with_row_index("_row").sort(DATE)
+    for column in FUNDAMENTAL_FEATURES:
+        known = (
+            fundamentals.select(DATE, "ticker", column)
+            .filter(pl.col(column).is_not_nan() & pl.col(column).is_not_null())
+            .sort(DATE)
+        )
+        out = out.join_asof(
+            known, on=DATE, by="ticker", strategy="backward", check_sortedness=False
+        )
+    out = out.sort("_row").drop("_row")
+    return out.with_columns(pl.col(list(FUNDAMENTAL_FEATURES)).fill_null(float("nan")))
 
 
-def fill_cross_section(frame: pd.DataFrame) -> pd.DataFrame:
+def fill_cross_section(frame: pl.DataFrame) -> pl.DataFrame:
     """Replace a missing ratio with that date's median across the market.
 
     Not every filer tags every concept — GOOGL reports no gross profit —
@@ -219,13 +229,13 @@ def fill_cross_section(frame: pd.DataFrame) -> pd.DataFrame:
     training set. A median-filled row says "unremarkable", which is the
     honest prior for a number that was never disclosed.
     """
-    filled = frame.copy()
+    fills = []
     for column in FUNDAMENTAL_FEATURES:
-        if column not in filled:
+        if column not in frame.columns:
             continue
-        medians = filled[column].groupby(level="date").transform("median")
-        filled[column] = filled[column].fillna(medians)
-    return filled
+        c = pl.col(column).fill_nan(None)
+        fills.append(c.fill_null(c.median().over(DATE)).fill_null(float("nan")).alias(column))
+    return frame.with_columns(fills)
 
 
 __all__ = [

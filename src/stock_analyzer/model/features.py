@@ -11,6 +11,11 @@ reconstruct after the fact — a historical close is the same number today
 as it was then — so a multi-year training set can be rebuilt without
 leaking the outcome into the features. Fundamentals from yfinance are a
 live snapshot with no history and are deliberately excluded.
+
+Frames are Polars and wide: a `date` column plus one column per ticker.
+A missing price is null, which rolling windows and ranks skip — the rule
+pandas applied to NaN — and results come back with NaN where a value
+could not be computed, so callers test with `is_nan`/`is_null` alike.
 """
 
 from __future__ import annotations
@@ -18,7 +23,9 @@ from __future__ import annotations
 import math
 
 import numpy as np
-import pandas as pd
+import polars as pl
+
+from ..data.frames import DATE
 
 TRADING_DAYS_PER_MONTH = 21
 RSI_PERIOD = 14
@@ -38,25 +45,53 @@ FEATURES: tuple[str, ...] = (
 )
 
 
-def _excess(close: pd.DataFrame | pd.Series, spy: pd.Series, back: int, skip: int = 0):
+def tickers_of(frame: pl.DataFrame) -> list[str]:
+    return [c for c in frame.columns if c != DATE]
+
+
+def on_calendar(frame: pl.DataFrame, calendar: pl.Series) -> pl.DataFrame:
+    """`frame` on exactly `calendar`'s dates (missing rows null), NaN as null."""
+    cal = pl.DataFrame({DATE: calendar})
+    out = cal.join(frame, on=DATE, how="left")
+    return out.with_columns(pl.col(tickers_of(out)).cast(pl.Float64).fill_nan(None))
+
+
+def _each(frame: pl.DataFrame, fn) -> pl.DataFrame:
+    """`fn(col_expr)` applied to every ticker column."""
+    return frame.select(pl.col(DATE), *(fn(pl.col(t)).alias(t) for t in tickers_of(frame)))
+
+
+def _excess(close: pl.DataFrame, spy: pl.Series, back: int, skip: int = 0) -> pl.DataFrame:
     """Return from `back` bars ago to `skip` bars ago, minus SPY's."""
-    t = close.shift(skip) / close.shift(back) - 1
     s = spy.shift(skip) / spy.shift(back) - 1
-    if isinstance(t, pd.DataFrame):
-        return t.sub(s, axis=0)
-    return t - s
+    return _each(close, lambda c: c.shift(skip) / c.shift(back) - 1 - pl.lit(s))
 
 
-def _weekly_rsi(close: pd.DataFrame) -> pd.DataFrame:
+def _week_end(days: np.ndarray, weekday: int) -> np.ndarray:
+    """The `weekday` (Mon=0) ending each date's week, as datetime64[D]."""
+    dow = (days.astype("datetime64[D]").view("int64") - 4) % 7  # 1970-01-01 was a Thursday
+    return days + ((weekday - dow) % 7).astype("timedelta64[D]")
+
+
+def _weekly_rsi(close: pl.DataFrame) -> pl.DataFrame:
     """Wilder weekly RSI as seen on each DAILY bar, matching
     technical_indicators._rsi_weekly: completed weeks use their last close,
     and the week in progress counts as one more (partial) week ending on
     that bar. The Wilder state is carried per completed week, so each
     daily value is one extra smoothing step on top of it."""
-    weekly = close.resample("W").last()
-    wk = weekly.to_numpy(dtype=float)
+    days = close[DATE].to_numpy().astype("datetime64[D]")
+    daily = close.select(tickers_of(close)).to_numpy().astype(float)  # null -> NaN
+    # Sunday-ending weeks, every week in the range (as pandas' "W" bins).
+    ends = _week_end(days, 6)
+    weeks = np.arange(ends.min(), ends.max() + np.timedelta64(1, "D"), np.timedelta64(7, "D"))
+    slot = np.searchsorted(weeks, ends)
+    n_w, n_c = len(weeks), daily.shape[1]
+    wk = np.full((n_w, n_c), np.nan)
+    for i, row in enumerate(daily):  # the week's last present close
+        present = ~np.isnan(row)
+        wk[slot[i], present] = row[present]
+
     delta = np.diff(wk, axis=0, prepend=np.nan)
-    n_w, n_c = wk.shape
     gain_state = np.full((n_w, n_c), np.nan)
     loss_state = np.full((n_w, n_c), np.nan)
     for j in range(n_c):
@@ -80,100 +115,125 @@ def _weekly_rsi(close: pd.DataFrame) -> pd.DataFrame:
             loss_state[i, j] = lo
 
     # Week each daily bar belongs to, and the completed week before it.
-    prev = weekly.index.searchsorted(close.index) - 1
+    prev = np.searchsorted(weeks, days) - 1
     ok = prev >= 0
     safe = np.where(ok, prev, 0)
     base = np.where(ok[:, None], wk[safe], np.nan)
     g0 = np.where(ok[:, None], gain_state[safe], np.nan)
     l0 = np.where(ok[:, None], loss_state[safe], np.nan)
-    d = close.to_numpy(dtype=float) - base
+    d = daily - base
     g = (g0 * (RSI_PERIOD - 1) + np.clip(d, 0, None)) / RSI_PERIOD
     lo = (l0 * (RSI_PERIOD - 1) + np.clip(-d, 0, None)) / RSI_PERIOD
     with np.errstate(divide="ignore", invalid="ignore"):
         rsi = 100 - 100 / (1 + g / lo)
     rsi = np.where(lo == 0, np.where(g > 0, 100.0, 50.0), rsi)
     rsi = np.where(np.isnan(g) | np.isnan(lo), np.nan, rsi)
-    return pd.DataFrame(rsi, index=close.index, columns=close.columns)
+    return pl.DataFrame(
+        {DATE: close[DATE], **{t: rsi[:, j] for j, t in enumerate(tickers_of(close))}}
+    )
+
+
+def _nan_for_null(frame: pl.DataFrame) -> pl.DataFrame:
+    cols = tickers_of(frame)
+    return frame.with_columns(pl.col(cols).fill_null(float("nan")))
 
 
 def panel_features(
-    close: pd.DataFrame,
-    high: pd.DataFrame,
-    volume: pd.DataFrame,
-    spy_close: pd.Series,
-) -> dict[str, pd.DataFrame]:
-    """Every feature as a (date x ticker) frame on SPY's trading calendar.
-    Inputs are dividend-adjusted daily bars; tickers are reindexed onto
-    SPY's calendar so every lookback is a count of market days."""
-    cal = spy_close.dropna().index
-    close = close.reindex(cal)
-    high = high.reindex(cal)
-    volume = volume.reindex(cal)
-    spy = spy_close.reindex(cal)
+    close: pl.DataFrame,
+    high: pl.DataFrame,
+    volume: pl.DataFrame,
+    spy_close: pl.DataFrame,
+) -> dict[str, pl.DataFrame]:
+    """Every feature as a wide (date x ticker) frame on SPY's trading
+    calendar. Inputs are dividend-adjusted daily bars; `spy_close` is a
+    (date, SPY) frame. Tickers are reindexed onto SPY's calendar so every
+    lookback is a count of market days."""
+    spy_col = next(c for c in spy_close.columns if c != DATE)
+    spy_frame = spy_close.select(DATE, pl.col(spy_col).cast(pl.Float64).fill_nan(None))
+    cal = spy_frame.drop_nulls(spy_col)[DATE]
+    close = on_calendar(close, cal)
+    high = on_calendar(high, cal)
+    volume = on_calendar(volume, cal)
+    spy = spy_frame.join(pl.DataFrame({DATE: cal}), on=DATE, how="right")[spy_col]
     m = TRADING_DAYS_PER_MONTH
 
-    rets = close.pct_change(fill_method=None)
-    spy_rets = spy.pct_change(fill_method=None)
-    sma50 = close.rolling(50).mean()
-    sma200 = close.rolling(200).mean()
+    rets = _each(close, lambda c: c / c.shift(1) - 1)
+    spy_rets = spy / spy.shift(1) - 1
+    sma50 = _each(close, lambda c: c.rolling_mean(50))
+    sma200 = _each(close, lambda c: c.rolling_mean(200))
     # Intraday highs over the trailing year, falling back to closes where a
     # High column is missing — as in technical_indicators.
-    high_52w = high.rolling(252, min_periods=1).max()
-    high_52w = high_52w.fillna(close.rolling(252, min_periods=1).max())
+    high_max = _each(high, lambda c: c.rolling_max(252, min_samples=1))
+    close_max = _each(close, lambda c: c.rolling_max(252, min_samples=1))
+    high_52w = high_max.select(
+        pl.col(DATE),
+        *(pl.col(t).fill_null(close_max[t]).alias(t) for t in tickers_of(close)),
+    )
 
-    mean_xy = rets.mul(spy_rets, axis=0).rolling(252, min_periods=200).mean()
-    mean_x = rets.rolling(252, min_periods=200).mean()
-    mean_y = spy_rets.rolling(252, min_periods=200).mean()
-    var_y = spy_rets.rolling(252, min_periods=200).var(ddof=0)
-    beta = (mean_xy - mean_x.mul(mean_y, axis=0)).div(var_y, axis=0)
+    beta_cols = []
+    mean_y = spy_rets.rolling_mean(252, min_samples=200)
+    var_y = spy_rets.rolling_var(252, min_samples=200, ddof=0)
+    for t in tickers_of(close):
+        x = rets[t]
+        # pandas aligned the product before rolling: a missing SPY return
+        # makes that day's product missing too.
+        mean_xy = (x * spy_rets).rolling_mean(252, min_samples=200)
+        mean_x = x.rolling_mean(252, min_samples=200)
+        beta_cols.append(((mean_xy - mean_x * mean_y) / var_y).alias(t))
+    beta = pl.DataFrame([close[DATE], *beta_cols])
 
-    return {
+    def ratio(a: pl.DataFrame, b: pl.DataFrame, minus: float = 1.0) -> pl.DataFrame:
+        return a.select(pl.col(DATE), *((pl.col(t) / b[t] - minus).alias(t) for t in tickers_of(a)))
+
+    frames = {
         "rs_1mo": _excess(close, spy, m),
         "rs_3mo": _excess(close, spy, 3 * m),
         "rs_6mo": _excess(close, spy, 6 * m),
         "rs_12_1": _excess(close, spy, 12 * m, skip=m),
-        "dist_from_52w_high": (close - high_52w) / high_52w,
-        "px_vs_sma200": close / sma200 - 1,
-        "sma50_vs_sma200": sma50 / sma200 - 1,
-        "volume_trend_20_60": volume.rolling(20).mean() / volume.rolling(60).mean() - 1,
+        "dist_from_52w_high": close.select(
+            pl.col(DATE),
+            *(((pl.col(t) - high_52w[t]) / high_52w[t]).alias(t) for t in tickers_of(close)),
+        ),
+        "px_vs_sma200": ratio(close, sma200),
+        "sma50_vs_sma200": ratio(sma50, sma200),
+        "volume_trend_20_60": ratio(
+            _each(volume, lambda c: c.rolling_mean(20)),
+            _each(volume, lambda c: c.rolling_mean(60)),
+        ),
         "weekly_rsi": _weekly_rsi(close),
-        "vol_60d": rets.rolling(60).std() * math.sqrt(252),
+        "vol_60d": _each(rets, lambda c: c.rolling_std(60) * math.sqrt(252)),
         "beta_252": beta,
     }
+    return {name: _nan_for_null(f) for name, f in frames.items()}
 
 
-def _as_dates(index: pd.Index) -> pd.DatetimeIndex:
-    """yfinance returns tz-aware bars from Ticker.history and naive ones
-    from download(); compare them as plain calendar dates."""
-    idx = pd.DatetimeIndex(index)
-    if idx.tz is not None:
-        idx = idx.tz_localize(None)
-    return idx.normalize()  # ty: ignore[unresolved-attribute]  # delegated, invisible to checkers
-
-
-def ticker_features(history: pd.DataFrame, spy_close: pd.Series) -> dict[str, float | None]:
+def ticker_features(
+    history: pl.DataFrame | None, spy_close: pl.DataFrame
+) -> dict[str, float | None]:
     """The same features for one ticker at its latest bar. `history` is a
-    yfinance frame (Close/High/Volume); `spy_close` is SPY's closes."""
-    if history is None or history.empty:
+    bar frame (Close/High/Volume); `spy_close` is SPY's (date, Close)."""
+    if history is None or history.is_empty():
         return {}
-    hist = history.copy()
-    hist.index = _as_dates(hist.index)
-    spy = spy_close.copy()
-    spy.index = _as_dates(spy.index)
-    x = {"Close": hist["Close"]}
-    x["High"] = hist["High"] if "High" in hist else hist["Close"]
-    x["Volume"] = hist["Volume"] if "Volume" in hist else pd.Series(np.nan, index=hist.index)
-    frames = panel_features(
-        x["Close"].to_frame("x"),
-        x["High"].to_frame("x"),
-        x["Volume"].to_frame("x"),
-        spy.loc[spy.index <= hist.index[-1]],
-    )
+    last_day = history[DATE].max()
+    x = {
+        "Close": history.select(DATE, pl.col("Close").alias("x")),
+        "High": history.select(
+            DATE, pl.col("High" if "High" in history.columns else "Close").alias("x")
+        ),
+        "Volume": (
+            history.select(DATE, pl.col("Volume").alias("x"))
+            if "Volume" in history.columns
+            else history.select(DATE, pl.lit(float("nan")).alias("x"))
+        ),
+    }
+    spy_col = next(c for c in spy_close.columns if c != DATE)
+    spy = spy_close.filter(pl.col(DATE) <= last_day).select(DATE, pl.col(spy_col).alias("SPY"))
+    frames = panel_features(x["Close"], x["High"], x["Volume"], spy)
     out: dict[str, float | None] = {}
     for name in FEATURES:
         col = frames[name]["x"]
-        val = col.iloc[-1] if len(col) else np.nan
-        out[name] = None if pd.isna(val) else float(val)
+        val = col[-1] if len(col) else float("nan")
+        out[name] = None if val is None or math.isnan(val) else float(val)
     return out
 
 
@@ -197,3 +257,13 @@ def passes_trend_gate(f: dict[str, float | None]) -> bool:
         and dist is not None
         and dist >= -0.30
     )
+
+
+__all__ = [
+    "FEATURES",
+    "on_calendar",
+    "panel_features",
+    "passes_trend_gate",
+    "ticker_features",
+    "tickers_of",
+]

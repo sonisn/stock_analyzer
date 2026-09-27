@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-import pandas as pd
+import polars as pl
 import pytest
 
 from stock_analyzer.db.repository import insert_pick_catalysts, insert_run
@@ -17,19 +17,20 @@ from stock_analyzer.discover.catalyst_grading import (
     format_catalyst_grading_block,
     grade_catalysts,
 )
+from tests.bars import bars, days
 
 TODAY = date(2026, 9, 17)
 EVENT = date(2026, 8, 20)
 
 
-def _frame(pre: float, post: float, event: date = EVENT) -> pd.DataFrame:
+def _frame(pre: float, post: float, event: date = EVENT) -> pl.DataFrame:
     """Flat at `pre` through the day before `event`, then `post` after."""
-    idx = pd.date_range(event - timedelta(days=30), event + timedelta(days=30), freq="D")
-    closes = [pre if ts.date() < event else post for ts in idx]
-    return pd.DataFrame({"Close": closes}, index=idx)
+    idx = days(event - timedelta(days=30), event + timedelta(days=30))
+    closes = [pre if ts < event else post for ts in idx]
+    return bars(idx, {"Close": closes})
 
 
-def _fetcher(frames: dict[str, pd.DataFrame]):
+def _fetcher(frames: dict[str, pl.DataFrame]):
     calls: list[str] = []
 
     def fetch(ticker, start, end):

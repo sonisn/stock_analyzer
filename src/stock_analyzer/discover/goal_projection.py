@@ -24,10 +24,14 @@ Numbers are nominal dollars. No LLM calls.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 import numpy as np
-import pandas as pd
+import polars as pl
+
+from ..data import frames
+from ..data.frames import DATE
 
 N_PATHS = 10_000
 BLOCK_MONTHS = 12
@@ -68,57 +72,68 @@ class Projection:
 def is_cash_like(frame: Any) -> bool:
     """A money-market fund: every close at its stable $1.00 NAV. Filling
     its missing history with SPY's months would model cash as stocks."""
-    if frame is None or getattr(frame, "empty", True) or "Close" not in frame:
+    closes = frames.closes(frame) if frame is not None else None
+    if closes is None:
         return False
-    closes = frame["Close"].dropna()
-    return bool(len(closes)) and bool(((closes - 1.0).abs() <= 0.005).all())
+    return bool(closes.select(((pl.col("Close") - 1.0).abs() <= 0.005).all()).item())
 
 
-def monthly_returns(bars: dict[str, Any]) -> pd.DataFrame:
-    """(month x ticker) returns from daily adjusted bars."""
-    closes = {}
+def monthly_returns(bars: dict[str, Any]) -> pl.DataFrame:
+    """Wide (month-end x ticker) returns from daily adjusted bars: each
+    month's last close, the current (incomplete) month left out."""
+    this_month = date.today().replace(day=1)
+    months: pl.DataFrame | None = None
     for ticker, frame in bars.items():
-        if frame is None or getattr(frame, "empty", True) or "Close" not in frame:
+        closes = frames.closes(frame) if frame is not None else None
+        if closes is None:
             continue
-        series = frame["Close"].dropna()
-        idx = pd.DatetimeIndex(series.index)
-        series.index = idx.tz_localize(None) if idx.tz is not None else idx
-        closes[ticker] = series.resample("ME").last()
-    if not closes:
-        return pd.DataFrame()
-    frame = pd.DataFrame(closes)
-    # The current month is incomplete; a partial month is not a month.
-    frame = frame[frame.index < pd.Timestamp.today().normalize().replace(day=1)]
-    return frame.pct_change().iloc[1:]
+        monthly = (
+            closes.with_columns(pl.col(DATE).dt.month_end().alias("_m"))
+            .group_by("_m")
+            .agg(pl.col("Close").last())
+            .sort("_m")
+            .select(pl.col("_m").alias(DATE), pl.col("Close").alias(ticker))
+        )
+        months = (
+            monthly if months is None else months.join(monthly, on=DATE, how="full", coalesce=True)
+        )
+    if months is None:
+        return pl.DataFrame()
+    months = months.sort(DATE).filter(pl.col(DATE) < this_month)
+    tickers = [c for c in months.columns if c != DATE]
+    rets = months.select(
+        pl.col(DATE), *((pl.col(t) / pl.col(t).shift(1) - 1).alias(t) for t in tickers)
+    )
+    return rets.slice(1)
 
 
 def portfolio_returns(
-    weights: dict[str, float], returns: pd.DataFrame, *, benchmark: str = "SPY"
+    weights: dict[str, float], returns: pl.DataFrame, *, benchmark: str = "SPY"
 ) -> tuple[np.ndarray, tuple[str, ...]]:
     """Monthly returns of a portfolio held at `weights` (rebalanced monthly).
 
     A holding without history for a month gets the benchmark's return that
     month — a young stock is assumed to move with the market until it has
     a record of its own."""
-    spy = returns[benchmark]
-    months = spy.dropna().index
+    rows = returns.filter(pl.col(benchmark).is_not_null())
+    spy = rows[benchmark].to_numpy().astype(float)
     total = sum(w for w in weights.values() if w > 0)
     if total <= 0:
         return np.array([]), ()
-    port = pd.Series(0.0, index=months)
+    port = np.zeros(len(spy))
     filled: list[str] = []
     for ticker, weight in weights.items():
         if weight <= 0:
             continue
         own = (
-            returns[ticker].reindex(months)
-            if ticker in returns
-            else pd.Series(np.nan, index=months)
+            rows[ticker].to_numpy().astype(float)
+            if ticker in rows.columns
+            else np.full(len(spy), np.nan)
         )
-        if own.isna().any():
+        if np.isnan(own).any():
             filled.append(ticker)
-        port += (weight / total) * own.fillna(spy.reindex(months))
-    return port.to_numpy(dtype=float), tuple(sorted(filled))
+        port += (weight / total) * np.where(np.isnan(own), spy, own)
+    return port, tuple(sorted(filled))
 
 
 def _block_paths(n_history: int, months: int, rng: np.random.Generator) -> np.ndarray:
@@ -164,7 +179,7 @@ def _deep_drawdown_odds(growth: np.ndarray, start_value: float, contribution: fl
 def project(
     *,
     weights: dict[str, float],
-    returns: pd.DataFrame,
+    returns: pl.DataFrame,
     start_value: float,
     months: int,
     monthly_contribution: float,
@@ -173,10 +188,10 @@ def project(
     benchmark: str = "SPY",
 ) -> Projection | None:
     """None when there is too little history to resample from."""
-    if benchmark not in returns or months <= 0 or start_value <= 0:
+    if benchmark not in returns.columns or months <= 0 or start_value <= 0:
         return None
     port, filled = portfolio_returns(weights, returns, benchmark=benchmark)
-    spy = returns[benchmark].dropna().to_numpy(dtype=float)
+    spy = returns[benchmark].drop_nulls().to_numpy().astype(float)
     if len(port) < MIN_HISTORY_MONTHS:
         return None
     rng = np.random.default_rng(SEED)
@@ -198,7 +213,7 @@ def project(
         filled_from_spy=filled,
     )
     # SPY on the same draws (same months of history, same order).
-    spy_series = returns[benchmark].reindex(returns[benchmark].dropna().index).to_numpy(dtype=float)
+    spy_series = spy
     sa, sb, _ = _simulate(_centred(spy_series, expected_return), idx, start_value)
     spy_end = sa + monthly_contribution * sb
     out.spy_p10 = float(np.percentile(spy_end, 10))

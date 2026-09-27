@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
+from ..data import frames
 from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 from .track_record import _close_on_or_before, _fetch_history
@@ -134,17 +135,16 @@ def grade_catalysts(
     span_start = min(dates) - timedelta(days=10)
     span_end = max(dates) + timedelta(days=REACTION_DAYS + 3)
 
-    spy = fetch("SPY", span_start, span_end)
-    if spy is None or spy.empty:
+    spy_closes = frames.closes(fetch("SPY", span_start, span_end))
+    if spy_closes is None:
         logger.warning("Catalyst grading: no SPY history — skipping")
         return CatalystReport()
-    spy_closes = spy["Close"].dropna()
 
     closes_by_ticker: dict[str, Any] = {}
     for ticker in {d["ticker"] for d in due}:
-        frame = fetch(ticker, span_start, span_end)
-        if frame is not None and not frame.empty:
-            closes_by_ticker[ticker] = frame["Close"].dropna()
+        closes = frames.closes(fetch(ticker, span_start, span_end))
+        if closes is not None:
+            closes_by_ticker[ticker] = closes
 
     report = CatalystReport()
     for d, event in zip(due, dates, strict=True):

@@ -16,10 +16,10 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-import pandas as pd
+import polars as pl
 
 from ..logging import get_logger
-from . import yf_gateway
+from . import frames, yf_gateway
 
 logger = get_logger(__name__)
 
@@ -30,32 +30,45 @@ logger = get_logger(__name__)
 PRIOR_QUARTERS = 1
 
 
-def prior_beats(dates: pd.DataFrame | None, report_day: date) -> tuple[int, int]:
+def _present(v: Any) -> bool:
+    return v is not None and v == v
+
+
+def prior_beats(dates: pl.DataFrame | None, report_day: date) -> tuple[int, int]:
     """(beats, quarters) over the PRIOR_QUARTERS reports before `report_day`.
-    A beat is reported EPS at or above the estimate."""
-    if dates is None or dates.empty:
+    A beat is reported EPS at or above the estimate. `dates` is the
+    earnings-dates table in frames.table_from_pandas shape."""
+    if dates is None or dates.is_empty():
         return 0, 0
     rows = []
-    for when, row in dates.iterrows():
-        day = date.fromisoformat(str(when)[:10])  # local report date
-        est, eps = row.get("EPS Estimate"), row.get("Reported EPS")
+    for row in dates.iter_rows(named=True):
+        day = date.fromisoformat(str(row["index"])[:10])  # local report date
+        est: Any = row.get("EPS Estimate")
+        eps: Any = row.get("Reported EPS")
         # A few days' slack: the calendar and Yahoo can differ on the date.
-        if day < report_day - timedelta(days=5) and pd.notna(est) and pd.notna(eps):
+        if day < report_day - timedelta(days=5) and _present(est) and _present(eps):
             rows.append((day, float(eps) >= float(est)))
     rows = sorted(rows, reverse=True)[:PRIOR_QUARTERS]
     return sum(beat for _, beat in rows), len(rows)
 
 
-def year_ago_revenue(stmt: pd.DataFrame | None, report_day: date) -> float | None:
+def year_ago_revenue(stmt: pl.DataFrame | None, report_day: date) -> float | None:
     """Revenue of the quarter that ended about a year before this one did.
     A quarter is reported within ~3 months of its end, so the year-ago
-    quarter ended 12-15 months before `report_day`."""
-    if stmt is None or stmt.empty or "Total Revenue" not in stmt.index:
+    quarter ended 12-15 months before `report_day`. `stmt` is the quarterly
+    income statement in frames.table_from_pandas shape (line items as rows,
+    quarter-end dates as columns)."""
+    if stmt is None:
+        return None
+    revenue = stmt.filter(pl.col("index") == "Total Revenue")
+    if revenue.is_empty():
         return None
     lo, hi = report_day - timedelta(days=365 + 100), report_day - timedelta(days=365)
-    for col, value in stmt.loc["Total Revenue"].items():
+    for col, value in revenue.row(0, named=True).items():
+        if col == "index":
+            continue
         end = date.fromisoformat(str(col)[:10])
-        if lo <= end <= hi and pd.notna(value) and float(value) > 0:
+        if lo <= end <= hi and _present(value) and float(value) > 0:
             return float(value)
     return None
 
@@ -63,11 +76,11 @@ def year_ago_revenue(stmt: pd.DataFrame | None, report_day: date) -> float | Non
 def fetch_track_record(ticker: str, report_day: date, revenue_now: float | None) -> dict[str, Any]:
     """{"prior_beats", "prior_quarters", "revenue_yoy_pct"}; counts are 0
     and the growth None when Yahoo has nothing."""
-    dates = yf_gateway.ticker_call(
-        ticker, "earnings_dates", lambda t: t.get_earnings_dates(limit=12)
+    dates = frames.table_from_pandas(
+        yf_gateway.ticker_call(ticker, "earnings_dates", lambda t: t.get_earnings_dates(limit=12))
     )
-    stmt = yf_gateway.ticker_call(
-        ticker, "quarterly_income_stmt", lambda t: t.quarterly_income_stmt
+    stmt = frames.table_from_pandas(
+        yf_gateway.ticker_call(ticker, "quarterly_income_stmt", lambda t: t.quarterly_income_stmt)
     )
     beats, quarters = prior_beats(dates, report_day)
     before = year_ago_revenue(stmt, report_day)

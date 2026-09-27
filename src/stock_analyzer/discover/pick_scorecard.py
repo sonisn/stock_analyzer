@@ -30,14 +30,29 @@ from statistics import mean
 from typing import Any
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from sqlalchemy import text
 
+from ..data import frames
 from ..db.session import exec_sql, get_session
 
 HORIZON_DAYS = 126  # trading days ≈ 6 months
 
-Closes = Callable[[list[str], date], dict[str, pd.Series]]
+# Which pool discover picked from, from each date on. Picks from different
+# pools are different experiments, so the card never blends them: cohorts
+# and the overall row are split by pool once picks span more than one.
+# Add a row whenever the universe or its rules change materially.
+UNIVERSE_ERAS: tuple[tuple[date, str], ...] = (
+    (date.min, "S&P 500"),
+    (date(2026, 9, 27), "US >= $2B quality"),
+)
+
+
+def universe_on(day: date, eras: tuple[tuple[date, str], ...] = UNIVERSE_ERAS) -> str:
+    return [label for start, label in eras if start <= day][-1]
+
+
+Closes = Callable[[list[str], date], dict[str, pl.DataFrame]]
 
 
 def _due(picked: date, horizon: int) -> date:
@@ -59,7 +74,11 @@ def _cohort(rows: list[dict[str, Any]], label: str) -> dict[str, Any]:
 
 
 def pick_scorecard(
-    db_path: str, *, horizon: int = HORIZON_DAYS, today: date | None = None
+    db_path: str,
+    *,
+    horizon: int = HORIZON_DAYS,
+    today: date | None = None,
+    eras: tuple[tuple[date, str], ...] = UNIVERSE_ERAS,
 ) -> dict[str, Any]:
     """{"cohorts": [...], "overall": {...} | None, "maturing": n,
     "next_due": date | None, "unmeasured": [ticker, ...]}. Due dates
@@ -79,7 +98,7 @@ def pick_scorecard(
     entries = [
         (t, datetime.fromisoformat(str(run_at)).date(), ret, spy) for t, run_at, ret, spy in picks
     ]
-    return _summarize(entries, horizon=horizon, today=today or date.today())
+    return _summarize(entries, horizon=horizon, today=today or date.today(), eras=eras)
 
 
 def suggestion_scorecard(
@@ -118,14 +137,14 @@ def suggestion_scorecard(
 
 
 def _outcome(
-    close: pd.Series | None, spy: pd.Series | None, day: date, horizon: int
+    close: pl.DataFrame | None, spy: pl.DataFrame | None, day: date, horizon: int
 ) -> tuple[float, float] | None:
     """(return %, SPY %) from the first close after `day` to `horizon`
     sessions later; None while the window is open or a price is missing."""
     if close is None or spy is None:
         return None
-    sessions = sorted(_by_day(spy).items())
-    px = _by_day(close)
+    sessions = sorted(frames.by_day(spy).items())
+    px = frames.by_day(close)
     start = next((i for i, (d, _) in enumerate(sessions) if d > day), None)
     if start is None or start + horizon >= len(sessions):
         return None
@@ -135,19 +154,18 @@ def _outcome(
     return (px[d1] / px[d0] - 1) * 100, (s1 / s0 - 1) * 100
 
 
-def _by_day(series: pd.Series) -> dict[date, float]:
-    s = series.dropna()
-    days = pd.DatetimeIndex(s.index).date  # ty: ignore[unresolved-attribute]  # delegated, invisible to checkers
-    return {d: float(v) for d, v in zip(days, s.to_numpy(), strict=True)}
-
-
 def _summarize(
-    entries: list[tuple[str, date, float | None, float | None]], *, horizon: int, today: date
+    entries: list[tuple[str, date, float | None, float | None]],
+    *,
+    horizon: int,
+    today: date,
+    eras: tuple[tuple[date, str], ...] | None = None,
 ) -> dict[str, Any]:
     """Group (ticker, day, return %, SPY %) by month, one decision per
-    ticker per month; a missing return is maturing or unmeasured."""
+    ticker per month; a missing return is maturing or unmeasured. With
+    `eras`, also by universe, labelled once graded picks span two."""
     seen: set[tuple[str, str]] = set()
-    graded: dict[str, list[dict[str, Any]]] = {}
+    graded: dict[tuple[str, str], list[dict[str, Any]]] = {}
     maturing: list[date] = []
     unmeasured: list[str] = []
     for ticker, day, ret, spy in entries:
@@ -161,19 +179,34 @@ def _summarize(
             else:
                 unmeasured.append(ticker)
             continue
-        graded.setdefault(month, []).append(
+        pool = universe_on(day, eras) if eras else ""
+        graded.setdefault((month, pool), []).append(
             {"ticker": ticker, "return_pct": ret, "spy_pct": spy, "excess_pct": ret - spy}
         )
 
-    cohorts = [
-        _cohort(rows, datetime.strptime(m, "%Y-%m").strftime("%b %Y"))
-        for m, rows in sorted(graded.items())
-    ]
-    all_rows = [r for rows in graded.values() for r in rows]
+    pools = list(dict.fromkeys(p for _, p in sorted(graded)))
+    split = len(pools) > 1
+
+    def label(month: str, pool: str) -> str:
+        name = datetime.strptime(month, "%Y-%m").strftime("%b %Y")
+        return f"{name} · {pool}" if split else name
+
+    cohorts = [_cohort(rows, label(m, p)) for (m, p), rows in sorted(graded.items())]
+    if split:
+        overall = [
+            _cohort(
+                [r for (_, p), rows in graded.items() if p == pool for r in rows], f"All · {pool}"
+            )
+            for pool in pools
+        ]
+    else:
+        all_rows = [r for rows in graded.values() for r in rows]
+        overall = [_cohort(all_rows, "All")] if len(cohorts) > 1 else []
     return {
         "horizon": horizon,
         "cohorts": cohorts,
-        "overall": _cohort(all_rows, "All") if len(cohorts) > 1 else None,
+        "overall": overall[0] if len(overall) == 1 else None,
+        "overall_by_universe": overall if split else [],
         "maturing": len(maturing),
         "next_due": min(maturing, default=None),
         "unmeasured": unmeasured,

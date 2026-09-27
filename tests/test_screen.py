@@ -25,6 +25,9 @@ def _good_fundamentals(**overrides):
         "market_cap": 50e9,
         "revenue_growth_yoy": 0.15,
         "operating_cash_flow": 5e9,
+        "analyst_count": 12,
+        "free_cash_flow": 4e9,
+        "return_on_equity": 0.25,
         "debt_to_equity": 0.5,
         "fcf_yield": 0.04,
         "operating_margin": 0.25,
@@ -341,3 +344,31 @@ def test_score_budget_is_45_45_10():
     assert comp["trend"] == pytest.approx(45.0)
     assert comp["conviction"] == pytest.approx(10.0)
     assert maxed["score"] == pytest.approx(100.0)
+
+
+def test_the_shortlist_caps_sectors_and_industries_and_refills():
+    from stock_analyzer.discover.screen import diversify_shortlist
+
+    def c(t, sector, industry):
+        return {"ticker": t, "sector": sector, "industry": industry}
+
+    ranked = [
+        c("VLO", "Energy", "Refining"),
+        c("MPC", "Energy", "Refining"),
+        c("PSX", "Energy", "Refining"),  # third refiner: skipped
+        c("TNK", "Energy", "Shipping"),
+        c("FRO", "Energy", "Shipping"),
+        c("WHD", "Energy", "Services"),  # fifth energy name: kept
+        c("XOM", "Energy", "Integrated"),  # sixth energy name: skipped
+        c("NVDA", "Technology", "Semis"),
+        c("X", None, None),  # no sector data: never capped
+    ]
+    got = diversify_shortlist(ranked, 7, max_per_sector=5, max_per_industry=2)
+    assert [x["ticker"] for x in got] == ["VLO", "MPC", "TNK", "FRO", "WHD", "NVDA", "X"]
+    assert (
+        "Refining" in ranked[2]["shortlist_skipped"] and "Energy" in ranked[6]["shortlist_skipped"]
+    )
+    # Too few sectors to fill the list: skipped names come back, in rank order.
+    got = diversify_shortlist(ranked[:7], 7, max_per_sector=5, max_per_industry=2)
+    assert [x["ticker"] for x in got] == ["VLO", "MPC", "PSX", "TNK", "FRO", "WHD", "XOM"]
+    assert not any(x.get("shortlist_skipped") for x in got)

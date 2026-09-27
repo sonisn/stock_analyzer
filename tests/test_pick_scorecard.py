@@ -91,7 +91,7 @@ def test_labels_only_the_picks_including_six_months(tmp_path):
     db = str(tmp_path / "l.db")
     p = _panel(3, 300, signal=0)
     with get_session(db) as session:
-        _run(session, p.close.index[100].isoformat(), ["T0"], others=("T1",))
+        _run(session, p.close["date"][100].isoformat(), ["T0"], others=("T1",))
 
     assert label_candidates(db, fetch_panel=lambda t: p, only_picks=True) == 3
     with get_session(db) as session:
@@ -130,3 +130,29 @@ def test_scorecard_renders_in_the_health_block():
         pick_scorecard=lambda: {**sc, "cohorts": [], "maturing": 0, "next_due": None},
     )
     assert "Scorecard" not in render_health_html(quiet)
+
+
+def test_picks_from_different_universes_are_never_blended():
+    from datetime import date
+
+    from stock_analyzer.discover.pick_scorecard import _summarize
+
+    eras = ((date.min, "S&P 500"), (date(2026, 9, 27), "US >= $2B quality"))
+    entries = [
+        ("AAA", date(2026, 9, 20), 10.0, 4.0),
+        ("BBB", date(2026, 9, 28), 2.0, 4.0),  # same month, new universe
+        ("CCC", date(2026, 10, 5), 8.0, 4.0),
+    ]
+    card = _summarize(entries, horizon=126, today=date(2027, 6, 1), eras=eras)
+    assert [c["cohort"] for c in card["cohorts"]] == [
+        "Sep 2026 · S&P 500",
+        "Sep 2026 · US >= $2B quality",
+        "Oct 2026 · US >= $2B quality",
+    ]
+    assert card["overall"] is None
+    assert [(o["cohort"], o["picks"], o["excess_pct"]) for o in card["overall_by_universe"]] == [
+        ("All · S&P 500", 1, 6.0),
+        ("All · US >= $2B quality", 2, 1.0),
+    ]
+    one = _summarize(entries[:1], horizon=126, today=date(2027, 6, 1), eras=eras)
+    assert one["cohorts"][0]["cohort"] == "Sep 2026" and one["overall_by_universe"] == []

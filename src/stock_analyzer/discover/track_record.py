@@ -50,8 +50,11 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Literal, NamedTuple
 
-import pandas as pd
+import numpy as np
+import polars as pl
 
+from ..data import frames
+from ..data.frames import DATE
 from ..db.session import get_session
 from ..db.track_record import (
     fetch_recent_pick_runs_with_model,
@@ -133,8 +136,8 @@ def _dedup_oldest(
 # --- price history ---------------------------------------------------------
 
 
-def _fetch_history(ticker: str, start: date, end: date) -> pd.DataFrame | None:
-    """Daily OHLCV for [start, end], date-indexed and timezone-naive.
+def _fetch_history(ticker: str, start: date, end: date) -> pl.DataFrame | None:
+    """Daily bars for [start, end] (data/frames.py shape).
 
     One fetch per (ticker, decision) serves every horizon plus the beta
     estimate, so widening the window costs no extra requests. Returns None
@@ -145,63 +148,56 @@ def _fetch_history(ticker: str, start: date, end: date) -> pd.DataFrame | None:
         from ..data import yf_gateway
 
         df = yf_gateway.daily_bars(ticker, start=start, end=end, what="track_record.history")
-        if df is None or df.empty:
+        if df is None or df.is_empty():
             return None
-        df = df.copy()
-        idx = pd.to_datetime(df.index)
-        if getattr(idx, "tz", None) is not None:
-            idx = idx.tz_localize(None)
-        df.index = idx.normalize()
         return df
     except Exception as e:
         logger.debug("yfinance history fetch failed for %s: %s", ticker, e)
         return None
 
 
-def _close_on_or_after(closes: pd.Series, on: date) -> tuple[float, date] | None:
-    """First close at or after `on` — the entry fill a reader could get."""
-    window = closes[closes.index >= pd.Timestamp(on)]
-    if window.empty:
-        return None
-    value = float(window.iloc[0])
-    return (value, window.index[0].date()) if pd.notna(value) else None
+def _close_on_or_after(closes: pl.DataFrame, on: date) -> tuple[float, date] | None:
+    """First close at or after `on` — the entry fill a reader could get.
+    `closes` is a (date, Close) frame."""
+    return frames.value_on_or_after(closes, on)
 
 
-def _close_on_or_before(closes: pd.Series, on: date) -> tuple[float, date] | None:
+def _close_on_or_before(closes: pl.DataFrame, on: date) -> tuple[float, date] | None:
     """Last close at or before `on` — the horizon's measurement price."""
-    window = closes[closes.index <= pd.Timestamp(on)]
-    if window.empty:
-        return None
-    value = float(window.iloc[-1])
-    return (value, window.index[-1].date()) if pd.notna(value) else None
+    return frames.value_on_or_before(closes, on)
 
 
-def _compute_beta(ticker_closes: pd.Series, spy_closes: pd.Series, pick_date: date) -> float | None:
+def _compute_beta(
+    ticker_closes: pl.DataFrame, spy_closes: pl.DataFrame, pick_date: date
+) -> float | None:
     """Trailing beta vs SPY on daily returns strictly BEFORE `pick_date`.
 
     Using only pre-decision data is the point: a beta fitted over the
     measurement window itself would absorb the very move being scored.
     """
-    start = pd.Timestamp(pick_date - timedelta(days=_BETA_LOOKBACK_DAYS))
-    cutoff = pd.Timestamp(pick_date)
-    joined = pd.DataFrame(
-        {
-            "t": ticker_closes[(ticker_closes.index >= start) & (ticker_closes.index < cutoff)],
-            "s": spy_closes[(spy_closes.index >= start) & (spy_closes.index < cutoff)],
-        }
-    ).dropna()
-    if len(joined) < _BETA_MIN_OBS + 1:
+    start = pick_date - timedelta(days=_BETA_LOOKBACK_DAYS)
+    window = (pl.col(DATE) >= start) & (pl.col(DATE) < pick_date)
+    joined = (
+        ticker_closes.filter(window)
+        .select(DATE, pl.col("Close").alias("t"))
+        .join(spy_closes.filter(window).select(DATE, pl.col("Close").alias("s")), on=DATE)
+        .sort(DATE)
+        .filter(pl.col("t").is_not_nan() & pl.col("s").is_not_nan())
+    )
+    if joined.height < _BETA_MIN_OBS + 1:
         return None
-    returns = joined.pct_change().dropna()
-    if len(returns) < _BETA_MIN_OBS:
+    t = joined["t"].to_numpy()
+    sv = joined["s"].to_numpy()
+    rt, rs = t[1:] / t[:-1] - 1, sv[1:] / sv[:-1] - 1
+    ok = ~(np.isnan(rt) | np.isnan(rs))
+    rt, rs = rt[ok], rs[ok]
+    if len(rt) < _BETA_MIN_OBS:
         return None
-    spy_var = float(returns["s"].var())
+    spy_var = float(np.var(rs, ddof=1))
     if not spy_var or spy_var <= 0:
         return None
-    beta = float(returns["t"].cov(returns["s"]) / spy_var)
-    if pd.isna(beta):
-        return None
-    return beta
+    beta = float(np.cov(rt, rs, ddof=1)[0, 1] / spy_var)
+    return None if np.isnan(beta) else beta
 
 
 # --- aggregation ----------------------------------------------------------
@@ -222,8 +218,8 @@ def _directional(value: float | None, direction: Direction) -> float | None:
 
 def _score_decision(
     decision: _Decision,
-    ticker_df: pd.DataFrame | None,
-    spy_df: pd.DataFrame | None,
+    ticker_df: pl.DataFrame | None,
+    spy_df: pl.DataFrame | None,
 ) -> tuple[list[PickReturn], UnmeasurableDecision | None]:
     """Score one decision at every horizon it has finished.
 
@@ -234,11 +230,10 @@ def _score_decision(
     too_young = decision.age_days < _MIN_AGE_DAYS
     no_data = "too_young" if too_young else "no_price_data"
 
-    if ticker_df is None or ticker_df.empty or spy_df is None or spy_df.empty:
+    t_closes, s_closes = frames.closes(ticker_df), frames.closes(spy_df)
+    if t_closes is None or s_closes is None:
         return [], _unmeasurable(decision, no_data)
 
-    t_closes = ticker_df["Close"].dropna()
-    s_closes = spy_df["Close"].dropna()
     t_entry = _close_on_or_after(t_closes, pick_date)
     s_entry = _close_on_or_after(s_closes, pick_date)
     if t_entry is None or s_entry is None:
@@ -282,8 +277,8 @@ def _unmeasurable(
 class _Series(NamedTuple):
     """A decision's closes and SPY's, their entry bars, and the stock's beta."""
 
-    t_closes: pd.Series
-    s_closes: pd.Series
+    t_closes: pl.DataFrame
+    s_closes: pl.DataFrame
     t_entry: tuple[float, date]
     s_entry: tuple[float, date]
     beta: float | None
@@ -443,7 +438,7 @@ def measure_track_record(db_path: str, *, lookback_days: int = 180) -> TrackReco
 
 def _fetch_frames(
     decisions: list[_Decision],
-) -> tuple[dict[str, pd.DataFrame | None], dict[tuple[str, str], pd.DataFrame | None]]:
+) -> tuple[dict[str, pl.DataFrame | None], dict[tuple[str, str], pl.DataFrame | None]]:
     """(SPY frame per decision date, frame per (ticker, decision date)).
 
     One history fetch per (ticker, decision date) covers every horizon and
@@ -460,7 +455,7 @@ def _fetch_frames(
             min(start + timedelta(days=max_horizon), date.today()),
         )
 
-    spy_frames: dict[str, pd.DataFrame | None] = {}
+    spy_frames: dict[str, pl.DataFrame | None] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         futures = {d: ex.submit(_fetch_history, "SPY", *_window(d)) for d in distinct_dates}
         for d, fut in futures.items():
@@ -470,7 +465,7 @@ def _fetch_frames(
                 logger.debug("SPY history fetch failed for %s: %s", d, e)
                 spy_frames[d] = None
 
-    ticker_frames: dict[tuple[str, str], pd.DataFrame | None] = {}
+    ticker_frames: dict[tuple[str, str], pl.DataFrame | None] = {}
     with ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
         futures2 = {key: ex.submit(_fetch_history, key[0], *_window(key[1])) for key in fetch_keys}
         for key, fut in futures2.items():
@@ -484,8 +479,8 @@ def _fetch_frames(
 
 def _score_all(
     decisions: list[_Decision],
-    ticker_frames: dict[tuple[str, str], pd.DataFrame | None],
-    spy_frames: dict[str, pd.DataFrame | None],
+    ticker_frames: dict[tuple[str, str], pl.DataFrame | None],
+    spy_frames: dict[str, pl.DataFrame | None],
 ) -> tuple[list[PickReturn], list[UnmeasurableDecision]]:
     all_rows: list[PickReturn] = []
     unmeasurable: list[UnmeasurableDecision] = []
@@ -1040,16 +1035,18 @@ def _spot_at(ticker: str, on: str) -> float | None:
 
         end = date.fromisoformat(on)
         start = end - timedelta(days=7)
-        df = yf_gateway.history(
-            ticker,
-            what="track_record.spot",
-            start=start.isoformat(),
-            end=end.isoformat(),
-            auto_adjust=False,
+        df = frames.bars_from_pandas(
+            yf_gateway.history(
+                ticker,
+                what="track_record.spot",
+                start=start.isoformat(),
+                end=end.isoformat(),
+                auto_adjust=False,
+            )
         )
-        if df is None or df.empty:
+        if df is None:
             return None
-        return float(df["Close"].iloc[-1])
+        return float(df["Close"][-1])
     except Exception as e:
         from ..logging import get_logger as _gl
 

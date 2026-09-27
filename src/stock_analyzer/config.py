@@ -96,7 +96,9 @@ class Settings(BaseSettings):
     # frame well below this; the cap is the backstop for a broad tape when
     # most of the index is in an uptrend. Survivors are kept by 6-month
     # relative strength, and holdings/watchlist names are never capped out.
-    discover_max_screen_candidates: int = 250
+    # 600 since the >= $2B universe (~1,600 clear the soft gate); the
+    # nightly job warms the fetch cache for exactly these names.
+    discover_max_screen_candidates: int = 600
     # Price rules of the discover screen: "soft" (default: only skip names
     # 40%+ below their 52-week high — long-term holds may be bought on a
     # dip), "strict" (the old four uptrend rules), or "off".
@@ -164,6 +166,11 @@ class Settings(BaseSettings):
     # different disk from `discover_db_path`.
     backup_dir: str = "~/.stock_analyzer/backups"
     backup_keep: int = 14
+    # An rclone remote path the nightly backup is also uploaded to (e.g.
+    # "box-crypt:stock-analyzer", an encrypted remote over Box), keeping
+    # `backup_keep` days there too. Empty: local copies only. The local
+    # backups sit in the same house as the database; this copy doesn't.
+    backup_remote: str = ""
     # `ops backup` also deletes log files older than this many days from
     # LOG_DIR and the repo's cron `logs/` (every process writes its own
     # file, so they pile up by the hundreds). 0 keeps them all.

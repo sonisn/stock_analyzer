@@ -9,14 +9,15 @@ candidates can be scored with the same yardstick as the backtest.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
-from datetime import datetime
-from typing import Any, cast
+import json
+from collections.abc import Callable
+from datetime import date, datetime
 
 import numpy as np
-import pandas as pd
+import polars as pl
 from sqlalchemy import text
 
+from ..data.frames import DATE
 from ..db.session import exec_sql, get_session
 from ..db.tables import CandidateOutcome
 from ..logging import get_logger
@@ -24,10 +25,17 @@ from .dataset import HORIZONS, PricePanel, download_panel
 
 logger = get_logger(__name__)
 
+_PENDING_SCHEMA = {
+    "run_id": pl.Int64,
+    "ticker": pl.String,
+    "run_date": pl.Date,
+    "horizon": pl.Int64,
+}
+
 
 def pending_labels(
     db_path: str, *, only_passed: bool = False, only_picks: bool = False
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """(run_id, ticker, run_date, horizon) rows that have no outcome yet;
     `only_passed` limits it to screen survivors (the per-run upkeep),
     `only_picks` to the top picks (the daily email's scorecard)."""
@@ -50,7 +58,7 @@ def pending_labels(
         for h in HORIZONS
         if (run_id, ticker, h) not in done
     ]
-    return pd.DataFrame(out, columns=["run_id", "ticker", "run_date", "horizon"])
+    return pl.DataFrame(out, schema=_PENDING_SCHEMA, orient="row")
 
 
 def label_candidates(
@@ -65,42 +73,42 @@ def label_candidates(
     # A window needs 1 + horizon trading days; ~7/5 calendar days each plus
     # a holiday margin. Skip rows that cannot have closed so a routine run
     # doesn't download prices for hundreds of names it can't label yet.
-    if not pending.empty:
-        cutoff = pd.Timestamp.today().normalize()
-        age = (cutoff - pd.to_datetime(pending["run_date"])).dt.days
-        pending = pending[age >= (pending["horizon"] + 1) * 7 / 5 + 3]
-    if pending.empty:
+    if not pending.is_empty():
+        age = (pl.lit(date.today()) - pl.col("run_date")).dt.total_days()
+        pending = pending.filter(age >= (pl.col("horizon") + 1) * 7 / 5 + 3)
+    if pending.is_empty():
         return 0
-    tickers = sorted(pending["ticker"].unique())
+    tickers = sorted(pending["ticker"].unique().to_list())
     panel = (fetch_panel or (lambda t: download_panel(t, years=2)))(tickers)
-    cal = panel.spy.dropna().index
-    close = panel.close.reindex(cal)
-    spy = panel.spy.reindex(cal)
+    spy_frame = panel.spy.filter(pl.col("SPY").is_not_null() & pl.col("SPY").is_not_nan())
+    cal = spy_frame[DATE].to_numpy().astype("datetime64[D]")
+    close = spy_frame.select(DATE).join(panel.close, on=DATE, how="left")
+    spy = spy_frame["SPY"].to_numpy()
 
     rows: list[CandidateOutcome] = []
-    # itertuples rows are namedtuples of the frame's columns; checkers see bare tuples.
-    for rec in cast(Iterable[Any], pending.itertuples(index=False)):
-        if rec.ticker not in close:
+    for rec in pending.iter_rows(named=True):
+        if rec["ticker"] not in close.columns:
             continue
-        # First bar strictly after the run date, then `horizon` bars on. (pandas
-        # accepts a Timestamp here but doesn't annotate it.)
-        entry_pos = int(cal.searchsorted(pd.Timestamp(rec.run_date), side="right"))  # ty: ignore[no-matching-overload]
-        exit_pos = entry_pos + int(rec.horizon)
+        # First bar strictly after the run date, then `horizon` bars on.
+        entry_pos = int(np.searchsorted(cal, np.datetime64(rec["run_date"]), side="right"))
+        exit_pos = entry_pos + int(rec["horizon"])
         if exit_pos >= len(cal):
             continue  # window still open
-        px_in, px_out = close[rec.ticker].iloc[entry_pos], close[rec.ticker].iloc[exit_pos]
-        spy_in, spy_out = spy.iloc[entry_pos], spy.iloc[exit_pos]
-        if any(np.isnan(v) or v <= 0 for v in (px_in, px_out, spy_in, spy_out)):
+        px = close[rec["ticker"]]
+        px_in, px_out = px[entry_pos], px[exit_pos]
+        spy_in, spy_out = spy[entry_pos], spy[exit_pos]
+        values = (px_in, px_out, spy_in, spy_out)
+        if any(v is None or np.isnan(v) or v <= 0 for v in values):
             continue
         ret = (px_out / px_in - 1) * 100
         spy_ret = (spy_out / spy_in - 1) * 100
         rows.append(
             CandidateOutcome(
-                run_id=int(rec.run_id),
-                ticker=rec.ticker,
-                horizon_days=int(rec.horizon),
-                entry_date=str(cal[entry_pos].date()),
-                exit_date=str(cal[exit_pos].date()),
+                run_id=int(rec["run_id"]),
+                ticker=rec["ticker"],
+                horizon_days=int(rec["horizon"]),
+                entry_date=str(cal[entry_pos]),
+                exit_date=str(cal[exit_pos]),
                 return_pct=float(ret),
                 spy_return_pct=float(spy_ret),
                 excess_pct=float(ret - spy_ret),
@@ -109,7 +117,7 @@ def label_candidates(
     with get_session(db_path) as session:
         for row in rows:
             session.add(row)
-    logger.info("Labeled %d candidate outcomes (%d pending)", len(rows), len(pending))
+    logger.info("Labeled %d candidate outcomes (%d pending)", len(rows), pending.height)
     return len(rows)
 
 
@@ -117,8 +125,6 @@ def grade_shadow_scores(db_path: str, horizon: int = 21) -> dict[str, float | in
     """Live, truly out-of-sample check of the model: the percentile each
     run recorded for its survivors (score_breakdown["model"]) against the
     excess return those names then realized. Per-run Spearman IC, averaged."""
-    import json
-
     with get_session(db_path) as session:
         rows = exec_sql(
             session,
@@ -129,20 +135,23 @@ def grade_shadow_scores(db_path: str, horizon: int = 21) -> dict[str, float | in
             ),
             params={"h": horizon},
         ).all()
-    frame = pd.DataFrame(
+    frame = pl.DataFrame(
         [
             (run_id, (json.loads(bd).get("model") or {}).get("percentile"), excess)
             for run_id, bd, excess in rows
         ],
-        columns=["run_id", "pct", "excess"],
-    ).dropna()
-    ics = [
-        g["pct"].rank().corr(g["excess"].rank()) for _, g in frame.groupby("run_id") if len(g) >= 5
-    ]
-    ics = [ic for ic in ics if pd.notna(ic)]
+        schema={"run_id": pl.Int64, "pct": pl.Float64, "excess": pl.Float64},
+        orient="row",
+    ).drop_nulls()
+    ics = []
+    for _, g in frame.group_by("run_id"):
+        if g.height >= 5:
+            ic = g.select(pl.corr(pl.col("pct").rank(), pl.col("excess").rank())).item()
+            if ic is not None and not np.isnan(ic):
+                ics.append(ic)
     return {
         "runs": len(ics),
-        "names": int(len(frame)),
+        "names": frame.height,
         "mean_ic": float(np.mean(ics)) if ics else None,
         "hit_rate": float(np.mean([ic > 0 for ic in ics])) if ics else None,
     }

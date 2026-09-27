@@ -63,7 +63,7 @@ from typing import Any
 import yfinance as yf
 
 from ..logging import get_logger
-from . import bar_store
+from . import bar_store, frames
 
 logger = get_logger(__name__)
 
@@ -559,7 +559,8 @@ def daily_bars(
     remember: bool = True,
 ):
     """Split- and dividend-adjusted daily bars from `start` through `end`
-    (inclusive; default today), or None when Yahoo has nothing.
+    (inclusive; default today), or None when Yahoo has nothing. A Polars
+    frame in the package's bar shape (data/frames.py).
 
     The technicals, realized-vol, track-record and daily-email steps each
     wanted their own slice of the same history and fetched it separately.
@@ -591,21 +592,27 @@ def daily_bars(
     return _slice_days(frame, start, end)
 
 
+def _history_bars(symbol: str, *, what: str, start: date):
+    """`history` from `start`, adjusted, as the package's bar shape."""
+    raw = history(symbol, what=what, start=start.isoformat(), auto_adjust=True)
+    return frames.bars_from_pandas(raw)
+
+
 def _synced_bars(symbol: str, fetch_from: date, what: str):
     """Bars from `fetch_from`, from the store where it is current, extended
     by a short download where it is not, downloaded whole otherwise."""
     stored = bar_store.load(symbol)
-    if stored is not None and stored.requested_from <= fetch_from and not stored.frame.empty:
+    if stored is not None and stored.requested_from <= fetch_from and not stored.frame.is_empty():
         if bar_store.is_current(stored, TICKER_CACHE_TTL):
             _bump("bars_stored")
             return bar_store.trim(stored.frame, fetch_from)
         since = bar_store.overlap_start(stored.frame)
-        delta = history(symbol, what=what, start=since.isoformat(), auto_adjust=True)
+        delta = _history_bars(symbol, what=what, start=since)
         if delta is None:
             logger.warning(
                 "%s: no new bars from Yahoo — using stored bars through %s",
                 symbol,
-                stored.frame.index[-1].date(),
+                bar_store.last_day(stored.frame),
             )
             return bar_store.trim(stored.frame, fetch_from)
         reason = bar_store.needs_full_refetch(stored.frame, delta)
@@ -617,9 +624,9 @@ def _synced_bars(symbol: str, fetch_from: date, what: str):
         logger.info("%s: %s — downloading its history again", symbol, reason)
         # Keep the stored coverage: a 15-year file stays 15 years.
         fetch_from = min(fetch_from, stored.requested_from)
-    frame = history(symbol, what=what, start=fetch_from.isoformat(), auto_adjust=True)
+    frame = _history_bars(symbol, what=what, start=fetch_from)
     if frame is None:
-        if stored is not None and not stored.frame.empty:
+        if stored is not None and not stored.frame.is_empty():
             logger.warning("%s: download failed — using stored bars", symbol)
             return bar_store.trim(stored.frame, fetch_from)
         return None
@@ -646,7 +653,7 @@ def daily_bars_many(symbols: Iterable[str], *, start: date, what: str = "daily_b
     stored_all: dict[str, bar_store.StoredBars] = {}
     for sym in wanted:
         stored = bar_store.load(sym)
-        if stored is None or stored.requested_from > start or stored.frame.empty:
+        if stored is None or stored.requested_from > start or stored.frame.is_empty():
             whole.append(sym)
             continue
         stored_all[sym] = stored
@@ -692,16 +699,15 @@ def daily_bars_many(symbols: Iterable[str], *, start: date, what: str = "daily_b
 
 
 def daily_closes(symbols: Iterable[str], start: date, what: str = "daily_closes") -> dict[str, Any]:
-    """{symbol: adjusted close Series from `start`}, through `daily_bars_many`."""
+    """{symbol: (date, Close) frame from `start`}, through `daily_bars_many`."""
     bars = daily_bars_many(symbols, start=start, what=what)
-    return {s: f["Close"] for s, f in bars.items() if f is not None and "Close" in f}
+    out = {s: frames.closes(f) for s, f in bars.items()}
+    return {s: c for s, c in out.items() if c is not None}
 
 
 def _download_split(symbols: list[str], start: date, what: str) -> dict[str, Any]:
     """Batched adjusted bars from `start`, split into one frame per symbol
-    in the shape `Ticker.history` returns (same columns, same timezone)."""
-    import pandas as pd
-
+    in the package's bar shape."""
     out: dict[str, Any] = {}
     for i in range(0, len(symbols), _DOWNLOAD_CHUNK):
         chunk = symbols[i : i + _DOWNLOAD_CHUNK]
@@ -717,7 +723,7 @@ def _download_split(symbols: list[str], start: date, what: str) -> dict[str, Any
         )
         if frame is None or frame.empty:
             continue
-        multi = isinstance(frame.columns, pd.MultiIndex)
+        multi = getattr(frame.columns, "nlevels", 1) > 1  # yfinance: one column level per ticker
         for sym in chunk:
             if multi:
                 if sym not in frame.columns.get_level_values(0):
@@ -728,25 +734,15 @@ def _download_split(symbols: list[str], start: date, what: str) -> dict[str, Any
             else:
                 continue
             part = part.dropna(subset=["Close"]) if "Close" in part else part.dropna(how="all")
-            if part.empty:
-                continue
-            part = part.copy()
-            part.columns.name = None
-            out[sym] = part
+            converted = frames.bars_from_pandas(part)
+            if converted is not None:
+                out[sym] = converted
     return out
 
 
 def _slice_days(frame: Any, start: date, end: date | None) -> Any:
-    import pandas as pd
-
-    if not isinstance(frame.index, pd.DatetimeIndex):
-        return frame  # nothing to slice by
-    tz = frame.index.tz
-    mask = frame.index >= pd.Timestamp(start).tz_localize(tz)
-    if end is not None:
-        mask &= frame.index < pd.Timestamp(end + timedelta(days=1)).tz_localize(tz)
-    out = frame[mask]
-    return None if out.empty else out
+    out = frames.since(frame, start, end)
+    return None if out.is_empty() else out
 
 
 def download(symbols: Iterable[str], *, what: str = "download", **kwargs: Any):

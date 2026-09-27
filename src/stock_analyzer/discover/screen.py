@@ -44,6 +44,28 @@ from typing import Any
 MIN_MARKET_CAP = 2e9
 MIN_REVENUE_GROWTH = 0.08
 MAX_DEBT_TO_EQUITY = 2.0
+# The universe's quality rules (data/universe_scan.QUALITY_RULES), checked
+# again here so a name that enters another way — an earnings standout, an
+# insider cluster, a holding — meets the same bar: positive operating and
+# free cash flow and a real return on equity. (Until 2026-09-27 a company
+# burning cash could pass on 2+ years of runway and <= 20% dilution; the
+# user chose self-funding businesses instead.) The 12-month revenue rule
+# has no per-ticker counterpart in Yahoo's quote and stays universe-only.
+MIN_RETURN_ON_EQUITY = 0.10
+# Estimates, revisions and targets from one or two analysts are an opinion,
+# not a consensus — and mid-caps are thinly covered.
+MIN_ANALYST_COVERAGE = 3
+# Mid-caps swing more, and the trend score rewards big moves: ranked on raw
+# points they would crowd the analysis slots on volatility alone. Each
+# candidate is ranked within its band instead (rank_within_size_bands).
+LARGE_CAP = 10e9
+# How many of one sector / one industry may take the paid analysis slots.
+# On 2026-09-27 seven of the 25 were energy and four of those refiners
+# (VLO, MPC, PSX, DINO) — one bet on refining margins bought four times.
+# Pick-time sector caps (DISCOVER_MAX_SECTOR_PCT) only act after that
+# analysis is paid for.
+MAX_PER_SECTOR_SHORTLIST = 5
+MAX_PER_INDUSTRY_SHORTLIST = 2
 MAX_DRAWDOWN_FROM_52W_HIGH = -0.30
 # The soft gate's only price rule: skip names in collapse (a falling knife).
 SOFT_MAX_DRAWDOWN_FROM_52W_HIGH = -0.40
@@ -134,6 +156,16 @@ def passes_hard_filter(
     ocf = f.get("operating_cash_flow")
     if ocf is None or ocf <= 0:
         reasons.append(f"operating_cash_flow={ocf} not positive")
+    fcf = f.get("free_cash_flow")
+    if fcf is None or fcf <= 0:
+        reasons.append(f"free_cash_flow={fcf} not positive")
+    roe = f.get("return_on_equity")
+    if roe is None or roe < MIN_RETURN_ON_EQUITY:
+        reasons.append(f"return_on_equity={roe} < {MIN_RETURN_ON_EQUITY:.0%}")
+
+    ac = f.get("analyst_count")
+    if ac is None or ac < MIN_ANALYST_COVERAGE:
+        reasons.append(f"analyst coverage {ac} < {MIN_ANALYST_COVERAGE}")
 
     de = f.get("debt_to_equity")
     if de is not None and de > MAX_DEBT_TO_EQUITY:
@@ -145,6 +177,80 @@ def passes_hard_filter(
     reasons.extend(trend_reasons)
 
     return (len(reasons) == 0, reasons)
+
+
+def prescreen(
+    tickers: list[str],
+    technicals: dict[str, dict[str, Any]],
+    *,
+    gate: TrendGate,
+    cap: int,
+    always: set[str] | frozenset[str] = frozenset(),
+) -> tuple[list[str], dict[str, list[str]], int]:
+    """(passed, {ticker: reasons} for the rest, how many the cap cut).
+
+    The trend gate, then the cap on what goes on to the expensive fetches,
+    with `always` (the user's own names) passing both. The strict gate
+    ranks by 6-month relative strength; the soft gate by closeness to the
+    ideal entry (10% below the high), so the cap doesn't quietly
+    reintroduce a momentum filter. The discover run and the nightly cache
+    warm-up (cli/earnings_watch) both call this, so they pick the same names.
+    """
+    reasons: dict[str, list[str]] = {}
+    passed: list[str] = []
+    for ticker in tickers:
+        ok, why = passes_trend_gate(technicals.get(ticker), gate)
+        if ok or ticker in always:
+            passed.append(ticker)
+        else:
+            reasons[ticker] = why
+    if len(passed) <= cap:
+        return passed, reasons, 0
+
+    def rank_key(t: str) -> float:
+        tech = technicals.get(t) or {}
+        if gate == "strict":
+            return tech.get("rs_6mo") or 0.0
+        dist = tech.get("dist_from_52w_high")
+        return -abs(dist - IDEAL_ENTRY_DRAWDOWN) if dist is not None else -1.0
+
+    ranked = sorted((t for t in passed if t not in always), key=rank_key, reverse=True)
+    keep = set(ranked[: max(0, cap - len(always))]) | set(always)
+    capped_out = [t for t in passed if t not in keep]
+    for ticker in capped_out:
+        reasons[ticker] = ["outside the screen cap for deep analysis"]
+    return [t for t in passed if t in keep], reasons, len(capped_out)
+
+
+def size_band(market_cap: float | None) -> str:
+    return "large" if (market_cap or 0) >= LARGE_CAP else "mid"
+
+
+def rank_within_size_bands(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Scored candidates ordered by their percentile WITHIN their size band
+    (large >= LARGE_CAP, mid below), raw score breaking ties: the best
+    mid-cap stands level with the best large-cap. Each candidate's
+    score_breakdown records its band and percentile. Needs `market_cap`
+    on the candidate (its fundamentals')."""
+    bands: dict[str, list[dict[str, Any]]] = {}
+    for c in candidates:
+        bands.setdefault(size_band(c.get("market_cap")), []).append(c)
+    for members in bands.values():
+        scores = sorted(c["score"] or 0 for c in members)
+        n = len(scores)
+        for c in members:
+            v = c["score"] or 0
+            below, equal = sum(x < v for x in scores), sum(x == v for x in scores)
+            pct = (below + (equal + 1) / 2) / n  # average rank / n, as pandas' pct rank
+            c["band_percentile"] = pct
+            breakdown = c.get("score_breakdown")
+            if isinstance(breakdown, dict):
+                breakdown["size_band"] = {
+                    "band": size_band(c.get("market_cap")),
+                    "percentile": round(pct, 4),
+                    "band_size": n,
+                }
+    return sorted(candidates, key=lambda c: (c["band_percentile"], c["score"] or 0), reverse=True)
 
 
 def _clamp(x: float, lo: float, hi: float) -> float:
@@ -290,3 +396,45 @@ def score_candidate(
             "conviction": {k: round(v, 1) for k, v in conv_parts.items()},
         },
     }
+
+
+def diversify_shortlist(
+    ranked: list[dict[str, Any]],
+    limit: int,
+    *,
+    max_per_sector: int = MAX_PER_SECTOR_SHORTLIST,
+    max_per_industry: int = MAX_PER_INDUSTRY_SHORTLIST,
+) -> list[dict[str, Any]]:
+    """The first `limit` of `ranked` (best first) with at most
+    `max_per_sector` per sector and `max_per_industry` per industry, the
+    next-best names taking the freed slots. If the caps leave the list
+    short (few sectors pass), the skipped names fill it back up in rank
+    order, so the caps never cost a slot. A name without a sector or
+    industry isn't capped on it. Skipped names get
+    `shortlist_skipped` with the reason."""
+    picked: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    sectors: dict[str, int] = {}
+    industries: dict[str, int] = {}
+    for c in ranked:
+        if len(picked) >= limit:
+            break
+        sector, industry = c.get("sector"), c.get("industry")
+        if sector and sectors.get(sector, 0) >= max_per_sector:
+            c["shortlist_skipped"] = f"already {max_per_sector} {sector} names on the shortlist"
+            skipped.append(c)
+            continue
+        if industry and industries.get(industry, 0) >= max_per_industry:
+            c["shortlist_skipped"] = f"already {max_per_industry} {industry} names on the shortlist"
+            skipped.append(c)
+            continue
+        picked.append(c)
+        if sector:
+            sectors[sector] = sectors.get(sector, 0) + 1
+        if industry:
+            industries[industry] = industries.get(industry, 0) + 1
+    for c in skipped[: max(0, limit - len(picked))]:
+        c.pop("shortlist_skipped", None)
+        picked.append(c)
+    order = {id(c): i for i, c in enumerate(ranked)}
+    return sorted(picked, key=lambda c: order[id(c)])

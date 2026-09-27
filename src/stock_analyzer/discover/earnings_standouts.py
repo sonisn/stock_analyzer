@@ -39,9 +39,10 @@ from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any
 
-import pandas as pd
+import polars as pl
 from sqlalchemy import text
 
+from ..data import frames
 from ..db.session import exec_sql, get_session
 from ..db.tables import EarningsEvent
 from ..logging import get_logger
@@ -65,7 +66,7 @@ DISCOVER_DAYS = 60
 # target moves going in are the context for the ones after it.
 ANALYST_CONTEXT_DAYS = 90
 
-Closes = Callable[[list[str], date], dict[str, pd.Series]]
+Closes = Callable[[list[str], date], dict[str, pl.DataFrame]]
 # (ticker, report day, this quarter's revenue) -> data/earnings_history.fetch_track_record
 TrackRecord = Callable[[str, date, float | None], dict[str, Any]]
 
@@ -127,17 +128,13 @@ def _pending(db_path: str) -> list[EarningsEvent]:
         return out
 
 
-def _by_day(series: pd.Series) -> dict[date, float]:
-    s = series.dropna()
-    days = pd.DatetimeIndex(s.index).date  # ty: ignore[unresolved-attribute]  # delegated, invisible to checkers
-    return {d: float(v) for d, v in zip(days, s.to_numpy(), strict=True)}
-
-
-def reaction(close: pd.Series, spy: pd.Series, report_day: date, last_final: date) -> float | None:
+def reaction(
+    close: pl.DataFrame, spy: pl.DataFrame, report_day: date, last_final: date
+) -> float | None:
     """Percent move from the last close before `report_day` to the first
     close after it, minus SPY's over the same bars. None until that close
     is final."""
-    spy_at, px_at = _by_day(spy), _by_day(close)
+    spy_at, px_at = frames.by_day(spy), frames.by_day(close)
     before = [d for d in spy_at if d < report_day]
     after = [d for d in spy_at if d > report_day]
     if not before or not after or min(after) > last_final:

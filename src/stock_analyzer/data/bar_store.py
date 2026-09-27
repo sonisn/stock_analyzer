@@ -19,6 +19,11 @@ history when either
 The last stored bar is left out of that comparison: it may have been
 written mid-session, and its close is expected to change.
 
+Frames are Polars, in the package's bar shape (data/frames.py: a `date`
+column plus yfinance's column names). Files written before the switch hold
+the pandas layout (the index saved as a timezone-aware `Date`) and are read
+through the same conversion, so the existing cache stays valid.
+
 Files are written to a temp name and renamed, so a reader in another
 process (two cron jobs overlapping) sees the old file or the new one,
 never half of one. `YF_BARS_DIR` moves the store; `YF_BARS_DIR=off`
@@ -33,14 +38,14 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
-from typing import Any
 from zoneinfo import ZoneInfo
 
-import pandas as pd
-import pyarrow as pa
+import polars as pl
 import pyarrow.parquet as pq
 
 from ..logging import get_logger
+from . import frames
+from .frames import DATE
 
 logger = get_logger(__name__)
 
@@ -58,7 +63,7 @@ _META_CHECKED = b"stock_analyzer.checked_at"
 
 @dataclass
 class StoredBars:
-    frame: pd.DataFrame
+    frame: pl.DataFrame
     # The start the stored download asked for. A symbol younger than that
     # has a first bar later than it, which is still complete coverage.
     requested_from: date
@@ -88,7 +93,7 @@ def load(symbol: str) -> StoredBars | None:
     try:
         table = pq.read_table(path)
         meta = table.schema.metadata or {}
-        frame = table.to_pandas()
+        frame = frames.from_parquet_table(pl.from_arrow(table))  # ty: ignore[invalid-argument-type]
         return StoredBars(
             frame=frame,
             requested_from=date.fromisoformat(meta[_META_FROM].decode()),
@@ -100,14 +105,14 @@ def load(symbol: str) -> StoredBars | None:
 
 
 def save(
-    symbol: str, frame: pd.DataFrame, requested_from: date, *, checked_at: float | None = None
+    symbol: str, frame: pl.DataFrame, requested_from: date, *, checked_at: float | None = None
 ) -> None:
     path = _path(symbol)
-    if path is None or frame is None or frame.empty:
+    if path is None or frame is None or frame.is_empty():
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        table = pa.Table.from_pandas(frame, preserve_index=True)
+        table = frame.to_arrow()
         meta = dict(table.schema.metadata or {})
         meta[_META_FROM] = requested_from.isoformat().encode()
         meta[_META_CHECKED] = repr(checked_at if checked_at is not None else time.time()).encode()
@@ -119,41 +124,49 @@ def save(
         logger.warning("Bar store: could not write %s (%s)", path.name, e)
 
 
-def overlap_start(stored: pd.DataFrame) -> date:
+def last_day(stored: pl.DataFrame) -> date:
+    return stored[DATE][-1]
+
+
+def overlap_start(stored: pl.DataFrame) -> date:
     """First day a sync asks for: a week before the last stored bar."""
-    # Bar stamps are midnight in the exchange's zone, so the text's date part
-    # is the trading day (a NaT-free path to a plain `date`).
-    last = date.fromisoformat(str(stored.index[-1])[:10])
-    return last - timedelta(days=OVERLAP_DAYS)
+    return last_day(stored) - timedelta(days=OVERLAP_DAYS)
 
 
-def needs_full_refetch(stored: pd.DataFrame, delta: pd.DataFrame) -> str | None:
+def _nonzero(col: pl.Expr) -> pl.Expr:
+    return col.fill_nan(0.0).fill_null(0.0) != 0
+
+
+def needs_full_refetch(stored: pl.DataFrame, delta: pl.DataFrame) -> str | None:
     """Why the stored history can no longer be extended, or None if it can."""
-    last = stored.index[-1]
-    new_days = delta[delta.index > last]
+    last = last_day(stored)
+    new_days = delta.filter(pl.col(DATE) > last)
     for col in _EVENT_COLUMNS:
-        if col in new_days and (new_days[col].fillna(0) != 0).any():
+        if col in new_days.columns and new_days.select(_nonzero(pl.col(col)).any()).item():
             return f"new {col.lower()}"
     # Complete bars both frames have; the last stored bar may be partial.
-    common = stored.index[:-1].intersection(delta.index)
-    if len(common) and "Close" in stored and "Close" in delta:
-        old = stored.loc[common, "Close"].astype(float)
-        new = delta.loc[common, "Close"].astype(float)
-        rel = ((new - old).abs() / old.abs().where(old != 0)).fillna(0)
-        if (rel > RESTATED_REL_TOL).any():
-            return "restated closes"
+    if "Close" in stored.columns and "Close" in delta.columns:
+        both = (
+            stored.head(stored.height - 1)
+            .select(DATE, pl.col("Close").alias("old"))
+            .join(delta.select(DATE, pl.col("Close").alias("new")), on=DATE, how="inner")
+        )
+        if both.height:
+            rel = ((pl.col("new") - pl.col("old")).abs() / pl.col("old").abs()).fill_nan(0.0)
+            rel = pl.when(pl.col("old") == 0).then(0.0).otherwise(rel).fill_null(0.0)
+            if both.select((rel > RESTATED_REL_TOL).any()).item():
+                return "restated closes"
     return None
 
 
-def extend(stored: pd.DataFrame, delta: pd.DataFrame) -> pd.DataFrame:
+def extend(stored: pl.DataFrame, delta: pl.DataFrame | None) -> pl.DataFrame:
     """Stored bars before the delta's first day, then the delta."""
-    if delta is None or delta.empty:
+    if delta is None or delta.is_empty():
         return stored
-    head = stored[stored.index < delta.index[0]]
-    if head.empty:
+    head = stored.filter(pl.col(DATE) < delta[DATE][0])
+    if head.is_empty():
         return delta
-    merged = pd.concat([head, delta.reindex(columns=head.columns.union(delta.columns))])
-    return merged[~merged.index.duplicated(keep="last")].sort_index()
+    return frames.normalize(pl.concat([head, delta], how="diagonal_relaxed"))
 
 
 # US equity session, New York time. Bars are treated as final this long
@@ -198,9 +211,6 @@ def is_current(stored: StoredBars, max_age_seconds: float, *, now: float | None 
     return stored.checked_at >= last_final_close(at).timestamp()
 
 
-def trim(frame: pd.DataFrame, start: date) -> pd.DataFrame:
-    """Bars from `start` on, whatever the index's timezone."""
-    idx: Any = frame.index
-    if not isinstance(idx, pd.DatetimeIndex):
-        return frame
-    return frame[idx >= pd.Timestamp(start).tz_localize(idx.tz)]
+def trim(frame: pl.DataFrame, start: date) -> pl.DataFrame:
+    """Bars from `start` on."""
+    return frames.since(frame, start)

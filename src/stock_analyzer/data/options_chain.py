@@ -21,7 +21,7 @@ from ..config import Settings
 from ..http_client import HttpClient, RetryPolicy
 from ..logging import get_logger
 from ..models.market import OptionChain, OptionQuote
-from . import yf_gateway
+from . import frames, yf_gateway
 
 logger = get_logger(__name__)
 
@@ -151,9 +151,10 @@ class YFinanceChain:
                         tk.option_chain(expiry_str), attr
                     ),
                 )
-                if df is None:
+                table = frames.table_from_pandas(df)
+                if table is None:
                     continue
-                for _, row in df.iterrows():
+                for row in table.iter_rows(named=True):
                     strike = _safe_float(row.get("strike"))
                     # NaN / None / 0 / negative strikes are nonsense; skip them.
                     if strike is None or strike <= 0:

@@ -21,12 +21,14 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-import pandas as pd
+import polars as pl
 from sqlmodel import Session, select
 
 from ..db.session import get_session
 from ..db.tables import TickerPrice
 from ..logging import get_logger
+from . import frames
+from .frames import DATE
 
 logger = get_logger(__name__)
 
@@ -84,9 +86,12 @@ def record_prices(
             out: dict[str, float] = {}
             for sym in symbols:
                 if sym in closes:
-                    series = closes[sym].dropna()
-                    if not series.empty:
-                        out[sym] = float(series.iloc[-1])
+                    # yfinance's pandas frame crosses into the bar shape here.
+                    bars = frames.closes(
+                        frames.bars_from_pandas(closes[[sym]].rename(columns={sym: "Close"}))
+                    )
+                    if bars is not None:
+                        out[sym] = float(bars["Close"][-1])
             return out
 
     try:
@@ -115,7 +120,7 @@ def stored_history(db_path: str) -> Any:
     yfinance frame the graders already take — so they work unchanged, and
     offline."""
 
-    def fetch(ticker: str, start: date, end: date) -> pd.DataFrame | None:
+    def fetch(ticker: str, start: date, end: date) -> pl.DataFrame | None:
         with get_session(db_path) as session:
             rows = session.exec(
                 select(TickerPrice.day, TickerPrice.close)
@@ -128,9 +133,8 @@ def stored_history(db_path: str) -> Any:
             ).all()
         if not rows:
             return None
-        return pd.DataFrame(
-            {"Close": [c for _, c in rows]},
-            index=pd.DatetimeIndex([pd.Timestamp(d) for d, _ in rows]),
+        return pl.DataFrame(
+            {DATE: [date.fromisoformat(d) for d, _ in rows], "Close": [float(c) for _, c in rows]}
         )
 
     return fetch
@@ -161,12 +165,12 @@ def backfill_from_panel(db_path: str, tickers: list[str], *, days: int = 400) ->
     with get_session(db_path) as session:
         for ticker in {t.upper() for t in tickers} | {"SPY"}:
             stored = bar_store.load(ticker)
-            if stored is None or "Close" not in stored.frame:
+            closes = frames.closes(stored.frame) if stored is not None else None
+            if closes is None:
                 continue
-            for stamp, value in stored.frame["Close"].dropna().items():
-                day = pd.Timestamp(stamp).date().isoformat()
-                if day >= start and value and value > 0:
-                    added += store_close(session, ticker, day, float(value))
+            for day, value in closes.iter_rows():
+                if day.isoformat() >= start and value and value > 0:
+                    added += store_close(session, ticker, day.isoformat(), float(value))
         session.commit()
     logger.info("Price record: backfilled %d close(s) from the bar store", added)
     return added

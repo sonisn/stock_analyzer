@@ -37,9 +37,10 @@ from ...discover.market_themes import (
 from ...discover.paper_ledger import build_ledger, ledger_report_data, load_tranches
 from ...discover.peers import batch_peer_comparison
 from ...discover.screen import (
-    IDEAL_ENTRY_DRAWDOWN,
+    diversify_shortlist,
     passes_hard_filter,
-    passes_trend_gate,
+    prescreen,
+    rank_within_size_bands,
     score_candidate,
 )
 from ...discover.thesis_tracker import check_theses, load_open_picks, thesis_report_data
@@ -167,38 +168,10 @@ class DataSteps(PipelineBase):
             if {"holding", "watchlist"} & set(universe.get(t, {}).get("sources") or [])
         }
 
-        reasons: dict[str, list[str]] = {}
-        passed: list[str] = []
-        for ticker in tickers:
-            ok, why = passes_trend_gate(technicals.get(ticker), self.settings.discover_trend_gate)
-            if ok or ticker in always:
-                passed.append(ticker)
-            else:
-                reasons[ticker] = why
-
-        # Cap the survivors, keeping the user's names outside the cap. The
-        # strict gate ranks by 6-month relative strength; the soft gate by
-        # closeness to the screen's ideal entry (10% below the high), so
-        # the cap doesn't quietly reintroduce a momentum filter.
         cap = self.settings.discover_max_screen_candidates
-        capped_out: list[str] = []
-        if len(passed) > cap:
-            if self.settings.discover_trend_gate == "strict":
-
-                def rank_key(t: str) -> float:
-                    return (technicals.get(t) or {}).get("rs_6mo") or 0.0
-            else:
-
-                def rank_key(t: str) -> float:
-                    dist = (technicals.get(t) or {}).get("dist_from_52w_high")
-                    return -abs(dist - IDEAL_ENTRY_DRAWDOWN) if dist is not None else -1.0
-
-            ranked = sorted((t for t in passed if t not in always), key=rank_key, reverse=True)
-            keep = set(ranked[: max(0, cap - len(always))]) | always
-            capped_out = [t for t in passed if t not in keep]
-            for ticker in capped_out:
-                reasons[ticker] = ["outside the screen cap for deep analysis"]
-            passed = [t for t in passed if t in keep]
+        passed, reasons, n_capped = prescreen(
+            tickers, technicals, gate=self.settings.discover_trend_gate, cap=cap, always=always
+        )
 
         self.state["screen_tickers"] = passed
         self.state["prescreen_reasons"] = reasons
@@ -207,7 +180,7 @@ class DataSteps(PipelineBase):
             "fundamentals + EPS revisions (~%d requests saved)",
             len(passed),
             len(tickers),
-            f" (capped at {cap})" if capped_out else "",
+            f" (capped at {cap})" if n_capped else "",
             len(passed),
             3 * (len(tickers) - len(passed)),
         )
@@ -375,11 +348,24 @@ class DataSteps(PipelineBase):
             for ticker in self.state["tickers"]
         ]
         self._apply_model_scores(candidates, technicals)
-        survivors = sorted(
-            [c for c in candidates if c["passed_filter"]],
-            key=lambda c: c["score"] or 0,
-            reverse=True,
-        )[:MAX_CANDIDATES_FOR_LLM]
+        passed_all = [c for c in candidates if c["passed_filter"]]
+        for c in passed_all:
+            f = fundamentals.get(c["ticker"]) or {}
+            c["market_cap"], c["industry"] = f.get("market_cap"), f.get("industry")
+        # Slots go by percentile within size band, not raw score, and no
+        # more than a few per sector and industry: see
+        # screen.rank_within_size_bands and screen.diversify_shortlist.
+        ranked = rank_within_size_bands(passed_all)
+        survivors = diversify_shortlist(ranked, MAX_CANDIDATES_FOR_LLM)
+        skipped = [c for c in ranked if c.get("shortlist_skipped")]
+        if skipped:
+            logger.info(
+                "Shortlist: %d skipped for sector/industry balance (%s)",
+                len(skipped),
+                ", ".join(
+                    f"{c['ticker']} ({c.get('industry') or c.get('sector')})" for c in skipped
+                ),
+            )
         passed = self._log_screen_funnel(candidates, survivors, universe)
         self.state["candidates"] = candidates
         self.state["survivors"] = survivors

@@ -286,7 +286,7 @@ def test_daily_bars_serves_every_window_from_one_download():
     assert kwargs["auto_adjust"] is True
     assert date.fromisoformat(kwargs["start"]) <= date.today() - timedelta(days=730)
     assert len(year) == 366 and len(month) == 31
-    assert len(upto) == 4 and upto.index[-1].date() == week_ago  # end is inclusive
+    assert len(upto) == 4 and upto["date"][-1] == week_ago  # end is inclusive
 
 
 def test_daily_bars_refetches_for_a_longer_window():

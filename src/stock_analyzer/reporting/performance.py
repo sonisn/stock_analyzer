@@ -30,6 +30,7 @@ from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any
 
+from ..data import frames
 from ..discover.track_record import _close_on_or_before, _fetch_history
 from ..logging import get_logger
 
@@ -107,9 +108,9 @@ def _account_total(entry: Any) -> float:
 
 def spy_return(start: date, end: date, fetch: Callable = _fetch_history) -> float | None:
     frame = fetch("SPY", start - timedelta(days=7), end)
-    if frame is None or frame.empty:
+    closes = frames.closes(frame)
+    if closes is None:
         return None
-    closes = frame["Close"].dropna()
     first, last = _close_on_or_before(closes, start), _close_on_or_before(closes, end)
     if not first or not last or first[0] <= 0:
         return None

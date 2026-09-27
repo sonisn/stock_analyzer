@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Literal
 
+from ..data import frames
 from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 from .catalyst_grading import MOVER_THRESHOLD_PCT, REACTION_DAYS, _window_move
@@ -237,18 +238,17 @@ def check_theses(
     today = today or date.today()
     eps_revisions = eps_revisions or {}
     start = min(p.pick_date for p in picks) - timedelta(days=int(_TREND_DAYS * 1.6))
-    spy = fetch("SPY", start, today)
-    spy_closes = spy["Close"].dropna() if spy is not None and not spy.empty else None
+    spy_closes = frames.closes(fetch("SPY", start, today))
 
     results: list[ThesisCheck] = []
     for pick in picks:
-        frame = fetch(pick.ticker, start, today)
-        if frame is None or frame.empty:
+        closes = frames.closes(fetch(pick.ticker, start, today))
+        if closes is None:
             logger.warning("Thesis check: no price history for %s — skipped", pick.ticker)
             continue
         check = _check_pick(
             pick,
-            frame["Close"].dropna(),
+            closes,
             spy_closes,
             today=today,
             revisions=eps_revisions.get(pick.ticker) or {},
@@ -341,7 +341,7 @@ def _price_concerns(
             )
         )
 
-    trailing = closes.tail(_TREND_DAYS)
+    trailing = closes.tail(_TREND_DAYS)["Close"]
     sma = float(trailing.mean()) if len(trailing) >= _TREND_DAYS else None
     if sma is not None and last < sma and lagging:
         price_concerns.append(

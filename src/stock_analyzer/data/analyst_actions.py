@@ -13,13 +13,12 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-import pandas as pd
 from sqlalchemy import text
 
 from ..db.session import exec_sql, get_session
 from ..db.tables import AnalystAction
 from ..logging import get_logger
-from . import yf_gateway
+from . import frames, yf_gateway
 
 logger = get_logger(__name__)
 
@@ -29,19 +28,21 @@ def _num(v: Any) -> float | None:
         f = float(v)
     except TypeError, ValueError:
         return None
-    return f if f > 0 and not pd.isna(f) else None
+    return f if f > 0 and f == f else None
 
 
 def fetch_analyst_actions(ticker: str) -> list[dict[str, Any]]:
     """Every action Yahoo has for `ticker`, newest first; [] when none."""
-    df = yf_gateway.ticker_call(ticker, "upgrades_downgrades", lambda t: t.upgrades_downgrades)
-    if df is None or df.empty:
+    df = frames.table_from_pandas(
+        yf_gateway.ticker_call(ticker, "upgrades_downgrades", lambda t: t.upgrades_downgrades)
+    )
+    if df is None:
         return []
     out = []
-    for when, r in df.iterrows():
+    for r in df.iter_rows(named=True):
         out.append(
             {
-                "graded_at": str(when)[:19],
+                "graded_at": str(r["index"])[:19],
                 "firm": str(r.get("Firm") or "").strip(),
                 "action": str(r.get("Action") or ""),
                 "to_grade": str(r.get("ToGrade") or ""),

@@ -25,8 +25,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
-import pandas as pd
+import numpy as np
+import polars as pl
 
+from ..data import frames
+from ..data.frames import DATE
 from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 from .report_sections import _split_by_ticker_blocks
@@ -134,53 +137,56 @@ def build_ledger(
     today = today or date.today()
     start = tranches[0].run_date - timedelta(days=5)
 
-    spy = fetch("SPY", start, today)
-    if spy is None or spy.empty:
+    spy_closes = frames.closes(fetch("SPY", start, today))
+    if spy_closes is None:
         logger.warning("Paper ledger: no SPY history — skipping")
         return report
-    spy_closes = spy["Close"].dropna()
-    calendar = spy_closes.index
+    calendar = spy_closes[DATE]
+    days = calendar.to_numpy().astype("datetime64[D]")
+    spy_px = spy_closes["Close"].to_numpy()
 
-    closes: dict[str, pd.Series] = {}
+    closes: dict[str, np.ndarray] = {}
     for ticker in sorted({t for tr in tranches for t in tr.weights}):
-        frame = fetch(ticker, start, today)
-        if frame is None or frame.empty:
+        own = frames.closes(fetch(ticker, start, today))
+        if own is None:
             report.skipped_tickers.append(ticker)
             continue
-        closes[ticker] = frame["Close"].dropna().reindex(calendar, method="ffill")
+        # Each trading day's latest close at or before it (forward-filled).
+        filled = pl.DataFrame({DATE: calendar}).join_asof(own.sort(DATE), on=DATE)
+        closes[ticker] = filled["Close"].to_numpy().astype(float)
 
-    strategy = pd.Series(0.0, index=calendar)
-    benchmark = pd.Series(0.0, index=calendar)
-    invested = pd.Series(0.0, index=calendar)
+    n = len(days)
+    strategy, benchmark, invested = np.zeros(n), np.zeros(n), np.zeros(n)
     for tr in tranches:
         spy_entry = _close_on_or_after(spy_closes, tr.run_date)
         if spy_entry is None:
             continue  # run is newer than the last available close
-        entry_day = pd.Timestamp(spy_entry[1])
+        entry_day = np.datetime64(spy_entry[1])
         weights = {t: w for t, w in tr.weights.items() if t in closes}
         total_w = sum(weights.values())
         if not weights or total_w <= 0:
             continue
-        live = calendar >= entry_day
-        tranche_value = pd.Series(0.0, index=calendar)
+        live = days >= entry_day
+        at_entry = int(np.searchsorted(days, entry_day))
+        tranche_value = np.zeros(n)
         for t, w in weights.items():
-            entry_px = closes[t].get(entry_day)
-            if entry_px is None or pd.isna(entry_px) or entry_px <= 0:
+            entry_px = closes[t][at_entry]
+            if np.isnan(entry_px) or entry_px <= 0:
                 continue
             shares = TRANCHE_USD * (w / total_w) / entry_px
-            tranche_value = tranche_value.add((closes[t] * shares).where(live, 0.0), fill_value=0.0)
-        if tranche_value.iloc[-1] <= 0:
+            tranche_value += np.where(live, np.nan_to_num(closes[t] * shares), 0.0)
+        if tranche_value[-1] <= 0:
             continue
-        spy_value = (spy_closes * (TRANCHE_USD / spy_entry[0])).where(live, 0.0)
-        strategy = strategy.add(tranche_value, fill_value=0.0)
-        benchmark = benchmark.add(spy_value, fill_value=0.0)
-        invested = invested.add(pd.Series(TRANCHE_USD, index=calendar).where(live, 0.0))
+        spy_value = np.where(live, spy_px * (TRANCHE_USD / spy_entry[0]), 0.0)
+        strategy += tranche_value
+        benchmark += spy_value
+        invested += np.where(live, TRANCHE_USD, 0.0)
         report.tranches.append(
             TrancheResult(
                 run_date=tr.run_date,
                 tickers=sorted(weights),
-                strategy_return_pct=(tranche_value.iloc[-1] / TRANCHE_USD - 1) * 100,
-                spy_return_pct=(spy_value.iloc[-1] / TRANCHE_USD - 1) * 100,
+                strategy_return_pct=(tranche_value[-1] / TRANCHE_USD - 1) * 100,
+                spy_return_pct=(spy_value[-1] / TRANCHE_USD - 1) * 100,
             )
         )
 
@@ -188,14 +194,15 @@ def build_ledger(
     if not active.any():
         return report
     strategy, benchmark, invested = strategy[active], benchmark[active], invested[active]
+    active_days = days[active]
     step = max(1, math.ceil(len(strategy) / _MAX_CURVE_POINTS))
     keep = list(range(0, len(strategy), step))
     if keep[-1] != len(strategy) - 1:
         keep.append(len(strategy) - 1)  # always end on the latest close
-    report.curve_dates = [strategy.index[i].date() for i in keep]
-    report.strategy_values = [float(strategy.iloc[i]) for i in keep]
-    report.spy_values = [float(benchmark.iloc[i]) for i in keep]
-    report.invested_values = [float(invested.iloc[i]) for i in keep]
+    report.curve_dates = [active_days[i].astype(object) for i in keep]
+    report.strategy_values = [float(strategy[i]) for i in keep]
+    report.spy_values = [float(benchmark[i]) for i in keep]
+    report.invested_values = [float(invested[i]) for i in keep]
     return report
 
 

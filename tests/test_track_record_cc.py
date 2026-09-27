@@ -66,7 +66,11 @@ def test_spot_at_first_of_month_picks_up_prior_close():
 
     from stock_analyzer.discover.track_record import _spot_at
 
-    real_df = pd.DataFrame({"Close": [100.0, 101.0, 102.0]})
+    # yfinance's own shape: a pandas frame on a date index (the one boundary
+    # where pandas is still what comes back).
+    real_df = pd.DataFrame(
+        {"Close": [100.0, 101.0, 102.0]}, index=pd.date_range("2026-05-27", periods=3)
+    )
     fake_ticker = MagicMock()
     fake_ticker.history.return_value = real_df
     with patch("yfinance.Ticker", return_value=fake_ticker):

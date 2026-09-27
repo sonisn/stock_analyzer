@@ -1,10 +1,17 @@
 """`ops` — keeping the scheduled jobs honest. No LLM tokens are spent.
 
   ops alert JOB LOG STATUS   email the tail of a failed job's log
-  ops backup                 copy the database, keeping the newest BACKUP_KEEP,
+  ops backup                 copy the database, keeping the newest BACKUP_KEEP
+                             (and upload it to BACKUP_REMOTE when set),
                              and delete logs older than LOG_KEEP_DAYS
+  ops restore [NAME]         download and check an off-site backup (the newest
+                             by default); --apply swaps it in, saving the current
+                             database first
   ops doctor                 check every key, model id and data source for free,
                              and free space on the disks the data lives on
+  ops universe               rescan US stocks >= $2B and rewrite the discover
+                             universe (~/.stock_analyzer/us_2b_universe.txt,
+                             preferred over the bundled copy)
 
 `scripts/run_job.sh` calls `alert` when a cron job exits non-zero; before
 it existed a failed job was silent until someone noticed an email missing.
@@ -13,9 +20,11 @@ it existed a failed job was silent until someone noticed an email missing.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sqlite3
+import subprocess
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -76,6 +85,100 @@ def backup(db_path: str, backup_dir: str, keep: int, *, now: datetime | None = N
         old.unlink()
     logger.info("Backup: %s (%.1f MB)", dest, dest.stat().st_size / 1e6)
     return dest
+
+
+Run = Callable[..., subprocess.CompletedProcess]
+
+
+def upload_offsite(dest: Path, remote: str, keep_days: int, *, run: Run = subprocess.run) -> None:
+    """Copy one backup to the rclone `remote` and delete copies there older
+    than `keep_days`. The remote is meant to be an rclone "crypt" remote, so
+    the cloud provider only ever stores an encrypted file. Raises on failure
+    (the cron wrapper then alerts); the local backup is already written."""
+    remote = remote.rstrip("/")
+    run(["rclone", "copyto", str(dest), f"{remote}/{dest.name}"], check=True, timeout=600)
+    if keep_days > 0:
+        prefix = dest.name.rsplit("-", 2)[0]
+        run(
+            [
+                "rclone",
+                "delete",
+                remote,
+                "--min-age",
+                f"{keep_days}d",
+                "--include",
+                f"{prefix}-*.db",
+            ],
+            check=True,
+            timeout=600,
+        )
+    logger.info("Off-site copy: %s/%s", remote, dest.name)
+
+
+def newest_offsite_age_days(
+    remote: str, *, now: datetime, run: Run = subprocess.run
+) -> float | None:
+    """Age in days of the newest backup on the remote, or None when empty."""
+    out = run(
+        ["rclone", "lsjson", remote.rstrip("/"), "--files-only"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    ).stdout
+    times = [
+        datetime.fromisoformat(f["ModTime"].replace("Z", "+00:00"))
+        for f in json.loads(out or "[]")
+        if f.get("Name", "").endswith(".db")
+    ]
+    if not times:
+        return None
+    return (now.astimezone() - max(times)).total_seconds() / 86400
+
+
+def restore(
+    remote: str, dest_dir: str, name: str | None = None, *, run: Run = subprocess.run
+) -> Path:
+    """Download one off-site backup (the newest, or `name`) into `dest_dir`,
+    decrypted by the rclone remote, and check it with SQLite's
+    integrity_check. Doesn't touch the live database (`apply_restore` does,
+    on request). Returns the restored file."""
+    remote = remote.rstrip("/")
+    if name is None:
+        listing = run(
+            ["rclone", "lsjson", remote, "--files-only"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        ).stdout
+        names = sorted(f["Name"] for f in json.loads(listing or "[]") if f["Name"].endswith(".db"))
+        if not names:
+            raise FileNotFoundError(f"no backups on {remote}")
+        name = names[-1]  # stock-YYYYmmdd-HHMMSS.db sorts by time
+    out_dir = Path(os.path.expanduser(dest_dir))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dest = out_dir / name
+    run(["rclone", "copyto", f"{remote}/{name}", str(dest)], check=True, timeout=600)
+    with sqlite3.connect(dest) as db:
+        verdict = db.execute("PRAGMA integrity_check").fetchone()[0]
+    if verdict != "ok":
+        raise RuntimeError(f"{dest} failed the integrity check: {verdict}")
+    return dest
+
+
+def apply_restore(restored: Path, db_path: str) -> Path:
+    """Replace the live database with `restored` through SQLite's backup
+    API, after saving the current one beside it. A plain file copy over a
+    database in WAL mode can be corrupted by the leftover -wal file; the
+    backup API writes through SQLite, so it can't. Returns the saved copy."""
+    live = Path(os.path.expanduser(db_path))
+    saved = live.with_name(f"{live.name}.before-restore-{datetime.now():%Y%m%d-%H%M%S}")
+    with sqlite3.connect(live) as cur, sqlite3.connect(saved) as keep:
+        cur.backup(keep)
+    with sqlite3.connect(restored) as src, sqlite3.connect(live) as dst:
+        src.backup(dst)
+    return saved
 
 
 def prune_logs(log_dirs: list[str], keep_days: int, *, now: datetime | None = None) -> int:
@@ -160,6 +263,69 @@ def _disk_checks(settings: Settings) -> list[Check]:
     return [(f"Disk ({', '.join(labels)})", check_for(path)) for path, labels in by_disk.values()]
 
 
+# The nightly job rescans the universe; a week without a rescan means the
+# job or Yahoo's screener has been failing, and a missing file means discover
+# is back on the ~1,900-name bundled list (the slow path).
+UNIVERSE_MAX_AGE_DAYS = 7
+
+
+def universe_file_problem(path: Path, now: float) -> str | None:
+    """Why the discover universe file is a problem, or None when it's fine."""
+    if not path.exists():
+        return f"{path} missing — discover falls back to the ~1,900-name bundled list"
+    age = (now - path.stat().st_mtime) / 86400
+    if age > UNIVERSE_MAX_AGE_DAYS:
+        return f"{path} last rescanned {age:.0f} days ago — is the nightly job failing?"
+    return None
+
+
+def _state_checks() -> list[Check]:
+    """Files the nightly job keeps current: the universe and the fetch cache."""
+    import time
+
+    from ..data import fetch_cache
+    from ..data.universe_base import LOCAL_US_2B, load_base_universe
+
+    def universe_check() -> str:
+        problem = universe_file_problem(LOCAL_US_2B, time.time())
+        if problem:
+            raise RuntimeError(problem)
+        age = (time.time() - LOCAL_US_2B.stat().st_mtime) / 86400
+        return f"{len(load_base_universe())} tickers, rescanned {age:.1f} days ago"
+
+    def cache_check() -> str:
+        # Informational: an empty cache only means the next run is slow.
+        parts = []
+        for kind in ("fundamentals", "eps_revisions"):
+            got = fetch_cache.entries(kind)
+            oldest = min((float(e["at"]) for e in got.values()), default=None)
+            age = f", oldest {(time.time() - oldest) / 86400:.1f}d" if oldest else ""
+            parts.append(f"{kind} {len(got)}{age}")
+        return "; ".join(parts)
+
+    return [("Discover universe", universe_check), ("Fetch cache", cache_check)]
+
+
+# The backup runs nightly; two days without a new off-site copy means it
+# has been failing (or the cloud login expired).
+OFFSITE_MAX_AGE_DAYS = 2
+
+
+def _offsite_checks(settings: Settings) -> list[Check]:
+    if not settings.backup_remote:
+        return []
+
+    def check() -> str:
+        age = newest_offsite_age_days(settings.backup_remote, now=datetime.now())
+        if age is None:
+            raise RuntimeError(f"no backups on {settings.backup_remote}")
+        if age > OFFSITE_MAX_AGE_DAYS:
+            raise RuntimeError(f"newest off-site backup is {age:.1f} days old")
+        return f"newest on {settings.backup_remote} is {age:.1f} days old"
+
+    return [("Off-site backup", check)]
+
+
 def _llm_checks(settings: Settings) -> list[Check]:
     """One check per configured (provider, model): a model lookup is free
     and fails on a bad key or a model id the provider does not serve."""
@@ -238,17 +404,21 @@ def _data_checks(settings: Settings) -> list[Check]:
         """The most-used source, unofficial and able to break without notice:
         prices (bars, quotes) and analyst estimates are separate endpoints,
         and either can fail while the other works."""
-        from ..data import yf_gateway
+        from ..data import frames, yf_gateway
 
-        bars = yf_gateway.ticker_call("SPY", "doctor", lambda t: t.history(period="5d"))
-        if bars is None or bars.empty:
+        bars = frames.closes(
+            frames.bars_from_pandas(
+                yf_gateway.ticker_call("SPY", "doctor", lambda t: t.history(period="5d"))
+            )
+        )
+        if bars is None:
             raise RuntimeError("no SPY price history — daily prices and the bar store are stuck")
         trend = yf_gateway.ticker_call("AAPL", "doctor", lambda t: t.eps_trend)
         if trend is None or trend.empty:
             raise RuntimeError(
                 "no AAPL EPS trend — estimates, revisions, standouts and snapshots are blind"
             )
-        return f"SPY {float(bars['Close'].iloc[-1]):.2f}; AAPL next-year EPS estimate ok"
+        return f"SPY {float(bars['Close'][-1]):.2f}; AAPL next-year EPS estimate ok"
 
     def smtp_check() -> str:
         import smtplib
@@ -313,7 +483,13 @@ def _data_checks(settings: Settings) -> list[Check]:
 def doctor(settings: Settings) -> int:
     """Run every check; returns how many failed."""
     failed = 0
-    for name, check in [*_data_checks(settings), *_disk_checks(settings), *_llm_checks(settings)]:
+    for name, check in [
+        *_data_checks(settings),
+        *_state_checks(),
+        *_offsite_checks(settings),
+        *_disk_checks(settings),
+        *_llm_checks(settings),
+    ]:
         try:
             detail = check()
             print(f"  ok    {name}: {detail}")
@@ -333,6 +509,17 @@ def main(argv: list[str] | None = None) -> None:
     a.add_argument("status", type=int)
     sub.add_parser("backup", help="copy the database into BACKUP_DIR, prune old logs")
     sub.add_parser("doctor", help="check keys, model ids and data sources")
+    r = sub.add_parser("restore", help="download and check an off-site backup; --apply swaps it in")
+    r.add_argument("name", nargs="?", help="backup file name (default: the newest)")
+    r.add_argument("--to", default="~/.stock_analyzer/restore", help="where to put it")
+    r.add_argument(
+        "--apply",
+        action="store_true",
+        help="also replace the live database with it (the current one is saved first)",
+    )
+    sub.add_parser(
+        "universe", help="rescan US stocks >= $2B with the quality rules (the nightly job does too)"
+    )
     args = parser.parse_args(argv)
 
     load_dotenv()
@@ -340,10 +527,31 @@ def main(argv: list[str] | None = None) -> None:
     if args.cmd == "alert":
         alert(settings, args.job, args.log, args.status)
     elif args.cmd == "backup":
-        backup(settings.discover_db_path, settings.backup_dir, settings.backup_keep)
+        dest = backup(settings.discover_db_path, settings.backup_dir, settings.backup_keep)
         prune_logs(_log_dirs(), settings.log_keep_days)
+        if settings.backup_remote:
+            upload_offsite(dest, settings.backup_remote, settings.backup_keep)
     elif args.cmd == "doctor":
         raise SystemExit(1 if doctor(settings) else 0)
+    elif args.cmd == "restore":
+        if not settings.backup_remote:
+            raise SystemExit("BACKUP_REMOTE is not set — see README, 'Off-site backup'")
+        got = restore(settings.backup_remote, args.to, args.name)
+        with sqlite3.connect(got) as db:
+            runs, picks = (
+                db.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in ("runs", "picks")
+            )
+        print(f"Restored {got} — integrity ok, {runs} runs, {picks} picks.")
+        if args.apply:
+            saved = apply_restore(got, settings.discover_db_path)
+            print(f"Live database replaced; the previous one is saved as {saved}.")
+        else:
+            print("Not applied. To replace the live database with it, rerun with --apply")
+            print("(the current database is saved first; best when no scheduled job is running).")
+    elif args.cmd == "universe":
+        from ..data.universe_base import refresh_us_2b
+
+        print(f"Discover universe: {refresh_us_2b()} tickers written")
 
 
 if __name__ == "__main__":

@@ -6,7 +6,6 @@ from datetime import date
 from pathlib import Path
 from unittest.mock import MagicMock
 
-import pandas as pd
 import pytest
 
 from stock_analyzer.data import transactions
@@ -17,6 +16,7 @@ from stock_analyzer.reporting.performance import (
     render_performance_html,
     time_weighted_return,
 )
+from tests.bars import bars, bdays
 
 D = date
 
@@ -34,8 +34,8 @@ def test_deposits_are_not_performance():
 
 
 def test_vs_spy_windows_and_render():
-    idx = pd.bdate_range("2025-12-20", "2026-04-10")
-    spy = pd.DataFrame({"Close": [100 + i * 0.1 for i in range(len(idx))]}, index=idx)
+    idx = bdays("2025-12-20", "2026-04-10")
+    spy = bars(idx, {"Close": [100 + i * 0.1 for i in range(len(idx))]})
     snaps = [(D(2026, 1, 2), 100.0), (D(2026, 3, 31), 112.0), (D(2026, 4, 1), 113.0)]
     rows = performance_vs_spy(
         snaps,

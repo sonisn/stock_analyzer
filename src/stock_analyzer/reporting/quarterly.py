@@ -33,6 +33,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from ..data import frames
 from ..db.repository import fetch_suggestions
 from ..db.session import exec_sql, get_session
 from ..discover.track_record import _close_on_or_after, _close_on_or_before, _fetch_history
@@ -181,9 +182,9 @@ def _return_since(
     ticker: str, since: date, today: date, fetch: Callable, entry: float | None = None
 ) -> float | None:
     frame = fetch(ticker, since - timedelta(days=7), today)
-    if frame is None or frame.empty:
+    closes = frames.closes(frame)
+    if closes is None:
         return None
-    closes = frame["Close"].dropna()
     last = _close_on_or_before(closes, today)
     if entry is None:
         first = _close_on_or_after(closes, since)

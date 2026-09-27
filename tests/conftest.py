@@ -37,6 +37,8 @@ os.environ["LOG_DIR"] = tempfile.mkdtemp(prefix="stock-analyzer-test-logs-")
 # The on-disk bar store would carry one test's bars into the next; tests
 # that exercise it point YF_BARS_DIR at their own tmp_path.
 os.environ["YF_BARS_DIR"] = "off"
+# Same for the per-ticker fetch cache (data/fetch_cache.py).
+os.environ["FETCH_CACHE_DIR"] = "off"
 
 import pytest
 
@@ -101,6 +103,17 @@ def _reset_yf_gateway(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     yf_gateway.reset()
     yield
     yf_gateway.reset()
+
+
+@pytest.fixture(autouse=True)
+def _no_local_universe(monkeypatch: pytest.MonkeyPatch, tmp_path_factory) -> None:
+    """The nightly rescan writes ~/.stock_analyzer/us_2b_universe.txt, which
+    the loader prefers over the bundled list; tests must see the bundle."""
+    from stock_analyzer.data import universe_base
+
+    missing = tmp_path_factory.mktemp("universe") / "us_2b_universe.txt"
+    monkeypatch.setattr(universe_base, "LOCAL_US_2B", missing)
+    universe_base.load_base_universe.cache_clear()
 
 
 @pytest.fixture(autouse=True)

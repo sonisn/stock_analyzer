@@ -21,13 +21,14 @@ import tempfile
 from datetime import date, datetime, timedelta
 from unittest.mock import patch
 
-import pandas as pd
+import polars as pl
 import pytest
 from sqlalchemy import text
 
 from stock_analyzer.db.session import get_session
 from stock_analyzer.db.track_record import fetch_recent_sell_runs
 from stock_analyzer.discover import track_record as tr
+from tests.bars import bars, days
 
 # --- synthetic price frames ----------------------------------------------
 
@@ -39,7 +40,7 @@ def _flat_then_path(
     at_90: float,
     pre_days: int = 200,
     post_days: int = 120,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """A daily frame that is exactly `entry` on pick_date and moves linearly
     to `at_90` by pick_date + 90 days (so a 30-day read is one third of the
     way). Pre-decision bars are flat, which makes beta inestimable — tests
@@ -47,13 +48,10 @@ def _flat_then_path(
     """
     start = pick_date - timedelta(days=pre_days)
     end = pick_date + timedelta(days=post_days)
-    idx = pd.date_range(start, end, freq="D")
+    idx = days(start, end)
     per_day = (at_90 - entry) / 90.0
-    closes = [
-        entry if ts.date() <= pick_date else entry + per_day * (ts.date() - pick_date).days
-        for ts in idx
-    ]
-    return pd.DataFrame({"Close": closes, "High": closes}, index=idx)
+    closes = [entry if ts <= pick_date else entry + per_day * (ts - pick_date).days for ts in idx]
+    return bars(idx, {"Close": closes, "High": closes})
 
 
 def _beta_path(
@@ -63,7 +61,7 @@ def _beta_path(
     entry: float,
     at_90: float,
     pre_days: int = 200,
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     """Pre-decision bars whose daily returns are exactly `beta` times SPY's
     (see `_spy_beta_path`), then the same linear forward path as above.
 
@@ -71,10 +69,10 @@ def _beta_path(
     the beta estimate rather than merely its sign.
     """
     start = pick_date - timedelta(days=pre_days)
-    idx = pd.date_range(start, pick_date + timedelta(days=120), freq="D")
+    idx = days(start, pick_date + timedelta(days=120))
     closes: list[float] = []
     price = entry
-    pre = [ts for ts in idx if ts.date() < pick_date]
+    pre = [ts for ts in idx if ts < pick_date]
     # Walk backward from `entry` so the bar ON pick_date is exactly `entry`.
     rets = [(0.005 if i % 2 == 0 else -0.005) * beta for i in range(len(pre))]
     path = [entry]
@@ -83,19 +81,19 @@ def _beta_path(
     path = list(reversed(path[1:]))
     per_day = (at_90 - entry) / 90.0
     for ts in idx:
-        if ts.date() < pick_date:
+        if ts < pick_date:
             closes.append(path[len([c for c in closes])])
-        elif ts.date() == pick_date:
+        elif ts == pick_date:
             price = entry
             closes.append(price)
         else:
-            closes.append(entry + per_day * (ts.date() - pick_date).days)
-    return pd.DataFrame({"Close": closes, "High": closes}, index=idx)
+            closes.append(entry + per_day * (ts - pick_date).days)
+    return bars(idx, {"Close": closes, "High": closes})
 
 
 def _spy_beta_path(
     pick_date: date, *, entry: float, at_90: float, pre_days: int = 200
-) -> pd.DataFrame:
+) -> pl.DataFrame:
     return _beta_path(pick_date, beta=1.0, entry=entry, at_90=at_90, pre_days=pre_days)
 
 
@@ -104,8 +102,8 @@ def _score(
     pick_date: date,
     age_days: int,
     direction: str,
-    ticker_df: pd.DataFrame,
-    spy_df: pd.DataFrame,
+    ticker_df: pl.DataFrame,
+    spy_df: pl.DataFrame,
 ) -> list:
     rows, bad = tr._score_decision(
         tr._Decision(

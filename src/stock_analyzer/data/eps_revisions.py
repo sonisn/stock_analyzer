@@ -27,10 +27,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
+import polars as pl
 
 from ..logging import get_logger
-from . import yf_gateway
+from . import fetch_cache, frames, yf_gateway
 
 logger = get_logger(__name__)
 
@@ -46,19 +46,16 @@ _PERIODS = {
 }
 
 
-def _get_cell(df: pd.DataFrame, period: str, col: str) -> int:
-    """Read a single cell from the revisions DataFrame, tolerating
-    yfinance's slight column-name inconsistencies (upLast7days vs
-    upLast7Days, etc.)."""
-    if period not in df.index:
-        return 0
-    # Look up case-insensitively against the DataFrame's actual columns.
+def _get_cell(df: pl.DataFrame, period: str, col: str) -> int:
+    """Read a single cell from the revisions table (frames.table_from_pandas
+    shape), tolerating yfinance's slight column-name inconsistencies
+    (upLast7days vs upLast7Days, etc.)."""
     target = col.lower()
     for actual in df.columns:
-        if str(actual).lower() == target:
-            val = df.loc[period, actual]
+        if actual != "index" and actual.lower() == target:
+            val = frames.cell(df, period, actual)
             try:
-                return int(val) if pd.notna(val) else 0
+                return int(val) if val is not None and val == val else 0
             except TypeError, ValueError:
                 return 0
     return 0
@@ -66,8 +63,10 @@ def _get_cell(df: pd.DataFrame, period: str, col: str) -> int:
 
 def fetch_eps_revisions(ticker: str) -> dict[str, Any] | None:
     """Return the per-ticker EPS revision summary, or None on any error."""
-    revs = yf_gateway.ticker_call(ticker, "eps_revisions", lambda t: t.eps_revisions)
-    if revs is None or revs.empty:
+    revs = frames.table_from_pandas(
+        yf_gateway.ticker_call(ticker, "eps_revisions", lambda t: t.eps_revisions)
+    )
+    if revs is None:
         return None
 
     cq_up_30 = _get_cell(revs, "0q", "upLast30days")
@@ -110,13 +109,23 @@ def fetch_eps_revisions(ticker: str) -> dict[str, Any] | None:
     }
 
 
-def batch_eps_revisions(tickers: list[str]) -> dict[str, dict[str, Any]]:
+def batch_eps_revisions(
+    tickers: list[str], *, refresh: list[str] | tuple[str, ...] = ()
+) -> dict[str, dict[str, Any]]:
     """Fetch revisions for many tickers in parallel."""
-    results: dict[str, dict[str, Any]] = {}
-    for ticker, r in yf_gateway.map_symbols(fetch_eps_revisions, tickers, workers=_MAX_WORKERS):
-        if r:
-            results[ticker] = r
-    return results
+    # Cached for a week like fundamentals, and expired after the same
+    # earnings report: the answer is stamped with the next report date from
+    # the cached fundamentals (fetched first in every caller that screens).
+    upcoming = {
+        t: (e.get("value") or {}).get("next_earnings")
+        for t, e in fetch_cache.entries("fundamentals").items()
+    }
+
+    def fetch(todo: list[str]):
+        for ticker, r in yf_gateway.map_symbols(fetch_eps_revisions, todo, workers=_MAX_WORKERS):
+            yield ticker, ({**r, "next_earnings": upcoming.get(ticker)} if r else None)
+
+    return fetch_cache.fetch_many("eps_revisions", tickers, fetch, refresh=refresh)
 
 
 def fetch_estimate_change(ticker: str, period: str = "+1y") -> float | None:
@@ -127,13 +136,13 @@ def fetch_estimate_change(ticker: str, period: str = "+1y") -> float | None:
     None when either value is missing or the base is not positive (a
     loss-making year's percentage change means nothing)."""
     trend = yf_gateway.ticker_call(ticker, "eps_trend", lambda t: t.eps_trend)
-    if trend is None or trend.empty or period not in trend.index:
-        return None
+    trend = frames.table_from_pandas(trend)
+    now, before = frames.cell(trend, period, "current"), frames.cell(trend, period, "30daysAgo")
     try:
-        now, before = float(trend.loc[period, "current"]), float(trend.loc[period, "30daysAgo"])
-    except KeyError, TypeError, ValueError:
+        now, before = float(now), float(before)
+    except TypeError, ValueError:
         return None
-    if pd.isna(now) or pd.isna(before) or before <= 0:
+    if now != now or before != before or before <= 0:
         return None
     return now / before - 1
 

@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..logging import get_logger
-from . import yf_gateway
+from . import frames, yf_gateway
 
 logger = get_logger(__name__)
 
@@ -82,7 +82,7 @@ def _pct_change(closes: Any, days: int) -> float | None:
     """Percent change over the last `days` sessions of a close series."""
     if closes is None or len(closes) <= days:
         return None
-    last, prior = closes.iloc[-1], closes.iloc[-1 - days]
+    last, prior = closes[-1], closes[-1 - days]
     if not prior:
         return None
     return float((last / prior - 1) * 100)
@@ -94,20 +94,19 @@ def _fetch_one(market: Market) -> dict[str, Any] | None:
         "world_markets.history",
         lambda t: t.history(period="2y", interval="1d"),
     )
-    if frame is None or getattr(frame, "empty", True):
+    bars = frames.closes(frames.bars_from_pandas(frame))
+    if bars is None:
         logger.info("No history for %s (%s)", market.name, market.symbol)
         return None
-    closes = frame["Close"].dropna()
-    if closes.empty:
-        return None
+    closes = bars["Close"]
     row: dict[str, Any] = {
         "symbol": market.symbol,
         "name": market.name,
         "region": market.region,
         "bears_on": list(market.bears_on),
         "note": market.note,
-        "last": float(closes.iloc[-1]),
-        "as_of": str(closes.index[-1].date()) if len(closes.index) else None,
+        "last": float(closes[-1]),
+        "as_of": str(bars["date"][-1]),
     }
     row.update({window: _pct_change(closes, days) for window, days in _WINDOWS.items()})
     return row

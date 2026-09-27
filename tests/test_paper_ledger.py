@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-import pandas as pd
+import polars as pl
 import pytest
 from sqlalchemy import text
 
@@ -19,22 +19,21 @@ from stock_analyzer.discover.paper_ledger import (
     parse_weights,
 )
 from stock_analyzer.discover.report_sections import append_paper_ledger_section
+from tests.bars import bars, days
 
 D0 = date(2026, 6, 1)
 TODAY = date(2026, 6, 30)
 
 
-def _series(start_px: float, end_px: float, start: date = D0) -> pd.DataFrame:
+def _series(start_px: float, end_px: float, start: date = D0) -> pl.DataFrame:
     """Linear price path from `start` to TODAY; flat before `start`."""
-    idx = pd.date_range(start - timedelta(days=10), TODAY, freq="D")
+    idx = days(start - timedelta(days=10), TODAY)
     span = (TODAY - start).days
     closes = [
-        start_px
-        if ts.date() <= start
-        else start_px + (end_px - start_px) * (ts.date() - start).days / span
+        start_px if ts <= start else start_px + (end_px - start_px) * (ts - start).days / span
         for ts in idx
     ]
-    return pd.DataFrame({"Close": closes}, index=idx)
+    return bars(idx, {"Close": closes})
 
 
 def _fetch(frames):

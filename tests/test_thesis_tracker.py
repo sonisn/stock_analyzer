@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-import pandas as pd
+import polars as pl
 from sqlalchemy import text
 
 from stock_analyzer.db.repository import insert_pick, insert_pick_catalysts, insert_run
@@ -18,26 +18,27 @@ from stock_analyzer.discover.thesis_tracker import (
     load_open_picks,
     thesis_report_data,
 )
+from tests.bars import bars, bdays
 
 TODAY = date(2026, 9, 1)
 PICKED = date(2026, 7, 1)
 
 
-def _path(before: float, at_pick: float, now: float, *, events=None) -> pd.DataFrame:
+def _path(before: float, at_pick: float, now: float, *, events=None) -> pl.DataFrame:
     """Business-day closes: flat at `before` for a year, stepping to
     `at_pick` on the pick date, then a straight line to `now`. `events`
     maps a date to an extra multiplicative jump from that day on."""
-    idx = pd.bdate_range(PICKED - timedelta(days=400), TODAY)
+    idx = bdays(PICKED - timedelta(days=400), TODAY)
     span = (TODAY - PICKED).days
     closes = []
     for ts in idx:
-        d = ts.date()
+        d = ts
         px = before if d < PICKED else at_pick + (now - at_pick) * (d - PICKED).days / span
         for when, jump in (events or {}).items():
             if d >= when:
                 px *= jump
         closes.append(px)
-    return pd.DataFrame({"Close": closes}, index=idx)
+    return bars(idx, {"Close": closes})
 
 
 def _pick(ticker: str, *, bear=-20.0, bull=40.0, catalysts=()) -> OpenPick:
@@ -52,7 +53,7 @@ def _pick(ticker: str, *, bear=-20.0, bull=40.0, catalysts=()) -> OpenPick:
     )
 
 
-def _check(pick: OpenPick, frame: pd.DataFrame, spy: pd.DataFrame | None = None, **kw):
+def _check(pick: OpenPick, frame: pl.DataFrame, spy: pl.DataFrame | None = None, **kw):
     frames = {"SPY": spy if spy is not None else _path(100, 100, 102), pick.ticker: frame}
     return check_theses([pick], today=TODAY, fetch=lambda t, s, e: frames.get(t), **kw)
 

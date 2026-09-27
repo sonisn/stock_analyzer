@@ -22,12 +22,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-import numpy as np
-import pandas as pd
+import polars as pl
 
 from ..data import yf_gateway
+from ..data.frames import DATE
 from ..logging import get_logger
-from .features import FEATURES, panel_features
+from .features import FEATURES, panel_features, tickers_of
 
 logger = get_logger(__name__)
 
@@ -45,10 +45,37 @@ DATASET_HORIZONS: tuple[int, ...] = (*HORIZONS, 252)
 
 @dataclass
 class PricePanel:
-    close: pd.DataFrame
-    high: pd.DataFrame
-    volume: pd.DataFrame
-    spy: pd.Series
+    """Wide Polars frames (a `date` column plus one column per ticker) on
+    the union of the symbols' trading days, and SPY as a (date, SPY) frame
+    on the same dates."""
+
+    close: pl.DataFrame
+    high: pl.DataFrame
+    volume: pl.DataFrame
+    spy: pl.DataFrame
+
+    @property
+    def tickers(self) -> list[str]:
+        return tickers_of(self.close)
+
+    def calendar(self) -> pl.Series:
+        """SPY's trading days: the dates it has a close for."""
+        spy = self.spy.with_columns(pl.col("SPY").fill_nan(None))
+        return spy.drop_nulls("SPY")[DATE]
+
+
+def _wide(frames: dict[str, pl.DataFrame], field: str) -> pl.DataFrame:
+    """One column per symbol of `field`, on the union of their dates."""
+    long = pl.concat(
+        [
+            f.select(DATE, pl.lit(sym).alias("ticker"), pl.col(field).cast(pl.Float64))
+            for sym, f in sorted(frames.items())
+            if field in f.columns
+        ]
+    )
+    wide = long.pivot(on="ticker", index=DATE, values=field).sort(DATE)
+    order = [s for s in sorted(frames) if s in wide.columns]
+    return wide.select(DATE, *order).with_columns(pl.col(order).fill_nan(None))
 
 
 def download_panel(tickers: list[str], *, years: int = 6) -> PricePanel:
@@ -63,22 +90,29 @@ def download_panel(tickers: list[str], *, years: int = 6) -> PricePanel:
     logger.info("Price panel: %d/%d symbols", len(frames), len(symbols))
     if not frames:
         raise RuntimeError("No price data downloaded")
+    return panel_from_bars(frames)
 
-    def field(name: str) -> pd.DataFrame:
-        return pd.DataFrame({sym: f[name] for sym, f in frames.items() if name in f})
 
-    close = field("Close")
-    # DatetimeIndex gets .normalize() by delegation, which type checkers can't see.
-    close.index = pd.DatetimeIndex(close.index).tz_localize(None).normalize()  # ty: ignore[unresolved-attribute]
-    high = field("High").set_axis(close.index)
-    volume = field("Volume").set_axis(close.index)
-    if "SPY" not in close:
+def panel_from_bars(frames: dict[str, pl.DataFrame]) -> PricePanel:
+    """A PricePanel from {symbol: bar frame}; SPY must be among them."""
+    close = _wide(frames, "Close")
+    if "SPY" not in close.columns:
         raise RuntimeError("SPY missing from the price download")
-    spy = close.pop("SPY")
-    high = high.drop(columns="SPY", errors="ignore")
-    volume = volume.drop(columns="SPY", errors="ignore")
-    close = close.dropna(axis=1, how="all")
-    return PricePanel(close, high[close.columns], volume[close.columns], spy)
+    spy = close.select(DATE, "SPY")
+    close = close.drop("SPY")
+    # A symbol with no close on any day carries nothing.
+    keep = [t for t in tickers_of(close) if close[t].null_count() < close.height]
+    close = close.select(DATE, *keep)
+    dates = close.select(DATE)
+
+    def aligned(field: str) -> pl.DataFrame:
+        wide = _wide(frames, field) if any(field in f.columns for f in frames.values()) else dates
+        out = dates.join(wide, on=DATE, how="left")
+        missing = [t for t in keep if t not in out.columns]
+        out = out.with_columns([pl.lit(None, dtype=pl.Float64).alias(t) for t in missing])
+        return out.select(DATE, *keep)
+
+    return PricePanel(close, aligned("High"), aligned("Volume"), spy)
 
 
 def load_panel(tickers: list[str], cache_dir: str | None = None, *, years: int = 6) -> PricePanel:
@@ -88,58 +122,115 @@ def load_panel(tickers: list[str], cache_dir: str | None = None, *, years: int =
     return download_panel(tickers, years=years)
 
 
-def forward_returns(panel: PricePanel, horizon: int) -> tuple[pd.DataFrame, pd.Series]:
-    """(date x ticker) return from the next bar's close to `horizon` bars
-    after it, and SPY's return over the same bars. NaN past the data."""
-    spy = panel.spy.reindex(panel.close.index)
-    ret = panel.close.shift(-1 - horizon) / panel.close.shift(-1) - 1
+def forward_returns(panel: PricePanel, horizon: int) -> tuple[pl.DataFrame, pl.Series]:
+    """Wide return from the next bar's close to `horizon` bars after it, on
+    the panel's dates, and SPY's return over the same bars. Missing past
+    the data."""
+    spy = panel.close.select(DATE).join(panel.spy, on=DATE, how="left")["SPY"].fill_nan(None)
+    ret = panel.close.select(
+        pl.col(DATE),
+        *(
+            (pl.col(t).shift(-1 - horizon) / pl.col(t).shift(-1) - 1).alias(t)
+            for t in panel.tickers
+        ),
+    )
     return ret, spy.shift(-1 - horizon) / spy.shift(-1) - 1
 
 
-def forward_excess(panel: PricePanel, horizon: int) -> pd.DataFrame:
+def forward_excess(panel: PricePanel, horizon: int) -> pl.DataFrame:
     """Forward return minus SPY's over the same bars."""
     ret, spy_ret = forward_returns(panel, horizon)
-    return ret.sub(spy_ret, axis=0)
+    return ret.select(pl.col(DATE), *((pl.col(t) - spy_ret).alias(t) for t in panel.tickers))
+
+
+def _week_end(weekday: int) -> pl.Expr:
+    """The `weekday` (ISO: Mon=1 .. Sun=7) ending each `date`'s week — the
+    period pandas calls "W-FRI" for weekday 5."""
+    return pl.col(DATE) + pl.duration(days=(weekday - pl.col(DATE).dt.weekday()) % 7)
 
 
 def build_dataset(
     panel: PricePanel,
     *,
     freq: str = "W-FRI",
-    fundamentals: pd.DataFrame | None = None,
-) -> pd.DataFrame:
+    fundamentals: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     """Long frame: one row per (date, ticker) on the last trading day of
     each week, with every feature, the trend-gate flag and two labels per
-    horizon: `fwd_{h}` (excess over SPY) and `fwd_{h}_badj` (beta-neutral). Rows missing any feature are dropped; rows whose
-    label is still in the future keep NaN labels (used for scoring only)."""
+    horizon: `fwd_{h}` (excess over SPY) and `fwd_{h}_badj` (beta-neutral).
+    Rows missing any feature are dropped; rows whose label is still in the
+    future keep NaN labels (used for scoring only). Sorted by date, then the
+    panel's ticker order."""
+    if freq != "W-FRI":
+        raise ValueError("weekly (W-FRI) sampling only")
     feats = panel_features(panel.close, panel.high, panel.volume, panel.spy)
-    cal = pd.DatetimeIndex(feats[FEATURES[0]].index)
-    weekly_last = pd.Series(cal, index=cal).groupby(cal.to_period(freq)).max()
-    dates = pd.DatetimeIndex(weekly_last.to_numpy())
+    cal = feats[FEATURES[0]].select(DATE)
+    weekly = (
+        cal.with_columns(_week_end(5).alias("_wk"))
+        .group_by("_wk")
+        .agg(pl.col(DATE).max())
+        .sort(DATE)
+    )
+    dates = weekly.select(DATE)
+    tickers = panel.tickers
+    order = pl.DataFrame({"ticker": tickers, "_pos": range(len(tickers))})
 
-    parts = {name: feats[name].loc[dates].stack(future_stack=True) for name in FEATURES}
-    beta = feats["beta_252"].loc[dates]
+    def long(frame: pl.DataFrame, name: str) -> pl.DataFrame:
+        at = dates.join(frame, on=DATE, how="left")
+        return at.unpivot(index=DATE, on=tickers, variable_name="ticker", value_name=name)
+
+    out = long(feats[FEATURES[0]], FEATURES[0])
+    for name in FEATURES[1:]:
+        out = out.join(long(feats[name], name), on=[DATE, "ticker"], how="left")
+    beta_at = dates.join(feats["beta_252"], on=DATE, how="left")
     for h in DATASET_HORIZONS:
         ret, spy_ret = forward_returns(panel, h)
-        ret, spy_ret = ret.reindex(cal).loc[dates], spy_ret.reindex(cal).loc[dates]
-        parts[f"fwd_{h}"] = ret.sub(spy_ret, axis=0).stack(future_stack=True)
+        ret = ret.with_columns(spy_ret.alias("_spy"))
+        at = dates.join(ret, on=DATE, how="left")
+        spy_at = at["_spy"]
+        excess = at.select(pl.col(DATE), *((pl.col(t) - spy_at).alias(t) for t in tickers))
         # Beta-neutral: remove the market move the stock's trailing beta
         # (known on the feature date) implies, so a high-beta name is not
         # credited with skill for simply riding a rising market.
-        parts[f"fwd_{h}_badj"] = (
-            ret - beta.reindex(columns=ret.columns).mul(spy_ret, axis=0)
-        ).stack(future_stack=True)
-    frame = pd.DataFrame(parts)
-    frame.index.names = ["date", "ticker"]
-    frame = frame.dropna(subset=list(FEATURES))
-    if fundamentals is not None and not fundamentals.empty:
+        badj = at.select(
+            pl.col(DATE), *((pl.col(t) - beta_at[t] * spy_at).alias(t) for t in tickers)
+        )
+        out = out.join(long(excess, f"fwd_{h}"), on=[DATE, "ticker"], how="left")
+        out = out.join(long(badj, f"fwd_{h}_badj"), on=[DATE, "ticker"], how="left")
+    floats = [c for c in out.columns if c not in (DATE, "ticker")]
+    out = out.with_columns(pl.col(floats).fill_null(float("nan")))
+    out = out.join(order, on="ticker").sort([DATE, "_pos"]).drop("_pos")
+    out = out.filter(pl.all_horizontal(pl.col(list(FEATURES)).is_not_nan()))
+    if fundamentals is not None and not fundamentals.is_empty():
         # Point-in-time only: `fundamentals` holds what each filing said
         # by its own as-of date, carried forward (model/fundamental_features).
-        frame = frame.join(fundamentals, how="left")
-    frame["gated"] = (
-        (frame["px_vs_sma200"] > 0)
-        & (frame["sma50_vs_sma200"] > 0)
-        & (frame["rs_6mo"] > 0)
-        & (frame["dist_from_52w_high"] >= -0.30)
+        out = out.join(fundamentals, on=[DATE, "ticker"], how="left")
+    out = out.with_columns(
+        (
+            (pl.col("px_vs_sma200") > 0)
+            & (pl.col("sma50_vs_sma200") > 0)
+            & (pl.col("rs_6mo") > 0)
+            & (pl.col("dist_from_52w_high") >= -0.30)
+        ).alias("gated")
     )
-    return frame.replace([np.inf, -np.inf], np.nan).dropna(subset=list(FEATURES))
+    floats = [c for c, t in out.schema.items() if t == pl.Float64]
+    out = out.with_columns(
+        [
+            pl.when(pl.col(c).is_infinite()).then(float("nan")).otherwise(pl.col(c)).alias(c)
+            for c in floats
+        ]
+    )
+    return out.filter(pl.all_horizontal(pl.col(list(FEATURES)).is_not_nan()))
+
+
+__all__ = [
+    "DATASET_HORIZONS",
+    "HORIZONS",
+    "PricePanel",
+    "build_dataset",
+    "download_panel",
+    "forward_excess",
+    "forward_returns",
+    "load_panel",
+    "panel_from_bars",
+]

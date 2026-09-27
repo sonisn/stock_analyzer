@@ -44,6 +44,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
+from ..data import frames
 from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 from .track_record import _close_on_or_after, _close_on_or_before, _fetch_history
@@ -272,9 +273,9 @@ def _load_candidates(
 def _forward_return(ticker: str, run_date: str, horizon_days: int) -> float | None:
     start = date.fromisoformat(run_date)
     frame = _fetch_history(ticker, start - timedelta(days=5), start + timedelta(days=horizon_days))
-    if frame is None or frame.empty:
+    closes = frames.closes(frame)
+    if closes is None:
         return None
-    closes = frame["Close"].dropna()
     entry = _close_on_or_after(closes, start)
     exit_ = _close_on_or_before(closes, start + timedelta(days=horizon_days))
     if entry is None or exit_ is None or entry[0] <= 0:

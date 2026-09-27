@@ -43,6 +43,7 @@ from datetime import date, datetime, timedelta
 from operator import attrgetter
 from typing import Any
 
+from ..data import frames
 from ..db.session import exec_sql, get_session
 from ..logging import get_logger
 from ..models.calibration import (
@@ -184,9 +185,9 @@ def _realized_return_pct(forecast: _Forecast, horizon_days: int) -> float | None
         pick_date - timedelta(days=5),
         pick_date + timedelta(days=horizon_days),
     )
-    if frame is None or frame.empty:
+    closes = frames.closes(frame)
+    if closes is None:
         return None
-    closes = frame["Close"].dropna()
     exit_ = _close_on_or_before(closes, pick_date + timedelta(days=horizon_days))
     if exit_ is None:
         return None
@@ -204,9 +205,9 @@ def _realized_return_pct(forecast: _Forecast, horizon_days: int) -> float | None
 def _spy_return_pct(pick_date: str, horizon_days: int) -> float | None:
     start = date.fromisoformat(pick_date)
     frame = _fetch_history("SPY", start - timedelta(days=5), start + timedelta(days=horizon_days))
-    if frame is None or frame.empty:
+    closes = frames.closes(frame)
+    if closes is None:
         return None
-    closes = frame["Close"].dropna()
     entry = _close_on_or_after(closes, start)
     exit_ = _close_on_or_before(closes, start + timedelta(days=horizon_days))
     if entry is None or exit_ is None or entry[0] <= 0:

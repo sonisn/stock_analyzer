@@ -9,9 +9,10 @@ on, the same request returns the quarter ending 2025-01-26, filed
 
 from __future__ import annotations
 
+import math
 from datetime import date
 
-import pandas as pd
+import polars as pl
 import pytest
 
 from stock_analyzer.model.fundamental_features import (
@@ -22,6 +23,7 @@ from stock_analyzer.model.fundamental_features import (
     month_ends,
     to_frame,
 )
+from tests.bars import bdays
 
 
 def test_as_reported_is_sent_for_point_in_time_requests(monkeypatch):
@@ -217,48 +219,58 @@ def test_values_are_carried_forward_never_backward():
         date(2025, 1, 31): {"NVDA": {"return_on_equity_pit": 0.60}},
         date(2025, 3, 31): {"NVDA": {"return_on_equity_pit": 0.75}},
     }
-    dates = pd.DatetimeIndex(["2025-01-10", "2025-02-14", "2025-03-14", "2025-04-11"])
+    dates = [date(2025, 1, 10), date(2025, 2, 14), date(2025, 3, 14), date(2025, 4, 11)]
     aligned = align_to_dates(to_frame(history), dates, ["NVDA"])
-    values = aligned["return_on_equity_pit"].droplevel("ticker")
+    values = dict(
+        zip(aligned["date"].to_list(), aligned["return_on_equity_pit"].to_list(), strict=True)
+    )
     # Before the first filing there is nothing to know.
-    assert pd.isna(values.loc["2025-01-10"])
+    assert math.isnan(values[date(2025, 1, 10)])
     # February reads January's filing; March still does; April reads March's.
-    assert values.loc["2025-02-14"] == 0.60
-    assert values.loc["2025-03-14"] == 0.60
-    assert values.loc["2025-04-11"] == 0.75
+    assert values[date(2025, 2, 14)] == 0.60
+    assert values[date(2025, 3, 14)] == 0.60
+    assert values[date(2025, 4, 11)] == 0.75
 
 
 def test_a_missing_ratio_becomes_the_days_median_not_a_dropped_row():
-    index = pd.MultiIndex.from_tuples(
-        [(pd.Timestamp("2025-03-14"), t) for t in ("A", "B", "GOOGL")],
-        names=["date", "ticker"],
+    frame = pl.DataFrame(
+        {
+            "date": [date(2025, 3, 14)] * 3,
+            "ticker": ["A", "B", "GOOGL"],
+            "gross_margin_pit": [0.40, 0.60, float("nan")],
+        }
     )
-    frame = pd.DataFrame({"gross_margin_pit": [0.40, 0.60, None]}, index=index)
     filled = fill_cross_section(frame)
-    assert filled.loc[(pd.Timestamp("2025-03-14"), "GOOGL"), "gross_margin_pit"] == 0.50
-    assert len(filled) == 3
+    assert filled.filter(pl.col("ticker") == "GOOGL")["gross_margin_pit"][0] == 0.50
+    assert filled.height == 3
 
 
 def test_the_dataset_gains_the_columns_only_when_asked():
     from stock_analyzer.model.dataset import PricePanel, build_dataset
 
-    dates = pd.bdate_range("2024-01-01", periods=320)
-    frame = pd.DataFrame(
-        {t: pd.Series(range(1, len(dates) + 1), index=dates, dtype=float) for t in ("AAA", "BBB")}
+    days = bdays(date(2024, 1, 1), periods=320)
+    ramp = [float(i) for i in range(1, len(days) + 1)]
+
+    def wide(scale: float) -> pl.DataFrame:
+        return pl.DataFrame(
+            {"date": days, "AAA": [v * scale for v in ramp], "BBB": [v * scale for v in ramp]}
+        )
+
+    panel = PricePanel(
+        wide(1.0), wide(1.01), wide(1000.0), pl.DataFrame({"date": days, "SPY": ramp})
     )
-    panel = PricePanel(frame, frame * 1.01, frame * 1000, frame["AAA"].copy())
     plain = build_dataset(panel)
     assert not [c for c in FUNDAMENTAL_FEATURES if c in plain.columns]
 
-    fundamentals = pd.DataFrame(
-        {"return_on_equity_pit": 0.5},
-        index=pd.MultiIndex.from_product(
-            [plain.index.levels[0], ["AAA", "BBB"]], names=["date", "ticker"]
-        ),
+    fundamentals = (
+        plain.select("date")
+        .unique()
+        .join(pl.DataFrame({"ticker": ["AAA", "BBB"]}), how="cross")
+        .with_columns(pl.lit(0.5).alias("return_on_equity_pit"))
     )
     joined = build_dataset(panel, fundamentals=fundamentals)
     assert "return_on_equity_pit" in joined.columns
-    assert joined["return_on_equity_pit"].notna().all()
+    assert joined["return_on_equity_pit"].is_not_null().all()
 
 
 def test_leverage_and_equity_come_from_assets_when_equity_is_untagged(monkeypatch):
@@ -344,11 +356,17 @@ def test_the_training_set_carries_a_one_year_label_without_labelling_the_db():
 def test_the_one_year_label_is_built(monkeypatch):
     from stock_analyzer.model.dataset import PricePanel, build_dataset
 
-    dates = pd.bdate_range("2022-01-03", periods=700)
-    frame = pd.DataFrame(
-        {t: pd.Series(range(1, len(dates) + 1), index=dates, dtype=float) for t in ("AAA", "BBB")}
+    days = bdays(date(2022, 1, 3), periods=700)
+    ramp = [float(i) for i in range(1, len(days) + 1)]
+
+    def wide(scale: float) -> pl.DataFrame:
+        return pl.DataFrame(
+            {"date": days, **{t: [v * scale for v in ramp] for t in ("AAA", "BBB")}}
+        )
+
+    panel = PricePanel(
+        wide(1.0), wide(1.01), wide(1000.0), pl.DataFrame({"date": days, "SPY": ramp})
     )
-    panel = PricePanel(frame, frame * 1.01, frame * 1000, frame["AAA"].copy())
     data = build_dataset(panel)
     assert "fwd_252" in data.columns and "fwd_252_badj" in data.columns
-    assert data["fwd_252"].notna().any()
+    assert data["fwd_252"].is_not_nan().any()

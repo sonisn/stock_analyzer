@@ -33,13 +33,12 @@ def _fmt_pct(n: float | None, *, signed: bool = True) -> str | None:
 
 
 def _trend_label(history, lookback_days: int) -> str | None:
-    if history is None or history.empty or len(history) < 2:
+    if history is None or history.is_empty() or history.height < 2:
         return None
     closes = history["Close"]
-    end = float(closes.iloc[-1])
     start_idx = max(-lookback_days, -len(closes))
-    start = float(closes.iloc[start_idx])
-    if start == 0:
+    end, start = closes[-1], closes[start_idx]
+    if end is None or start is None or start == 0:
         return None
     pct = (end - start) / start * 100
     direction = "Up" if pct > 2 else "Down" if pct < -2 else "Neutral"

@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import date, timedelta
 from types import SimpleNamespace
 
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
 
 from stock_analyzer.data.brokerage import classify_account_kind
 from stock_analyzer.discover import asset_location as al
 from stock_analyzer.discover import goal_projection as gp
+from tests.bars import bars as make_bars
+from tests.bars import days
 
 LT, ST = 0.15, 0.32
 KINDS = {"Brokerage": "taxable", "Traditional IRA": "tax_deferred", "HSA": "tax_free"}
@@ -60,12 +63,9 @@ def test_reit_detection():
 
 
 def test_trailing_yield_from_bars():
-    idx = pd.date_range(
-        end=pd.Timestamp("2026-09-25"), periods=400, freq="D", tz="America/New_York"
-    )
-    bars = pd.DataFrame({"Close": 50.0, "Dividends": 0.0}, index=idx)
-    for d in ("2026-01-15", "2026-04-15", "2026-07-15", "2025-07-15"):
-        bars.loc[pd.Timestamp(d, tz="America/New_York"), "Dividends"] = 0.5
+    idx = days(date(2026, 9, 25) - timedelta(days=399), date(2026, 9, 25))
+    paid = {date(2026, 1, 15), date(2026, 4, 15), date(2026, 7, 15), date(2025, 7, 15)}
+    bars = make_bars(idx, {"Close": 50.0, "Dividends": [0.5 if d in paid else 0.0 for d in idx]})
     # three payments inside the last year: 1.50 / 50
     assert al.trailing_yield(bars, today=date(2026, 9, 25)) == pytest.approx(0.03)
     assert al.trailing_yield(None) == 0.0
@@ -180,15 +180,20 @@ def test_premium_by_account_counts_only_short_options_in_the_window():
 
 def _returns(months=180, vol_a=0.03, vol_spy=0.04, seed=1):
     rng = np.random.default_rng(seed)
-    idx = pd.date_range("2011-01-31", periods=months, freq="ME")
-    return pd.DataFrame(
+    ends = []
+    y, m = 2011, 1
+    for _ in range(months):
+        ends.append(date(y, m, calendar.monthrange(y, m)[1]))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    young = [None] * (months - min(24, months)) + list(rng.normal(0.01, 0.05, min(24, months)))
+    return pl.DataFrame(
         {
+            "date": ends,
             "SPY": rng.normal(0.008, vol_spy, months),
             "AAA": rng.normal(0.03, vol_a * 3, months),  # a hot stock: high mean, high vol
-            "YNG": [np.nan] * (months - min(24, months))
-            + list(rng.normal(0.01, 0.05, min(24, months))),
+            "YNG": young,
         },
-        index=idx,
+        schema_overrides={"YNG": pl.Float64},
     )
 
 
@@ -268,10 +273,10 @@ def test_too_little_history_gives_no_projection():
 
 
 def test_monthly_returns_drops_the_partial_month():
-    idx = pd.date_range(end=pd.Timestamp.today(), periods=200, freq="D", tz="America/New_York")
-    bars = {"SPY": pd.DataFrame({"Close": np.linspace(100, 120, 200)}, index=idx)}
+    idx = days(date.today() - timedelta(days=199), date.today())
+    bars = {"SPY": make_bars(idx, {"Close": np.linspace(100, 120, 200)})}
     m = gp.monthly_returns(bars)
-    assert m.index[-1] < pd.Timestamp.today().normalize().replace(day=1)
+    assert m["date"][-1] < date.today().replace(day=1)
 
 
 # --- rendering ------------------------------------------------------------------
@@ -327,8 +332,8 @@ def test_typical_month_ignores_one_off_lumps():
 
 
 def test_money_market_funds_are_cash():
-    idx = pd.date_range(end=pd.Timestamp("2026-09-25"), periods=3, freq="D")
-    assert gp.is_cash_like(pd.DataFrame({"Close": [1.0, 1.0, 1.0]}, index=idx))
-    assert not gp.is_cash_like(pd.DataFrame({"Close": [1.0, 1.1, 0.9]}, index=idx))
-    assert not gp.is_cash_like(pd.DataFrame({"Close": [50.0, 51.0, 52.0]}, index=idx))
+    idx = days(date(2026, 9, 23), date(2026, 9, 25))
+    assert gp.is_cash_like(make_bars(idx, {"Close": [1.0, 1.0, 1.0]}))
+    assert not gp.is_cash_like(make_bars(idx, {"Close": [1.0, 1.1, 0.9]}))
+    assert not gp.is_cash_like(make_bars(idx, {"Close": [50.0, 51.0, 52.0]}))
     assert not gp.is_cash_like(None)

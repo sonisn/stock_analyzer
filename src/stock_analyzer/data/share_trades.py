@@ -15,10 +15,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
+import polars as pl
 
 from ..logging import get_logger
-from . import yf_gateway
+from . import frames, yf_gateway
 
 logger = get_logger(__name__)
 
@@ -26,31 +26,42 @@ _MAX_WORKERS = 5
 _MAX_RECENT_TRANSACTIONS = 10
 
 
-def _row_value(df: pd.DataFrame | None, label: str) -> float | None:
-    """Pull a single value from a 2-column dataframe keyed by first-column label."""
-    if df is None or df.empty:
+def _data_columns(df: pl.DataFrame) -> list[str]:
+    """yfinance's own columns (frames.table_from_pandas adds `index`)."""
+    return [c for c in df.columns if c != "index"]
+
+
+def _present(v: Any) -> bool:
+    return v is not None and v == v
+
+
+def _labelled(df: pl.DataFrame | None, label: str, position: int) -> Any:
+    """The value in data column `position` of the row whose first data
+    column reads `label` (insider_purchases: label, Shares, Trans)."""
+    if df is None or df.is_empty():
         return None
-    matches = df[df.iloc[:, 0] == label]
-    if matches.empty:
+    cols = _data_columns(df)
+    if len(cols) <= position:
         return None
-    v = matches.iloc[0, 1]
+    matches = df.filter(pl.col(cols[0]).cast(pl.String) == label)
+    return None if matches.is_empty() else matches[cols[position]][0]
+
+
+def _row_value(df: pl.DataFrame | None, label: str) -> float | None:
+    """Value column of the insider-purchases row named `label`."""
+    v = _labelled(df, label, 1)
     try:
-        return float(v) if pd.notna(v) else None
-    except ValueError, TypeError:
+        return float(v) if _present(v) else None
+    except TypeError, ValueError:
         return None
 
 
-def _row_count(df: pd.DataFrame | None, label: str) -> int | None:
-    """Pull the 'Trans' (count) column for a given label."""
-    if df is None or df.empty or len(df.columns) < 3:
-        return None
-    matches = df[df.iloc[:, 0] == label]
-    if matches.empty:
-        return None
-    v = matches.iloc[0, 2]
+def _row_count(df: pl.DataFrame | None, label: str) -> int | None:
+    """Transaction-count column of the insider-purchases row named `label`."""
+    v = _labelled(df, label, 2)
     try:
-        return int(v) if pd.notna(v) else None
-    except ValueError, TypeError:
+        return int(v) if _present(v) else None
+    except TypeError, ValueError:
         return None
 
 
@@ -84,11 +95,11 @@ def fetch_share_trade_data(ticker: str) -> dict[str, Any] | None:
     tables = yf_gateway.ticker_call(ticker, "share_trades", _fetch_holder_tables)
     if tables is None:
         return None
-    ip, it, ih, mh = tables
+    ip, it, ih, mh = (frames.table_from_pandas(t) for t in tables)
 
     out: dict[str, Any] = {"ticker": ticker}
 
-    if ip is not None and not ip.empty:
+    if ip is not None:
         summary = {
             "purchases_shares": _row_value(ip, "Purchases"),
             "sales_shares": _row_value(ip, "Sales"),
@@ -101,38 +112,33 @@ def fetch_share_trade_data(ticker: str) -> dict[str, Any] | None:
         summary["insider_signal"] = _classify_insider_signal(summary)
         out["insider_summary_6mo"] = summary
 
-    if it is not None and not it.empty:
+    if it is not None:
         transactions: list[dict[str, Any]] = []
-        for _, row in it.head(_MAX_RECENT_TRANSACTIONS).iterrows():
+        for row in it.head(_MAX_RECENT_TRANSACTIONS).iter_rows(named=True):
             tx: dict[str, Any] = {
-                "shares": int(row["Shares"])
-                if "Shares" in row and pd.notna(row["Shares"])
-                else None,
-                "value_usd": float(row["Value"])
-                if "Value" in row and pd.notna(row["Value"])
-                else None,
+                "shares": int(row["Shares"]) if _present(row.get("Shares")) else None,
+                "value_usd": float(row["Value"]) if _present(row.get("Value")) else None,
                 "date": str(row["Transaction Start Date"])
-                if "Transaction Start Date" in row and pd.notna(row["Transaction Start Date"])
+                if _present(row.get("Transaction Start Date"))
                 else None,
-                "ownership": str(row["Ownership"])
-                if "Ownership" in row and pd.notna(row["Ownership"])
-                else None,
+                "ownership": str(row["Ownership"]) if _present(row.get("Ownership")) else None,
             }
             for col_name in ("Insider", "Text"):
-                if col_name in it.columns and pd.notna(row.get(col_name)):
+                if _present(row.get(col_name)):
                     tx[col_name.lower()] = str(row[col_name])
             transactions.append(tx)
         out["insider_recent_transactions"] = transactions
 
-    if mh is not None and not mh.empty:
+    if mh is not None:
         try:
-            # major_holders is a 1-column DataFrame indexed by metric name.
+            # major_holders is a 1-column table indexed by metric name.
             mh_dict: dict[str, float] = {}
-            for idx, row in mh.iterrows():
-                val = row.iloc[0] if len(row) else None
-                if val is not None and pd.notna(val):
+            value_cols = _data_columns(mh)
+            for row in mh.iter_rows(named=True):
+                val: Any = row[value_cols[0]] if value_cols else None
+                if _present(val):
                     try:
-                        mh_dict[str(idx)] = float(val)
+                        mh_dict[str(row["index"])] = float(val)
                     except ValueError, TypeError:
                         continue
         except Exception:
@@ -145,22 +151,18 @@ def fetch_share_trade_data(ticker: str) -> dict[str, Any] | None:
             else None,
         }
 
-    if ih is not None and not ih.empty:
+    if ih is not None:
         top_holders: list[dict[str, Any]] = []
-        for _, row in ih.head(5).iterrows():
+        for row in ih.head(5).iter_rows(named=True):
             top_holders.append(
                 {
-                    "holder": str(row["Holder"])
-                    if "Holder" in row and pd.notna(row["Holder"])
-                    else None,
-                    "value_usd": float(row["Value"])
-                    if "Value" in row and pd.notna(row["Value"])
-                    else None,
+                    "holder": str(row["Holder"]) if _present(row.get("Holder")) else None,
+                    "value_usd": float(row["Value"]) if _present(row.get("Value")) else None,
                     "pct_change": float(row["pctChange"])
-                    if "pctChange" in row and pd.notna(row["pctChange"])
+                    if _present(row.get("pctChange"))
                     else None,
                     "date_reported": str(row["Date Reported"])
-                    if "Date Reported" in row and pd.notna(row["Date Reported"])
+                    if _present(row.get("Date Reported"))
                     else None,
                 }
             )

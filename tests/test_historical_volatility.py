@@ -62,7 +62,11 @@ def test_fetch_realized_volatility_happy_path():
     random.seed(42)
     for _ in range(260):
         closes.append(closes[-1] * (1 + random.gauss(0.0005, 0.01)))
-    df = pd.DataFrame({"Close": closes})
+    # yfinance's shape: recent sessions on a timezone-aware date index.
+    df = pd.DataFrame(
+        {"Close": closes},
+        index=pd.bdate_range(end=pd.Timestamp.today(), periods=len(closes), tz="America/New_York"),
+    )
     fake_ticker = MagicMock()
     fake_ticker.history.return_value = df
     fake_yf = MagicMock()

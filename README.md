@@ -5,7 +5,7 @@ A personal portfolio analyzer that runs two pipelines on top of Claude
 ranker consensus and red-team), market data, and brokerage holdings:
 
 - **`discover-stocks`** — surface 5 medium-term picks from a screened
-  universe (S&P 500 snapshot + watchlist + holdings, with news coverage as
+  universe (every US-listed stock >= $2B that is tradable + watchlist + holdings, with news coverage as
   a conviction overlay rather than the candidate pool). Sonnet writes
   per-ticker analyst reports; the ranker runs one high-effort consensus
   round per provider in `DISCOVER_RANKER_PROVIDERS` (default claude,
@@ -28,7 +28,7 @@ full analysis to the log so you never lose a run to an email failure.
 
 | Stage | Model | What it does |
 |---|---|---|
-| Universe | — | Sampling frame (S&P 500 snapshot + watchlist + holdings) plus a news-derived conviction overlay |
+| Universe | — | Sampling frame (US stocks >= $2B, filtered for tradability, + watchlist + holdings) plus a news-derived conviction overlay |
 | Fundamentals / Technicals / EPS revisions / Sector rotation / Macro | — | Parallel data fetches (yfinance, FRED, FinnHub) |
 | Track record | — | Score past BUY/HOLD/TRIM/SELL calls vs SPY at fixed 30d + 90d horizons, beta-adjusted |
 | Market themes | Sonnet | Identify 3-8 themes grounded in actual price + revision data |
@@ -174,8 +174,21 @@ summary logged at the end of a run.
 - `YF_MAX_ATTEMPTS` (4) — tries per call before giving up
 - `YF_COOLDOWN_SECONDS` (15) — base global pause after a rate limit
 - `FINNHUB_RATE_LIMIT_PER_MIN` (55) — under the 60/min free-tier ceiling
-- `DISCOVER_MAX_SCREEN_CANDIDATES` (250) — cap on names that reach the
+- `DISCOVER_MAX_SCREEN_CANDIDATES` (600) — cap on names that reach the
   per-ticker fundamentals + EPS fetches, after the trend gate
+- `FETCH_CACHE_DAYS` (8) / `FETCH_CACHE_DIR` (`~/.stock_analyzer/cache`) —
+  per-ticker fundamentals and EPS revisions (`data/fetch_cache.py`, one
+  small JSON file per kind, latest answer only). An answer is dropped the
+  day after the company reports (it carries its next earnings date) and
+  otherwise kept up to 8 days; price-dependent fields (market cap, P/E,
+  FCF yield, target upside) are rescaled to the latest stored close. The
+  nightly `earnings-watch` job runs discover's trend gate and cap and
+  renews the oldest fifth of those names plus any new or just-reported
+  ones (~120-200 requests a night instead of ~1,200), so discover and
+  rebalance ask Yahoo only for names they have never seen. Fundamentals
+  are one request per name (`info`, with trailing-12-month operating cash
+  flow); a cash-burning company costs two more for the dilution check.
+  `0` turns it off
 - `YF_BARS_DIR` (`~/.stock_analyzer/cache/bars`) — the on-disk daily-bar
   store (`data/bar_store.py`), one Parquet file per symbol. Outside market
   hours, bars synced after the last close are served with no request;
@@ -795,6 +808,86 @@ with a connection error, check the AdGuard allow rule
 alerts on a revoked key, a failed login, a retired model id, Yahoo
 prices or estimates no longer coming back, or a disk running low (under 10% free, or under 50 GB) before Monday's paid runs.
 
+## The universe: every US stock worth $2B+
+
+Discover screens every US-listed stock with a market cap of $2B or more
+that passes six business-quality rules, applied by Yahoo's screener itself
+(two requests for the whole market instead of one per company):
+
+| Rule | Threshold |
+|---|---|
+| Revenue growth, latest quarter vs a year before | ≥ 8% |
+| Revenue growth, last 12 months | ≥ 8% |
+| Total debt / equity | ≤ 2 |
+| Operating cash flow, last 12 months | > 0 |
+| Free cash flow, last 12 months | > 0 |
+| Return on equity | ≥ 10% |
+
+On 2026-09-27 that was 395 of 2,146 (824 with only the first, third and
+fourth, the hard filter's own). Then the traps go, judged on the screener's
+own fields: OTC listings, anything but common stock (funds, SPACs and
+shells, preferreds, warrants, units), prices under $5 for companies under
+$10B, under $10M a day of trading, and less than a year of history.
+Foreign listings (TSM, ARM) and mid-caps (DINO) are in, which the S&P
+indexes exclude; pre-profit companies (OKLO) are not, unless they come in
+as a holding, watchlist name, earnings standout or insider cluster.
+
+The nightly `earnings-watch` job rescans (the numbers change every
+earnings season) into `~/.stock_analyzer/us_2b_universe.txt`, outside the
+repo so the refresh never blocks the auto-update; `uv run ops universe`
+does it by hand. The rules are `QUALITY_RULES` in `data/universe_scan.py`.
+Without that file a run falls back to the bundled snapshot
+(`data/static/us_2b_universe.txt`, 1,895 names taken before the quality
+rules, so slow). `DISCOVER_UNIVERSE=sp500` switches back. The
+forward-return model still trains on the S&P 500, where it was built and
+validated, and the nightly insider check stays on the S&P 500 plus
+tracked stocks.
+
+A stock that enters the screen some other way (an earnings standout, an
+insider cluster, a holding) meets the same bar in the hard filter:
+positive trailing-12-month operating and free cash flow and a return on
+equity of 10% or more, besides the growth, debt and analyst rules. (Until
+2026-09-27 a company burning cash could pass on 2+ years of runway and
+at most 20% dilution; that exception is gone with the quality rules.)
+
+The 25 analysis slots also take at most **5 names per sector and 2 per
+industry** (`screen.diversify_shortlist`): on 2026-09-27 seven of the 25
+were energy and four of them refiners — one bet on refining margins
+analyzed four times. The next-best names take the freed slots, and if too
+few sectors pass to fill 25, the skipped names come back in rank order.
+
+Mid-caps behave differently from large caps, so the screen adds two rules
+for the bigger universe. A candidate needs **3+ analysts** (estimates and
+revisions from one or two are an opinion, not a consensus). And the 25
+analysis slots go by each candidate's **percentile within its size band**
+(large >= $10B, mid below), raw score breaking ties: on raw points the
+first test run gave 19 of 25 slots to non-S&P names, five of them tanker
+and dry-bulk shippers riding one trade, at a median 39% volatility.
+
+### Hedge funds' 13F moves (context only)
+
+The nightly job checks 18 long-term, concentrated funds (Berkshire,
+Pershing Square, Appaloosa, Baupost, Third Point, Viking, Coatue, Lone
+Pine, Duquesne, Himalaya, Tiger, D1, Altimeter, Maverick, Egerton, Akre,
+Fundsmith, the Gates Foundation Trust) for a new quarterly 13F (one SEC
+request each; a filing is downloaded only when new), maps CUSIPs to
+tickers through OpenFIGI (cached; AdGuard needs `@@||openfigi.com^$important`)
+and compares each fund's latest two quarters. The daily email lists who
+bought or sold your holdings, with the quarter: a 13F is filed up to 45
+days after it, so positions can be 4½ months old. Not scored — the
+evidence that copying 13Fs pays after that delay is weak.
+
+## Data frames: Polars
+
+Every frame inside the package is Polars. Daily bars share one shape
+(`data/frames.py`: a `date` column plus yfinance's column names), and
+yfinance's pandas output is converted where it arrives — the one place
+pandas remains. The price cache reads files written before the switch.
+The migration was checked against outputs recorded from the pandas code
+on frozen inputs — features, the training dataset, walk-forward metrics,
+point-in-time fundamentals, technicals, the goal projection, track-record
+helpers, reactions: 142 values, all equal to 1e-9.
+
 ## Screen price rules
 
 `DISCOVER_TREND_GATE=soft` (default) only rejects names more than 40% below
@@ -877,6 +970,7 @@ runs don't re-download it:
 | `ticker_reference` | sector / industry / name (refreshed after 30 days) and next earnings date (after 3 days, or once it has passed) | one row per stock, overwritten; unused rows dropped after 365 days |
 | `stock_views` | the daily email's latest long-term view per stock, plus the headlines already sent | one row per holding, overwritten (links capped at 40); dropped 90 days after the last refresh |
 | `portfolio_snapshots`, `suggestions` | daily value, advice ledger | one row per day / per advice |
+| `fund_positions`, `cusip_tickers` | tracked hedge funds' 13F stock positions (last 4 quarters each) and the CUSIP->ticker cache | ~1,600 rows a quarter, pruned to 4 quarters; cache grows slowly |
 | `insider_buys` | open-market purchases (Form 4, code P) at S&P 500 and tracked companies | a few hundred rows a year; dropped after 400 days |
 | `analyst_actions` | rating and price-target actions by firm for stocks with a followed earnings report, from 90 days before it | tens of rows per stock |
 | `forecast_snapshots` | each weekday night, analysts' consensus for every tracked stock (~175: holdings, a year of picks, recent screen survivors, standouts): EPS and revenue for this and next fiscal year, analyst count, price targets, recommendation — plus short interest (share of float, days to cover), shares outstanding and ownership from the same request — point in time, so revisions and short interest can become model features without look-ahead | ~175 rows per weekday (~4 MB/year); kept forever |
@@ -899,7 +993,7 @@ and, when the command exits non-zero, emails the log's last 80 lines
 | Command | What | No LLM |
 |---|---|---|
 | `ops doctor` | database integrity, `.env` permissions, Finnhub, FRED, SnapTrade, SMTP login, and a free model lookup for every configured (provider, model) — catches a bad key or a retired model id before a run pays for it | ✓ |
-| `ops backup` | consistent SQLite copy into `BACKUP_DIR` (default `~/.stock_analyzer/backups`, keep `BACKUP_KEEP`=14), then deletes logs older than `LOG_KEEP_DAYS`=90; `scripts/run_backup.sh` runs it nightly | ✓ |
+| `ops backup` | consistent SQLite copy into `BACKUP_DIR` (default `~/.stock_analyzer/backups`, keep `BACKUP_KEEP`=14), then deletes logs older than `LOG_KEEP_DAYS`=90; uploads it to `BACKUP_REMOTE` when set (below); `scripts/run_backup.sh` runs it nightly | ✓ |
 | `scripts/update.sh` | fetches `origin/main`, runs the suite on it in a throwaway worktree, and fast-forwards only if it passes (`scripts/run_update.sh` from cron) | ✓ |
 
 The schedule lives in `scripts/crontab`; install it with `crontab scripts/crontab`.
@@ -927,6 +1021,38 @@ Structured LLM stages detect an answer cut off at its output ceiling
 the token count) and raise `OutputTruncatedError` with the raw text,
 rather than handing a half-written JSON document downstream.
 
+
+### Off-site backup
+
+The nightly backups sit on a different disk from the database, but in the
+same machine. `BACKUP_REMOTE` also sends each one off-site through
+[rclone](https://rclone.org), encrypted before it leaves, and keeps
+`BACKUP_KEEP` days there; `ops doctor` fails when the newest off-site copy
+is over two days old. It's ~7 MB a night, so a free plan is plenty (Box
+10 GB, Google Drive 15 GB, Koofr 10 GB, MEGA 20 GB).
+
+One-time setup (Box shown; this machine has no browser):
+
+1. `sudo apt install rclone`
+2. `rclone config` → `n` → name `box` → storage `box` → Enter through the
+   options → at "Use web browser to automatically authenticate?" answer `n`,
+   run the `rclone authorize "box"` it prints on a computer with a browser
+   (and rclone), sign in, and paste the token back. (Or connect with
+   `ssh -L 53682:localhost:53682 <this machine>`, answer `y`, and open the
+   printed link on your own computer.)
+3. `rclone config` → `n` → name `box-crypt` → storage `crypt` → remote
+   `box:stock-analyzer-backups` → standard filename encryption → let it
+   generate the password and the salt. **Save both in a password manager
+   off this machine** — without them the copies can't be opened.
+4. In `.env`: `BACKUP_REMOTE=box-crypt:` then check with `uv run ops backup`
+   and `rclone ls box-crypt:` (Box itself shows only scrambled names).
+
+To restore: `uv run ops restore` downloads the newest off-site copy (or
+`ops restore <file>.db`), decrypts it and runs SQLite's integrity check,
+into `~/.stock_analyzer/restore`; `--apply` then swaps it in through
+SQLite's backup API (safe with the WAL, unlike a file copy), saving the
+current database beside it first. On a new machine, set up the same two
+rclone remotes with the saved passwords first.
 ## Tests
 
 ```bash

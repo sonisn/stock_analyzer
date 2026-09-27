@@ -86,11 +86,11 @@ def fetch_realized_volatility(
     frames = dict(yf_gateway.map_symbols(_bars, tickers))
     for t in tickers:
         df = frames.get(t)
-        if df is None or df.empty:
+        if df is None or df.is_empty():
             logger.info("HV fetch returned no data for %s", t)
             continue
         try:
-            closes = [float(c) for c in df["Close"].tolist() if not math.isnan(c)]
+            closes = [float(c) for c in df["Close"].drop_nulls().to_list() if not math.isnan(c)]
         except Exception as e:
             logger.info("HV closes parse failed for %s: %s", t, e)
             continue

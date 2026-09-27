@@ -112,15 +112,15 @@ def ordinary_dividends(sector: str | None, industry: str | None) -> bool:
 def trailing_yield(bars: Any, *, today: date | None = None) -> float:
     """Dividends paid over the last year over the latest close, from daily
     bars with a `Dividends` column (as `yf_gateway.daily_bars` returns)."""
-    if bars is None or getattr(bars, "empty", True) or "Dividends" not in bars:
+    if bars is None or bars.is_empty() or "Dividends" not in bars.columns:
         return 0.0
-    import pandas as pd
+    from ..data import frames
 
     today = today or date.today()
-    idx = pd.DatetimeIndex(bars.index)
-    since = pd.Timestamp(today - timedelta(days=365)).tz_localize(idx.tz)
-    paid = float(bars.loc[idx >= since, "Dividends"].fillna(0).sum())
-    close = float(bars["Close"].dropna().iloc[-1]) if "Close" in bars else 0.0
+    recent = frames.since(bars, today - timedelta(days=365))
+    paid = float(recent["Dividends"].fill_null(0.0).sum())
+    closes = frames.closes(bars)
+    close = float(closes["Close"][-1]) if closes is not None else 0.0
     return paid / close if close > 0 and paid > 0 else 0.0
 
 

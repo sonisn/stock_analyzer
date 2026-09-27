@@ -6,13 +6,11 @@ left as None; downstream filters treat None as 'failed' (conservative).
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timedelta
 from typing import Any
 
-import pandas as pd
-
 from ..logging import get_logger
-from . import yf_gateway
+from . import bar_store, fetch_cache, frames, yf_gateway
 
 logger = get_logger(__name__)
 
@@ -24,33 +22,32 @@ logger = get_logger(__name__)
 # what got the run rate-limited.
 _MAX_WORKERS = 8
 
-_OCF_ROW_NAMES = (
-    "Operating Cash Flow",
-    "Total Cash From Operating Activities",
-    "Cash Flow From Continuing Operating Activities",
-)
+
+# Companies report about every 13 weeks.
+_QUARTER = timedelta(days=91)
 
 
-def _latest_ocf(quarterly_cashflow: pd.DataFrame | None) -> float | None:
-    if quarterly_cashflow is None or quarterly_cashflow.empty:
+def _next_report(earnings_ts: float | None, today: date) -> str | None:
+    """The next report date, ISO. Yahoo keeps showing the LAST report until
+    the next is scheduled (MSFT read 2026-07-29 on 2026-09-27), so a past
+    date is rolled forward by quarters. If that guess is early, the cache
+    just refetches and gets Yahoo's real date."""
+    if not earnings_ts:
         return None
-    for row in _OCF_ROW_NAMES:
-        if row in quarterly_cashflow.index:
-            val = quarterly_cashflow.loc[row].iloc[0]
-            if val is not None and pd.notna(val):
-                return float(val)
-    return None
+    when = datetime.fromtimestamp(earnings_ts).date()
+    while when < today:
+        when += _QUARTER
+    return when.isoformat()
 
 
 def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
-    # Two paced calls rather than one: `info` and `quarterly_cashflow` are
-    # separate Yahoo endpoints, so they each need their own rate-limit slot.
+    # One request: `info` carries trailing-twelve-month operating cash flow.
+    # (This used to read the latest QUARTER from a second endpoint, which
+    # doubled the requests and failed seasonal businesses on one weak
+    # quarter.)
     info = yf_gateway.ticker_call(ticker, "fundamentals.info", lambda t: t.info or {})
     if not info:
         return None
-    cashflow = yf_gateway.ticker_call(
-        ticker, "fundamentals.cashflow", lambda t: t.quarterly_cashflow
-    )
 
     market_cap = info.get("marketCap")
     debt = info.get("totalDebt") or 0
@@ -74,20 +71,30 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
         except TypeError, ZeroDivisionError:
             target_upside_pct = None
 
+    ocf = info.get("operatingCashflow")
+    earnings_ts = info.get("earningsTimestamp")
     return {
+        "total_cash": info.get("totalCash"),
         "ticker": ticker,
+        # When and at what price this was fetched, and the next report:
+        # the cache (fetch_cache) expires it after that report, and
+        # `reprice` brings the price-dependent fields to a later close.
+        "quote_price": current_price,
+        "quote_date": date.today().isoformat(),
+        "next_earnings": _next_report(earnings_ts, date.today()),
         "name": info.get("shortName") or info.get("longName"),
         "sector": info.get("sector"),
         "industry": info.get("industry"),
         "market_cap": market_cap,
         "revenue_growth_yoy": info.get("revenueGrowth"),
         "earnings_growth_yoy": info.get("earningsGrowth"),
-        "operating_cash_flow": _latest_ocf(cashflow),
+        "operating_cash_flow": ocf,
         "free_cash_flow": fcf,
         "fcf_yield": fcf_yield,
         "debt_to_equity": debt_to_equity,
         "gross_margin": info.get("grossMargins"),
         "operating_margin": info.get("operatingMargins"),
+        "return_on_equity": info.get("returnOnEquity"),
         "profit_margin": info.get("profitMargins"),
         # Forward-looking fields used by analyst + reviewer for forward thesis.
         "forward_pe": info.get("forwardPE"),
@@ -196,12 +203,54 @@ def _overlay_filed_values(results: dict[str, dict[str, Any]], *, as_of: date | N
             row["fcf_yield"] = row["free_cash_flow"] / row["market_cap"]
 
 
+def _stored_close(ticker: str) -> tuple[date, float] | None:
+    """The latest close in the on-disk bar store (no request), or None."""
+    stored = bar_store.load(ticker)
+    if stored is None or stored.frame.is_empty():
+        return None
+    last = stored.frame.tail(1)
+    close = last["Close"][0]
+    return (last[frames.DATE][0], float(close)) if close else None
+
+
+# Fields that move with the share price, and how: market cap and the
+# multiples scale with it, yields scale against it.
+_WITH_PRICE = ("market_cap", "forward_pe", "trailing_pe", "peg_ratio")
+_AGAINST_PRICE = ("fcf_yield",)
+
+
+def reprice(row: dict[str, Any], close: tuple[date, float] | None) -> None:
+    """Bring a cached answer's price-dependent fields to a later close, in
+    place. Only when the close is from after the day it was fetched, so a
+    fresh answer keeps Yahoo's live price."""
+    then, fetched_on = row.get("quote_price"), row.get("quote_date")
+    if close is None or not then or not fetched_on or close[0].isoformat() <= fetched_on:
+        return
+    ratio = close[1] / then
+    for field in _WITH_PRICE:
+        if row.get(field) is not None:
+            row[field] = row[field] * ratio
+    for field in _AGAINST_PRICE:
+        if row.get(field) is not None:
+            row[field] = row[field] / ratio
+    if row.get("analyst_target_mean"):
+        row["analyst_target_upside_pct"] = row["analyst_target_mean"] / close[1] - 1
+    row["quote_price"], row["quote_date"] = close[1], close[0].isoformat()
+
+
 def batch_fundamentals(
-    tickers: list[str], *, as_of: date | None = None
+    tickers: list[str], *, as_of: date | None = None, refresh: list[str] | tuple[str, ...] = ()
 ) -> dict[str, dict[str, Any]]:
-    results: dict[str, dict[str, Any]] = {}
-    for ticker, r in yf_gateway.map_symbols(fetch_fundamentals, tickers, workers=_MAX_WORKERS):
-        if r:
-            results[ticker] = r
+    # The Yahoo answers are cached for a week (fetch_cache) and repriced to
+    # the latest stored close; the filed-value overlay is one batched call
+    # and runs fresh on every batch.
+    results: dict[str, dict[str, Any]] = fetch_cache.fetch_many(
+        "fundamentals",
+        tickers,
+        lambda todo: yf_gateway.map_symbols(fetch_fundamentals, todo, workers=_MAX_WORKERS),
+        refresh=refresh,
+    )
+    for ticker, row in results.items():
+        reprice(row, _stored_close(ticker))
     _overlay_filed_values(results, as_of=as_of)
     return results

@@ -26,7 +26,7 @@ from datetime import date
 from dotenv import load_dotenv
 
 from ..config import Settings
-from ..data.universe_base import load_base_universe
+from ..data.universe_base import sp500
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -68,9 +68,9 @@ def main(argv: list[str] | None = None) -> None:
         from ..model.dataset import build_dataset, load_panel
         from ..model.ranker_model import format_model_report, save_model, walk_forward
 
-        panel = load_panel(list(load_base_universe()), settings.model_cache_dir, years=15)
+        panel = load_panel(list(sp500()), settings.model_cache_dir, years=15)
         result = walk_forward(
-            build_dataset(panel), panel.spy.dropna().index, horizon=21, label_kind="beta_adj"
+            build_dataset(panel), panel.calendar(), horizon=21, label_kind="beta_adj"
         )
         verdict["accepted"] = result.accepted
         print(format_model_report(result))

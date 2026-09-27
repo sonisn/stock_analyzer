@@ -5,12 +5,15 @@ from __future__ import annotations
 from datetime import date
 
 import pandas as pd
+import polars as pl
 import pytest
 from sqlalchemy import text
 
+from stock_analyzer.data import frames
 from stock_analyzer.db.session import get_session
 from stock_analyzer.discover import earnings_standouts as es
 from stock_analyzer.reporting.health import build_portfolio_health, render_health_html
+from tests.bars import bars, bdays
 
 REPORT = date(2026, 10, 20)  # a Tuesday
 
@@ -30,11 +33,10 @@ def _row(ticker, eps=1.2, eps_est=1.0, rev=1.05e9, rev_est=1.0e9, day=REPORT, ho
 def _closes(moves: dict[str, float]):
     """Bars Oct 1 - Nov 30; each ticker jumps by `moves[t]` (fraction) on
     the first session after the report, SPY by 1%."""
-    idx = pd.bdate_range("2026-10-01", "2026-11-30")
-    after = idx > pd.Timestamp(REPORT)
+    idx = bdays("2026-10-01", "2026-11-30")
 
-    def series(jump: float) -> pd.Series:
-        return pd.Series([100.0 * (1 + jump) if a else 100.0 for a in after], index=idx)
+    def series(jump: float) -> pl.DataFrame:
+        return bars(idx, {"Close": [100.0 * (1 + jump) if d > REPORT else 100.0 for d in idx]})
 
     def fetch(symbols, start):
         return {s: series(0.01 if s == "SPY" else moves.get(s, 0.0)) for s in symbols}
@@ -177,6 +179,7 @@ def test_track_record_reads_the_year_before_the_report():
             ]
         ),
     )
+    dates = frames.table_from_pandas(dates)  # as fetch_track_record converts it
     # Only the quarter before counts: June beat; January missed.
     assert prior_beats(dates, date(2026, 9, 24)) == (1, 1)
     assert prior_beats(dates, date(2026, 3, 31)) == (0, 1)
@@ -189,6 +192,7 @@ def test_track_record_reads_the_year_before_the_report():
             ["2026-05-31", "2026-02-28", "2025-11-30", "2025-08-31", "2025-05-31"]
         ),
     )
+    stmt = frames.table_from_pandas(stmt)
     assert year_ago_revenue(stmt, date(2026, 9, 24)) == 1.57e10
     assert year_ago_revenue(stmt, date(2028, 1, 1)) is None
     assert es.passes_track_record({"prior_beats": 1, "revenue_yoy_pct": None})
@@ -216,17 +220,17 @@ def test_a_shown_standout_is_recorded_and_graded_six_months_on(tmp_path):
         record_suggestions(session, [row, {**row, "suggested_on": "2026-01-06"}])
         record_suggestions(session, [{**row, "ticker": "NEW", "suggested_on": "2026-09-01"}])
 
-    idx = pd.bdate_range("2025-12-01", "2026-09-25")
+    idx = bdays("2025-12-01", "2026-09-25")
 
     def closes(symbols, start):
-        up = pd.Series(range(100, 100 + len(idx)), index=idx, dtype=float)
-        flat = pd.Series(100.0, index=idx)
+        up = bars(idx, {"Close": list(range(100, 100 + len(idx)))})
+        flat = bars(idx, {"Close": 100.0})
         return {s: (flat if s == "SPY" else up) for s in symbols if s != "NEW"}
 
     card = suggestion_scorecard(db, closes, today=date(2026, 9, 26))
     (jan,) = card["cohorts"]
     assert (jan["cohort"], jan["picks"]) == ("Jan 2026", 1)  # two days, one decision
-    entry = 100 + idx.get_loc(pd.Timestamp("2026-01-06"))  # first close after the email
+    entry = 100 + idx.index(date(2026, 1, 6))  # first close after the email
     assert jan["spy_pct"] == 0 and jan["excess_pct"] == pytest.approx(126 / entry * 100)
     assert card["maturing"] == 1  # NEW, shown this month
 

@@ -13,7 +13,7 @@ import tempfile
 from datetime import date, datetime, timedelta
 from unittest.mock import patch
 
-import pandas as pd
+import polars as pl
 import pytest
 from sqlalchemy import text
 
@@ -24,17 +24,16 @@ from stock_analyzer.models.calibration import (
     CalibrationRecord,
     ConvictionBucket,
 )
+from tests.bars import bars, days
 
 _EV_HORIZON = cal._EV_HORIZON_DAYS
 
 
-def _price_frame(start: date, *, entry: float, at_horizon: float, horizon: int) -> pd.DataFrame:
-    idx = pd.date_range(start - timedelta(days=10), start + timedelta(days=horizon + 30), freq="D")
+def _price_frame(start: date, *, entry: float, at_horizon: float, horizon: int) -> pl.DataFrame:
+    idx = days(start - timedelta(days=10), start + timedelta(days=horizon + 30))
     per_day = (at_horizon - entry) / horizon
-    closes = [
-        entry if ts.date() <= start else entry + per_day * (ts.date() - start).days for ts in idx
-    ]
-    return pd.DataFrame({"Close": closes}, index=idx)
+    closes = [entry if ts <= start else entry + per_day * (ts - start).days for ts in idx]
+    return bars(idx, {"Close": closes})
 
 
 def _seed_pick(

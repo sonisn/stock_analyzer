@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..logging import get_logger
-from . import yf_gateway
+from . import frames, yf_gateway
 
 logger = get_logger(__name__)
 
@@ -51,18 +51,20 @@ def fetch_sector_returns(months: int = 6) -> dict[str, float]:
     if data is None or data.empty:
         return {}
 
-    closes = data["Close"] if "Close" in data.columns.get_level_values(0) else data
+    # yfinance's multi-ticker frame (pandas) crosses into Polars per ETF.
+    closes_all = data["Close"] if "Close" in data.columns.get_level_values(0) else data
 
     # Compute per-ETF return, then attribute back to a canonical sector name.
     returns_by_etf: dict[str, float] = {}
     for etf in unique_etfs:
         try:
-            series = closes[etf].dropna()
+            bars = frames.bars_from_pandas(closes_all[[etf]].rename(columns={etf: "Close"}))
         except KeyError, TypeError:
             continue
-        if len(series) < 2:
+        series = frames.closes(bars)
+        if series is None or series.height < 2:
             continue
-        returns_by_etf[etf] = float(series.iloc[-1] / series.iloc[0] - 1)
+        returns_by_etf[etf] = float(series["Close"][-1] / series["Close"][0] - 1)
 
     # Map back to canonical sector names. Prefer the first variant per ETF in
     # SECTOR_ETFS dict order so output is deterministic.

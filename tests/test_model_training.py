@@ -3,9 +3,12 @@ the forward-return model — on synthetic prices, no network."""
 
 from __future__ import annotations
 
+from datetime import date, timedelta
+
 import numpy as np
-import pandas as pd
+import polars as pl
 import pytest
+from dateutil.relativedelta import relativedelta
 from sqlalchemy import text
 
 from stock_analyzer.db.repository import insert_candidate, insert_run
@@ -35,7 +38,7 @@ def _panel(
     drift differences are themselves predictable, so pure noise needs
     drift_spread=0 as well."""
     rng = np.random.default_rng(seed)
-    idx = pd.bdate_range("2020-01-01", periods=n_days)
+    idx = _bdays(date(2020, 1, 1), n_days)
     spy_r = rng.normal(0.0003, 0.01, n_days)
     rets = np.empty((n_days, n_tickers))
     rets[:21] = rng.normal(0, 0.02, (21, n_tickers))
@@ -43,38 +46,50 @@ def _panel(
     for t in range(21, n_days):
         past = rets[t - 21 : t].sum(axis=0) - spy_r[t - 21 : t].sum()
         rets[t] = spy_r[t] + drift + signal * past / 21 + rng.normal(0, 0.02, n_tickers)
-    close = pd.DataFrame(
-        100 * np.exp(np.cumsum(rets, axis=0)),
-        index=idx,
-        columns=[f"T{i}" for i in range(n_tickers)],
+    names = [f"T{i}" for i in range(n_tickers)]
+    prices = 100 * np.exp(np.cumsum(rets, axis=0))
+    volume = rng.integers(500_000, 1_500_000, prices.shape).astype(float)
+    return PricePanel(
+        _wide(idx, prices, names),
+        _wide(idx, prices * 1.005, names),
+        _wide(idx, volume, names),
+        pl.DataFrame({"date": idx, "SPY": 100 * np.exp(np.cumsum(spy_r))}),
     )
-    spy = pd.Series(100 * np.exp(np.cumsum(spy_r)), index=idx)
-    volume = pd.DataFrame(
-        rng.integers(500_000, 1_500_000, close.shape), index=idx, columns=close.columns
-    ).astype(float)
-    return PricePanel(close, close * 1.005, volume, spy)
+
+
+def _bdays(start: date, n: int) -> list[date]:
+    """`n` weekdays from `start` (pandas' bdate_range)."""
+    out, d = [], start
+    while len(out) < n:
+        if d.weekday() < 5:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def _wide(idx: list[date], values: np.ndarray, names: list[str]) -> pl.DataFrame:
+    return pl.DataFrame({"date": idx, **{n: values[:, j] for j, n in enumerate(names)}})
 
 
 def test_forward_label_enters_on_the_next_bar():
     p = _panel(3, 100, signal=0)
     fwd = forward_excess(p, 5)
-    day = p.close.index[10]
-    c, s = p.close["T0"], p.spy
-    expected = (c.iloc[16] / c.iloc[11] - 1) - (s.iloc[16] / s.iloc[11] - 1)
-    assert fwd.loc[day, "T0"] == pytest.approx(expected)
-    assert np.isnan(fwd["T0"].iloc[-3])
+    c, s = p.close["T0"], p.spy["SPY"]
+    expected = (c[16] / c[11] - 1) - (s[16] / s[11] - 1)
+    assert fwd["T0"][10] == pytest.approx(expected)
+    assert fwd["T0"][-3] is None  # past the data
 
 
 def test_walk_forward_finds_a_planted_signal_and_rejects_noise():
     signal = _panel(signal=0.6)
-    res = walk_forward(build_dataset(signal), signal.spy.index, horizon=21, population="all")
+    res = walk_forward(build_dataset(signal), signal.spy["date"], horizon=21, population="all")
     assert res.metrics["model"]["ic_mean"] > 0.05
     assert res.accepted
     # Momentum was planted in the last month's return, so its weight leads.
     assert res.coefficients["rs_1mo"] == max(res.coefficients.values())
 
     noise = _panel(signal=0.0, seed=1, drift_spread=0)
-    res = walk_forward(build_dataset(noise), noise.spy.index, horizon=21, population="all")
+    res = walk_forward(build_dataset(noise), noise.spy["date"], horizon=21, population="all")
     assert not res.accepted
 
 
@@ -86,11 +101,10 @@ def test_training_rows_are_purged_before_each_test_block(monkeypatch):
     monkeypatch.setattr(rm, "fit_ridge", lambda x, y, **kw: seen.append(len(x)) or real_fit(x, y))
     p = _panel(20, 900, signal=0.3)
     data = build_dataset(p)
-    rm.walk_forward(data, p.spy.index, horizon=63, population="all")
-    labeled = data["fwd_63"].notna().groupby(level="date").sum()
-    first_block = data.index.get_level_values("date").min() + pd.DateOffset(years=2)
+    rm.walk_forward(data, p.spy["date"], horizon=63, population="all")
+    first_block = data["date"].min() + relativedelta(years=2)
     # The purge drops at least 63 trading days (~12 weekly dates) before the block.
-    unpurged = int(labeled[labeled.index < first_block].sum())
+    unpurged = data.filter((pl.col("date") < first_block) & pl.col("fwd_63").is_not_nan()).height
     assert seen[0] <= unpurged - 12 * 20
 
 
@@ -98,7 +112,7 @@ def test_live_scoring_and_persistence(tmp_path):
     db = str(tmp_path / "m.db")
     assert load_active_model(db) is None
     p = _panel(signal=0.6)
-    res = walk_forward(build_dataset(p), p.spy.index, horizon=21, population="all")
+    res = walk_forward(build_dataset(p), p.spy["date"], horizon=21, population="all")
     version = save_model(db, res)
     model = load_active_model(db)
     assert model is not None and model.version == version
@@ -113,7 +127,7 @@ def test_live_scoring_and_persistence(tmp_path):
 def test_label_backfill_writes_matured_outcomes_once(tmp_path):
     db = str(tmp_path / "l.db")
     p = _panel(3, 200, signal=0)
-    run_day = p.close.index[100]
+    run_day = p.close["date"][100]
     with get_session(db) as session:
         run_id = insert_run(
             session,
@@ -150,9 +164,9 @@ def test_label_backfill_writes_matured_outcomes_once(tmp_path):
                 "SELECT entry_date, exit_date, excess_pct FROM candidate_outcomes WHERE horizon_days = 21"
             )
         ).one()
-    c, s = p.close["T0"], p.spy
-    assert row[0] == str(p.close.index[101].date()) and row[1] == str(p.close.index[122].date())
-    expected = ((c.iloc[122] / c.iloc[101]) - (s.iloc[122] / s.iloc[101])) * 100
+    c, s, days = p.close["T0"], p.spy["SPY"], p.close["date"]
+    assert row[0] == str(days[101]) and row[1] == str(days[122])
+    expected = ((c[122] / c[101]) - (s[122] / s[101])) * 100
     assert row[2] == pytest.approx(expected)
 
 
@@ -235,14 +249,13 @@ def test_candidate_snapshot_keeps_numeric_fields_only(tmp_path):
 
 def test_beta_adjusted_label_removes_market_exposure():
     rng = np.random.default_rng(3)
-    idx = pd.bdate_range("2020-01-01", periods=600)
+    idx = _bdays(date(2020, 1, 1), 600)
     spy_r = rng.normal(0.001, 0.01, 600)  # a rising market
-    spy = pd.Series(100 * np.cumprod(1 + spy_r), index=idx)
+    spy = pl.DataFrame({"date": idx, "SPY": 100 * np.cumprod(1 + spy_r)})
     # Day-by-day 2x SPY with no stock-specific return: pure market exposure.
-    lev = pd.Series(50 * np.cumprod(1 + 2 * spy_r), index=idx)
-    close = pd.DataFrame({"LEV": lev})
-    vol = pd.DataFrame({"LEV": rng.integers(1e6, 2e6, 600).astype(float)}, index=idx)
-    data = build_dataset(PricePanel(close, close, vol, spy)).dropna(subset=["fwd_21"])
+    close = pl.DataFrame({"date": idx, "LEV": 50 * np.cumprod(1 + 2 * spy_r)})
+    vol = pl.DataFrame({"date": idx, "LEV": rng.integers(1e6, 2e6, 600).astype(float)})
+    data = build_dataset(PricePanel(close, close, vol, spy)).filter(pl.col("fwd_21").is_not_nan())
     assert data["beta_252"].mean() == pytest.approx(2.0, abs=1e-6)
     # Plain excess credits the leverage; the beta-neutral label mostly doesn't
     # (what is left is compounding, a small fraction of the excess).

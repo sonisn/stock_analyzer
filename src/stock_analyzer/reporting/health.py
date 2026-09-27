@@ -75,6 +75,8 @@ class PortfolioHealth:
     standouts: list[dict[str, Any]] = field(default_factory=list)
     # New insider-buying clusters (data/insider_buying.clusters rows).
     insider_clusters: list[dict[str, Any]] = field(default_factory=list)
+    # Tracked hedge funds' 13F moves in holdings: {ticker: [move, ...]}.
+    fund_moves: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     sector_by_ticker: dict[str, str] = field(default_factory=dict)
     values: dict[str, float] = field(default_factory=dict)  # ticker -> market value
     units: dict[str, float] = field(default_factory=dict)  # ticker -> shares held
@@ -221,6 +223,7 @@ def build_portfolio_health(
     pick_scorecard: Callable[[], dict[str, Any]] | None = None,
     standouts: Callable[[], list[dict[str, Any]]] | None = None,
     insider_clusters: Callable[[], list[dict[str, Any]]] | None = None,
+    fund_moves: Callable[[list[str]], dict[str, list[dict[str, Any]]]] | None = None,
 ) -> PortfolioHealth:
     """`reinvest(held, over_cap_sectors, n)` returns up to `n` ranked ideas
     for sale proceeds; it is only called when something suggests a sale."""
@@ -314,6 +317,12 @@ def build_portfolio_health(
             health.insider_clusters = insider_clusters()
 
     attempt("insider buying", insiders)
+
+    def funds() -> None:
+        if fund_moves is not None:
+            health.fund_moves = fund_moves(tickers)
+
+    attempt("hedge-fund 13F", funds)
     return health
 
 
@@ -463,6 +472,7 @@ def render_health_html(h: PortfolioHealth) -> str:
         _upcoming_earnings_html(h),
         render_standouts_html(h),
         render_insider_clusters_html(h),
+        render_fund_moves_html(h),
         _pick_scorecard_html(h),
     ]
     if not any(alerts):
@@ -611,7 +621,8 @@ def _scorecard_block(sc: dict[str, Any], title: str, when: str, noun: str) -> st
     if not sc or not (sc["cohorts"] or sc["maturing"] or sc["unmeasured"]):
         return ""
     parts = [f"<h4>{html.escape(title)}</h4>"]
-    rows = sc["cohorts"] + ([sc["overall"]] if sc["overall"] else [])
+    overall = sc.get("overall_by_universe") or ([sc["overall"]] if sc["overall"] else [])
+    rows = sc["cohorts"] + overall
     if rows:
         parts.append(
             _table(
@@ -859,6 +870,30 @@ def render_insider_clusters_html(h: PortfolioHealth) -> str:
                 for c in h.insider_clusters
             ],
         )
+    )
+
+
+def render_fund_moves_html(h: PortfolioHealth) -> str:
+    """Which tracked hedge funds added to or cut your holdings last quarter."""
+    if not h.fund_moves:
+        return ""
+    from ..data.hedge_funds_13f import summarize
+
+    periods = sorted({m["period"] for ms in h.fund_moves.values() for m in ms})
+    as_of = periods[-1] if periods else "?"
+    rows = [
+        [html.escape(t), html.escape(summarize(ms))]
+        for t, ms in sorted(h.fund_moves.items())
+        if summarize(ms)
+    ]
+    if not rows:
+        return ""
+    return (
+        "<h3>Hedge funds in your holdings (13F)</h3>"
+        f'<p style="font-size:13px;color:#6b7280">From tracked funds\' filings for the '
+        f"quarter ending {html.escape(as_of)} — positions up to 4½ months old when filed. "
+        "Only moves in positions of 2%+ of a fund's portfolio; context, not a signal."
+        "</p>" + _table(["Ticker", "Tracked funds"], rows)
     )
 
 

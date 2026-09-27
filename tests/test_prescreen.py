@@ -31,6 +31,9 @@ GOOD_FUNDAMENTALS = {
     "market_cap": 50e9,
     "revenue_growth_yoy": 0.15,
     "operating_cash_flow": 5e9,
+    "analyst_count": 12,
+    "free_cash_flow": 4e9,
+    "return_on_equity": 0.25,
     "debt_to_equity": 0.5,
     "sector": "Technology",
 }

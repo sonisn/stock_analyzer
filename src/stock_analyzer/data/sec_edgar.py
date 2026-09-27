@@ -25,7 +25,7 @@ from ..logging import get_logger
 logger = get_logger(__name__)
 
 _MAX_WORKERS = 3  # SEC limits 10 req/sec; stay polite
-_USER_AGENT = "stock-analyzer research-bot (snehal.soni@farohealth.com)"
+_USER_AGENT = "stock-analyzer research-bot (soni.snehal@gmail.com)"
 _HEADERS = {"User-Agent": _USER_AGENT, "Accept-Encoding": "gzip, deflate"}
 _TICKERS_URL = "https://www.sec.gov/files/company_tickers.json"
 _SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
