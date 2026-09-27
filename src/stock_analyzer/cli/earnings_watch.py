@@ -29,6 +29,7 @@ from sqlalchemy import text
 from ..config import Settings
 from ..data import bar_store, fetch_cache, finnhub, hedge_funds_13f, insider_buying, yf_gateway
 from ..data.analyst_actions import fetch_analyst_actions
+from ..data.backlog import batch_rpo
 from ..data.earnings_history import fetch_track_record
 from ..data.eps_revisions import batch_eps_revisions, fetch_estimate_change
 from ..data.forecast_snapshots import record_snapshots, tracked_tickers
@@ -144,6 +145,8 @@ def warm_screen_cache(db: str, settings: Settings) -> int:
     # answer is at most a week old and no night refetches everything.
     batch_fundamentals(names, refresh=fetch_cache.oldest("fundamentals", names))
     batch_eps_revisions(names, refresh=fetch_cache.oldest("eps_revisions", names))
+    # Contracted books are scored too; free SEC requests, same rotation.
+    batch_rpo(names, refresh=fetch_cache.oldest("contracted_book", names))
     logger.info("Screen cache warmed: %d names", len(names))
     return len(names)
 

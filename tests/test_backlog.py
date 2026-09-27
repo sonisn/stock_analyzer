@@ -275,3 +275,85 @@ def test_the_analyst_is_told_what_a_missing_book_means():
     assert "not a forecast" in text
     # the trap: absence must never read as bad news
     assert "never evidence against" in text
+
+
+# --- the week-long cache -------------------------------------------------------
+
+
+@pytest.fixture
+def cached(monkeypatch, tmp_path):
+    monkeypatch.setenv("FETCH_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(bl, "load_ticker_cik_map", lambda: {"AVGO": CIK, "BE": 2})
+    calls: list[str] = []
+    return calls
+
+
+def _answers(monkeypatch, calls, by_cik):
+    from stock_analyzer.http_client import ClientError, ServerError
+
+    def get_json(url):
+        cik = int(url.split("CIK")[1][:10])
+        calls.append(cik)
+        answer = by_cik[cik]
+        if answer == 404:
+            raise ClientError("not found", status=404, url=url)
+        if answer == 500:
+            raise ServerError("down", status=500, url=url)
+        return answer
+
+    monkeypatch.setattr(bl._HTTP, "get_json", get_json)
+
+
+def test_a_name_without_a_book_is_not_asked_again_this_week(monkeypatch, cached):
+    _answers(monkeypatch, cached, {CIK: AVGO_FACTS, 2: 404})
+    first = bl.batch_rpo(["AVGO", "BE"])
+    second = bl.batch_rpo(["AVGO", "BE"])
+    assert set(first) == set(second) == {"AVGO"}
+    assert sorted(cached) == [2, CIK]  # one request each, across both runs
+
+
+def test_a_failed_request_is_retried_next_run_not_cached_as_no_book(monkeypatch, cached):
+    _answers(monkeypatch, cached, {CIK: AVGO_FACTS, 2: 500})
+    assert set(bl.batch_rpo(["BE"])) == set()
+    assert set(bl.batch_rpo(["BE"])) == set()
+    assert cached == [2, 2]
+
+
+def test_strict_raises_on_a_failure_but_not_on_a_missing_concept(monkeypatch, cached):
+    _answers(monkeypatch, cached, {CIK: 500, 2: 404})
+    assert bl.fetch_rpo("BE", strict=True) is None
+    assert bl.fetch_rpo("AVGO") is None  # lenient by default
+    with pytest.raises(Exception, match="down"):
+        bl.fetch_rpo("AVGO", strict=True)
+
+
+def test_a_point_in_time_read_skips_the_cache(monkeypatch, cached, tmp_path):
+    _answers(monkeypatch, cached, {CIK: AVGO_FACTS, 2: 404})
+    old = bl.batch_rpo(["AVGO"], as_of=date(2026, 6, 1))
+    assert old["AVGO"]["value"] == 45.0e9
+    assert not (tmp_path / "contracted_book.json").exists()
+
+
+def test_the_screen_fetches_books_only_for_names_it_will_score(monkeypatch):
+    from types import SimpleNamespace
+
+    from stock_analyzer.cli.discover import DiscoverPipeline
+    from stock_analyzer.cli.discover_steps import data_steps
+
+    asked: list[list[str]] = []
+    monkeypatch.setattr(bl, "batch_rpo", lambda ts: asked.append(list(ts)) or {"OK": {}})
+    monkeypatch.setattr(
+        data_steps, "passes_hard_filter", lambda f, t, gate: (f.get("good", False), [])
+    )
+    wf = SimpleNamespace(
+        state={"tickers": ["OK", "FAILS", "PRESCREENED", "NODATA"]},
+        settings=SimpleNamespace(discover_trend_gate="soft"),
+    )
+    books = DiscoverPipeline._screen_books(
+        wf,
+        {"OK": {"good": True}, "FAILS": {"good": False}, "PRESCREENED": {"good": True}},
+        {t: {"price": 1.0} for t in ("OK", "FAILS", "PRESCREENED", "NODATA")},
+        {"PRESCREENED": ["drawdown"]},
+    )
+    assert asked == [["OK"]]
+    assert books == {"OK": {}}

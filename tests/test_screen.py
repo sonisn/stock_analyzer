@@ -15,6 +15,7 @@ from stock_analyzer.discover.screen import (
     MIN_REVENUE_GROWTH,
     passes_hard_filter,
     score_candidate,
+    typical_book_points,
 )
 
 # --- helpers ----------------------------------------------------------------
@@ -372,3 +373,61 @@ def test_the_shortlist_caps_sectors_and_industries_and_refills():
     got = diversify_shortlist(ranked[:7], 7, max_per_sector=5, max_per_industry=2)
     assert [x["ticker"] for x in got] == ["VLO", "MPC", "PSX", "TNK", "FRO", "WHD", "XOM"]
     assert not any(x.get("shortlist_skipped") for x in got)
+
+
+# --- contracted book ---------------------------------------------------------
+
+
+def _book_points(yoy_pct):
+    book = None if yoy_pct == "absent" else {"yoy_pct": yoy_pct}
+    scored = score_candidate(_good_fundamentals(), _good_technicals(), _universe_entry(), book=book)
+    return scored["breakdown"]["fundamentals"]["contracted_book"]
+
+
+def test_a_fast_growing_book_earns_the_full_eight_points():
+    assert _book_points(552.0) == 8.0
+    assert _book_points(50.0) == 8.0
+
+
+def test_book_points_slide_from_zero_at_five_percent():
+    assert _book_points(5.0) == 0.0
+    assert _book_points(27.5) == 4.0
+
+
+def test_a_shrinking_book_costs_three_points():
+    assert _book_points(-10.0) == -3.0
+    assert _book_points(-3.0) == 0.0  # flat-ish is not a warning
+
+
+def test_no_book_scores_the_typical_book_of_the_run():
+    """Only about a third of companies tag a book; absence is not evidence
+    either way, so a name without one gets the run's median points."""
+    assert _book_points("absent") == 0.0  # no run context: nothing to be typical of
+    assert _book_points(None) == 0.0
+    without = score_candidate(
+        _good_fundamentals(), _good_technicals(), _universe_entry(), no_book_points=3.5
+    )
+    assert without["breakdown"]["fundamentals"]["contracted_book"] == 3.5
+    tagged = score_candidate(
+        _good_fundamentals(),
+        _good_technicals(),
+        _universe_entry(),
+        book={"yoy_pct": 2.0},
+        no_book_points=3.5,
+    )
+    assert tagged["breakdown"]["fundamentals"]["contracted_book"] == 0.0  # a real flat book
+
+
+def test_the_typical_book_is_the_median_of_the_scoreable_ones():
+    books = [{"yoy_pct": 80.0}, {"yoy_pct": 27.5}, {"yoy_pct": -40.0}, {"value": 1.0}, None]
+    assert typical_book_points(books) == 4.0  # median of 8, 4, -3
+    assert typical_book_points([None, {"value": 1.0}]) == 0.0
+
+
+def test_the_book_counts_toward_fundamentals():
+    base = score_candidate(_good_fundamentals(), _good_technicals(), _universe_entry())
+    grown = score_candidate(
+        _good_fundamentals(), _good_technicals(), _universe_entry(), book={"yoy_pct": 80.0}
+    )
+    assert grown["components"]["fundamentals"] == base["components"]["fundamentals"] + 8
+    assert grown["score"] == base["score"] + 8

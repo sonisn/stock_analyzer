@@ -106,9 +106,12 @@ def test_nightly_warm_up_fetches_what_the_prescreen_would_pick(monkeypatch):
         "batch_eps_revisions",
         lambda ts, refresh: fetched.setdefault("e", list(ts)),
     )
+    monkeypatch.setattr(
+        earnings_watch, "batch_rpo", lambda ts, refresh: fetched.setdefault("b", list(ts))
+    )
     settings = Settings(discover_trend_gate="soft", discover_max_screen_candidates=2)
     assert earnings_watch.warm_screen_cache("db", settings) == 2
-    assert fetched == {"f": ["UP", "MINE"], "e": ["UP", "MINE"]}
+    assert fetched == {"f": ["UP", "MINE"], "e": ["UP", "MINE"], "b": ["UP", "MINE"]}
     assert eps_revisions.batch_eps_revisions([]) == {}
 
 

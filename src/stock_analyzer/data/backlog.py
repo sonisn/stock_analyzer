@@ -26,11 +26,12 @@ filter that penalizes absence.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
 from datetime import date
 from typing import Any
 
 from ..logging import get_logger
-from . import yf_gateway
+from . import fetch_cache, yf_gateway
 from .sec_edgar import _HTTP, load_ticker_cik_map
 
 logger = get_logger(__name__)
@@ -55,12 +56,18 @@ def _day(value: Any) -> date | None:
         return None
 
 
-def fetch_rpo(ticker: str, *, as_of: date | None = None) -> dict[str, Any] | None:
+def fetch_rpo(
+    ticker: str, *, as_of: date | None = None, strict: bool = False
+) -> dict[str, Any] | None:
     """Contracted-but-undelivered revenue for `ticker`, or None.
 
     `as_of` keeps only facts already FILED by that date, which is what
     makes this safe to use in a backtest: the book AVGO disclosed on
     2026-09-10 did not exist for anyone on 2026-08-01.
+
+    `strict` raises on a failed request instead of returning None, so a
+    caller that caches "no book" can tell it from "could not ask"; a 404
+    (the company never tagged the concept) is None either way.
     """
     cik = load_ticker_cik_map().get(ticker.upper())
     if not cik:
@@ -68,6 +75,8 @@ def fetch_rpo(ticker: str, *, as_of: date | None = None) -> dict[str, Any] | Non
     try:
         body = _HTTP.get_json(_CONCEPT_URL.format(cik=cik))
     except Exception as e:  # noqa: BLE001 — a missing concept is normal
+        if strict and getattr(e, "status", None) != 404:
+            raise
         logger.debug("No RPO concept for %s (%s)", ticker, e)
         return None
 
@@ -132,15 +141,47 @@ def fetch_rpo(ticker: str, *, as_of: date | None = None) -> dict[str, Any] | Non
     }
 
 
-def batch_rpo(tickers: list[str], *, as_of: date | None = None) -> dict[str, dict[str, Any]]:
-    """`fetch_rpo` across tickers, skipping the ones that do not tag it."""
-    out: dict[str, dict[str, Any]] = {}
-    for ticker, result in yf_gateway.map_symbols(
-        lambda t: fetch_rpo(t, as_of=as_of), tickers, workers=3
-    ):
-        if result:
-            out[ticker.upper()] = result
-    return out
+# Cached in place of None for a name that tags no book, so the ~64% that
+# never do are not asked again on every run (the cache drops None).
+_UNTAGGED: dict[str, Any] = {"untagged": True}
+
+
+def batch_rpo(
+    tickers: list[str],
+    *,
+    as_of: date | None = None,
+    refresh: Iterable[str] = (),
+) -> dict[str, dict[str, Any]]:
+    """`fetch_rpo` across tickers, skipping the ones that do not tag it.
+
+    Today's answers go through the week-long fetch cache (a book only
+    changes with a 10-Q), so a discover run asks the SEC only for names it
+    has not seen this week; `refresh` renews some anyway. A point-in-time
+    `as_of` read is never cached."""
+    wanted = [t.upper() for t in tickers]
+    if as_of is not None:
+        return {
+            t: r
+            for t, r in yf_gateway.map_symbols(
+                lambda t: fetch_rpo(t, as_of=as_of), wanted, workers=3
+            )
+            if r
+        }
+
+    def ask(ticker: str) -> dict[str, Any] | None:
+        try:
+            return fetch_rpo(ticker, strict=True) or _UNTAGGED
+        except Exception as e:  # noqa: BLE001 — retried next run, not cached
+            logger.debug("RPO fetch failed for %s (%s)", ticker, e)
+            return None
+
+    def fetch(todo: list[str]) -> Iterator[tuple[str, Any]]:
+        yield from yf_gateway.map_symbols(ask, todo, workers=3)
+
+    answers = fetch_cache.fetch_many(
+        "contracted_book", wanted, fetch, refresh=[t.upper() for t in refresh]
+    )
+    return {t: r for t, r in answers.items() if not r.get("untagged")}
 
 
 def coverage_years(rpo_value: float | None, revenue_ttm: float | None) -> float | None:

@@ -296,7 +296,7 @@ def _state_checks() -> list[Check]:
     def cache_check() -> str:
         # Informational: an empty cache only means the next run is slow.
         parts = []
-        for kind in ("fundamentals", "eps_revisions"):
+        for kind in ("fundamentals", "eps_revisions", "contracted_book"):
             got = fetch_cache.entries(kind)
             oldest = min((float(e["at"]) for e in got.values()), default=None)
             age = f", oldest {(time.time() - oldest) / 86400:.1f}d" if oldest else ""

@@ -15,7 +15,8 @@ funnel is visible instead of silently producing "the top 5 of 6".
 
 Score budget — max 100 points, plus whatever the caller adds as a theme
 bonus:
-  45 pts fundamentals  (growth, FCF yield, margins, debt)
+  45 pts fundamentals  (growth, FCF yield, margins, debt), plus up to
+                        +8 / -3 for contracted-book growth where tagged
   45 pts trend         (RS, entry zone, volume, weekly RSI, EPS revisions)
   10 pts conviction    (media mention count, source diversity)
 
@@ -37,6 +38,8 @@ realized forward alpha, using the scores already stored per run.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from statistics import median
 from typing import Any
 
 # Hard filter thresholds — tighten/loosen after running the pipeline a few
@@ -287,6 +290,41 @@ def _score_fundamentals(f: dict[str, Any]) -> tuple[float, dict[str, float]]:
     return (sum(parts.values()), parts)
 
 
+# Contracted book (SEC remaining performance obligations), year on year.
+# Measured 2026-09-20 on point-in-time filings, S&P 500, 2016-2026: 126-day
+# excess-return IC +0.12, and it survived beta, sector, 12-1 momentum and
+# revenue growth (which keeps nothing once the book is removed). Weighted
+# like EPS revisions. Only ~36% of companies tag a book and the study only
+# compared companies that do, so a name without one (or without a year-ago
+# figure) gets the median points of the names that have one in the same run
+# (`typical_book_points`): absence is never evidence, either way.
+BOOK_FLAT_BELOW = 0.05
+BOOK_FULL_AT = 0.50
+BOOK_MAX_POINTS = 8.0
+BOOK_SHRINKING_BELOW = -0.10
+BOOK_SHRINKING_POINTS = -3.0
+
+
+def _score_book(book: dict[str, Any] | None) -> float | None:
+    """+8 for a book up 50%+ in a year, sliding to 0 at +5%; -3 once it
+    has shrunk by 10% or more; None when not tagged or no year-ago figure."""
+    yoy = (book or {}).get("yoy_pct")
+    if yoy is None:
+        return None
+    growth = yoy / 100
+    if growth <= BOOK_SHRINKING_BELOW:
+        return BOOK_SHRINKING_POINTS
+    span = BOOK_FULL_AT - BOOK_FLAT_BELOW
+    return _clamp((growth - BOOK_FLAT_BELOW) / span * BOOK_MAX_POINTS, 0, BOOK_MAX_POINTS)
+
+
+def typical_book_points(books: Iterable[dict[str, Any] | None]) -> float:
+    """Median book points among the names that have a scoreable book —
+    what a name without one is given. 0 when none do."""
+    points = [p for p in map(_score_book, books) if p is not None]
+    return round(median(points), 1) if points else 0.0
+
+
 def _score_trend(
     t: dict[str, Any],
     revisions: dict[str, Any] | None = None,
@@ -371,6 +409,8 @@ def score_candidate(
     technicals: dict[str, Any],
     universe_entry: dict[str, Any],
     revisions: dict[str, Any] | None = None,
+    book: dict[str, Any] | None = None,
+    no_book_points: float = 0.0,
 ) -> dict[str, Any]:
     """Combine the three scoring dimensions into a 0-100 total + breakdown.
 
@@ -379,8 +419,15 @@ def score_candidate(
     up +8 / -3 based on direction_30d — analyst revision flow is one of the
     few forward-looking signals here, so it carries more weight than the
     media-mention count does. Optional so unit tests + legacy callers can
-    still pass three args."""
+    still pass three args.
+
+    `book` is the name's contracted-book record (data/backlog.fetch_rpo);
+    its year-on-year growth adds up to +8 / -3 to fundamentals, and a name
+    without one gets `no_book_points` (the run's `typical_book_points`)."""
     fund_total, fund_parts = _score_fundamentals(fundamentals)
+    book_points = _score_book(book)
+    fund_parts["contracted_book"] = no_book_points if book_points is None else book_points
+    fund_total += fund_parts["contracted_book"]
     trend_total, trend_parts = _score_trend(technicals, revisions=revisions)
     conv_total, conv_parts = _score_conviction(universe_entry)
     return {

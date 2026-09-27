@@ -42,6 +42,7 @@ from ...discover.screen import (
     prescreen,
     rank_within_size_bands,
     score_candidate,
+    typical_book_points,
 )
 from ...discover.thesis_tracker import check_theses, load_open_picks, thesis_report_data
 from ...discover.track_record import (
@@ -334,6 +335,8 @@ class DataSteps(PipelineBase):
         revisions_by_t = self.state.get("eps_revisions") or {}
 
         prescreen_reasons = self.state.get("prescreen_reasons") or {}
+        books = self._screen_books(fundamentals, technicals, prescreen_reasons)
+        no_book_points = typical_book_points(books.values())
 
         candidates = [
             self._screen_candidate(
@@ -343,6 +346,8 @@ class DataSteps(PipelineBase):
                 universe=universe,
                 themes_by_t=themes_by_t,
                 revisions_by_t=revisions_by_t,
+                books=books,
+                no_book_points=no_book_points,
                 prescreen_reasons=prescreen_reasons,
             )
             for ticker in self.state["tickers"]
@@ -393,6 +398,34 @@ class DataSteps(PipelineBase):
             content=f"Screen: {passed}/{len(candidates)} passed; top {len(survivors)} → LLM"
         )
 
+    def _screen_books(
+        self,
+        fundamentals: dict[str, Any],
+        technicals: dict[str, Any],
+        prescreen_reasons: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        """Contracted books for every name that will be scored, since
+        book growth is part of the score (screen._score_book). Free SEC
+        requests, cached for a week; a failed fetch scores as no book."""
+        gate = self.settings.discover_trend_gate
+        scored = [
+            t
+            for t in self.state["tickers"]
+            if t not in prescreen_reasons
+            and fundamentals.get(t)
+            and technicals.get(t)
+            and passes_hard_filter(fundamentals.get(t), technicals.get(t), gate)[0]
+        ]
+        if not scored:
+            return {}
+        try:
+            from ...data.backlog import batch_rpo
+
+            return batch_rpo(scored)
+        except Exception as e:  # noqa: BLE001 — a score input, not a dependency
+            logger.warning("Contracted-book fetch for the screen failed (%s)", e)
+            return {}
+
     def _screen_candidate(
         self,
         ticker: str,
@@ -402,6 +435,8 @@ class DataSteps(PipelineBase):
         universe: dict[str, Any],
         themes_by_t: dict[str, Any],
         revisions_by_t: dict[str, Any],
+        books: dict[str, dict[str, Any]],
+        no_book_points: float,
         prescreen_reasons: dict[str, Any],
     ) -> dict[str, Any]:
         """One ticker through the hard filter and, if it passes, the score."""
@@ -433,6 +468,8 @@ class DataSteps(PipelineBase):
                 t,
                 u,
                 revisions=revisions_by_t.get(ticker),
+                book=books.get(ticker.upper()),
+                no_book_points=no_book_points,
             )
             bonus, theme_meta = theme_score_bonus(ticker, themes_by_t)
             cand["score"] = round(scored["score"] + bonus, 1)
