@@ -476,6 +476,34 @@ def record_portfolio_snapshot(
         logger.warning("Could not record today's portfolio snapshot (%s)", e)
 
 
+def goal_pace_for(settings: Settings) -> dict:
+    """The goal-pace line's numbers from the stored daily totals (today's
+    included), or {} when no goal is set or nothing is stored."""
+    if not settings.goal_target_usd or not settings.goal_date:
+        return {}
+    from ..db.repository import fetch_snapshots
+    from ..db.session import get_session
+    from ..discover.goal_pace import goal_pace
+    from .plan_check import monthly_contribution
+
+    try:
+        with get_session(settings.discover_db_path) as session:
+            totals = [
+                (date.fromisoformat(str(s.day)[:10]), float(s.total))
+                for s in fetch_snapshots(session)
+            ]
+        monthly, _ = monthly_contribution(settings, date.today())
+    except Exception as e:  # noqa: BLE001 — one line of the email, not a dependency
+        logger.warning("Goal pace unavailable (%s)", e)
+        return {}
+    return (
+        goal_pace(
+            totals, target=settings.goal_target_usd, goal_date=settings.goal_date, monthly=monthly
+        )
+        or {}
+    )
+
+
 def record_daily_suggestions(settings: Settings, health) -> None:
     """Keep today's actionable advice for the quarterly review. Never
     blocks the email."""
@@ -617,6 +645,8 @@ def main() -> None:
     )
     record_daily_suggestions(settings, health)
     record_portfolio_snapshot(settings, holdings, prices=prices)
+    if health is not None:
+        health.goal_pace = goal_pace_for(settings)
     if not settings.email_to:
         logger.error("EMAIL_TO not set; printing report instead of emailing")
         print(result)

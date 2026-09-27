@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 
 from ..config import Settings
 from ..data import finnhub, yf_gateway
+from ..discover.goal_pace import months_until
 from ..logging import get_logger
 
 logger = get_logger(__name__)
@@ -35,10 +36,6 @@ class PlanCheck:
     asset_html: str
     goal_html: str
     headlines: list[str]
-
-
-def _months_until(today: date, goal: date) -> int:
-    return max((goal.year - today.year) * 12 + goal.month - today.month, 0)
 
 
 def _account_kinds(holdings: dict[str, list[dict[str, Any]]]) -> dict[str, str]:
@@ -192,9 +189,7 @@ def build_plan_check(
         }
         left_out = sorted(cash_like)
         months = (
-            _months_until(today, goal_date)
-            if goal_date
-            else round(settings.goal_horizon_years * 12)
+            months_until(today, goal_date) if goal_date else round(settings.goal_horizon_years * 12)
         )
         contribution, source = monthly_contribution(settings, today)
         projection = gp.project(

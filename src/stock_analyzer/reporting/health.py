@@ -52,6 +52,10 @@ from ..logging import get_logger
 
 logger = get_logger(__name__)
 
+# SPY's long-run yearly return is about 10%; a goal that needs more than
+# that from here is shown in red.
+GOAL_PACE_WARN = 0.10
+
 DRAWDOWN_REVIEW_PCT = -20.0  # discover/rebalance_holdings.flag_drawdown_reviews
 EARNINGS_DAYS = 7
 MAX_ANALYST_LINES = 6  # per standout, newest first
@@ -117,6 +121,8 @@ class PortfolioHealth:
     # portfolio's demand (data/world_markets.py). Context, never a
     # decision: these are 3-5 year holdings.
     world_markets: list[dict[str, Any]] = field(default_factory=list)
+    # Steady yearly return still needed for GOAL_TARGET_USD (discover/goal_pace).
+    goal_pace: dict[str, Any] = field(default_factory=dict)
     # Accounts the broker has stopped syncing. Not a footnote like the
     # notes above — until the connection is restored every number for
     # that account describes the day it went dark, so it leads the email.
@@ -464,6 +470,7 @@ def render_health_html(h: PortfolioHealth) -> str:
     parts = [
         '<section class="health"><h2>Portfolio health</h2>',
         _snapshot_html(h),
+        _goal_pace_html(h),
         *alerts,
         _add_on_html(h),
         _income_html(h),
@@ -509,6 +516,31 @@ def render_health_html(h: PortfolioHealth) -> str:
         )
     parts.append("</section>")
     return "".join(parts)
+
+
+def _goal_pace_html(h: PortfolioHealth) -> str:
+    """One line: the steady return still needed to reach the goal, and
+    how that moved since tracking began (rising = falling behind)."""
+    p = h.goal_pace
+    if not p:
+        return ""
+    goal = f"${p['target'] / 1e6:,.1f}M by {p['goal_date']:%b %Y}"
+    if p["needed"] is None:
+        text = f"Goal {goal}: out of reach at any steady return with ${p['monthly']:,.0f} a month."
+        return f'<p style="font-size:13px;color:#9c1010">{html.escape(text)}</p>'
+    text = (
+        f"Goal {goal}: needs {p['needed']:.1%} a year from here, "
+        f"with ${p['monthly']:,.0f} a month going in"
+    )
+    if p.get("was") is not None:
+        moved = (p["needed"] - p["was"]) * 100
+        if abs(moved) < 0.05:
+            trend = "unchanged"
+        else:
+            trend = f"{'behind' if moved > 0 else 'ahead'}: {moved:+.1f} pts"
+        text += f" (was {p['was']:.1%} on {p['since']:%b %d}, {trend})"
+    color = "#9c1010" if p["needed"] > GOAL_PACE_WARN else "#374151"
+    return f'<p style="font-size:13px;color:{color}">{html.escape(text)}.</p>'
 
 
 def _snapshot_html(h: PortfolioHealth) -> str:
