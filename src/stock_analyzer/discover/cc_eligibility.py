@@ -46,6 +46,7 @@ def eligible_holdings_per_account(
       - the account holds >= 100 shares
       - the account has >= 100 shares NOT collateralizing an open short call
       - the ticker is not in `denylist`
+      - the ticker is not a cash sweep or money-market fund
 
     `options_accounts` is the same OPTIONS_ACCOUNTS allowlist the
     cash-secured-put path honours (empty = every account). Puts respected
@@ -62,11 +63,19 @@ def eligible_holdings_per_account(
     Tickers with no eligible account are omitted from the result entirely
     (no empty-list value).
     """
+    from ..reporting.health import is_cash_like
+
     denyset = {t.upper() for t in denylist}
     allowed = set(options_accounts)
     out: dict[str, list[EligibleHolding]] = {}
     for ticker, info in position_splits.items():
         if ticker.upper() in denyset:
+            continue
+        # A cash sweep's units are dollars, not shares: SPAXX's 20,846 in the
+        # IRA were the only "eligible" position on 2026-09-26, once every real
+        # round lot already backed a call. The daily email had this guard.
+        price = info.get("price") if isinstance(info, dict) else None
+        if is_cash_like(ticker, price if isinstance(price, int | float) else None):
             continue
         splits = info.get("splits") or []  # type: ignore[assignment]
         if not isinstance(splits, list):

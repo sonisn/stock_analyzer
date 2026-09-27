@@ -177,3 +177,17 @@ def test_empty_override_falls_back_to_the_bundle(text):
         with open(path, "w") as fh:
             fh.write(text)
         assert "AAPL" in load_base_universe(path)
+
+
+def test_holdings_join_the_frame_by_ticker_without_cash_or_cusips():
+    from stock_analyzer.cli.discover_steps.data_steps import holdings_frame
+
+    holdings = {
+        "Traditional IRA": [
+            {"ticker": "AVGO", "units": 100},
+            {"ticker": "SPAXX", "units": 20846},
+            {"ticker": "876214206", "units": 10},
+        ],
+        "Robinhood": [{"ticker": "okLo", "units": 5}, {"ticker": "AVGO", "units": 1}],
+    }
+    assert holdings_frame(holdings) == ("AVGO", "OKLO")

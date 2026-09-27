@@ -164,7 +164,7 @@ def batch_ticker_news(
         return {t: [] for t in tickers}
     names = names or {}
     quota_hit = threading.Event()
-    counts = {"tavily": 0, "finnhub": 0}
+    counts = {"search": 0, "finnhub": 0}
     counts_lock = threading.Lock()
 
     def _count(source: str) -> None:
@@ -185,7 +185,7 @@ def batch_ticker_news(
                         e,
                     )
             if items:
-                _count("tavily")
+                _count("search")
                 return ticker, items
         if finnhub_client is not None:
             items = fetch_finnhub_ticker_news(ticker, days=days, client=finnhub_client)
@@ -196,10 +196,10 @@ def batch_ticker_news(
     with ThreadPoolExecutor(max_workers=_TAVILY_MAX_WORKERS) as ex:
         out = dict(ex.map(_one, tickers))
     logger.info(
-        "Catalyst news: %d/%d tickers covered (tavily=%d, finnhub=%d)",
-        counts["tavily"] + counts["finnhub"],
+        "Catalyst news: %d/%d tickers covered (web search=%d, finnhub=%d)",
+        counts["search"] + counts["finnhub"],
         len(tickers),
-        counts["tavily"],
+        counts["search"],
         counts["finnhub"],
     )
     return out

@@ -8,7 +8,7 @@ from typing import Any
 
 from agno.workflow.types import StepInput, StepOutput
 
-from ...data.brokerage import fetch_portfolio_holdings
+from ...data.brokerage import fetch_portfolio_holdings, listed_tickers
 from ...data.earnings_calendar import batch_earnings_flags
 from ...data.eps_revisions import batch_eps_revisions
 from ...data.finnhub import batch_finnhub_signals
@@ -63,6 +63,21 @@ from .helpers import (
 logger = get_logger("stock_analyzer.cli.discover")
 
 
+def holdings_frame(holdings: dict[str, list[dict[str, Any]]]) -> tuple[str, ...]:
+    """The held tickers that belong in the universe frame.
+
+    Holdings rows carry "ticker" (data/brokerage.py); reading "symbol" left
+    every holding out of the frame ("holdings 0") until 2026-09-26.
+    listed_tickers drops option symbols and dead CUSIPs, and a cash sweep is
+    dropped too: holdings skip the trend gate, so SPAXX would take one of the
+    analysis slots.
+    """
+    from ...reporting.health import is_cash_like
+
+    listed, _ = listed_tickers(holdings)
+    return tuple(sorted({t.upper() for t in listed if not is_cash_like(t, None)}))
+
+
 class DataSteps(PipelineBase):
     # --- step executors ------------------------------------------------
 
@@ -75,16 +90,7 @@ class DataSteps(PipelineBase):
         try:
             holdings = fetch_portfolio_holdings()
             self.state["holdings_raw"] = holdings
-            holdings_tickers = tuple(
-                sorted(
-                    {
-                        str(item.get("symbol") or "").upper()
-                        for items in holdings.values()
-                        for item in items
-                        if item.get("symbol")
-                    }
-                )
-            )
+            holdings_tickers = holdings_frame(holdings)
         except Exception as e:
             logger.info(
                 "Holdings unavailable for the universe frame (%s) — "

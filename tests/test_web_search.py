@@ -108,3 +108,19 @@ def test_llm_sees_facts_not_page_furniture():
         "highlights": ["The quarter beat."],
     }
     assert ws._content(same) == "The quarter beat. More detail."  # no repeat
+
+
+def test_a_cash_sweep_is_never_a_covered_call_candidate():
+    from stock_analyzer.discover.cc_eligibility import eligible_holdings_per_account
+
+    splits = {
+        "SPAXX": {"splits": [{"account": "Traditional IRA", "units": 20846}]},
+        "NVDA": {"splits": [{"account": "Traditional IRA", "units": 500}]},
+    }
+    out = eligible_holdings_per_account(
+        splits,
+        open_short_calls_by_account={"NVDA": {"Traditional IRA": 4}},
+        denylist=(),
+        options_accounts=("Traditional IRA",),
+    )
+    assert list(out) == ["NVDA"] and out["NVDA"][0].max_contracts == 1
