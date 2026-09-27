@@ -318,6 +318,23 @@ def _score_book(book: dict[str, Any] | None) -> float | None:
     return _clamp((growth - BOOK_FLAT_BELOW) / span * BOOK_MAX_POINTS, 0, BOOK_MAX_POINTS)
 
 
+def fundamental_view(
+    fundamentals: dict[str, Any],
+    *,
+    book: dict[str, Any] | None = None,
+    revisions: dict[str, Any] | None = None,
+) -> float:
+    """The screen's own read of the business, without the price trend:
+    fundamentals (growth, FCF yield, margins, debt), contracted-book growth
+    and EPS revision flow. The dashboard sets it against the IBD-style
+    Composite, which is mostly price."""
+    total, _ = _score_fundamentals(fundamentals)
+    total += _score_book(book) or 0.0
+    direction = (revisions or {}).get("direction_30d")
+    total += 8.0 if direction == "raising" else -3.0 if direction == "lowering" else 0.0
+    return total
+
+
 def typical_book_points(books: Iterable[dict[str, Any] | None]) -> float:
     """Median book points among the names that have a scoreable book —
     what a name without one is given. 0 when none do."""
@@ -381,9 +398,10 @@ def _score_trend(
 # An earnings standout IS evidence, but the same evidence the trend score
 # already rewards (rising EPS revisions); counting it here too would score
 # it twice. An insider cluster is evidence too, but not yet proven enough
-# to score (data/insider_buying.py): eligible, graded live, no bonus.
+# to score (data/insider_buying.py): eligible, graded live, no bonus. An
+# IBD-style leader is price strength the trend score already counts.
 _NON_EVIDENCE_SOURCES = frozenset(
-    {"index", "watchlist", "holding", "earnings_standout", "insider_cluster"}
+    {"index", "watchlist", "holding", "earnings_standout", "insider_cluster", "ibd_leader"}
 )
 
 

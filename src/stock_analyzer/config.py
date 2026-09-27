@@ -99,6 +99,11 @@ class Settings(BaseSettings):
     # 600 since the >= $2B universe (~1,600 clear the soft gate); the
     # nightly job warms the fetch cache for exactly these names.
     discover_max_screen_candidates: int = 600
+    # IBD-style leaders (cli/ibd.py) added to the discover and rebalance
+    # universe: the top N by Composite plus any Composite 90+ stock in a buy
+    # zone. Eligible only, no score bonus, graded as source "ibd_leader".
+    # 0 turns it off.
+    discover_ibd_leaders: int = 25
     # Price rules of the discover screen: "soft" (default: only skip names
     # 40%+ below their 52-week high — long-term holds may be bought on a
     # dip), "strict" (the old four uptrend rules), or "off".
@@ -116,6 +121,9 @@ class Settings(BaseSettings):
     # `discover_max_sector_new_pct` of the new capital. Trimmed dollars are
     # held as cash rather than redistributed, like the other caps.
     discover_max_sector_pct: float = 30.0
+    # Largest share of the portfolio any one stock may reach after a
+    # rebalance (percent). The rebalancer's prompt and its examples follow it.
+    rebalance_max_position_pct: float = 25.0
     discover_max_sector_new_pct: float = 50.0
     # Tax-loss harvesting candidates in the rebalance report: a taxable
     # position slice qualifies when its unrealized loss is at least this

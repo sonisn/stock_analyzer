@@ -105,6 +105,8 @@ class RebalancePlanSteps(PipelineBase):
             csp_dte_max=self.settings.csp_dte_max,
             csp_max_pct_per_put=self.settings.csp_max_pct_per_put,
             csp_max_pct_total=self.settings.csp_max_pct_total,
+            max_position_pct=self.settings.rebalance_max_position_pct,
+            max_sector_pct=self.settings.discover_max_sector_pct,
         )
 
     def _request_plan(self, rebalancer: Rebalancer, ranker_text: str, history_block: str) -> Any:
@@ -125,11 +127,27 @@ class RebalancePlanSteps(PipelineBase):
             add_on_block=self._add_on_block(),
             backlog_block=self.state.get("backlog_block") or "",
             stub_income_block=self.state.get("stub_income_block") or "",
+            leadership_block=self._leadership_block(),
             obligations_block=covered_call_block(
                 self.state.get("holdings_positions") or {},
                 self.state.get("covered_call_obligations") or {},
             ),
         )
+
+    def _leadership_block(self) -> str:
+        """Sector direction and IBD-style ratings for the holdings and the
+        discover picks (reporting/leaders), or "" when unavailable."""
+        from ...reporting.leaders import leadership_block
+
+        tickers = [
+            *(self.state.get("holdings_reviews") or {}),
+            *(t for _, t, _ in self.state.get("picks") or []),
+        ]
+        try:
+            return leadership_block(self.settings.discover_db_path, tickers)
+        except Exception as e:  # noqa: BLE001 — context, not a dependency
+            logger.warning("Market leadership block unavailable (%s)", e)
+            return ""
 
     def _record_lost_plan(self, e: Exception) -> StepOutput:
         # Every way the plan call can fail has to land here, not just bad

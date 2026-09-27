@@ -461,7 +461,138 @@ class StockView(SQLModel, table=True):
     news_on: str | None = None  # ISO date the links were last written
 
 
+class IbdRating(SQLModel, table=True):
+    """This morning's IBD-style ratings (discover/ibd_ratings.py), one row
+    per stock in the $2B+ universe. Replaced whole each morning, so the
+    table stays ~1,900 rows."""
+
+    __tablename__ = "ibd_ratings"
+
+    ticker: str = Field(primary_key=True)
+    as_of: str = ""  # ISO date of the last close rated
+    price: float | None = None
+    industry: str | None = None
+    composite: int | None = None
+    rs_rating: int | None = None
+    eps_rating: int | None = None
+    ad_grade: str | None = None
+    group_rank: int | None = None
+    groups_ranked: int | None = None
+    rs_line_high: bool | None = None
+    off_high: float | None = None  # fraction below the 52-week high
+    six_month: float | None = None
+    eps_q1: float | None = None  # latest quarter's EPS growth, fraction
+    base: str | None = None
+    base_weeks: int | None = None
+    base_depth: float | None = None
+    pivot: float | None = None
+    vs_pivot: float | None = None
+    base_status: str | None = None
+
+
+class IbdMarket(SQLModel, table=True):
+    """Market direction each morning (distribution and follow-through days
+    on SPY and QQQ). One row a day, a few hundred bytes."""
+
+    __tablename__ = "ibd_market"
+
+    day: str = Field(primary_key=True)  # ISO date of the last close
+    status: str = ""
+    detail: str = ""
+    indexes: str = ""  # JSON: per-index counts
+
+
+class IbdHistory(SQLModel, table=True):
+    """IBD-style ratings over time, so a stock's progress (and the ratings'
+    worth) can be compared. Daily for the names that matter (Composite 90+,
+    in a buy zone, held or tracked); every stock once a week (`full`), which
+    is the point-in-time panel a study of the ratings needs. ~160k small
+    rows a year."""
+
+    __tablename__ = "ibd_history"
+
+    day: str = Field(primary_key=True)  # ISO date of the close rated
+    ticker: str = Field(primary_key=True)
+    full: bool = False  # part of the weekly all-stocks snapshot
+    backfilled: bool = False  # rebuilt from stored bars, not recorded that morning
+    price: float | None = None
+    composite: int | None = None
+    rs_rating: int | None = None
+    eps_rating: int | None = None
+    ad_grade: str | None = None
+    group_rank: int | None = None
+    base_status: str | None = None
+    pivot: float | None = None
+
+
+class IbdSignal(SQLModel, table=True):
+    """A stock entering a buy zone or breaking out with Composite 80+ — the
+    IBD-style "buy" moment, logged once per 30 days per stock and graded
+    later against SPY (reporting/leaders.signal_scorecard)."""
+
+    __tablename__ = "ibd_signals"
+
+    ticker: str = Field(primary_key=True)
+    day: str = Field(primary_key=True)  # ISO date of the close it fired on
+    status: str = ""  # "buy zone" or "breakout"
+    price: float | None = None
+    pivot: float | None = None
+    composite: int | None = None
+    rs_rating: int | None = None
+    eps_rating: int | None = None
+    base: str | None = None
+    industry: str | None = None
+    backfilled: bool = False  # rebuilt from stored bars, not recorded that morning
+
+
+class IbdSector(SQLModel, table=True):
+    """Each sector's direction each morning (discover/ibd_ratings.
+    sector_direction): Leading, Uptrend, Caution or Correction, and why.
+    Twelve rows a day."""
+
+    __tablename__ = "ibd_sectors"
+
+    day: str = Field(primary_key=True)
+    sector: str = Field(primary_key=True)
+    status: str = ""
+    reasons: str = ""  # "; "-joined
+    rank: int | None = None
+    stocks: int = 0
+    breadth: float | None = None  # share of its stocks above their 50-day
+    breadth_before: float | None = None  # the same, ten sessions earlier
+    median_six: float | None = None
+    leaders: int = 0  # Composite 90+
+    etf: str | None = None
+    etf_above_50: bool | None = None
+    etf_above_200: bool | None = None
+    etf_dist_days: int | None = None
+    backfilled: bool = False
+
+
+class StockNews(SQLModel, table=True):
+    """The top news items per featured stock for the dashboard (cli/ibd.py,
+    each morning): company-specific, ranked by materiality. Replaced whole
+    every morning, so the table stays a few hundred rows."""
+
+    __tablename__ = "stock_news"
+
+    ticker: str = Field(primary_key=True)
+    rank: int = Field(primary_key=True)
+    fetched: str = ""  # ISO date
+    title: str = ""
+    url: str | None = None
+    source: str | None = None
+    published: str | None = None
+    snippet: str | None = None
+
+
 __all__ = [
+    "StockNews",
+    "IbdSector",
+    "IbdHistory",
+    "IbdSignal",
+    "IbdMarket",
+    "IbdRating",
     "AnalystAction",
     "CusipTicker",
     "FundPosition",

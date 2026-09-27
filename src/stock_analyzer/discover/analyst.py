@@ -171,6 +171,16 @@ disclosure, so it lags; and roughly half of all companies never tag the
 concept, so `null` means "not disclosed" and is never evidence against a
 name.
 
+`market_leadership` is the stock's IBD-style standing that morning:
+Composite, RS and EPS Ratings (1-99 against every US stock worth $2B+),
+its industry group's rank, and its sector's direction (Leading, Uptrend,
+Caution, Correction). The user wants money in the market's leaders and
+accepts concentration in a leading sector, so a high Composite in a
+Leading sector supports the case, and a sector in Caution or Correction
+is a timing risk worth naming. It is price evidence, not business
+evidence: it never outweighs the fundamentals, the book or the filings.
+`null` means not rated (too new, or under $2B).
+
 COMMON FAILURE MODES TO AVOID:
 - "Faces competition in a rapidly evolving market" — boilerplate, no signal.
   Better: "Competitor X disclosed a 30% price cut in Q4 transcript."

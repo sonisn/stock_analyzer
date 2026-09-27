@@ -169,7 +169,19 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
         holdings_ok=bool(positions),
         reasoning=reasoning,
         reviews={t: (r or "") for t, r in ledger.review_text.items()},
+        ibd=_ibd_or_nothing(db, set(positions)),
     )
+
+
+def _ibd_or_nothing(db: str, held: set[str]) -> dict[str, Any]:
+    """The Market leaders tab's data (reporting/leaders.py), or {}."""
+    from ..reporting.leaders import collect as collect_leaders
+
+    try:
+        return collect_leaders(db, held=held, today=date.today())
+    except Exception as e:  # noqa: BLE001 — one tab, not the page
+        logger.warning("Market leaders tab unavailable (%s)", e)
+        return {}
 
 
 def _brokerage_positions() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:

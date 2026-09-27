@@ -48,6 +48,21 @@ logger = get_logger("stock_analyzer.cli.discover")
 
 
 class AnalysisSteps(PipelineBase):
+    def _leadership_ratings(self) -> dict[str, dict]:
+        """IBD-style ratings for the survivors, read once per run."""
+        if "leadership_ratings" not in self.state:
+            from ...reporting.leaders import ratings_for
+
+            try:
+                self.state["leadership_ratings"] = ratings_for(
+                    self.settings.discover_db_path,
+                    [c["ticker"] for c in self.state.get("survivors") or []],
+                )
+            except Exception as e:  # noqa: BLE001 — context, not a dependency
+                logger.warning("Market leadership ratings unavailable (%s)", e)
+                self.state["leadership_ratings"] = {}
+        return self.state["leadership_ratings"]
+
     def step_analyst(self, step_input: StepInput) -> StepOutput:
         survivors = self.state.get("survivors") or []
         if not survivors:
@@ -95,7 +110,12 @@ class AnalysisSteps(PipelineBase):
                 if flag
             ]
             payloads[ticker] = {
-                "fundamentals": fundamentals.get(ticker) or {},
+                # The company profile (description, website) is for the dashboard, not the prompt.
+                "fundamentals": {
+                    k: v
+                    for k, v in (fundamentals.get(ticker) or {}).items()
+                    if k not in ("summary", "website", "employees", "hq")
+                },
                 "data_reconciliation_flags": reconciliation_flags,
                 "technicals": technicals.get(ticker) or {},
                 "universe_signals": {
@@ -114,6 +134,8 @@ class AnalysisSteps(PipelineBase):
                 "eps_revisions": eps_revisions.get(ticker) or {},
                 # Contracted, not forecast: revenue already under order.
                 "contracted_book": (self.state.get("contracted_book") or {}).get(ticker),
+                # IBD-style ratings and the sector's direction (cli/ibd.py).
+                "market_leadership": self._leadership_ratings().get(ticker),
                 "share_trades": share_trades.get(ticker),
                 "risk_factors_10k": _trim(
                     (risk_factors.get(ticker) or {}).get("risk_factors"),

@@ -77,6 +77,12 @@ def _parse_ticker_file(path: Path) -> tuple[str, ...]:
     return tuple(dict.fromkeys(out))  # de-dup, preserve order
 
 
+def all_us_2b() -> tuple[str, ...]:
+    """Every tradable US stock worth $2B+, before the quality rules (the
+    bundled scan): the whole market that market-wide percentiles need."""
+    return _parse_ticker_file(_US_2B)
+
+
 def sp500() -> tuple[str, ...]:
     """The bundled S&P 500 list: the model's training universe."""
     return load_base_universe(kind="sp500")

@@ -504,6 +504,28 @@ def goal_pace_for(settings: Settings) -> dict:
     )
 
 
+def market_checks_for(settings: Settings, held: list[str]) -> list[dict]:
+    """Holdings whose IBD-style ratings turned (reporting/leaders), or []."""
+    from ..reporting.leaders import holding_checks
+
+    try:
+        return holding_checks(settings.discover_db_path, held, today=date.today())
+    except Exception as e:  # noqa: BLE001 — one section of the email, not a dependency
+        logger.warning("Market re-check prompts unavailable (%s)", e)
+        return []
+
+
+def sector_trends_for(settings: Settings, health) -> list[dict]:
+    """Direction of the sectors you hold (reporting/leaders), or []."""
+    from ..reporting.leaders import held_sector_trends
+
+    try:
+        return held_sector_trends(settings.discover_db_path, health.sector_by_ticker, health.values)
+    except Exception as e:  # noqa: BLE001 — one line of the email, not a dependency
+        logger.warning("Sector trends unavailable (%s)", e)
+        return []
+
+
 def record_daily_suggestions(settings: Settings, health) -> None:
     """Keep today's actionable advice for the quarterly review. Never
     blocks the email."""
@@ -647,6 +669,8 @@ def main() -> None:
     record_portfolio_snapshot(settings, holdings, prices=prices)
     if health is not None:
         health.goal_pace = goal_pace_for(settings)
+        health.market_checks = market_checks_for(settings, list(health.values))
+        health.sector_trends = sector_trends_for(settings, health)
     if not settings.email_to:
         logger.error("EMAIL_TO not set; printing report instead of emailing")
         print(result)

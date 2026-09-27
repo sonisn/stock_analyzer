@@ -119,11 +119,23 @@ class DataSteps(PipelineBase):
         except Exception as e:  # noqa: BLE001 — an idea source, not a requirement
             logger.info("Insider clusters unavailable for the universe (%s)", e)
             insider = ()
+        try:
+            from ..ibd import top_leaders
+
+            leaders = top_leaders(
+                self.settings.discover_db_path,
+                self.settings.discover_ibd_leaders,
+                today=date.today(),
+            )
+        except Exception as e:  # noqa: BLE001 — an idea source, not a requirement
+            logger.info("IBD-style leaders unavailable for the universe (%s)", e)
+            leaders = ()
         universe = build_universe(
             watchlist=self.settings.discover_watchlist,
             holdings=holdings_tickers,
             standouts=standouts,
             insider_clusters=insider,
+            ibd_leaders=leaders,
         )
         if not universe:
             raise RuntimeError(

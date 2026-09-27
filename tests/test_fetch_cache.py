@@ -96,6 +96,7 @@ def test_nightly_warm_up_fetches_what_the_prescreen_would_pick(monkeypatch):
     }
     fetched: dict[str, list[str]] = {}
     monkeypatch.setattr(earnings_watch, "tracked_tickers", lambda db, today: ["MINE"])
+    monkeypatch.setattr("stock_analyzer.cli.ibd.top_leaders", lambda db, n, today: ())
     monkeypatch.setattr(earnings_watch, "load_base_universe", lambda: ("UP", "NEAR", "KNIFE"))
     monkeypatch.setattr(earnings_watch, "batch_technicals", lambda ts: techs)
     monkeypatch.setattr(

@@ -131,6 +131,15 @@ def warm_screen_cache(db: str, settings: Settings) -> int:
     technicals cost next to nothing; a name that differs by morning is
     simply fetched then."""
     tracked = tracked_tickers(db, today=date.today())
+    try:
+        from .ibd import top_leaders
+
+        leaders = top_leaders(db, settings.discover_ibd_leaders, today=date.today())
+    except Exception as e:  # noqa: BLE001 — a warmer cache, not a requirement
+        logger.info("IBD-style leaders unavailable for the warm-up (%s)", e)
+        leaders = ()
+    # Leaders are fed to discover, so they pass the gate like tracked names.
+    tracked = list(dict.fromkeys([*tracked, *leaders]))
     tickers = list(dict.fromkeys([*load_base_universe(), *tracked]))
     technicals = batch_technicals(tickers)
     names, _, _ = prescreen(

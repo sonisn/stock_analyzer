@@ -721,6 +721,60 @@ Tax-aware: prefer LTCG lots for stub sales (see existing tax-lot
 guidance)."""
 
 
+# The single-stock cap and the sector rule, as the static sections word
+# them, and what each becomes for the user's settings. Every phrase must be
+# found (tests hold this), so a reworded section cannot silently keep 25%.
+_POSITION_PHRASES = (
+    "grown past ~25% of the",
+    "not yet hit the 25%",
+    "No single position should exceed ~25% of post-rebalance",
+    "above 25% cap",
+    "exceeds the 25% single-name cap",
+)
+_EXAMPLE_OVER_CAP = "already at 28% concentration — skip"
+_SECTOR_RULE = "  3. Sector concentration is unhealthy (any sector >40% of portfolio), OR"
+
+
+def _apply_limits(text: str, *, max_position_pct: float, max_sector_pct: float) -> str:
+    pos = f"{max_position_pct:g}"
+    for phrase in _POSITION_PHRASES:
+        text = text.replace(phrase, phrase.replace("25", pos))
+    text = text.replace(
+        _EXAMPLE_OVER_CAP, f"already at {max_position_pct + 3:g}% concentration — skip"
+    )
+    if max_sector_pct >= 100:
+        rule = (
+            "  3. A sector you hold is in CORRECTION on the sector check in MARKET\n"
+            "     LEADERSHIP (trim its weakest names). Sector WEIGHT alone is not a\n"
+            "     reason to act: the user accepts concentration in leading sectors, OR"
+        )
+    else:
+        rule = f"  3. Sector concentration is unhealthy (any sector >{max_sector_pct:g}% of portfolio), OR"
+    return text.replace(_SECTOR_RULE, rule)
+
+
+# How market leadership (IBD-style ratings, sector direction) enters the plan.
+_MARKET_LEADERSHIP = """MARKET LEADERSHIP (when a "Market leadership" block is given):
+The user wants money in the market's leaders and accepts a concentrated
+book in a leading sector. The block gives each holding's and pick's
+IBD-style Composite (1-99, mostly price strength), its industry group rank,
+and each sector's direction: LEADING / UPTREND / CAUTION / CORRECTION.
+  - Tie-break: when a discover pick and the best ADD are within 1
+    confidence point of each other, the one with the Composite at least
+    5 higher wins, provided its sector is not in CAUTION or CORRECTION.
+    This replaces the ">= 2 points" bar of STEP 3 only for such near-ties.
+  - Do not ADD or BUY into a sector in CAUTION or CORRECTION; say so in
+    the ADD-first walk. Existing positions there are held unless their
+    own thesis is broken.
+  - A sector in CORRECTION: consider TRIM of its weakest holdings (lowest
+    Composite first), with the proceeds to the strongest name in a
+    LEADING sector, subject to the tax rules above.
+  - Composite is evidence about price, not about the business. It never
+    overrides a broken or intact long-term thesis in the reviews.
+
+"""
+
+
 def _build_rebalancer_instructions(
     *,
     cc_target_delta_min: float = 0.35,
@@ -737,23 +791,32 @@ def _build_rebalancer_instructions(
     csp_dte_max: int = 45,
     csp_max_pct_per_put: float = 0.25,
     csp_max_pct_total: float = 0.80,
+    max_position_pct: float = 25.0,
+    max_sector_pct: float = 100.0,
 ) -> str:
-    """Build the rebalancer prompt. CC and CSP params are templated from
-    Settings so `.env` overrides actually flow into the LLM context.
+    """Build the rebalancer prompt. CC and CSP params, the single-stock cap
+    and the sector limit are templated from Settings so `.env` overrides
+    actually flow into the LLM context.
     """
     buffer_pct = int(round(cc_slippage_buffer * 100))
     stub_section = (
         "" if not cc_stub_optimization else _stub_consolidation(cc_min_stub_usd=cc_min_stub_usd)
     )
+    core = _apply_limits(
+        "".join(
+            (_ROLE_AND_INPUTS, _WHEN_TO_ACT, _TAX_BAR_OVERRIDES, _DEPLOYING_MONEY, _CONSTRAINTS)
+        ),
+        max_position_pct=max_position_pct,
+        max_sector_pct=max_sector_pct,
+    )
     return "".join(
         (
-            _ROLE_AND_INPUTS,
-            _WHEN_TO_ACT,
-            _TAX_BAR_OVERRIDES,
-            _DEPLOYING_MONEY,
-            _CONSTRAINTS,
+            core,
+            _MARKET_LEADERSHIP,
             _WASH_SALES_AND_HARVESTING,
-            _OUTPUT_FORMAT,
+            _apply_limits(
+                _OUTPUT_FORMAT, max_position_pct=max_position_pct, max_sector_pct=max_sector_pct
+            ),
             _CRITICAL_RULES,
             _STRUCTURED_OUTPUT,
             _covered_call_writing(

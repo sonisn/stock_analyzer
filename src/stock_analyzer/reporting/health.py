@@ -123,6 +123,10 @@ class PortfolioHealth:
     world_markets: list[dict[str, Any]] = field(default_factory=list)
     # Steady yearly return still needed for GOAL_TARGET_USD (discover/goal_pace).
     goal_pace: dict[str, Any] = field(default_factory=dict)
+    # Holdings whose IBD-style ratings turned (reporting/leaders.holding_checks).
+    market_checks: list[dict[str, Any]] = field(default_factory=list)
+    # Direction of the sectors you hold (reporting/leaders.held_sector_trends).
+    sector_trends: list[dict[str, Any]] = field(default_factory=list)
     # Accounts the broker has stopped syncing. Not a footnote like the
     # notes above — until the connection is restored every number for
     # that account describes the day it went dark, so it leads the email.
@@ -466,11 +470,18 @@ def _money(v: float) -> str:
 
 
 def render_health_html(h: PortfolioHealth) -> str:
-    alerts = [_drawdowns_html(h), _thesis_html(h), _over_cap_html(h), _harvest_html(h)]
+    alerts = [
+        _drawdowns_html(h),
+        _thesis_html(h),
+        _market_checks_html(h),
+        _over_cap_html(h),
+        _harvest_html(h),
+    ]
     parts = [
         '<section class="health"><h2>Portfolio health</h2>',
         _snapshot_html(h),
         _goal_pace_html(h),
+        _sector_trends_html(h),
         *alerts,
         _add_on_html(h),
         _income_html(h),
@@ -564,6 +575,57 @@ def _drawdowns_html(h: PortfolioHealth) -> str:
             [_badge("DRAWDOWN"), html.escape(r["ticker"]), f"{r['pnl_pct']:+.1f}%"]
             for r in h.drawdowns
         ],
+    )
+
+
+_TREND_COLOR = {
+    "Leading": "#0e6432",
+    "Uptrend": "#0e6432",
+    "Caution": "#8a5a00",
+    "Correction": "#9c1010",
+}
+_TREND_ICON = {"Leading": "▲", "Uptrend": "▲", "Caution": "◆", "Correction": "▼"}
+
+
+def _sector_trends_html(h: PortfolioHealth) -> str:
+    """One line: the direction of each sector you hold, worst first."""
+    if not h.sector_trends:
+        return ""
+    parts = []
+    for t in h.sector_trends:
+        color = _TREND_COLOR.get(t["status"], "#374151")
+        why = (
+            f": {t['reasons']}" if t["status"] in ("Caution", "Correction") and t["reasons"] else ""
+        )
+        rank = f" (#{t['rank']})" if t.get("rank") else ""
+        parts.append(
+            f'<span style="color:{color};font-weight:600">{_TREND_ICON.get(t["status"], "")} '
+            f"{html.escape(t['sector'])} {html.escape(t['status'])}{rank}</span>"
+            f'{html.escape(why)} <span style="color:#6b7280">({t["pct"]:.0f}% of holdings)</span>'
+        )
+    return '<p style="font-size:13px">Your sectors: ' + " · ".join(parts) + "</p>"
+
+
+def _market_checks_html(h: PortfolioHealth) -> str:
+    """Holdings the market has turned on. A prompt to re-read the thesis:
+    for a 3-5 year holding, price action alone is not a reason to sell."""
+    if not h.market_checks:
+        return ""
+    rows = []
+    for c in h.market_checks:
+        alt = c.get("alternative")
+        rows.append(
+            [
+                _badge("RE-CHECK"),
+                html.escape(c["ticker"]),
+                html.escape("; ".join(c["reasons"])),
+                html.escape(f"{alt['ticker']} (Composite {alt['composite']}, {alt['industry']})")
+                if alt
+                else "—",
+            ]
+        )
+    return "<h3>Market turned on these: re-check the thesis (not a sell signal)</h3>" + _table(
+        ["", "Ticker", "What changed", "Strongest in its group you don’t own"], rows
     )
 
 
@@ -1574,6 +1636,27 @@ def _add_on_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
 
 
 def _sector_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
+    for t in h.sector_trends:
+        names = ", ".join(f"{x['ticker']} (Composite {x['composite']})" for x in t["holdings"][:3])
+        why = f" ({t['reasons']})" if t["reasons"] else ""
+        if t["status"] == "Correction":
+            yield _item(
+                2,
+                None,
+                "SECTOR CORRECTION",
+                f"{t['sector']} is in a correction{why}; it is {t['pct']:.0f}% of your holdings. "
+                f"Stop adding new money there and consider trimming its weakest names"
+                + (f": {names}." if names else "."),
+            )
+        elif t["status"] == "Caution":
+            yield _item(
+                3,
+                None,
+                "SECTOR CAUTION",
+                f"{t['sector']} turned cautious{why}; it is {t['pct']:.0f}% of your holdings. "
+                "Hold off adding new money there until it recovers"
+                + (f"; weakest there: {names}." if names else "."),
+            )
     for r in h.sectors:
         if r["over"]:
             yield _item(

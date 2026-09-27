@@ -203,3 +203,48 @@ def batch_ticker_news(
         counts["finnhub"],
     )
     return out
+
+
+# --- the dashboard's news panel -------------------------------------------------------
+
+DASHBOARD_NEWS_DAYS = 14
+DASHBOARD_NEWS_TOP = 5
+_DASHBOARD_SNIPPET = 280
+
+
+def dashboard_news(
+    tickers: list[str], names: dict[str, str | None], *, client: Any = None
+) -> dict[str, list[dict[str, Any]]]:
+    """{ticker: up to 5 items} about the company itself, most material
+    first (data/news_rank), from Finnhub company news: free, so every
+    featured stock can have it each morning. A ticker with nothing
+    company-specific gets [], and the page says so."""
+    from .news_rank import rank_news
+
+    client = client or finnhub_data._client()
+    if client is None:
+        logger.warning("No FINNHUB_API_KEY: the dashboard's news panel stays empty")
+        return {}
+    out: dict[str, list[dict[str, Any]]] = {}
+    for t in tickers:
+        try:
+            raw = fetch_finnhub_ticker_news(
+                t, days=DASHBOARD_NEWS_DAYS, max_results=40, client=client
+            )
+        except Exception as e:  # noqa: BLE001 — one stock's news, not the job
+            logger.debug("Dashboard news failed for %s (%s)", t, e)
+            continue
+        ranked = rank_news(raw, t, names.get(t), top_n=DASHBOARD_NEWS_TOP)
+        out[t] = [
+            {
+                "title": item.get("title") or "",
+                "url": item.get("url"),
+                "source": item.get("source"),
+                "published": item.get("published_date"),
+                "snippet": (item.get("snippet") or "")[:_DASHBOARD_SNIPPET] or None,
+            }
+            for item in ranked
+        ]
+    covered = sum(1 for v in out.values() if v)
+    logger.info("Dashboard news: %d of %d stocks have company-specific news", covered, len(tickers))
+    return out

@@ -40,6 +40,10 @@ def _next_report(earnings_ts: float | None, today: date) -> str | None:
     return when.isoformat()
 
 
+# A company description is a paragraph or three; the panel shows the start.
+SUMMARY_CHARS = 700
+
+
 def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
     # One request: `info` carries trailing-twelve-month operating cash flow.
     # (This used to read the latest QUARTER from a second endpoint, which
@@ -85,6 +89,14 @@ def fetch_fundamentals(ticker: str) -> dict[str, Any] | None:
         "name": info.get("shortName") or info.get("longName"),
         "sector": info.get("sector"),
         "industry": info.get("industry"),
+        # Profile for the dashboard's company panel; the same request.
+        "summary": (info.get("longBusinessSummary") or "")[:SUMMARY_CHARS] or None,
+        "website": info.get("website"),
+        "employees": info.get("fullTimeEmployees"),
+        "hq": ", ".join(
+            x for x in (info.get("city"), info.get("state") or info.get("country")) if x
+        )
+        or None,
         "market_cap": market_cap,
         "revenue_growth_yoy": info.get("revenueGrowth"),
         "earnings_growth_yoy": info.get("earningsGrowth"),

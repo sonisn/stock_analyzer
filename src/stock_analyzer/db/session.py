@@ -71,6 +71,9 @@ _LEGACY_MIGRATIONS: tuple[tuple[str, str], ...] = (
     # Which accounts a snapshot's total covered, so connecting an account
     # is read as money arriving rather than as performance.
     ("portfolio_snapshots", "ALTER TABLE portfolio_snapshots ADD COLUMN accounts TEXT"),
+    # IBD-style history rebuilt from stored bars rather than recorded live.
+    ("ibd_history", "ALTER TABLE ibd_history ADD COLUMN backfilled BOOLEAN NOT NULL DEFAULT 0"),
+    ("ibd_signals", "ALTER TABLE ibd_signals ADD COLUMN backfilled BOOLEAN NOT NULL DEFAULT 0"),
 )
 
 

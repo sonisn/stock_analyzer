@@ -14,6 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from .leaders_page import CSS as LEADERS_CSS
+from .leaders_page import HTML as LEADERS_HTML
+from .leaders_page import JS as LEADERS_JS
 from .serialization import dumps_compact
 
 CSS = """
@@ -73,6 +76,11 @@ th.sort{cursor:pointer;user-select:none}
 th.sort:hover{color:var(--ink2)}
 th.sort::after{content:attr(data-arrow);color:var(--s1)}
 @media (max-width:640px){.hide-s{display:none}}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin:-6px 0 20px}
+.tabs button{background:none;border:0;border-bottom:2px solid transparent;color:var(--ink3);
+ font:inherit;font-size:14px;padding:8px 12px;cursor:pointer;margin-bottom:-1px}
+.tabs button.on{color:var(--ink);border-bottom-color:var(--s1);font-weight:600}
+.tab{display:none}.tab.on{display:block}
 """
 
 JS = """
@@ -108,6 +116,7 @@ function sortable(tbody, rows, render, keys, numeric){
   ths.forEach((th,i)=>{ if(!keys[i]) return; th.classList.add('sort'); th.title='Sort';
     th.onclick=()=>{ if(by===i) dir=-dir; else {by=i; dir=numeric.includes(i)?-1:1;} draw(); };});
   draw();
+  return draw;
 }
 const VERDICT_RANK={'SELL':3,'TRIM':2,'HOLD':1};
 const GRADE_RANK={'good call':3,'too early':2,'missed':1};
@@ -250,6 +259,16 @@ sortable('#runs', D.runs, renderRuns,
   [0,2,3,4,5]);
 
 if(D.holdings.length) show(D.holdings[0].ticker);
+
+/* tabs: the choice lives in the URL hash, so a bookmark opens the tab */
+function tab(name){
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('on',t.id==='tab-'+name));
+  if(location.hash!=='#'+name) history.replaceState(null,'','#'+name);
+}
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>tab(b.dataset.tab));
+tab(location.hash==='#leaders'?'leaders':'portfolio');
+
 """
 
 
@@ -271,10 +290,13 @@ def render_page(data: dict[str, Any]) -> str:
     )
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Portfolio Dashboard</title><style>{CSS}</style></head><body><div class="wrap">
+<title>Portfolio Dashboard</title><style>{CSS}{LEADERS_CSS}</style></head><body><div class="wrap">
 <header><h1>Portfolio</h1>
  <span class="sub">run #{data["latest_run"]} · generated {data["generated"]}</span>
  <button class="theme" id="tbtn">Dark</button></header>
+<nav class="tabs"><button data-tab="portfolio">Portfolio</button>
+ <button data-tab="leaders">Market leaders</button></nav>
+<section class="tab" id="tab-portfolio">
 {stale}
 <div class="tiles">
  <div class="tile"><div class="k">Holdings value</div><div class="v">${total:,.0f}</div></div>
@@ -325,5 +347,8 @@ def render_page(data: dict[str, Any]) -> str:
  <table><thead><tr><th>Run</th><th>Kind</th><th>Date</th><th class="num">Universe</th>
   <th class="num">Surv.</th><th class="num">Picks</th></tr></thead>
  <tbody id="runs"></tbody></table></div>
+</section>
 
-</div><script>{JS.replace("__DATA__", dumps_compact(data))}</script></body></html>"""
+{LEADERS_HTML}
+
+</div><script>{(JS + LEADERS_JS).replace("__DATA__", dumps_compact(data))}</script></body></html>"""

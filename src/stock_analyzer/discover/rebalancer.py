@@ -92,6 +92,8 @@ class Rebalancer:
         csp_dte_max: int = 45,
         csp_max_pct_per_put: float = 0.25,
         csp_max_pct_total: float = 0.80,
+        max_position_pct: float = 25.0,
+        max_sector_pct: float = 100.0,
     ):
         instructions = _build_rebalancer_instructions(
             cc_target_delta_min=cc_target_delta_min,
@@ -108,6 +110,8 @@ class Rebalancer:
             csp_dte_max=csp_dte_max,
             csp_max_pct_per_put=csp_max_pct_per_put,
             csp_max_pct_total=csp_max_pct_total,
+            max_position_pct=max_position_pct,
+            max_sector_pct=max_sector_pct,
         )
         # Opus 4.7+ adaptive thinking — high effort for the deepest synthesis
         # (combining holdings reviews + new picks + cash math + concentration).
@@ -151,6 +155,7 @@ class Rebalancer:
         obligations_block: str = "",
         backlog_block: str = "",
         stub_income_block: str = "",
+        leadership_block: str = "",
     ) -> RebalancePlan:
         prompt, agg = _decide_prompt(
             holdings_reviews=holdings_reviews,
@@ -167,6 +172,7 @@ class Rebalancer:
             add_on_block=add_on_block,
             obligations_block=obligations_block,
             backlog_block=backlog_block,
+            leadership_block=leadership_block,
             stub_income_block=stub_income_block,
         )
         logger.info(
@@ -203,6 +209,7 @@ def _decide_prompt(
     obligations_block: str = "",
     backlog_block: str = "",
     stub_income_block: str = "",
+    leadership_block: str = "",
 ) -> tuple[str, str]:
     """The user message for the rebalancer, and the aggressiveness applied."""
     # Accept either the new structured form ({ticker: HoldingReview})
@@ -260,6 +267,8 @@ def _decide_prompt(
     # was visible to this agent before 2026-09-20.
     backlog_section = f"{backlog_block}\n\n" if backlog_block else ""
     stub_income_section = f"{stub_income_block}\n\n" if stub_income_block else ""
+    # Sector direction and each name's IBD-style ratings (MARKET LEADERSHIP).
+    leadership_section = f"{leadership_block}\n\n" if leadership_block else ""
     harvest_section = (
         f"TAX-LOSS HARVEST CANDIDATES (deterministic; see instructions):\n{harvest_block}\n\n"
         if harvest_block
@@ -274,6 +283,7 @@ def _decide_prompt(
         f"{backlog_section}"
         f"{stub_income_section}"
         f"{macro_block}"
+        f"{leadership_section}"
         f"{themes_section}"
         f"{cc_section}"
         f"{csp_section}"

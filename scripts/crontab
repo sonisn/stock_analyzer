@@ -8,6 +8,9 @@
 #
 # m  h(UTC)  dom  mon       dow  command
 
+# 6:00 AM NY, weekdays: IBD-style ratings for every $2B+ stock, then the dashboard
+# (its "Market leaders" tab), ready before the open. No LLM, no email.
+0    10,11   *    *         1-5  NY_AT=06:00 /home/sonisnehal/stock_analyzer/scripts/run_ibd.sh
 # 8:30 AM NY, weekdays: update to origin/main only if its tests pass.
 30   12,13   *    *         1-5  NY_AT=08:30 /home/sonisnehal/stock_analyzer/scripts/run_update.sh
 # 9:30 AM NY, weekdays: daily portfolio email.
