@@ -1,4 +1,12 @@
-"""Portfolio analysis pipeline: SnapTrade holdings → analysis → email."""
+"""Portfolio analysis pipeline: SnapTrade holdings → analysis → email.
+
+The email goes out weekly (Wednesday morning, scripts/crontab): the
+holdings are kept 6-12 months and more, and a daily email was mostly
+noise. `--snapshot-only` runs every weekday after the close instead:
+the portfolio's value at the day's closes, no model calls and no email,
+so the performance, vs-SPY and goal-pace history stays daily and a
+deposit is still told apart from a gain.
+"""
 
 from __future__ import annotations
 
@@ -606,13 +614,44 @@ def _chart_cid(ticker: str) -> str:
     return "chart-" + ticker.replace(".", "-").replace("/", "-")
 
 
+def closing_quotes(tickers: list[str], *, today: date) -> dict[str, float]:
+    """{ticker: latest close} from the bar store (one batched download for
+    whatever it lacks)."""
+    closes = yf_gateway.daily_closes(tickers, today - timedelta(days=10), what="snapshot")
+    return {t.upper(): float(c["Close"][-1]) for t, c in closes.items() if c.height}
+
+
+def snapshot_only(settings: Settings, *, today: date) -> None:
+    """Record today's portfolio value at the closing prices. No model calls,
+    no email."""
+    holdings = fetch_portfolio_holdings()
+    tickers, _ = listed_tickers(holdings)
+    prices, notes = reconcile_prices(holdings, closing_quotes(tickers, today=today))
+    for note in notes:
+        logger.info("Snapshot price note: %s", note)
+    record_portfolio_snapshot(settings, holdings, prices=prices)
+    logger.info("Portfolio snapshot recorded for %s (%d holdings)", today, len(tickers))
+
+
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="analyze-portfolio", description=__doc__.split("\n")[0])
+    parser.add_argument(
+        "--snapshot-only",
+        action="store_true",
+        help="record today's portfolio value at the close; no analysis, no email",
+    )
+    args = parser.parse_args()
     load_dotenv()
     # Pacing knobs live in the environment, and these modules are
     # imported before `.env` is loaded — re-read them now.
     yf_gateway.reload_from_env()
     finnhub.reload_from_env()
     settings = Settings.from_env()
+    if args.snapshot_only:
+        snapshot_only(settings, today=date.today())
+        return
 
     holdings = fetch_portfolio_holdings()
     agent = _build_agent(settings)
