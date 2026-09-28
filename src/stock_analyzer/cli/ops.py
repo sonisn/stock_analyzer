@@ -26,7 +26,7 @@ import shutil
 import sqlite3
 import subprocess
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -363,6 +363,54 @@ def _llm_checks(settings: Settings) -> list[Check]:
     ]
 
 
+# Below this Claude agreement (over at least SPOT_CHECK_MIN_FIELDS fields in
+# the last 120 days) an open reader has drifted from its tested 83-92%.
+SPOT_CHECK_FLOOR = 0.70
+SPOT_CHECK_MIN_FIELDS = 20
+
+
+def openrouter_host_problems(db: str, *, today: date) -> tuple[list[str], str]:
+    """(problems, summary) for the OpenRouter hosts: failed known-answer
+    checks, read quality below the floor, Claude agreement below it."""
+    from ..openrouter import APPROVED_HOSTS
+    from ..openrouter_hosts import failed_checks, host_quality, spot_check_summary
+
+    problems = [
+        f"{model} on {host}: failed its last known-answer check"
+        for model, hosts in sorted(failed_checks(db, today=today).items())
+        for host in sorted(hosts)
+    ]
+    problems += [
+        f"{q['model']} on {q['provider']}: {q['problem']}"
+        for q in host_quality(db, today=today)
+        if q["problem"]
+    ]
+    for sc in spot_check_summary(db, today=today):
+        if (
+            sc["compared"] >= SPOT_CHECK_MIN_FIELDS
+            and sc["agreed"] / sc["compared"] < SPOT_CHECK_FLOOR
+        ):
+            problems.append(
+                f"{sc['model']} on {sc['provider']}: Claude agrees on only "
+                f"{sc['agreed']}/{sc['compared']} fields"
+            )
+    hosts = sum(len(h) for h in APPROVED_HOSTS.values())
+    return problems, f"{hosts} approved model/host pairs, none flagged"
+
+
+def _openrouter_checks(settings: Settings) -> list[Check]:
+    if not settings.openrouter_api_key:
+        return []
+
+    def check() -> str:
+        problems, summary = openrouter_host_problems(settings.discover_db_path, today=date.today())
+        if problems:
+            raise RuntimeError("; ".join(problems))
+        return summary
+
+    return [("OpenRouter hosts", check)]
+
+
 def _data_checks(settings: Settings) -> list[Check]:
     def finnhub_check() -> str:
         from ..data import finnhub
@@ -489,6 +537,7 @@ def doctor(settings: Settings) -> int:
         *_offsite_checks(settings),
         *_disk_checks(settings),
         *_llm_checks(settings),
+        *_openrouter_checks(settings),
     ]:
         try:
             detail = check()

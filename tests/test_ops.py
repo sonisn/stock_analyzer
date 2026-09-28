@@ -78,6 +78,7 @@ def test_doctor_counts_failures_without_stopping(capsys):
         patch.object(ops, "_disk_checks", return_value=[]),
         patch.object(ops, "_state_checks", return_value=[]),
         patch.object(ops, "_offsite_checks", return_value=[]),
+        patch.object(ops, "_openrouter_checks", return_value=[]),
     ):
         assert ops.doctor(object()) == 2
     out = capsys.readouterr().out

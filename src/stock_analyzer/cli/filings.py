@@ -268,6 +268,7 @@ def run(
     dry_run: bool = False,
     compare_claude: int = 0,
     recheck_drops: bool = False,
+    host_check: bool = False,
 ) -> int:
     """Read the latest filing of every ticker in `tiers` ({ticker: "A"|"B"})."""
     db = settings.discover_db_path
@@ -330,7 +331,19 @@ def run(
             )
         return 0
     assert client is not None
-    print(f"Spent today ${spent_today(db):.3f} of ${settings.openrouter_daily_cap_usd:.2f}\n")
+    print(f"Spent today ${spent_today(db):.3f} of ${settings.openrouter_daily_cap_usd:.2f}")
+    if host_check:
+        from ..openrouter_hosts import run_canaries
+
+        checks = run_canaries(client, db, [reader, bulk], today=today)
+        bad = [f"{c.model} on {c.host}: {c.detail}" for c in checks if not c.passed]
+        print(
+            f"Host check: {len(checks) - len(bad)}/{len(checks)} passed "
+            f"(${sum(c.cost_usd for c in checks):.3f})"
+        )
+        for line in bad:
+            print(f"  skipped this run — {line}")
+    print()
 
     reads: list[tuple[str, FilingRead, Prepared]] = []
     stopped: str | None = None
@@ -388,6 +401,89 @@ def run(
     )
     if stopped:
         print(f"Stopped at the daily cap with {len(queue)} left for the next run: {stopped}")
+    try:
+        from ..openrouter_hosts import report_lines
+
+        print("\nHosts, last 30 days:")
+        print("\n".join(report_lines(db, today=today)) or "  no reads yet")
+    except Exception as e:  # noqa: BLE001 — a report line never fails the run
+        logger.warning("Host report failed (%s)", e)
+    log_usage_summary()
+    return 0
+
+
+SPOT_CHECK_DAYS = 35
+
+
+def spot_check(settings: Settings, n: int, *, today: date, seed: int | None = None) -> int:
+    """Claude re-reads `n` random open-model reads from the last
+    SPOT_CHECK_DAYS and the agreement is stored per field (table
+    filing_spot_checks): the running measure of the open readers against
+    Claude, by model and host. ~$0.07 a filing on Claude Sonnet."""
+    import random
+
+    from ..db.tables import FilingSpotCheck
+
+    db = settings.discover_db_path
+    since = date.fromordinal(today.toordinal() - SPOT_CHECK_DAYS).isoformat()
+    with get_session(db) as session:
+        done = set(session.exec(select(FilingSpotCheck.accession)).all())
+        rows = [
+            r
+            for r in session.exec(
+                select(FilingFacts).where(FilingFacts.read_on >= since, FilingFacts.facts != "")
+            ).all()
+            if r.accession not in done
+        ]
+        rows = [
+            {k: getattr(r, k) for k in FilingFacts.model_fields}  # detached copies
+            for r in rows
+        ]
+    rng = random.Random(seed)
+    picked = rng.sample(rows, min(n, len(rows)))
+    agreed_total = compared_total = 0
+    for row in picked:
+        filing = {
+            k: row[k] for k in ("ticker", "form", "filed_on", "period_end", "accession", "url")
+        }
+        text_ = fetch_filing_text(row["url"])
+        sections = filing_sections(text_ or "", row["form"], max_chars=SECTION_CHARS)
+        if "mda" not in sections:
+            print(f"{row['ticker']}: filing no longer cuts cleanly, skipped")
+            continue
+        try:
+            theirs = claude_read(settings, filing, sections)
+        except Exception as e:  # noqa: BLE001
+            print(f"{row['ticker']}: Claude read failed ({e})")
+            continue
+        agree = compare(json.loads(row["facts"]), theirs)
+        agreed, compared = sum(agree.values()), len(agree)
+        agreed_total += agreed
+        compared_total += compared
+        with get_session(db) as session:
+            session.merge(
+                FilingSpotCheck(
+                    accession=row["accession"],
+                    checked_on=today.isoformat(),
+                    ticker=row["ticker"],
+                    reader_model=row["reader_model"],
+                    provider=row["provider"],
+                    claude_model=settings.discover_sonnet_model,
+                    agreed=agreed,
+                    compared=compared,
+                    fields=dumps_compact(agree),
+                )
+            )
+        misses = ", ".join(f for f, ok in agree.items() if not ok) or "none"
+        print(
+            f"{row['ticker']:<6} {row['reader_model']:<20} {row['provider'] or '?':<14} "
+            f"{agreed}/{compared} agree (differ: {misses})"
+        )
+    if compared_total:
+        print(
+            f"\nSpot-check: {agreed_total}/{compared_total} fields agree "
+            f"({agreed_total / compared_total:.0%}) on {len(picked)} filings"
+        )
     log_usage_summary()
     return 0
 
@@ -434,6 +530,13 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="re-read filings already stored")
     parser.add_argument("--dry-run", action="store_true", help="fetch and cut, no model calls")
     parser.add_argument(
+        "--spot-check",
+        type=int,
+        default=0,
+        metavar="N",
+        help="only: have Claude re-read N random open-model reads and store the agreement",
+    )
+    parser.add_argument(
         "--recheck-drops",
         action="store_true",
         help="re-read stored bulk reads whose filing shows a filed income drop (free SEC check)",
@@ -448,6 +551,8 @@ def main() -> int:
     args = parser.parse_args()
     settings = Settings()
     today = date.today()
+    if args.spot_check:
+        return spot_check(settings, args.spot_check, today=today)
     if args.tickers:
         tiers = {t.upper(): "A" for t in args.tickers}
     else:
@@ -463,6 +568,9 @@ def main() -> int:
         dry_run=args.dry_run,
         compare_claude=args.compare_claude,
         recheck_drops=args.recheck_drops,
+        # The known-answer host check runs before the weekly sweep, not
+        # before a hand-picked read of a few tickers.
+        host_check=not args.tickers,
     )
 
 

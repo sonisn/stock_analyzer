@@ -43,6 +43,45 @@ _URL = "https://openrouter.ai/api/v1/chat/completions"
 # reader or checker costs, so an unpriced model can't slip past the cap.
 _UNKNOWN_PRICE_PER_MTOK = (3.0, 15.0)
 _CHARS_PER_TOKEN = 3.5
+# The hosts each model may run on — an allowlist, so a host OpenRouter adds
+# tomorrow gets no traffic until it has been checked. Vetted 2026-09-28 on
+# ~1,900 stored filing reads (quote match 99.7-100% on every host listed)
+# and a known-answer test. Left out of GLM-5.3: Sail Research (billed
+# $0.0153 a read) and AkashML ($0.0246), against Io Net $0.0092, Morph
+# $0.0116 and Baidu $0.0061 — same model, same fp8. `sort: price` alone
+# was not strict enough to keep reads off them.
+APPROVED_HOSTS: dict[str, list[str]] = {
+    "z-ai/glm-5.3": ["io-net", "morph", "novita", "baidu"],
+    "z-ai/glm-5.3-flash": [
+        "sail-research",
+        "gmicloud",
+        "novita",
+        "phala",
+        "streamlake",
+        "parasail",
+        "z-ai",
+        "morph",
+    ],
+}
+# OpenRouter's slug → the provider name its replies carry.
+HOST_NAMES: dict[str, str] = {
+    "io-net": "Io Net",
+    "morph": "Morph",
+    "novita": "Novita",
+    "baidu": "Baidu",
+    "sail-research": "Sail Research",
+    "gmicloud": "GMICloud",
+    "phala": "Phala",
+    "streamlake": "StreamLake",
+    "parasail": "Parasail",
+    "z-ai": "Z.AI",
+    "akashml": "AkashML",
+}
+
+
+class NoApprovedHostError(RuntimeError):
+    """Every approved host for the model is excluded (failed its check or
+    its quality slipped) — the caller's fallback takes over."""
 
 
 @dataclass
@@ -102,9 +141,18 @@ def _record(db_path: str, stage: str, c: Completion) -> None:
 
 
 class OpenRouter:
-    def __init__(self, api_key: str, db_path: str, *, daily_cap_usd: float) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        db_path: str,
+        *,
+        daily_cap_usd: float,
+        excluded: dict[str, set[str]] | None = None,
+    ) -> None:
         self.db_path = db_path
         self.daily_cap_usd = daily_cap_usd
+        # {model: hosts skipped this run} (openrouter_hosts.excluded_hosts).
+        self.excluded = excluded or {}
         self._lock = threading.Lock()
         self._pending = 0.0
         self._http = HttpClient(
@@ -119,6 +167,10 @@ class OpenRouter:
             retry_policy=RetryPolicy(max_attempts=3),
             name="openrouter",
         )
+
+    def allowed_hosts(self, model: str) -> list[str]:
+        skip = self.excluded.get(model, set())
+        return [h for h in APPROVED_HOSTS.get(model, []) if h not in skip]
 
     def _reserve(self, stage: str, model: str, est: float) -> None:
         with self._lock:
@@ -160,6 +212,12 @@ class OpenRouter:
                 "usage": {"include": True},
                 **(extra or {}),
             }
+            routing = body.get("provider")
+            if model in APPROVED_HOSTS and isinstance(routing, dict) and "only" not in routing:
+                allowed = self.allowed_hosts(model)
+                if not allowed:
+                    raise NoApprovedHostError(f"every approved host for {model} is excluded")
+                body["provider"] = {**routing, "only": allowed}
             if json_mode:
                 body["response_format"] = {"type": "json_object"}
             t0 = time.monotonic()
@@ -217,12 +275,17 @@ def parse_json_object(raw: str) -> dict[str, Any] | None:
 
 
 def client_from_settings(settings: Any) -> OpenRouter | None:
+    """A client that skips the hosts whose latest known-answer check failed
+    or whose read quality slipped (openrouter_hosts.excluded_hosts)."""
     if not settings.openrouter_api_key:
         return None
+    from .openrouter_hosts import excluded_hosts
+
     return OpenRouter(
         settings.openrouter_api_key,
         settings.discover_db_path,
         daily_cap_usd=settings.openrouter_daily_cap_usd,
+        excluded=excluded_hosts(settings.discover_db_path, today=datetime.now(UTC).date()),
     )
 
 
@@ -246,8 +309,9 @@ class OpenRouterAgent:
     """Stands in for `llm.AgnoAgent` in a helper role: `.run(prompt)`
     returns an object with `.content`. Billed and capped like every other
     OpenRouter call. `fallback` builds the agent to use when OpenRouter
-    fails or answers empty — never when the daily cap refuses the call,
-    which must not turn into paid spend elsewhere."""
+    fails, answers empty, or fails `validate` (prompt, reply → problems) —
+    never when the daily cap refuses the call, which must not turn into
+    paid spend elsewhere."""
 
     def __init__(
         self,
@@ -258,9 +322,11 @@ class OpenRouterAgent:
         client: OpenRouter | None,
         json_mode: bool = False,
         fallback: Any = None,
+        validate: Any = None,
     ) -> None:
         self.name, self.model_id, self.instructions = name, model, instructions
         self.client, self.json_mode, self._fallback = client, json_mode, fallback
+        self._validate = validate
 
     def run(self, prompt: str) -> Any:
         try:
@@ -277,6 +343,9 @@ class OpenRouterAgent:
             )
             if not c.text.strip():
                 raise RuntimeError(f"empty reply from {self.model_id}")
+            problems = self._validate(prompt, c.text) if self._validate else []
+            if problems:
+                raise RuntimeError(f"reply failed its check: {'; '.join(problems)[:200]}")
             return SimpleNamespace(content=c.text)
         except BudgetExceededError:
             raise
@@ -295,6 +364,7 @@ def helper_agent(
     *,
     json_mode: bool = False,
     fallback: tuple[str, str] | None = None,
+    validate: Any = None,
 ) -> Any:
     """An agent for a helper role: `llm.AgnoAgent` for claude/gemini/openai,
     `OpenRouterAgent` for "openrouter" (with `fallback` = (provider, model)
@@ -321,4 +391,5 @@ def helper_agent(
         client=client_from_settings(Settings()),
         json_mode=json_mode,
         fallback=back,
+        validate=validate,
     )

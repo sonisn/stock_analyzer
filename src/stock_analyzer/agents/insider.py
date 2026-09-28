@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 
 from ..logging import get_logger
@@ -55,6 +56,41 @@ CRITICAL:
 """
 
 
+# A ticker the report names: "(DKS)" or a "- DKS:" line.
+_TICKER_RE = re.compile(r"\(([A-Z]{1,5}(?:\.[A-Z])?)\)|^\s*-\s*([A-Z]{1,5}(?:\.[A-Z])?):", re.M)
+_TITLE_SKIP = {"THE", "A", "AN"}
+# Parenthesised words that are roles or acronyms, not tickers ("(CFO)").
+_NOT_TICKERS = {"CEO", "CFO", "COO", "CTO", "EVP", "SVP", "VP", "IPO", "ETF", "SEC", "AI", "US"}
+
+
+def ungrounded_tickers(prompt: str, report: str) -> list[str]:
+    """Tickers the report names that the source items don't support: not
+    in the items as a symbol, and the company's name (its first word, as
+    the SEC lists it) isn't there either. An open model that invents a
+    ticker — or reads input a host altered — fails this, and the report is
+    written by the fallback model instead."""
+    from ..data.sec_edgar import load_ticker_titles
+
+    def plain(text: str) -> str:  # "Dick’s" / "DICK'S" -> "dicks"
+        return re.sub(r"[^a-z0-9]+", " ", re.sub(r"['’]", "", text.lower()))
+
+    titles = load_ticker_titles()
+    source = f" {plain(prompt)} "
+    bad = []
+    for m in _TICKER_RE.finditer(report):
+        ticker = m.group(1) or m.group(2)
+        if ticker in _NOT_TICKERS:
+            continue
+        if re.search(rf"\b{re.escape(ticker)}\b", prompt):
+            continue
+        words = [w for w in plain(titles.get(ticker, "")).split() if w.upper() not in _TITLE_SKIP]
+        if words and f" {words[0]} " in source:
+            continue
+        if ticker not in bad:
+            bad.append(ticker)
+    return [f"{t} is not in the source items" for t in bad]
+
+
 class InsiderAgent:
     def __init__(
         self,
@@ -71,6 +107,7 @@ class InsiderAgent:
             # the import runs before the CLI switches to market time.
             INSIDER_INSTRUCTIONS.format(today=date.today().strftime("%b %d, %Y")),
             fallback=fallback,
+            validate=ungrounded_tickers,
         )
 
     def run(

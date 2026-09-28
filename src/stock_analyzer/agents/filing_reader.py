@@ -19,6 +19,7 @@ models (Claude, Gemini, OpenAI) receive.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -145,6 +146,18 @@ def quote_found(quote: str, norm_source: str) -> bool:
     return sum(r in norm_source for r in runs) / len(runs) >= 0.6
 
 
+# What a host's privacy filter leaves in place of a name or place
+# ("[ADDRESS]", "<PERSON>"). A filing never contains one, so a reply that
+# does was read from altered input (seen 2026-09-28 on two GLM-5.3 hosts).
+_PLACEHOLDER = re.compile(
+    r"[\[<](?:ADDRESS|NAME|PERSON|LOCATION|EMAIL|PHONE|ORGANI[SZ]ATION|REDACTED)[^\]>]{0,20}[\]>]"
+)
+
+
+def has_placeholder(reply: Any) -> bool:
+    return bool(_PLACEHOLDER.search(json.dumps(reply)))
+
+
 def _quotes(value: Any) -> list[str]:
     """Every "quote" string anywhere in a reply."""
     if isinstance(value, dict):
@@ -206,6 +219,8 @@ def flag_reasons(facts: dict[str, Any] | None, checked: int, found: int) -> list
         reasons.append("liquidity concern")
     if checked and found / checked < MIN_QUOTE_HIT_RATE:
         reasons.append(f"only {found}/{checked} quotes found in the filing")
+    if has_placeholder(facts):
+        reasons.append("reply has a redaction placeholder: the host altered the filing text")
     return reasons
 
 
@@ -235,6 +250,7 @@ def read_filing(
     *,
     model: str,
     retry: bool = True,
+    host: str | None = None,
 ) -> FilingRead:
     """One read on `model`, retried once (unless `retry` is off) if the
     answer comes back empty or unparseable: with thinking off, or — on a
@@ -248,6 +264,11 @@ def read_filing(
 
     def attempt(extra: dict[str, Any], max_tokens: int) -> dict[str, Any] | None:
         nonlocal cost, provider
+        if host:  # pinned to one host: the known-answer check (openrouter_hosts)
+            extra = {
+                **extra,
+                "provider": {**extra["provider"], "only": [host], "allow_fallbacks": False},
+            }
         reply = client.complete(
             "FilingReader", model, READER_INSTRUCTIONS, prompt, max_tokens=max_tokens, extra=extra
         )

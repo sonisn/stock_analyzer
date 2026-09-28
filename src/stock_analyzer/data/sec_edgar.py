@@ -47,6 +47,15 @@ def load_ticker_cik_map() -> dict[str, int]:
     return _load_ticker_map()
 
 
+_TICKER_TO_TITLE: dict[str, str] = {}
+
+
+def load_ticker_titles() -> dict[str, str]:
+    """ticker → company name as the SEC lists it ("REPUBLIC SERVICES, INC.")."""
+    _load_ticker_map()
+    return _TICKER_TO_TITLE
+
+
 def _load_ticker_map() -> dict[str, int]:
     global _TICKER_TO_CIK
     if _TICKER_TO_CIK is not None:
@@ -54,6 +63,9 @@ def _load_ticker_map() -> dict[str, int]:
     try:
         data = _HTTP.get_json(_TICKERS_URL)
         _TICKER_TO_CIK = {row["ticker"].upper(): int(row["cik_str"]) for row in data.values()}
+        _TICKER_TO_TITLE.update(
+            {row["ticker"].upper(): str(row.get("title") or "") for row in data.values()}
+        )
     except HttpClientError as e:
         logger.warning("SEC ticker map fetch failed: %s", e)
         _TICKER_TO_CIK = {}

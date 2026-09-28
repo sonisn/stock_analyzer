@@ -434,7 +434,8 @@ def test_helper_agent_on_openrouter_falls_back_but_never_past_the_cap(tmp_path):
     agent = OpenRouterAgent("Rerank", "z-ai/glm-5.3", "sys", client=c, json_mode=True)
     assert agent.run("news").content == '{"AVGO": [2]}'
     body = c._http.bodies[0]  # type: ignore[attr-defined]
-    assert body["provider"] == HELPER_EXTRA["provider"] and body["response_format"]
+    routing = {k: v for k, v in body["provider"].items() if k != "only"}
+    assert routing == HELPER_EXTRA["provider"] and body["response_format"]
 
     # An empty answer or an outage goes to the fallback...
     c = _client(tmp_path, [("", 0.001)])
@@ -449,3 +450,13 @@ def test_helper_agent_on_openrouter_falls_back_but_never_past_the_cap(tmp_path):
     with pytest.raises(BudgetExceededError):
         agent.run("x" * 1000)
     assert used == [1, 1]
+
+
+def test_reader_calls_go_only_to_approved_hosts(tmp_path):
+    c = _client(tmp_path, [(json.dumps(FACTS_OK), 0.005), (json.dumps(FACTS_OK), 0.001)])
+    fr.read_filing(c, FILING, SECTIONS, model="z-ai/glm-5.3")
+    fr.read_filing(c, FILING, SECTIONS, model="z-ai/glm-5.3-flash")
+    big, flash = c._http.bodies  # type: ignore[attr-defined]
+    assert big["provider"]["only"] == ["io-net", "morph", "novita", "baidu"]
+    assert big["provider"]["quantizations"] == ["fp8", "bf16", "fp16"]
+    assert "akashml" not in flash["provider"]["only"]

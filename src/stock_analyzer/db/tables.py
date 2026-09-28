@@ -652,7 +652,43 @@ class EightKAlert(SQLModel, table=True):
     cost_usd: float = 0.0
 
 
+class OpenRouterHostCheck(SQLModel, table=True):
+    """A known-answer check of one OpenRouter host serving one model
+    (openrouter_hosts.canary), run before each weekly filing read. A host
+    that failed its latest check is skipped until it passes one."""
+
+    __tablename__ = "openrouter_host_checks"
+
+    day: str = Field(primary_key=True)  # ISO date
+    model: str = Field(primary_key=True)
+    host: str = Field(primary_key=True)  # OpenRouter slug, e.g. "io-net"
+    passed: bool = False
+    detail: str = ""
+    cost_usd: float = 0.0
+
+
+class FilingSpotCheck(SQLModel, table=True):
+    """Claude re-reading a filing an open model read, field by field
+    (cli/filings.py --spot-check): the running measure of the open readers'
+    quality, per model and host. A handful of rows a month."""
+
+    __tablename__ = "filing_spot_checks"
+
+    accession: str = Field(primary_key=True)
+    checked_on: str = ""  # ISO date
+    ticker: str = Field(default="", index=True)
+    reader_model: str = ""
+    provider: str | None = None
+    claude_model: str = ""
+    agreed: int = 0
+    compared: int = 0
+    fields: str = ""  # JSON {field: agreed}
+    cost_usd: float = 0.0
+
+
 __all__ = [
+    "FilingSpotCheck",
+    "OpenRouterHostCheck",
     "EightKAlert",
     "FilingFacts",
     "OpenRouterSpend",
