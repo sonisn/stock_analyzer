@@ -262,7 +262,7 @@ def test_recheck_drops_rereads_only_stored_bulk_reads_that_dropped(tmp_path, mon
     )
 
 
-def test_store_keeps_two_filings_for_tier_a_and_one_for_tier_b(tmp_path):
+def test_store_keeps_two_filings_per_stock(tmp_path):
     db = str(tmp_path / "t.db")
     for tier, ticker in (("A", "AAA"), ("B", "BBB")):
         for n, filed in enumerate(["2026-02-01", "2026-05-01", "2026-08-01"]):
@@ -271,7 +271,7 @@ def test_store_keeps_two_filings_for_tier_a_and_one_for_tier_b(tmp_path):
             filings.store(db, read, tier=tier, today=date(2026, 9, 27))
     with get_session(db) as s:
         kept = sorted(r.accession for r in s.exec(select(FilingFacts)).all())
-    assert kept == ["AAA-1", "AAA-2", "BBB-2"]
+    assert kept == ["AAA-1", "AAA-2", "BBB-1", "BBB-2"]
 
 
 def test_run_promotes_tier_a_bulk_reads_and_skips_what_is_current(tmp_path, monkeypatch):
@@ -307,6 +307,7 @@ def test_run_promotes_tier_a_bulk_reads_and_skips_what_is_current(tmp_path, monk
         openrouter_reader_model="big",
         openrouter_bulk_model="flash",
     )
+    monkeypatch.setattr(filings, "_prepare_previous", lambda t: None)
     tiers = {"AAA": "A", "BBB": "B", "CCC": "B"}
     assert filings.run(settings, tiers, today=date(2026, 9, 27)) == 0
     # AAA only had a bulk read and is now tier A; BBB is current; CCC is new.
@@ -460,3 +461,70 @@ def test_reader_calls_go_only_to_approved_hosts(tmp_path):
     assert big["provider"]["only"] == ["io-net", "morph", "novita", "baidu"]
     assert big["provider"]["quantizations"] == ["fp8", "bf16", "fp16"]
     assert "akashml" not in flash["provider"]["only"]
+
+
+def test_a_stock_read_for_the_first_time_gets_its_previous_filing_too(tmp_path, monkeypatch):
+    db = str(tmp_path / "t.db")
+    old = {**FILING, "ticker": "OLD", "accession": "OLD-1"}
+    filings.store(
+        db,
+        fr.FilingRead(filing=old, reader_model="flash", facts=FACTS_OK),
+        tier="B",
+        today=date(2026, 9, 1),
+    )
+    monkeypatch.setattr(
+        filings, "_prepare", lambda t: ({**FILING, "ticker": t, "accession": f"{t}-2"}, SECTIONS)
+    )
+    monkeypatch.setattr(
+        filings,
+        "_prepare_previous",
+        lambda t: (
+            {**FILING, "ticker": t, "accession": f"{t}-1", "filed_on": "2026-05-01"},
+            SECTIONS,
+        ),
+    )
+    seen = []
+    monkeypatch.setattr(
+        filings,
+        "read_tiered",
+        lambda client, item, *, tier, reader_model, bulk_model: (
+            seen.append(item[0]["accession"])
+            or fr.FilingRead(filing=item[0], reader_model="flash", facts=FACTS_OK)
+        ),
+    )
+    monkeypatch.setattr(filings, "log_usage_summary", lambda: None)
+    from stock_analyzer.reporting import filing_alert
+
+    monkeypatch.setattr(filing_alert, "earnings_releases", lambda *a, **k: [])
+    settings = filings.Settings(discover_db_path=db, openrouter_api_key="k")
+    assert filings.run(settings, {"OLD": "B", "NEW": "B"}, today=date(2026, 9, 28)) == 0
+    # OLD is known: only its new filing. NEW gets its last two.
+    assert sorted(seen) == ["NEW-1", "NEW-2", "OLD-2"]
+
+
+def test_only_stocks_that_passed_the_screen_lately_are_eligible(tmp_path):
+    from sqlalchemy import text
+
+    from stock_analyzer.db.session import exec_sql
+
+    db = str(tmp_path / "t.db")
+    with get_session(db) as s:
+        exec_sql(
+            s,
+            text(
+                "INSERT INTO runs (id, run_at, kind, universe_size, survivors, picks) VALUES (1, datetime('now', '-5 day'), 'rebalance', 3, 1, 0)"
+            ),
+        )
+        exec_sql(
+            s,
+            text(
+                "INSERT INTO runs (id, run_at, kind, universe_size, survivors, picks) VALUES (2, datetime('now', '-200 day'), 'discover', 3, 1, 0)"
+            ),
+        )
+        for run, t, ok in ((1, "PASS", 1), (1, "FAIL", 0), (2, "STALE", 1)):
+            exec_sql(
+                s,
+                text("INSERT INTO candidates (run_id, ticker, passed_filter) VALUES (:r, :t, :p)"),
+                {"r": run, "t": t, "p": ok},
+            )
+    assert filings.passed_recently(db) == ["PASS"]

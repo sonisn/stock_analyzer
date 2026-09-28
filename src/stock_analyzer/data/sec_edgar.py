@@ -437,15 +437,25 @@ def latest_filing(
     """The newest filing of `forms`: accession, form, filed_on, period_end
     and the primary document's URL. None when the ticker has no CIK or the
     SEC is unreachable."""
+    found = latest_filings(ticker, 1, forms)
+    return found[0] if found else None
+
+
+def latest_filings(
+    ticker: str, n: int, forms: tuple[str, ...] = ("10-Q", "10-K", "20-F")
+) -> list[dict[str, Any]]:
+    """The `n` newest filings of `forms`, newest first (one request);
+    [] when the ticker has no CIK or the SEC is unreachable."""
     cik = _load_ticker_map().get(ticker.upper())
     if cik is None:
-        return None
+        return []
     try:
         sub = _HTTP.get_json(_SUBMISSIONS_URL.format(cik=cik))
     except HttpClientError as e:
         logger.warning("SEC submissions fetch failed for %s: %s", ticker, e)
-        return None
+        return []
     recent = sub.get("filings", {}).get("recent", {})
+    out: list[dict[str, Any]] = []
     for form, acc, doc, filed, period in zip(
         recent.get("form", []),
         recent.get("accessionNumber", []),
@@ -455,16 +465,20 @@ def latest_filing(
         strict=False,
     ):
         if form in forms:
-            return {
-                "ticker": ticker.upper(),
-                "cik": cik,
-                "accession": acc,
-                "form": form,
-                "filed_on": filed,
-                "period_end": period or None,
-                "url": f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}/{doc}",
-            }
-    return None
+            out.append(
+                {
+                    "ticker": ticker.upper(),
+                    "cik": cik,
+                    "accession": acc,
+                    "form": form,
+                    "filed_on": filed,
+                    "period_end": period or None,
+                    "url": f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc.replace('-', '')}/{doc}",
+                }
+            )
+            if len(out) == n:
+                break
+    return out
 
 
 def fetch_filing_text(url: str) -> str | None:

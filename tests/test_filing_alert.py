@@ -78,7 +78,7 @@ def test_new_filings_are_read_once_and_routine_8ks_skipped(tmp_path, monkeypatch
         _filing("8-K", "k1", ["2.02", "9.01"]),
         _filing("8-K", "k2", ["5.07"]),  # shareholder vote: routine
     ]
-    monkeypatch.setattr(fa, "filings_since", lambda t, since: filings)
+    monkeypatch.setattr(fa, "filings_since", lambda t, since, forms=(): filings)
     page = f"ITEM 2. MANAGEMENT'S DISCUSSION AND ANALYSIS\n{MDA}\nITEM 3. QUANTITATIVE AND x"
     monkeypatch.setattr(fa, "fetch_filing_text", lambda url: page)
     monkeypatch.setattr(fa, "exhibit_99_text", lambda f: "Press release")
@@ -101,7 +101,9 @@ def test_new_filings_are_read_once_and_routine_8ks_skipped(tmp_path, monkeypatch
 
 def test_the_cap_stops_the_check_without_losing_what_was_read(tmp_path, monkeypatch):
     db = str(tmp_path / "t.db")
-    monkeypatch.setattr(fa, "filings_since", lambda t, since: [_filing("8-K", "k1", ["5.02"])])
+    monkeypatch.setattr(
+        fa, "filings_since", lambda t, since, forms=(): [_filing("8-K", "k1", ["5.02"])]
+    )
     monkeypatch.setattr(fa, "fetch_filing_text", lambda url: "The CFO resigned.")
     monkeypatch.setattr(fa, "exhibit_99_text", lambda f: None)
     c = _client(tmp_path, [], cap=0.0000001)

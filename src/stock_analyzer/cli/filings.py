@@ -1,20 +1,23 @@
 """`read-filings` — structured facts from each stock's latest 10-Q/10-K/20-F.
 
-Weekly, Saturday night (scripts/run_filings.sh), over the whole $2B+
-universe in two tiers:
+Weekly, Saturday night (scripts/run_filings.sh), over the stocks whose facts
+can reach the deciding models — ~500 of the ~1,900 in the $2B+ universe
+(`--all` reads every one) — in two tiers:
 
   A. the stocks acted on — holdings, picks, the discover shortlist and the
      market leaders — read by the reader model (GLM-5.3);
      Their latest earnings 8-K (the press release, where guidance is — a
      10-Q seldom states it) is read too, once the filings are done.
-  B. everything else, read by the bulk model (GLM-5.3-Flash). A bulk read
+  B. stocks that passed the screen's hard filter in the last ELIGIBLE_DAYS
+     (90), read by the bulk model (GLM-5.3-Flash). A bulk read
      that reports a serious event, or fails, is read again on the reader
      model, and that read replaces it — as is one whose filing shows
      operating or net income down 25%+ in its own XBRL figures
      (data/income_drop), which the bulk model can read past.
 
-For each stock: the newest filing from EDGAR (free), skipped when it is
-already stored — unless a tier-A stock only has a bulk read, which is
+For each stock: the newest filing from EDGAR (free) — and, for a stock
+read for the first time, the one before it too, so its facts can say what
+changed — skipped when it is already stored — unless a tier-A stock only has a bulk read, which is
 re-read on the reader model (a stock becoming a pick gets the better read
 on the next run). Results land in `filing_facts` as each read finishes.
 
@@ -51,7 +54,8 @@ from ..agents.filing_reader import (
 from ..config import Settings
 from ..data.forecast_snapshots import tracked_tickers
 from ..data.income_drop import income_drops
-from ..data.sec_edgar import fetch_filing_text, filing_sections, latest_filing
+from ..data.sec_edgar import fetch_filing_text, filing_sections, latest_filing, latest_filings
+from ..data.text_change import ANNUAL_FORMS, risk_change, risk_sections
 from ..data.universe_base import all_us_2b
 from ..db.session import exec_sql, get_session
 from ..db.tables import FilingFacts
@@ -62,7 +66,10 @@ from ..usage import BudgetExceededError, log_usage_summary
 
 logger = get_logger(__name__)
 
-KEEP = {"A": 2, "B": 1}
+KEEP = {"A": 2, "B": 2}
+# A stock counts as screen-eligible when it passed the hard filter in a run
+# this recent; only those (and tier A) are read each week.
+ELIGIBLE_DAYS = 90
 _SEC_WORKERS = 4  # the SEC client rate-limits itself to 8 requests a second
 _READ_WORKERS = 8
 # Fields compared between a reader and Claude.
@@ -95,6 +102,22 @@ def analyzed_recently(db: str, runs: int = 3) -> list[str]:
     return [r[0].upper() for r in rows if r[0]]
 
 
+def passed_recently(db: str, *, days: int = ELIGIBLE_DAYS) -> list[str]:
+    """Stocks that passed the screen's hard filter in any run of the last
+    `days` — the ones whose filing facts can reach the deciding models.
+    ~430 of the ~1,900 in the $2B+ universe (2026-09-28)."""
+    with get_session(db) as session:
+        rows = exec_sql(
+            session,
+            text(
+                "SELECT DISTINCT ticker FROM candidates WHERE passed_filter = 1 AND run_id IN "
+                "(SELECT id FROM runs WHERE run_at >= date('now', :window))"
+            ),
+            {"window": f"-{days} day"},
+        ).all()
+    return [r[0].upper() for r in rows if r[0]]
+
+
 def tier_a(settings: Settings, *, today: date) -> list[str]:
     """Holdings, recent picks, the latest discover survivors, the recent
     Analyst shortlists, earnings standouts and the market leaders."""
@@ -105,6 +128,33 @@ def tier_a(settings: Settings, *, today: date) -> list[str]:
     return list(
         dict.fromkeys([*tracked_tickers(db, today=today), *analyzed_recently(db), *leaders])
     )
+
+
+def _risk_change(filing: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        return risk_change(filing, filing.get("_risks_full") or "")
+    except Exception as e:  # noqa: BLE001 — a missing comparison never stops a read
+        logger.info("%s: risk-factor comparison failed (%s)", filing.get("ticker"), e)
+        return None
+
+
+def _known_tickers(db: str) -> set[str]:
+    with get_session(db) as session:
+        return {
+            t for (t,) in exec_sql(session, text("SELECT DISTINCT ticker FROM filing_facts")).all()
+        }
+
+
+def _prepare_previous(ticker: str) -> Prepared | None:
+    """The filing before the newest, cut and ready to read — for a stock
+    read for the first time, so its facts can say what changed."""
+    filings = latest_filings(ticker, 2)
+    if len(filings) < 2:
+        return None
+    filing = filings[1]
+    text_ = fetch_filing_text(filing["url"])
+    sections = filing_sections(text_ or "", filing["form"], max_chars=SECTION_CHARS)
+    return (filing, sections) if "mda" in sections else None
 
 
 def _stored(db: str) -> dict[str, str]:
@@ -125,6 +175,9 @@ def _prepare(ticker: str) -> Prepared | str:
     sections = filing_sections(text, filing["form"], max_chars=SECTION_CHARS)
     if "mda" not in sections:
         return f"MD&A not found in {filing['form']}"
+    if filing["form"] in ANNUAL_FORMS:
+        # The whole risk-factor section, for `risk_change` if this one is read.
+        filing["_risks_full"] = risk_sections(text, filing["form"])
     return filing, sections
 
 
@@ -150,6 +203,8 @@ def store(db: str, read: FilingRead, *, tier: str, today: date) -> None:
                 flag_reasons="; ".join(read.flag_reasons),
                 escalated_from=read.escalated_from,
                 cost_usd=round(read.cost_usd, 6),
+                risk_kept=(f.get("risk_change") or {}).get("kept"),
+                risk_cosine=(f.get("risk_change") or {}).get("cosine"),
             )
         )
         session.flush()
@@ -302,6 +357,28 @@ def run(
             continue
         stored[acc] = "queued"  # share classes (GOOG/GOOGL) file one document
         todo.append((tiers[t], p))
+    # A stock read for the first time also gets the filing before, so its
+    # facts can say what changed from one quarter to the next.
+    known = _known_tickers(db) if not dry_run else set()
+    new = [] if dry_run else [(tier, p) for tier, p in todo if p[0]["ticker"] not in known]
+    with ThreadPoolExecutor(_SEC_WORKERS) as ex:
+        previous = list(ex.map(lambda tp: _prepare_previous(tp[1][0]["ticker"]), new))
+    for (tier, _), prev in zip(new, previous, strict=True):
+        if prev is not None and prev[0]["accession"] not in stored:
+            stored[prev[0]["accession"]] = "queued"
+            todo.append((tier, prev))
+    if new:
+        print(f"{len(new)} stocks new to the table: their previous filing is read too")
+    # A 10-K about to be read is compared with last year's risk factors
+    # (two free SEC requests); the full sections are then dropped.
+    annual = [p for _, p in todo if p[0].get("_risks_full")]
+    with ThreadPoolExecutor(_SEC_WORKERS) as ex:
+        changes = list(ex.map(lambda p: _risk_change(p[0]), annual))
+    for p, change in zip(annual, changes, strict=True):
+        p[0]["risk_change"] = change
+    for p in prepared.values():
+        if not isinstance(p, str):
+            p[0].pop("_risks_full", None)
     # Only the filings about to be read (and, with --recheck-drops, the
     # stored bulk reads): two free SEC requests each.
     with ThreadPoolExecutor(_SEC_WORKERS) as ex:
@@ -527,6 +604,11 @@ def main() -> int:
         "tickers", nargs="*", help="read just these, on the reader model (default: the universe)"
     )
     parser.add_argument("--limit", type=int, default=0, help="read at most this many stocks")
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="the whole $2B+ universe (default: tier A + stocks that passed the screen lately)",
+    )
     parser.add_argument("--force", action="store_true", help="re-read filings already stored")
     parser.add_argument("--dry-run", action="store_true", help="fetch and cut, no model calls")
     parser.add_argument(
@@ -556,7 +638,8 @@ def main() -> int:
     if args.tickers:
         tiers = {t.upper(): "A" for t in args.tickers}
     else:
-        tiers = {t: "B" for t in all_us_2b()}
+        base = all_us_2b() if args.all else passed_recently(settings.discover_db_path)
+        tiers = {t: "B" for t in base}
         tiers.update({t: "A" for t in tier_a(settings, today=today)})
     if args.limit:
         tiers = dict(sorted(tiers.items(), key=lambda kv: kv[1])[: args.limit])

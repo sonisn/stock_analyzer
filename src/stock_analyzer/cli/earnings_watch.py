@@ -93,6 +93,11 @@ def main() -> None:
         logger.exception("13F hedge-fund sync failed")
         failed.append("hedge-fund 13F")
     try:
+        _activist_scan(db, settings)
+    except Exception:
+        logger.exception("13D activist scan failed")
+        failed.append("13D activist scan")
+    try:
         refresh_us_2b()  # the quality rules move with each earnings season
     except Exception:
         logger.exception("Universe rescan failed — keeping the last one")
@@ -104,6 +109,29 @@ def main() -> None:
         failed.append("screen cache warm-up")
     if failed:
         raise SystemExit(f"failed: {', '.join(failed)}")
+
+
+def _activist_scan(db: str, settings: Settings) -> None:
+    """Schedule 13Ds on the $2B+ universe (and holdings) from the last few
+    days, read on the open reader (reporting/filing_alert.activist_scan)."""
+    from ..data.universe_base import all_us_2b
+    from ..openrouter import client_from_settings
+    from ..reporting.filing_alert import activist_scan
+
+    client = client_from_settings(settings)
+    if client is None:
+        logger.info("13D scan skipped: no OPENROUTER_API_KEY")
+        return
+    found = activist_scan(
+        client,
+        db,
+        set(all_us_2b()) | set(settings.discover_watchlist),
+        today=date.today(),
+        model=settings.openrouter_reader_model,
+    )
+    for item in found:
+        f, read = item["filing"], (item["facts"].get("read") or {})
+        logger.info("Activist 13D: %s %s — %s", f["ticker"], f["form"], read.get("headline"))
 
 
 def _watch(db: str) -> None:

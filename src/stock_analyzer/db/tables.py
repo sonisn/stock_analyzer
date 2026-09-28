@@ -628,6 +628,9 @@ class FilingFacts(SQLModel, table=True):
     # The bulk model whose flagged read this one replaced, if any.
     escalated_from: str | None = None
     cost_usd: float = 0.0
+    # 10-K/20-F only: the risk factors against last year's (data/text_change).
+    risk_kept: float | None = None  # share of sentences carried over verbatim
+    risk_cosine: float | None = None
 
 
 class EightKAlert(SQLModel, table=True):
@@ -652,6 +655,28 @@ class EightKAlert(SQLModel, table=True):
     cost_usd: float = 0.0
 
 
+class SecEvent(SQLModel, table=True):
+    """An SEC event filing on a stock we follow (data/sec_events): a late-
+    filing notice, a shelf or offering, a planned insider sale (Form 144),
+    or a Schedule 13D. Holdings' events are emailed the evening they are
+    found; 13Ds across the universe feed discover as an idea source. Also
+    what stops a filing being read or emailed twice. Small rows; a few
+    thousand a year, mostly Form 144s below the alert threshold."""
+
+    __tablename__ = "sec_events"
+
+    accession: str = Field(primary_key=True)
+    ticker: str = Field(index=True)
+    form: str = ""
+    kind: str = Field(default="", index=True)  # late_filing|shelf|offering|planned_sale|activist
+    filed_on: str = Field(default="", index=True)
+    url: str = ""
+    read_on: str = ""
+    reader_model: str = ""
+    facts: str = ""  # JSON: parsed fields plus the reader's answer
+    alerted: bool = False  # met the alert bar (a Form 144 below it is only recorded)
+
+
 class OpenRouterHostCheck(SQLModel, table=True):
     """A known-answer check of one OpenRouter host serving one model
     (openrouter_hosts.canary), run before each weekly filing read. A host
@@ -670,7 +695,7 @@ class OpenRouterHostCheck(SQLModel, table=True):
 class FilingSpotCheck(SQLModel, table=True):
     """Claude re-reading a filing an open model read, field by field
     (cli/filings.py --spot-check): the running measure of the open readers'
-    quality, per model and host. A handful of rows a month."""
+    quality, per model and host. Run by hand only (not scheduled)."""
 
     __tablename__ = "filing_spot_checks"
 
@@ -687,6 +712,7 @@ class FilingSpotCheck(SQLModel, table=True):
 
 
 __all__ = [
+    "SecEvent",
     "FilingSpotCheck",
     "OpenRouterHostCheck",
     "EightKAlert",

@@ -48,7 +48,10 @@ positioning around earnings are not reasons to trade. The user provides:
     one_offs, reported `events` (material weakness, impairment, guidance
     cut, investigation…), tone, and `vs_prior_filing` (what changed since
     the filing before). When it is present the raw excerpts below are
-    empty; treat it as the filing.
+    empty; treat it as the filing. On a 10-K, `risk_factors_vs_last_year`
+    says how much of the risk-factor section was rewritten — companies
+    that rewrite theirs heavily have tended to do worse, weakly: a reason
+    to read the key risks closely, not a verdict.
   - earnings_release (when present): the latest earnings press release
     (8-K item 2.02) — headline, guidance and reported numbers. A 10-Q
     seldom states guidance; this is where the company does. Newer than

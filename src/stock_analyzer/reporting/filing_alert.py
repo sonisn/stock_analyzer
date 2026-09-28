@@ -35,8 +35,18 @@ from ..agents.filing_reader import (
 )
 from ..data.filing_evidence import evidence_packs
 from ..data.sec_edgar import exhibit_99_text, fetch_filing_text, filing_sections, filings_since
+from ..data.sec_events import (
+    EVENT_FORMS,
+    PLANNED_SALE_MIN_USD,
+    kind_of,
+    parse_13d,
+    parse_planned_sale,
+    primary_xml,
+    shares_change,
+)
+from ..data.text_change import ANNUAL_FORMS, risk_change, risk_sections
 from ..db.session import get_session
-from ..db.tables import EightKAlert, FilingFacts
+from ..db.tables import EightKAlert, FilingFacts, SecEvent
 from ..logging import get_logger
 from ..openrouter import OpenRouter
 from ..serialization import dumps_compact
@@ -52,7 +62,8 @@ def _seen(db: str) -> set[str]:
     with get_session(db) as session:
         periodic = set(session.exec(select(FilingFacts.accession)).all())
         eightks = set(session.exec(select(EightKAlert.accession)).all())
-    return periodic | eightks
+        events = set(session.exec(select(SecEvent.accession)).all())
+    return periodic | eightks | events
 
 
 def new_holding_filings(
@@ -71,12 +82,14 @@ def new_holding_filings(
     since = today - timedelta(days=LOOKBACK_DAYS)
     found: list[dict[str, Any]] = []
     for ticker in tickers:
-        for f in filings_since(ticker, since):
+        for f in filings_since(ticker, since, forms=(*PERIODIC, "8-K", *EVENT_FORMS)):
             if f["accession"] in seen:
                 continue
             seen.add(f["accession"])  # share classes file one document
             try:
-                if f["form"] in PERIODIC:
+                if kind_of(f["form"]):
+                    item = read_event(client, db, f, model=model, today=today)
+                elif f["form"] in PERIODIC:
                     item = _periodic(client, db, f, model=model, today=today, store=store)
                 elif set(f["items"]) & set(MATERIAL_8K_ITEMS):
                     item = _eightk(client, db, f, model=model, today=today)
@@ -96,6 +109,11 @@ def new_holding_filings(
 def _periodic(client, db, f, *, model, today, store) -> dict[str, Any] | None:
     text = fetch_filing_text(f["url"])
     sections = filing_sections(text or "", f["form"], max_chars=SECTION_CHARS)
+    if text and f["form"] in ANNUAL_FORMS:
+        try:
+            f["risk_change"] = risk_change(f, risk_sections(text, f["form"]))
+        except Exception as e:  # noqa: BLE001
+            logger.info("%s: risk-factor comparison failed (%s)", f["ticker"], e)
     if "mda" not in sections:
         logger.info("%s %s: MD&A not found, left to the weekly read", f["ticker"], f["form"])
         return None
@@ -140,6 +158,120 @@ def earnings_releases(
     return out
 
 
+def read_event(
+    client: OpenRouter, db: str, f: dict[str, Any], *, model: str, today: date
+) -> dict[str, Any] | None:
+    """Read and store one SEC event filing (data/sec_events); the email item
+    when it meets the alert bar, else None. A Form 144 below
+    PLANNED_SALE_MIN_USD and a 13D the reader doesn't call activist are
+    recorded but not alerted. What the reads cost is in openrouter_spend."""
+    from ..agents.event_reader import read_13d, read_offering
+
+    kind = kind_of(f["form"]) or ""
+    facts: dict[str, Any] = {}
+    alert = True
+    used_model = ""
+    if kind in ("shelf", "offering"):
+        change = shares_change(f["cik"], today=today) if f.get("cik") else None
+        if change:
+            facts["shares"] = change
+        if kind == "offering":
+            body = fetch_filing_text(f["url"])
+            if body:
+                facts["offering"] = read_offering(client, f, body, model=model)
+                used_model = model
+    elif kind == "planned_sale":
+        xml = primary_xml(f)
+        facts.update(parse_planned_sale(xml) if xml else {})
+        alert = (facts.get("value_usd") or 0) >= PLANNED_SALE_MIN_USD
+    elif kind == "activist":
+        xml = primary_xml(f)
+        parsed = parse_13d(xml) if xml else {}
+        issuer = parsed.get("issuer_cik")
+        if issuer and f.get("cik") and int(issuer) != int(f["cik"]):
+            return None  # this ticker is the holder, not the target
+        facts.update({k: v for k, v in parsed.items() if k not in ("purpose", "items_text")})
+        if parsed:
+            facts["read"] = read_13d(client, f, parsed, model=model)
+            used_model = model
+        # "unclear" is kept: an amendment by an activist fund often doesn't
+        # restate its demands (Elliott at Seadrill, 2026-09-21). The discover
+        # idea source (`activist_targets`) takes "activist" only.
+        alert = ((facts.get("read") or {}).get("stance")) in ("activist", "unclear")
+    with get_session(db) as session:
+        session.merge(
+            SecEvent(
+                accession=f["accession"],
+                ticker=f["ticker"],
+                form=f["form"],
+                kind=kind,
+                filed_on=f["filed_on"],
+                url=f["url"],
+                read_on=today.isoformat(),
+                reader_model=used_model,
+                facts=dumps_compact(facts),
+                alerted=alert,
+            )
+        )
+    return {"kind": "event", "event": kind, "filing": f, "facts": facts} if alert else None
+
+
+SCAN_DAYS = 5  # a weekend plus a missed night
+
+
+def activist_scan(
+    client: OpenRouter, db: str, tickers: set[str], *, today: date, model: str
+) -> list[dict[str, Any]]:
+    """Schedule 13Ds filed on any of `tickers` in the last SCAN_DAYS (EDGAR
+    daily index, one request a day), each read once. Returns the activist
+    ones. Nightly in earnings-watch; stops quietly at the OpenRouter cap."""
+    from ..data.sec_events import recent_days, thirteen_d_targets
+
+    seen = _seen(db)
+    tried: set[tuple[str, str]] = set()  # one filing, several listed parties
+    found = []
+    for day in recent_days(today + timedelta(days=1), SCAN_DAYS):
+        for f in thirteen_d_targets(day, tickers):
+            key = (f["accession"], f["ticker"])
+            if f["accession"] in seen or key in tried:
+                continue
+            tried.add(key)
+            try:
+                item = read_event(client, db, f, model=model, today=today)
+            except BudgetExceededError as e:
+                logger.warning("13D scan: stopped at the OpenRouter cap (%s)", e)
+                return found
+            except Exception as e:  # noqa: BLE001 — one filing never sinks the scan
+                logger.warning("13D %s %s failed (%s)", f["ticker"], f["accession"], e)
+                continue
+            if item:
+                found.append(item)
+    return found
+
+
+def activist_targets(db: str, *, today: date, days: int = 60) -> list[str]:
+    """Stocks with an activist 13D filed in the last `days` — a discover
+    idea source ("activist_13d"), not a score."""
+    import json
+
+    since = (today - timedelta(days=days)).isoformat()
+    with get_session(db) as session:
+        rows = session.exec(
+            select(SecEvent.ticker, SecEvent.facts).where(
+                SecEvent.kind == "activist", SecEvent.filed_on >= since
+            )
+        ).all()
+    out = set()
+    for ticker, facts in rows:
+        try:
+            read = (json.loads(facts or "{}") or {}).get("read") or {}
+        except json.JSONDecodeError:
+            continue
+        if read.get("stance") == "activist":
+            out.add(ticker)
+    return sorted(out)
+
+
 def _eightk(client, db, f, *, model, today) -> dict[str, Any] | None:
     body = fetch_filing_text(f["url"])
     if not body:
@@ -168,8 +300,19 @@ def _eightk(client, db, f, *, model, today) -> dict[str, Any] | None:
 # --- the email -----------------------------------------------------------------
 
 
+EVENT_LABELS = {
+    "late_filing": "late-filing notice",
+    "shelf": "shelf registration",
+    "offering": "offering",
+    "planned_sale": "planned insider sale",
+    "activist": "activist stake",
+}
+
+
 def subject_part(item: dict[str, Any]) -> str:
     f = item["filing"]
+    if item["kind"] == "event":
+        return f"{f['ticker']} {EVENT_LABELS.get(item['event'], f['form'])}"
     if item["kind"] == "periodic":
         return f"{f['ticker']} {f['form']}"
     labels = [MATERIAL_8K_ITEMS[i] for i in f["items"] if i in MATERIAL_8K_ITEMS]
@@ -189,9 +332,75 @@ def _events(events: list[dict[str, Any]] | None) -> list[str]:
     ]
 
 
+def _money(v: Any) -> str:
+    try:
+        v = float(v)
+    except TypeError, ValueError:
+        return "?"
+    return f"${v / 1e9:,.2f}B" if v >= 1e9 else f"${v / 1e6:,.1f}M"
+
+
+def event_rows(item: dict[str, Any]) -> list[str]:
+    """The lines for one SEC event (data/sec_events) in the alert email."""
+    f, facts, kind = item["filing"], item.get("facts") or {}, item["event"]
+    link = f'<a href="{_e(f["url"])}">{_e(f["form"])} filed {_e(f["filed_on"])}</a>'
+    head = f"<b>{_e(f['ticker'])}</b> — {EVENT_LABELS.get(kind, kind)}: {link}"
+    rows = [head]
+    if kind == "late_filing":
+        rows.append(
+            "⚠ The company told the SEC it cannot file its report on time — often a sign "
+            "of accounting trouble. Read the notice for the reason."
+        )
+    elif kind == "planned_sale":
+        pct = facts.get("pct_of_outstanding")
+        rows.append(
+            f"{_e(facts.get('seller'))} ({_e(facts.get('relationship'))}) plans to sell "
+            f"{(facts.get('shares') or 0):,.0f} shares, {_money(facts.get('value_usd'))}"
+            + (f" ({pct}% of the company)" if pct else "")
+            + f", around {_e(facts.get('sale_date'))}"
+            + (f"; acquired as {_e(facts.get('acquired_as'))}" if facts.get("acquired_as") else "")
+        )
+    elif kind == "activist":
+        read = facts.get("read") or {}
+        who = ", ".join(facts.get("holders") or []) or "a holder"
+        rows.append(f"{_e(who)} — {_e(facts.get('percent'))}% of the class")
+        if read.get("headline"):
+            rows.append(f"<b>{_e(read['headline'])}</b>")
+        if read.get("demands"):
+            rows.append(f"Seeks: {_e(read['demands'])}")
+        if read.get("quote"):
+            rows.append(f"<i>“{_e(read['quote'])}”</i>")
+    else:  # shelf / offering
+        o = facts.get("offering") or {}
+        if o.get("headline"):
+            rows.append(f"<b>{_e(o['headline'])}</b>")
+        if o:
+            size = (
+                _money(o["amount_usd_millions"] * 1e6)
+                if o.get("amount_usd_millions")
+                else "size not stated"
+            )
+            rows.append(
+                f"{_e(o.get('security'))}{' (at-the-market program)' if o.get('at_the_market') else ''}"
+                f", {size}"
+                + (f"; proceeds for {_e(o['use_of_proceeds'])}" if o.get("use_of_proceeds") else "")
+            )
+        elif kind == "shelf":
+            rows.append("Registers securities the company may sell later (no sale yet).")
+        sh = facts.get("shares") or {}
+        if sh.get("change_pct") is not None:
+            rows.append(
+                f"Shares outstanding {sh['change_pct']:+.1f}% in a year "
+                f"({sh.get('year_ago', 0):,.0f} → {sh['latest']:,.0f})"
+            )
+    return rows
+
+
 def filing_block(item: dict[str, Any]) -> str:
     f = item["filing"]
     link = f'<a href="{_e(f["url"])}">{_e(f["form"])} filed {_e(f["filed_on"])}</a>'
+    if item["kind"] == "event":
+        return "<p>" + "<br>".join(event_rows(item)) + "</p>"
     if item["kind"] == "periodic":
         p = item["pack"]
         rows = [
@@ -233,4 +442,7 @@ def filing_block(item: dict[str, Any]) -> str:
 def summary_line(item: dict[str, Any]) -> str:
     """One line for logs and tests."""
     s = item.get("pack") or item.get("summary") or {}
+    if item["kind"] == "event":
+        facts = item.get("facts") or {}
+        s = facts.get("read") or facts.get("offering") or {}
     return f"{subject_part(item)}: {s.get('headline') or s.get('summary') or ''}"

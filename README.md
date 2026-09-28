@@ -24,6 +24,12 @@ Both pipelines emit a structured **HTML email + PDF**, persist every
 run to **SQLite** for cross-run track-record scoring, and dump the
 full analysis to the log so you never lose a run to an email failure.
 
+Open models over OpenRouter do the **reading**, never the deciding:
+GLM-5.3 and GLM-5.3-Flash turn every $2B+ company's latest 10-Q/10-K and
+earnings press release into quoted facts for the deciding models (see
+[SEC filings, read by open models](#sec-filings-read-by-open-models)),
+and GLM-5.3 writes the insider summary and ranks the news.
+
 ## What's in it
 
 | Stage | Model | What it does |
@@ -33,7 +39,7 @@ full analysis to the log so you never lose a run to an email failure.
 | Track record | — | Score past BUY/HOLD/TRIM/SELL calls vs SPY at fixed 30d + 90d horizons, beta-adjusted |
 | Market themes | Sonnet | Identify 3-8 themes grounded in actual price + revision data |
 | Screen | — | Hard filters + 0-100 composite score (45 fundamentals / 45 trend / 10 attention) |
-| Enrichment (parallel) | — | News, earnings, insider selling, share trades, peers, 10-Q MD&A, transcripts |
+| Enrichment (parallel) | — | News, earnings, insider selling, share trades, peers, SEC filing facts (read weekly by GLM-5.3), transcripts |
 | Analyst | Sonnet | Per-ticker analyst report with structured output |
 | Ranker | Claude + Gemini + OpenAI (one consensus round each) | Top-N picks with 3 scenarios (bull/base/bear) + EV + agreement ratio |
 | Macro veto | — (deterministic) | Suppress high-momentum picks in a risk-off FRED regime |
@@ -119,9 +125,14 @@ uv run discover-stocks            # find new picks
 uv run rebalance-portfolio        # review holdings + plan
 uv run analyze-portfolio          # one-off analyst-style report
 uv run analyze-insiders           # insider + political trade signals
+uv run read-filings               # SEC filings -> facts (GLM-5.3 on OpenRouter)
+uv run dashboard --open           # one HTML page of everything on record
 uv run ops doctor                 # free check of every key, model id and source
 uv run stock-analyzer --help      # every command in one list
 ```
+
+`rebalance-portfolio` and `discover-stocks` have no `--help`: any
+argument starts a live (paid) run. Read the module docstring instead.
 
 ## Required env vars
 
@@ -151,6 +162,21 @@ For covered-call writing (optional but recommended — better strike picks):
   Tradier brokerage account (no funding minimum). Without it, the
   pipeline falls back to delayed yfinance data with no Greeks.
 - `TRADIER_BASE_URL` — defaults to production `https://api.tradier.com/v1`.
+
+For the SEC filing reader and the helper roles (insider summary, news
+ranking):
+
+- `OPENROUTER_API_KEY` — open models over OpenRouter
+  (`OPENROUTER_READER_MODEL`=z-ai/glm-5.3, `OPENROUTER_BULK_MODEL`=
+  z-ai/glm-5.3-flash, `OPENROUTER_DAILY_CAP_USD`=2 across every process)
+- `RERANK_PROVIDER` / `INSIDER_PROVIDER` = `openrouter` with
+  `RERANK_MODEL` / `INSIDER_MODEL` = `z-ai/glm-5.3` puts those roles on
+  GLM-5.3 (the insider summary falls back to `LLM_PROVIDER` if OpenRouter
+  fails or its report names a ticker the sources don't support). Leave
+  them empty to keep them on Claude.
+- `LLM_PRICES` — prices for any model the built-in table lacks
+  (`model=in:out` USD per million tokens); GPT-6 and Gemini Pro are built
+  in, so the cost cap and the run totals count them.
 
 For email delivery:
 
@@ -874,8 +900,15 @@ request each; a filing is downloaded only when new), maps CUSIPs to
 tickers through OpenFIGI (cached; AdGuard needs `@@||openfigi.com^$important`)
 and compares each fund's latest two quarters. The daily email lists who
 bought or sold your holdings, with the quarter: a 13F is filed up to 45
-days after it, so positions can be 4½ months old. Not scored — the
-evidence that copying 13Fs pays after that delay is weak.
+days after it, so positions can be 4½ months old.
+
+Tested 2026-09-28 on these funds' 13Fs since 2013, bought on the filing
+date: one fund's new 2%+ position beat the average S&P 500 stock by 2.1%
+over six months (t 1.7), a fund's top holdings not at all, but **two or
+more funds buying the same stock in the same quarter** by 3.3% (t 2.0,
+positive in both halves). That is borderline, so such a stock becomes a
+discover idea source (`fund_consensus`, within 135 days of the filing)
+and is flagged in the email — not scored.
 
 ## Data frames: Polars
 
@@ -974,6 +1007,9 @@ runs don't re-download it:
 | `insider_buys` | open-market purchases (Form 4, code P) at S&P 500 and tracked companies | a few hundred rows a year; dropped after 400 days |
 | `analyst_actions` | rating and price-target actions by firm for stocks with a followed earnings report, from 90 days before it | tens of rows per stock |
 | `forecast_snapshots` | each weekday night, analysts' consensus for every tracked stock (~175: holdings, a year of picks, recent screen survivors, standouts): EPS and revenue for this and next fiscal year, analyst count, price targets, recommendation — plus short interest (share of float, days to cover), shares outstanding and ownership from the same request — point in time, so revisions and short interest can become model features without look-ahead | ~175 rows per weekday (~4 MB/year); kept forever |
+| `filing_facts` | structured facts from each stock's latest 10-Q/10-K (`read-filings`) | two filings per stock acted on, one for the rest (~1,900 stocks, ~5 KB each) |
+| `sec_events` | late-filing notices, shelves and offerings, planned insider sales (Form 144) and Schedule 13Ds on holdings; 13Ds across the universe | a few thousand small rows a year |
+| `openrouter_spend`, `openrouter_host_checks` | what OpenRouter billed per day/model/stage; each host's weekly known-answer check | a few rows a day |
 | `earnings_events` | clear earnings beats anywhere in the market and reports by past picks, with the reaction, the revision and the verdict (`earnings-watch`) | tens of rows a week in earnings season; dropped after 365 days |
 
 Tax lots, cash flows and dividends read the stored activity history, so a
@@ -982,6 +1018,92 @@ splits or FIFO matching. History upkeep trims old prose (365 days), compacts
 the file (VACUUM) once trimming frees 20% of it, and the monthly
 `model-review` email reports the database size and largest tables, flagging
 it past `HISTORY_DB_WARN_MB` (50 MB).
+
+## SEC filings, read by open models
+
+`read-filings` (Saturday 11 PM New York, `scripts/run_filings.sh`, $5 cap)
+reads the newest 10-Q / 10-K / 20-F of every stock whose facts can reach
+the deciding models — holdings, picks, shortlists, market leaders and
+anything that passed the screen's hard filter in the last 90 days (~460 of
+the ~1,900 $2B+ stocks; `--all` reads every one). A stock read for the
+first time gets its previous filing read too, so its facts say what
+changed quarter to quarter. It stores
+structured facts in `filing_facts`: guidance, demand, margins, backlog,
+liquidity, capital return, key risks, one-offs, reported events
+(material weakness, going concern, restatement, investigation...), tone
+and what changed since the filing before — every field with a verbatim
+quote that is checked against the filing text.
+
+- **Tier A** (holdings, recent picks and shortlists, market leaders) is
+  read by `OPENROUTER_READER_MODEL` (GLM-5.3, ~$0.01 a filing); **tier B**
+  (the other screen-eligible stocks) by `OPENROUTER_BULK_MODEL`
+  (GLM-5.3-Flash, ~$0.002). A bulk read is re-read on GLM-5.3 when it
+  flags an event, fails, or when the filing's own XBRL figures show
+  operating or net income down 25%+ (`data/income_drop.py`, free).
+- Tier A's latest **earnings press release** (8-K item 2.02) is read too —
+  a 10-Q seldom states guidance, the release usually does.
+- The deciding models (Analyst, Reviewer) get a compact `sec_filing` pack
+  and an `earnings_release` in place of the first few thousand characters
+  of MD&A they used to see.
+- The **screen** takes points off for high-severity red flags in the
+  latest filing: going concern -8, material weakness or restatement -4
+  (floor -8). Every filing category is stored with each screened
+  candidate so `score-attribution` can measure it later.
+- A **held** stock's new 10-Q/10-K or material 8-K is read the evening it
+  appears (the 6:30 PM snapshot run) and emailed with the drop alerts.
+- A 10-K's **risk factors are compared with last year's**
+  (`data/text_change.py`, free): the share of sentences carried over
+  verbatim (typical 70%) goes to the deciding models as a fact. Tested on
+  the S&P 500's 10-Ks since 2012 ("Lazy Prices"): heavily rewritten risk
+  factors did precede weaker returns, in both halves, but too weakly to
+  score (t 1.6); it is kept with every screened candidate to test again on
+  the wider universe.
+
+Useful runs:
+
+```bash
+uv run read-filings --dry-run          # fetch and cut every filing, no model calls
+uv run read-filings AVGO NVDA          # just these, on GLM-5.3
+uv run read-filings --recheck-drops    # re-read stored bulk reads whose income fell
+uv run read-filings --spot-check 5     # Claude re-reads 5 random reads (~$0.35), by hand only
+```
+
+**Host guardrails** (`openrouter_hosts.py`). The same model at the same
+fp8 precision is served by a dozen OpenRouter hosts and they are not
+interchangeable — some bill 2-3x more, and two answered a test prompt as
+if a place name had been masked. So:
+
+- only **approved hosts** get traffic (`openrouter.APPROVED_HOSTS`); a new
+  host gets nothing until it is added there;
+- before each weekly read every approved host takes a **known-answer
+  check** (a made-up 10-Q, exact quotes required); a host that fails is
+  skipped until a later check passes (`openrouter_host_checks`);
+- a host whose **quote match** falls below 97% over 30 days, or with over
+  10% unusable replies, is skipped automatically;
+- a reply containing a redaction placeholder ("[ADDRESS]") is flagged.
+
+The Saturday log ends with a per-host quality table, and `ops doctor`
+fails its "OpenRouter hosts" check when any of the above trips.
+
+### Other SEC filings: holding alerts and activist stakes
+
+The 6:30 PM snapshot run also checks each holding for these, from the
+same EDGAR filing list it already downloads (`data/sec_events.py`), and
+puts them in the evening alert email:
+
+| Filing | Alert | Model |
+|---|---|---|
+| NT 10-Q / NT 10-K | the company can't file its report on time — a known red flag | none |
+| S-3 / S-3ASR | a shelf registration, with the share count's change over a year (XBRL) | none |
+| 424B5 | an offering: common stock, at-the-market program, debt or convertible, and how much — plus the share-count change | GLM-5.3, ~$0.005 |
+| Form 144 | a planned insider sale of $1M+ (seller, role, shares, value, date), before its Form 4 | none |
+| Schedule 13D | a 5%+ holder: who, what percent, and whether they seek changes | GLM-5.3, ~$0.001 |
+
+Every night `earnings-watch` also scans EDGAR's daily index for 13Ds on
+the whole $2B+ universe. A holder the reader calls activist (board seats,
+a sale, a buyback, a strategy change — not an asset manager's routine
+"engagement") makes the stock a discover idea source for 60 days
+(`activist_13d`, no score bonus). About $5 a year in all.
 
 ## Scheduled jobs and upkeep
 
@@ -996,7 +1118,25 @@ and, when the command exits non-zero, emails the log's last 80 lines
 | `ops backup` | consistent SQLite copy into `BACKUP_DIR` (default `~/.stock_analyzer/backups`, keep `BACKUP_KEEP`=14), then deletes logs older than `LOG_KEEP_DAYS`=90; uploads it to `BACKUP_REMOTE` when set (below); `scripts/run_backup.sh` runs it nightly | ✓ |
 | `scripts/update.sh` | fetches `origin/main`, runs the suite on it in a throwaway worktree, and fast-forwards only if it passes (`scripts/run_update.sh` from cron) | ✓ |
 
-The schedule lives in `scripts/crontab`; install it with `crontab scripts/crontab`.
+The schedule (New York time):
+
+| When | Script | What | LLM |
+|---|---|---|---|
+| Weekdays 6:00 AM | `run_ibd.sh` | IBD-style ratings for every $2B+ stock, then the dashboard | — |
+| Weekdays 8:30 AM | `run_update.sh` | pull `main` if its tests pass | — |
+| **Wednesday 9:30 AM** | `run_portfolio.sh` | the weekly portfolio email (`analyze-portfolio`) | Claude + GLM-5.3 rerank |
+| Weekdays 4:15 PM | `run_dashboard.sh` | rebuild the dashboard | — |
+| Weekdays 6:30 PM | `run_snapshot.sh` | silent value snapshot; emails only on an unusual drop, a call near its strike, or a held stock's new filing | GLM-5.3 (filings) |
+| Weekdays 10:00 PM | `run_earnings_watch.sh` | earnings standouts, insider clusters, cache warm-up | — |
+| **Saturday 11:00 PM** | `run_filings.sh` | host checks, then the week's SEC filings | GLM-5.3 / Flash |
+| Sunday 8:00 PM | `run_doctor.sh` | `ops doctor` | — |
+| Daily 2:00 AM | `run_backup.sh` | database backup, off-site copy | — |
+| 1st of month 11:00 AM | `run_model_review.sh` | forward-return model review email | — |
+| First week of Jan/Apr/Jul/Oct | `run_quarterly_review.sh` | quarterly suggestions review | — |
+| First week of December | `run_tax_planner.sh` | year-end tax plan | — |
+
+`discover-stocks`, `rebalance-portfolio` and `analyze-insiders` are run by
+hand. The schedule lives in `scripts/crontab`; install it with `crontab scripts/crontab`.
 Ubuntu's cron ignores `CRON_TZ` and the server runs on UTC, so each job is
 scheduled at both UTC hours its New York time can fall on (EDT and EST) with
 `NY_AT=HH:MM`, and `run_job.sh` runs it only on the firing whose New York hour
@@ -1060,7 +1200,7 @@ uv run pytest -q -n 4      # -n: spread over 4 workers (pytest-xdist)
 uv run ty check src        # type check
 ```
 
-870+ tests covering the high-stakes math (tax-lot computation, verdict
+1,100+ tests covering the high-stakes math (tax-lot computation, verdict
 auto-repair, direction-aware and horizon-separated track-record alpha,
 beta adjustment, score validation, forecast calibration, parsers,
 section-dispatch parity HTML/PDF, multi-provider ranker consensus math,

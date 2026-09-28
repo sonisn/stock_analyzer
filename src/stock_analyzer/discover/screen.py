@@ -417,9 +417,20 @@ def _score_trend(
 # already rewards (rising EPS revisions); counting it here too would score
 # it twice. An insider cluster is evidence too, but not yet proven enough
 # to score (data/insider_buying.py): eligible, graded live, no bonus. An
-# IBD-style leader is price strength the trend score already counts.
+# IBD-style leader is price strength the trend score already counts. An
+# activist 13D target is an idea, not measured evidence (data/sec_events);
+# a 13F consensus is borderline evidence (data/hedge_funds_13f).
 _NON_EVIDENCE_SOURCES = frozenset(
-    {"index", "watchlist", "holding", "earnings_standout", "insider_cluster", "ibd_leader"}
+    {
+        "index",
+        "watchlist",
+        "holding",
+        "earnings_standout",
+        "insider_cluster",
+        "ibd_leader",
+        "activist_13d",
+        "fund_consensus",
+    }
 )
 
 

@@ -54,3 +54,18 @@ def test_income_drops_reads_both_concepts(monkeypatch):
     monkeypatch.setattr(idr._HTTP, "get_json", lambda url: {"units": {"USD": FACTS}})
     got = idr.income_drops({"cik": 1, "accession": "new", "form": "10-Q"})
     assert len(got) == 2 and got[0].startswith("filed operating income -50%")
+
+
+def test_risk_factor_change_measures_and_describes():
+    from stock_analyzer.data.text_change import compare, describe
+
+    word = [chr(97 + i) * 3 for i in range(20)]  # "aaa", "bbb", ...: digits aren't words
+    base = [f"Our business faces the {w} risk from competition and regulation today." for w in word]
+    same = compare(" ".join(base), " ".join(base))
+    assert same["kept"] == 1.0 and same["cosine"] == 1.0
+    new = [f"A new {w} cyber threat could disrupt our operations badly." for w in word[:12]]
+    got = compare(" ".join(base[:8] + new), " ".join(base))
+    assert got["kept"] == 0.4
+    assert "heavily rewritten" in describe({**got, "prior_filed_on": "2025-02-20"})
+    assert "about as usual" in describe({"kept": 0.72, "prior_filed_on": "2025-02-20"})
+    assert compare("too short.", " ".join(base)) is None

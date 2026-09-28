@@ -74,6 +74,9 @@ _LEGACY_MIGRATIONS: tuple[tuple[str, str], ...] = (
     # IBD-style history rebuilt from stored bars rather than recorded live.
     ("ibd_history", "ALTER TABLE ibd_history ADD COLUMN backfilled BOOLEAN NOT NULL DEFAULT 0"),
     ("ibd_signals", "ALTER TABLE ibd_signals ADD COLUMN backfilled BOOLEAN NOT NULL DEFAULT 0"),
+    # How much a 10-K's risk factors changed from last year (data/text_change).
+    ("filing_facts", "ALTER TABLE filing_facts ADD COLUMN risk_kept REAL"),
+    ("filing_facts", "ALTER TABLE filing_facts ADD COLUMN risk_cosine REAL"),
 )
 
 

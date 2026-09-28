@@ -17,7 +17,7 @@ a bad host away from the filing reads and the helper roles:
     slips below QUOTE_RATE_FLOOR is skipped too.
 
 `excluded_hosts` combines the last two; `client_from_settings` applies it
-to every call. The Claude spot-check (cli/filings.py --spot-check) is the
+to every call. The Claude spot-check (cli/filings.py --spot-check, run by hand) is a
 fourth, slower measure: agreement with Claude, by model and host.
 """
 

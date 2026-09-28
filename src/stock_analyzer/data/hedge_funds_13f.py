@@ -15,7 +15,8 @@ dozen requests. CUSIPs become tickers through OpenFIGI's free mapping
 `changes` compares each fund's latest quarter with the one before and keeps
 only conviction moves: positions of MIN_FUND_WEIGHT (2%) or more of the
 fund's reported portfolio, with each move's weight shown, and `summarize`
-flags CONSENSUS_FUNDS (3) or more funds buying the same stock. No LLM.
+flags CONSENSUS_FUNDS (2) or more funds buying the same stock, which also
+makes it a discover idea source (`consensus_buys`, no score bonus). No LLM.
 """
 
 from __future__ import annotations
@@ -71,8 +72,16 @@ MIN_FUND_WEIGHT = 0.02
 # growing it into a real one is a new position, not a "+14,323%" add
 # (Fundsmith in TSM, 2026-06-30).
 STARTER_WEIGHT = 0.002
-# This many tracked funds buying the same stock in one quarter is flagged.
-CONSENSUS_FUNDS = 3
+# This many tracked funds buying the same stock in one quarter is flagged,
+# and makes the stock a discover idea source (`consensus_buys`). Tested
+# 2026-09-28 on these funds' 13Fs since 2013, bought at the filing date:
+# 2+ funds buying the same S&P 500 stock in a quarter beat the average
+# stock by +3.3% over 6 months (t 2.01), positive in both halves; one fund
+# alone +2.1% (t 1.72), top holdings ~0. Borderline after ~20 slices were
+# tried, so eligible and graded live, never a score bonus.
+CONSENSUS_FUNDS = 2
+# A consensus older than this (from its filing date) has had its window.
+CONSENSUS_FRESH_DAYS = 135
 
 _UA = {"User-Agent": "stock-analyzer research-bot (soni.snehal@gmail.com)"}
 _SEC = HttpClient(default_headers=_UA, timeout=30.0, rate_limit_per_min=480, name="sec-13f")
@@ -307,6 +316,19 @@ def changes(db_path: str, tickers: list[str] | None = None) -> dict[str, list[di
     for moves in out.values():
         moves.sort(key=lambda m: -max(m["weight_pct"], m["weight_before_pct"]))
     return out
+
+
+def consensus_buys(db_path: str, *, today: date) -> list[str]:
+    """Stocks CONSENSUS_FUNDS or more tracked funds bought (new or added,
+    as `changes` counts a conviction move) in the same quarter, filed
+    within CONSENSUS_FRESH_DAYS — a discover idea source, no score bonus."""
+    since = date.fromordinal(today.toordinal() - CONSENSUS_FRESH_DAYS).isoformat()
+    funds: dict[tuple[str, str], set[str]] = {}
+    for ticker, moves in changes(db_path).items():
+        for m in moves:
+            if m["action"] in ("new", "added") and (m.get("filed") or "") >= since:
+                funds.setdefault((ticker, m["period"]), set()).add(m["fund"])
+    return sorted({t for (t, _), fs in funds.items() if len(fs) >= CONSENSUS_FUNDS})
 
 
 def summarize(moves: list[dict[str, Any]]) -> str:

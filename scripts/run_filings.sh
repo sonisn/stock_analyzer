@@ -6,12 +6,4 @@
 export OPENROUTER_DAILY_CAP_USD="${FILINGS_WEEKLY_CAP_USD:-5}"
 # Before the sweep, every approved host reads a made-up filing with known
 # answers; a host that fails is skipped (openrouter_hosts.py).
-#
-# First Saturday of the month: Claude re-reads 5 random open-model reads
-# (~$0.35) and the agreement is stored per model and host — the running
-# measure `ops doctor` checks. Its own run so a failure can't stop the sweep.
-dir="$(dirname "${BASH_SOURCE[0]}")"
-if [ "$(TZ=America/New_York date +%d)" -le 7 ]; then
-  "$dir/run_job.sh" filings-spot-check uv run read-filings --spot-check "${FILINGS_SPOT_CHECK_N:-5}" || true
-fi
-exec "$dir/run_job.sh" filings uv run read-filings
+exec "$(dirname "${BASH_SOURCE[0]}")/run_job.sh" filings uv run read-filings

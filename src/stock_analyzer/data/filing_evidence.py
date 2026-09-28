@@ -23,6 +23,7 @@ from sqlalchemy import text
 
 from ..db.session import exec_sql, get_session
 from ..logging import get_logger
+from .text_change import describe as describe_change
 
 logger = get_logger(__name__)
 
@@ -82,6 +83,9 @@ def pack(row: dict[str, Any], prior: dict[str, Any] | None = None) -> dict[str, 
     capital = (facts.get("capital_return") or {}).get("detail")
     if capital:
         out["capital_return"] = capital
+    change = describe_change({"kept": row.get("risk_kept"), "prior_filed_on": "prior"})
+    if change:
+        out["risk_factors_vs_last_year"] = change
     out["key_risks"] = [
         r["risk"] for r in facts.get("key_risks") or [] if isinstance(r, dict) and r.get("risk")
     ]
@@ -124,7 +128,7 @@ def _latest_reads(db: str, tickers: list[str]) -> dict[str, list[dict[str, Any]]
                     session,
                     text(
                         "SELECT ticker, form, filed_on, period_end, url, facts, quotes_found, "
-                        "quotes_checked, reader_model, flag_reasons FROM filing_facts WHERE ticker IN "
+                        "quotes_checked, reader_model, flag_reasons, risk_kept, risk_cosine FROM filing_facts WHERE ticker IN "
                         f"({', '.join(f':t{i}' for i in range(len(wanted)))}) "
                         "ORDER BY ticker, filed_on DESC"
                     ),
@@ -248,6 +252,9 @@ def filing_features(db: str, tickers: list[str], *, today: date) -> dict[str, di
             if c.get("severity") == "high":
                 data[f"filing_{cat}_high"] = data.get(f"filing_{cat}_high", 0) + 1
         data["filing_income_drop"] = float("filed " in (row.get("flag_reasons") or ""))
+        for key in ("risk_kept", "risk_cosine"):
+            if row.get(key) is not None:
+                data[f"filing_{key}"] = float(row[key])
         out[t] = data
     return out
 

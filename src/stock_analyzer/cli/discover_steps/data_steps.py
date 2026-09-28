@@ -131,12 +131,28 @@ class DataSteps(PipelineBase):
         except Exception as e:  # noqa: BLE001 — an idea source, not a requirement
             logger.info("IBD-style leaders unavailable for the universe (%s)", e)
             leaders = ()
+        try:
+            from ...reporting.filing_alert import activist_targets
+
+            activists = tuple(activist_targets(self.settings.discover_db_path, today=date.today()))
+        except Exception as e:  # noqa: BLE001 — an idea source, not a requirement
+            logger.info("Activist 13D targets unavailable for the universe (%s)", e)
+            activists = ()
+        try:
+            from ...data.hedge_funds_13f import consensus_buys
+
+            consensus = tuple(consensus_buys(self.settings.discover_db_path, today=date.today()))
+        except Exception as e:  # noqa: BLE001 — an idea source, not a requirement
+            logger.info("13F consensus unavailable for the universe (%s)", e)
+            consensus = ()
         universe = build_universe(
             watchlist=self.settings.discover_watchlist,
             holdings=holdings_tickers,
             standouts=standouts,
             insider_clusters=insider,
             ibd_leaders=leaders,
+            activist_targets=activists,
+            fund_consensus=consensus,
         )
         if not universe:
             raise RuntimeError(

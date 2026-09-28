@@ -148,7 +148,31 @@ def test_a_starter_position_grown_into_a_real_one_is_new(tmp_path):
             "weight_before_pct": 0.0,
         }
 
-    assert hf.summarize([buy("A"), buy("B")]).startswith("2 buying")
+    assert hf.summarize([buy("A")]).startswith("1 buying")
+    assert hf.summarize([buy("A"), buy("B")]).startswith("Consensus: 2 funds buying.")
     assert hf.summarize([buy("A"), buy("B"), buy("C")]).startswith(
         "Consensus: 3 funds buying. 3 buying (A new, 3.0% of fund; B new"
     )
+
+
+def test_consensus_buys_need_two_funds_in_the_same_fresh_quarter(monkeypatch):
+    from datetime import date
+
+    def move(fund, period, filed, action="new"):
+        return {"fund": fund, "action": action, "period": period, "filed": filed}
+
+    monkeypatch.setattr(
+        hf,
+        "changes",
+        lambda db: {
+            "TWO": [move("A", "2026-06-30", "2026-08-14"), move("B", "2026-06-30", "2026-08-10")],
+            "ONE": [move("A", "2026-06-30", "2026-08-14")],
+            "SPLIT": [move("A", "2026-06-30", "2026-08-14"), move("B", "2026-03-31", "2026-05-15")],
+            "STALE": [move("A", "2025-12-31", "2026-02-14"), move("B", "2025-12-31", "2026-02-10")],
+            "SOLD": [
+                move("A", "2026-06-30", "2026-08-14", "exited"),
+                move("B", "2026-06-30", "2026-08-10"),
+            ],
+        },
+    )
+    assert hf.consensus_buys("db", today=date(2026, 9, 28)) == ["TWO"]
