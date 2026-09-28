@@ -17,7 +17,7 @@ from typing import Annotated, Literal
 from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
-from .providers import Provider
+from .providers import HelperProvider, Provider
 
 Aggressiveness = Literal["conservative", "balanced", "aggressive"]
 
@@ -61,9 +61,12 @@ class Settings(BaseSettings):
     sentiment_model: str | None = None
     ticker_provider: Provider | None = None
     ticker_model: str | None = None
-    rerank_provider: Provider | None = None
+    # The two helper roles may also be "openrouter" with an OpenRouter model
+    # id (e.g. z-ai/glm-5.3): billed against OPENROUTER_DAILY_CAP_USD, and
+    # the insider synthesis falls back to LLM_PROVIDER if OpenRouter fails.
+    rerank_provider: HelperProvider | None = None
     rerank_model: str | None = None
-    insider_provider: Provider | None = None
+    insider_provider: HelperProvider | None = None
     insider_model: str | None = None
 
     # ---- Data sources -----------------------------------------------------
@@ -146,7 +149,7 @@ class Settings(BaseSettings):
     # with cheaper options plan to fit (Analyst tier/count, extra Ranker
     # rounds, Reviewer model) and any single call that would pass the cap is
     # refused. Only priced models count: Claude is built in; add others via
-    # LLM_PRICES, e.g. "gemini-pro-latest=1.25:10,gpt-6-astra=2:8" (USD per
+    # LLM_PRICES, e.g. "gemini-flash-latest=0.3:2.5,gpt-6-luna=0.1:0.5" (USD per
     # million input:output tokens).
     discover_max_cost_usd: float | None = None
     llm_prices: str = ""

@@ -10,6 +10,7 @@ from ..data.market_news import fetch_market_sentiment_news
 from ..data.ticker import fetch_ticker_data
 from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from ..providers import HelperProvider
 from ..serialization import dumps_prompt
 from .news_reranker import NewsReranker
 from .stock_views import is_equity
@@ -72,7 +73,7 @@ class PortfolioAgent:
         ticker_model: str | None = None,
         sentiment_provider: Provider | None = None,
         sentiment_model: str | None = None,
-        rerank_provider: Provider | None = None,
+        rerank_provider: HelperProvider | None = None,
         rerank_model: str | None = None,
         db_path: str | None = None,
         view_max_age_days: int = 7,

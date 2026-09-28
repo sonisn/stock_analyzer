@@ -24,6 +24,7 @@ from sqlalchemy import text
 from sqlmodel import col, select
 
 from ..data import bar_store, fetch_cache
+from ..data.filing_evidence import red_flags
 from ..db.session import exec_sql, get_session
 from ..db.tables import IbdMarket, IbdRating
 from ..logging import get_logger
@@ -468,7 +469,12 @@ def held_sector_trends(
     return sorted(out, key=lambda o: (order.get(o["status"], 4), -o["pct"]))
 
 
-def view_map(rows: list[Any], held: set[str], ours: dict[str, dict[str, Any]]) -> list[dict]:
+def view_map(
+    rows: list[Any],
+    held: set[str],
+    ours: dict[str, dict[str, Any]],
+    flags: dict[str, list[str]] | None = None,
+) -> list[dict]:
     """Points for the "our view vs the market's" map: every rated stock with
     cached fundamentals (the screen's ~600, holdings included), our
     fundamental view and the Composite, both as 1-99 ranks among them."""
@@ -482,7 +488,12 @@ def view_map(rows: list[Any], held: set[str], ours: dict[str, dict[str, Any]]) -
     revisions = {t: e.get("value") for t, e in fetch_cache.entries("eps_revisions").items()}
     rated = {r.ticker: r for r in rows if r.composite is not None and fundamentals.get(r.ticker)}
     raw = {
-        t: fundamental_view(fundamentals[t], book=books.get(t), revisions=revisions.get(t))
+        t: fundamental_view(
+            fundamentals[t],
+            book=books.get(t),
+            revisions=revisions.get(t),
+            filing_flags=(flags or {}).get(t),
+        )
         for t in rated
     }
     view = percentile_ranks(raw)
@@ -697,7 +708,11 @@ def collect(db: str, *, held: set[str], today: date) -> dict[str, Any]:
     ]
     history = _safely("rating history", lambda: rating_history(db, with_history, today), {})
     scorecard = _safely("signal scorecard", lambda: signal_scorecard(db), {})
-    points = _safely("view map", lambda: view_map(rows, held, ours), [])
+    points = _safely(
+        "view map",
+        lambda: view_map(rows, held, ours, red_flags(db, [r.ticker for r in rows], today=today)),
+        [],
+    )
     sectors = _safely("sector direction", lambda: sector_view(db, today), {})
     groups_chart = _safely("group chart", lambda: group_chart(rows, held), {})
     listed_tickers = [r.ticker for r in keep]

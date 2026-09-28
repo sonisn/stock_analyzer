@@ -42,8 +42,10 @@ def insert_snapshots(
     candidates: list[dict[str, Any]],
     fundamentals: dict[str, Any],
     revisions: dict[str, Any],
+    filing: dict[str, dict[str, float]] | None = None,
 ) -> None:
-    """Fundamentals and estimate revisions as they were at screen time."""
+    """Fundamentals, estimate revisions and SEC filing facts as they were
+    at screen time."""
     for c in candidates:
         if c["ticker"] in fundamentals:
             insert_candidate_snapshot(
@@ -52,6 +54,7 @@ def insert_snapshots(
                 c["ticker"],
                 fundamentals.get(c["ticker"]),
                 revisions.get(c["ticker"]),
+                (filing or {}).get(c["ticker"].upper()),
             )
 
 

@@ -24,7 +24,7 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import text
 
@@ -32,6 +32,9 @@ from .db.session import exec_sql, get_session
 from .http_client import HttpClient, RetryPolicy
 from .logging import get_logger
 from .usage import TRACKER, BudgetExceededError, estimate_cost
+
+if TYPE_CHECKING:
+    from .providers import Provider
 
 logger = get_logger(__name__)
 
@@ -220,4 +223,102 @@ def client_from_settings(settings: Any) -> OpenRouter | None:
         settings.openrouter_api_key,
         settings.discover_db_path,
         daily_cap_usd=settings.openrouter_daily_cap_usd,
+    )
+
+
+# --- helper roles on an open model ---------------------------------------------
+
+# Low-effort thinking on fp8-or-better hosts, cheapest first — the routing
+# the filing reader was validated on (agents/filing_reader.READER_EXTRA).
+HELPER_EXTRA: dict[str, Any] = {
+    "reasoning": {"effort": "low"},
+    "provider": {
+        "quantizations": ["fp8", "bf16", "fp16"],
+        "sort": "price",
+        "allow_fallbacks": True,
+    },
+}
+# Thinking comes out of the same budget as the answer.
+HELPER_MAX_TOKENS = 8000
+
+
+class OpenRouterAgent:
+    """Stands in for `llm.AgnoAgent` in a helper role: `.run(prompt)`
+    returns an object with `.content`. Billed and capped like every other
+    OpenRouter call. `fallback` builds the agent to use when OpenRouter
+    fails or answers empty — never when the daily cap refuses the call,
+    which must not turn into paid spend elsewhere."""
+
+    def __init__(
+        self,
+        name: str,
+        model: str,
+        instructions: str,
+        *,
+        client: OpenRouter | None,
+        json_mode: bool = False,
+        fallback: Any = None,
+    ) -> None:
+        self.name, self.model_id, self.instructions = name, model, instructions
+        self.client, self.json_mode, self._fallback = client, json_mode, fallback
+
+    def run(self, prompt: str) -> Any:
+        try:
+            if self.client is None:
+                raise RuntimeError("OPENROUTER_API_KEY is not set")
+            c = self.client.complete(
+                self.name,
+                self.model_id,
+                self.instructions,
+                prompt,
+                max_tokens=HELPER_MAX_TOKENS,
+                json_mode=self.json_mode,
+                extra=HELPER_EXTRA,
+            )
+            if not c.text.strip():
+                raise RuntimeError(f"empty reply from {self.model_id}")
+            return SimpleNamespace(content=c.text)
+        except BudgetExceededError:
+            raise
+        except Exception as e:
+            if self._fallback is None:
+                raise
+            logger.warning("%s on %s failed (%s) — using the fallback", self.name, self.model_id, e)
+            return self._fallback().run(prompt)
+
+
+def helper_agent(
+    name: str,
+    provider: str,
+    model: str,
+    instructions: str,
+    *,
+    json_mode: bool = False,
+    fallback: tuple[str, str] | None = None,
+) -> Any:
+    """An agent for a helper role: `llm.AgnoAgent` for claude/gemini/openai,
+    `OpenRouterAgent` for "openrouter" (with `fallback` = (provider, model)
+    to use if OpenRouter fails)."""
+    from .llm import AgnoAgent
+
+    if provider != "openrouter":
+        return AgnoAgent(name, cast("Provider", provider), model, instructions=instructions)
+    from .config import Settings
+
+    back = None
+    if fallback is not None:
+        fb_provider, fb_model = fallback
+
+        def back() -> Any:
+            return AgnoAgent(
+                name, cast("Provider", fb_provider), fb_model, instructions=instructions
+            )
+
+    return OpenRouterAgent(
+        name,
+        model,
+        instructions,
+        client=client_from_settings(Settings()),
+        json_mode=json_mode,
+        fallback=back,
     )

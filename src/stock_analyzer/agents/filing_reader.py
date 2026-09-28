@@ -174,6 +174,12 @@ def filing_prompt(filing: dict[str, Any], sections: dict[str, str]) -> str:
         f"Company: {filing['ticker']}  Form: {filing['form']}  "
         f"Period ended: {filing.get('period_end') or 'n/a'}  Filed: {filing['filed_on']}"
     ]
+    if filing.get("income_drops"):
+        # Tagged figures from this filing (data/income_drop): say what drove them.
+        parts.append(
+            "Income as filed (XBRL): "
+            + "; ".join(d.removeprefix("filed ") for d in filing["income_drops"])
+        )
     if "mda" in sections:
         parts.append("=== MANAGEMENT'S DISCUSSION AND ANALYSIS ===\n" + sections["mda"])
     if "risks" in sections:

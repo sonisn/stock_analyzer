@@ -22,7 +22,7 @@ from ..models.llm import Catalyst
 logger = get_logger(__name__)
 
 _FIXED_SOURCES = frozenset(
-    {"sec_filing", "quarterly_mda", "earnings_transcript", "earnings_calendar"}
+    {"sec_filing", "earnings_release", "quarterly_mda", "earnings_transcript", "earnings_calendar"}
 )
 
 

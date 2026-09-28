@@ -90,9 +90,11 @@ def insert_candidate_snapshot(
     ticker: str,
     fundamentals: dict[str, Any] | None,
     revisions: dict[str, Any] | None = None,
+    filing: dict[str, float] | None = None,
 ) -> None:
-    """Store the numeric fundamentals (4 significant figures) and EPS
-    revision counts this run saw. Skipped when there is nothing to keep."""
+    """Store the numeric fundamentals (4 significant figures), EPS
+    revision counts and SEC filing facts (data/filing_evidence.
+    filing_features) this run saw. Skipped when there is nothing to keep."""
     data: dict[str, float] = {}
     for key in SNAPSHOT_FIELDS:
         v = (fundamentals or {}).get(key)
@@ -102,6 +104,7 @@ def insert_candidate_snapshot(
         v = (revisions or {}).get(key)
         if isinstance(v, int):
             data[key] = v
+    data.update(filing or {})
     if data:
         session.add(
             CandidateSnapshot(run_id=run_id, ticker=ticker, data=json.dumps(data, sort_keys=True))

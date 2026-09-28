@@ -174,3 +174,36 @@ def test_tesla_names_its_press_release_exhibit991(monkeypatch):
     monkeypatch.setattr(sec_edgar, "fetch_filing_text", lambda url: url.rsplit("/", 1)[1])
     f = {"url": "https://www.sec.gov/Archives/edgar/data/1/2/tsla-20260722.htm", "accession": "a"}
     assert sec_edgar.exhibit_99_text(f) == "exhibit991.htm"
+
+
+def test_the_latest_earnings_release_is_read_once_and_reaches_the_deciders(tmp_path, monkeypatch):
+    from stock_analyzer.data.filing_evidence import earnings_releases
+
+    db = str(tmp_path / "t.db")
+    older = {**_filing("8-K", "k0", ["2.02"]), "filed_on": "2026-07-25"}
+    newer = _filing("8-K", "k1", ["2.02", "9.01"])
+    asked = []
+
+    def since(t, day, forms=()):
+        asked.append(forms)
+        return [older, _filing("8-K", "k2", ["5.02"]), newer]
+
+    monkeypatch.setattr(fa, "filings_since", since)
+    monkeypatch.setattr(fa, "fetch_filing_text", lambda url: "Results.")
+    monkeypatch.setattr(fa, "exhibit_99_text", lambda f: "Press release")
+    c = _client(tmp_path, [(json.dumps(EIGHTK), 0.004)])
+    c.db_path = db
+    got = fa.earnings_releases(c, db, ["ABC"], today=TODAY, model="z-ai/glm-5.3")
+    assert [i["filing"]["accession"] for i in got] == ["k1"] and asked == [("8-K",)]
+    # Stored, so the next week reads nothing.
+    again = _client(tmp_path, [])
+    assert fa.earnings_releases(again, db, ["ABC"], today=TODAY, model="m") == []
+
+    assert earnings_releases(db, ["abc", "NONE"]) == {
+        "ABC": {
+            "filed_on": "2026-09-25",
+            "headline": "Record revenue, guidance raised",
+            "guidance": "raised: FY revenue to $70B",
+            "numbers": ["revenue $18.1B +22% y/y"],
+        }
+    }

@@ -58,6 +58,7 @@ def persist_rebalance_run(
         candidates,
         state.get("fundamentals") or {},
         state.get("eps_revisions") or {},
+        state.get("filing_features"),
     )
     insert_scorecards(session, run_id, analyses)
     for ticker, review in state.get("holdings_reviews", {}).items():

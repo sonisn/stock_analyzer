@@ -49,9 +49,11 @@ def build_holding_review_payloads(
     recent_news: dict[str, list[dict[str, Any]]] | None = None,
     thesis_checks: list[dict[str, Any]] | None = None,
     filing_packs: dict[str, dict[str, Any]] | None = None,
+    releases: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     recent_news = recent_news or {}
     filing_packs = filing_packs or {}
+    releases = releases or {}
     thesis_by_ticker = {c["ticker"]: c for c in thesis_checks or []}
     payloads: dict[str, dict[str, Any]] = {}
     for ticker, pos in positions.items():
@@ -93,6 +95,7 @@ def build_holding_review_payloads(
             "share_trades": share_trades.get(ticker),
             # SEC filing facts read nightly stand in for the raw excerpts.
             "sec_filing": filing,
+            "earnings_release": releases.get(ticker),
             "risk_factors_10k": ""
             if filing
             else _trim((rfs.get(ticker) or {}).get("risk_factors"), risk_factors_chars),

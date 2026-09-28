@@ -11,8 +11,9 @@ import json
 import re
 
 from ..data.news_rank import rank_news
-from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from ..openrouter import helper_agent
+from ..providers import HelperProvider
 
 logger = get_logger(__name__)
 
@@ -60,19 +61,12 @@ No prose, no explanation, no markdown fence."""
 
 
 class NewsReranker:
-    def __init__(self, name: str, provider: Provider, model: str):
-        self.agent = AgnoAgent(
-            name,
-            provider,
-            model,
-            instructions=NEWS_RERANK_INSTRUCTIONS,
-        )
+    def __init__(self, name: str, provider: HelperProvider, model: str):
+        # A failed call ranks in code (`rank_news`), so no model fallback.
+        self.agent = helper_agent(name, provider, model, NEWS_RERANK_INSTRUCTIONS)
         # One call for the whole portfolio (see `rerank_batch`).
-        self.batch_agent = AgnoAgent(
-            f"{name} (batch)",
-            provider,
-            model,
-            instructions=BATCH_RERANK_INSTRUCTIONS,
+        self.batch_agent = helper_agent(
+            f"{name} (batch)", provider, model, BATCH_RERANK_INSTRUCTIONS, json_mode=True
         )
 
     def rerank_batch(

@@ -8,7 +8,7 @@ from typing import Any
 from agno.workflow.types import StepInput, StepOutput
 
 from ...data.brokerage import fetch_portfolio_holdings
-from ...data.filing_evidence import evidence_packs, prefer_pack
+from ...data.filing_evidence import earnings_releases, evidence_packs, prefer_pack
 from ...data.fundamentals import batch_fundamentals
 from ...discover.analyst import Analyst, analyze_tiered, plan_under_budget
 from ...discover.catalysts import repair_catalysts
@@ -97,6 +97,9 @@ class AnalysisSteps(PipelineBase):
         # SEC filing facts read nightly (cli/filings.py) stand in for the
         # raw 10-Q/10-K excerpts, unless this run fetched a newer filing.
         packs = evidence_packs(self.settings.discover_db_path, [c["ticker"] for c in survivors])
+        releases = earnings_releases(
+            self.settings.discover_db_path, [c["ticker"] for c in survivors]
+        )
 
         payloads: dict[str, dict[str, Any]] = {}
         for c in survivors:
@@ -149,6 +152,7 @@ class AnalysisSteps(PipelineBase):
                 "market_leadership": self._leadership_ratings().get(ticker),
                 "share_trades": share_trades.get(ticker),
                 "sec_filing": filing,
+                "earnings_release": releases.get(ticker),
                 "risk_factors_10k": ""
                 if filing
                 else _trim(

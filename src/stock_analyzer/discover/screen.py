@@ -318,11 +318,28 @@ def _score_book(book: dict[str, Any] | None) -> float | None:
     return _clamp((growth - BOOK_FLAT_BELOW) / span * BOOK_MAX_POINTS, 0, BOOK_MAX_POINTS)
 
 
+# Red flags in the latest SEC filing, as read by `read-filings`
+# (data/filing_evidence.red_flags). Not measured like the book: the facts
+# only exist since 2026-09-27, so there is no history to test against. The
+# weights lean on the accounting literature instead — going-concern
+# opinions and material-weakness disclosures precede underperformance —
+# and stay small: enough to cost a borderline name its shortlist slot,
+# never to outweigh a strong business. The pick scorecard records them
+# (track_record) so the next review can check.
+FILING_FLAG_POINTS = {"going_concern": -8.0, "material_weakness": -4.0, "restatement": -4.0}
+FILING_FLAG_FLOOR = -8.0
+
+
+def _score_filing_flags(flags: Iterable[str] | None) -> float:
+    return max(FILING_FLAG_FLOOR, sum(FILING_FLAG_POINTS.get(f, 0.0) for f in flags or ()))
+
+
 def fundamental_view(
     fundamentals: dict[str, Any],
     *,
     book: dict[str, Any] | None = None,
     revisions: dict[str, Any] | None = None,
+    filing_flags: Iterable[str] | None = None,
 ) -> float:
     """The screen's own read of the business, without the price trend:
     fundamentals (growth, FCF yield, margins, debt), contracted-book growth
@@ -330,6 +347,7 @@ def fundamental_view(
     Composite, which is mostly price."""
     total, _ = _score_fundamentals(fundamentals)
     total += _score_book(book) or 0.0
+    total += _score_filing_flags(filing_flags)
     direction = (revisions or {}).get("direction_30d")
     total += 8.0 if direction == "raising" else -3.0 if direction == "lowering" else 0.0
     return total
@@ -429,6 +447,7 @@ def score_candidate(
     revisions: dict[str, Any] | None = None,
     book: dict[str, Any] | None = None,
     no_book_points: float = 0.0,
+    filing_flags: Iterable[str] | None = None,
 ) -> dict[str, Any]:
     """Combine the three scoring dimensions into a 0-100 total + breakdown.
 
@@ -441,11 +460,18 @@ def score_candidate(
 
     `book` is the name's contracted-book record (data/backlog.fetch_rpo);
     its year-on-year growth adds up to +8 / -3 to fundamentals, and a name
-    without one gets `no_book_points` (the run's `typical_book_points`)."""
+    without one gets `no_book_points` (the run's `typical_book_points`).
+
+    `filing_flags` are the red-flag categories in the name's latest SEC
+    filing (see FILING_FLAG_POINTS); absent means none were read."""
     fund_total, fund_parts = _score_fundamentals(fundamentals)
     book_points = _score_book(book)
     fund_parts["contracted_book"] = no_book_points if book_points is None else book_points
     fund_total += fund_parts["contracted_book"]
+    # Always present (0 without flags) so score_attribution can measure it
+    # across every candidate, not only the flagged ones.
+    fund_parts["filing_red_flags"] = _score_filing_flags(filing_flags)
+    fund_total += fund_parts["filing_red_flags"]
     trend_total, trend_parts = _score_trend(technicals, revisions=revisions)
     conv_total, conv_parts = _score_conviction(universe_entry)
     return {

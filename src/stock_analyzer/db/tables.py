@@ -632,8 +632,10 @@ class FilingFacts(SQLModel, table=True):
 
 class EightKAlert(SQLModel, table=True):
     """A material 8-K on a held stock, read and emailed the evening it was
-    found (reporting/filing_alert.py). Also what stops it being emailed
-    twice. A hundred-odd small rows a year."""
+    found (reporting/filing_alert.py) — also what stops it being emailed
+    twice — or the latest earnings release of a stock acted on, read by
+    the weekly run for its guidance (never emailed). A few hundred small
+    rows a year."""
 
     __tablename__ = "eightk_alerts"
 

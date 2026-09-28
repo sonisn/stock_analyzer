@@ -5,9 +5,9 @@ token metrics here under the agent's name (the pipeline stage). The
 report shows the per-stage totals so the cost of a run is visible instead
 of discovered on the provider bill.
 
-Prices are Anthropic first-party list rates (USD per million tokens).
-Models without a known price (Gemini, OpenAI) still report tokens; their
-cost is shown as unknown rather than guessed.
+Prices are first-party list rates (USD per million tokens). A model
+without a known price still reports tokens; its cost is shown as unknown
+rather than guessed, and LLM_PRICES can add one.
 """
 
 from __future__ import annotations
@@ -29,6 +29,15 @@ _PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-sonnet-5": (2.0, 10.0),
     "claude-sonnet-4-6": (3.0, 15.0),
     "claude-haiku-4-5": (1.0, 5.0),
+    # OpenAI and Google list rates (2026-09-27). The Gemini alias moves with
+    # Google's newest Pro, so it takes the 3.1 Pro rate, the dearer of the
+    # two it could be; prompts over 200k tokens bill higher still.
+    "gpt-6-astra": (10.0, 50.0),
+    "gpt-6-astra-pro": (10.0, 50.0),
+    "gpt-6-sol": (2.0, 10.0),
+    "gemini-pro-latest": (2.0, 12.0),
+    "gemini-3.1-pro-preview": (2.0, 12.0),
+    "gemini-2.5-pro": (1.25, 10.0),
     # OpenRouter: the dearest fp8 host's rate (reads route to fp8 hosts,
     # cheapest first), so the pre-call cap estimate errs high. The client
     # records the billed cost OpenRouter returns. (2026-09-27)
@@ -156,7 +165,7 @@ _CHARS_PER_TOKEN = 3.5
 
 def set_extra_prices(spec: str) -> None:
     """Add prices for models the table doesn't know, from LLM_PRICES:
-    "gemini-pro-latest=1.25:10,gpt-6-astra=2:8" (USD per million input:output
+    "gemini-flash-latest=0.3:2.5,gpt-6-luna=0.1:0.5" (USD per million input:output
     tokens). Unknown models are never guessed — they just don't count."""
     for part in (spec or "").split(","):
         name, _, rates = part.strip().partition("=")

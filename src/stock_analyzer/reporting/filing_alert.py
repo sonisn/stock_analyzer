@@ -105,6 +105,41 @@ def _periodic(client, db, f, *, model, today, store) -> dict[str, Any] | None:
     return {"kind": "periodic", "filing": f, "pack": pack} if pack else None
 
 
+EARNINGS_ITEM = "2.02"  # Results of Operations and Financial Condition
+EARNINGS_LOOKBACK_DAYS = 100  # one quarter: older releases are superseded
+
+
+def earnings_releases(
+    client: OpenRouter, db: str, tickers: list[str], *, today: date, model: str
+) -> list[dict[str, Any]]:
+    """Each ticker's latest earnings 8-K from the last quarter, read with
+    its press release if not read yet — the weekly run does this for the
+    stocks acted on (tier A), since a 10-Q seldom states guidance and the
+    release usually does. Stored in `eightk_alerts` like a holding's, never
+    emailed. Raises BudgetExceededError at the cap (the caller stops)."""
+    seen = _seen(db)
+    since = today - timedelta(days=EARNINGS_LOOKBACK_DAYS)
+    out: list[dict[str, Any]] = []
+    for ticker in tickers:
+        releases = [
+            f for f in filings_since(ticker, since, forms=("8-K",)) if EARNINGS_ITEM in f["items"]
+        ]
+        if not releases or releases[-1]["accession"] in seen:
+            continue
+        f = releases[-1]
+        seen.add(f["accession"])
+        try:
+            item = _eightk(client, db, f, model=model, today=today)
+        except BudgetExceededError:
+            raise
+        except Exception as e:  # noqa: BLE001 — one release never sinks the batch
+            logger.warning("Earnings release %s %s failed (%s)", ticker, f["filed_on"], e)
+            continue
+        if item:
+            out.append(item)
+    return out
+
+
 def _eightk(client, db, f, *, model, today) -> dict[str, Any] | None:
     body = fetch_filing_text(f["url"])
     if not body:

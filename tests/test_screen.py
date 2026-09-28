@@ -431,3 +431,25 @@ def test_the_book_counts_toward_fundamentals():
     )
     assert grown["components"]["fundamentals"] == base["components"]["fundamentals"] + 8
     assert grown["score"] == base["score"] + 8
+
+
+def test_filing_red_flags_cost_points_and_are_always_recorded():
+    base = score_candidate(_good_fundamentals(), _good_technicals(), _universe_entry())
+    assert base["breakdown"]["fundamentals"]["filing_red_flags"] == 0.0
+    weak = score_candidate(
+        _good_fundamentals(),
+        _good_technicals(),
+        _universe_entry(),
+        filing_flags=["material_weakness"],
+    )
+    assert weak["components"]["fundamentals"] == pytest.approx(
+        base["components"]["fundamentals"] - 4.0
+    )
+    # Going concern plus a restatement is floored at -8.
+    worst = score_candidate(
+        _good_fundamentals(),
+        _good_technicals(),
+        _universe_entry(),
+        filing_flags=["going_concern", "restatement", "material_weakness"],
+    )
+    assert worst["breakdown"]["fundamentals"]["filing_red_flags"] == -8.0

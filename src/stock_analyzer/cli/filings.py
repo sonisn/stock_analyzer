@@ -5,9 +5,13 @@ universe in two tiers:
 
   A. the stocks acted on — holdings, picks, the discover shortlist and the
      market leaders — read by the reader model (GLM-5.3);
+     Their latest earnings 8-K (the press release, where guidance is — a
+     10-Q seldom states it) is read too, once the filings are done.
   B. everything else, read by the bulk model (GLM-5.3-Flash). A bulk read
      that reports a serious event, or fails, is read again on the reader
-     model, and that read replaces it.
+     model, and that read replaces it — as is one whose filing shows
+     operating or net income down 25%+ in its own XBRL figures
+     (data/income_drop), which the bulk model can read past.
 
 For each stock: the newest filing from EDGAR (free), skipped when it is
 already stored — unless a tier-A stock only has a bulk read, which is
@@ -46,6 +50,7 @@ from ..agents.filing_reader import (
 )
 from ..config import Settings
 from ..data.forecast_snapshots import tracked_tickers
+from ..data.income_drop import income_drops
 from ..data.sec_edgar import fetch_filing_text, filing_sections, latest_filing
 from ..data.universe_base import all_us_2b
 from ..db.session import exec_sql, get_session
@@ -171,8 +176,13 @@ def read_tiered(
     try on the reader costs a cent where a retry on the bulk model often
     can't turn its thinking off (2026-09-27 sweep)."""
     filing, sections = item
+    drops: list[str] = filing.get("income_drops") or []
     if tier == "A" or bulk_model == reader_model:
-        return read_filing(client, filing, sections, model=reader_model)
+        return _with_drops(read_filing(client, filing, sections, model=reader_model), drops)
+    if filing.get("bulk_stored"):  # --recheck-drops: the bulk read is already in the table
+        better = read_filing(client, filing, sections, model=reader_model)
+        better.escalated_from = bulk_model
+        return _with_drops(better, drops)
     bulk: FilingRead | None
     try:
         bulk = read_filing(client, filing, sections, model=bulk_model, retry=False)
@@ -181,18 +191,25 @@ def read_tiered(
     except Exception as e:  # noqa: BLE001 — the reader gets its turn
         logger.info("%s: bulk read failed (%s), reading on %s", filing["ticker"], e, reader_model)
         bulk = None
-    if bulk is not None and bulk.facts is not None and not bulk.flagged:
+    if bulk is not None and bulk.facts is not None and not bulk.flagged and not drops:
         return bulk
     try:
         better = read_filing(client, filing, sections, model=reader_model)
     except BudgetExceededError:
         if bulk is None:
             raise
-        return bulk  # keep the bulk read; the cap stops the batch next
+        return _with_drops(bulk, drops)  # keep the bulk read; the cap stops the batch next
     better.escalated_from = bulk_model
     if bulk is not None:
         better.cost_usd += bulk.cost_usd
-    return better
+    return _with_drops(better, drops)
+
+
+def _with_drops(read: FilingRead, drops: list[str]) -> FilingRead:
+    """The filed income drops join the read's flags, so the stored row
+    says why it was escalated and the screen can score it."""
+    read.flag_reasons += [d for d in drops if d not in read.flag_reasons]
+    return read
 
 
 def _get(d: dict[str, Any] | None, path: str) -> Any:
@@ -250,6 +267,7 @@ def run(
     force: bool = False,
     dry_run: bool = False,
     compare_claude: int = 0,
+    recheck_drops: bool = False,
 ) -> int:
     """Read the latest filing of every ticker in `tiers` ({ticker: "A"|"B"})."""
     db = settings.discover_db_path
@@ -264,6 +282,7 @@ def run(
         prepared = dict(zip(tickers, ex.map(_prepare, tickers), strict=True))
     stored = {} if force else _stored(db)
     todo: list[tuple[str, Prepared]] = []
+    bulk_reads: list[tuple[str, Prepared]] = []  # stored bulk reads, for --recheck-drops
     skipped = up_to_date = 0
     for t in tickers:
         p = prepared[t]
@@ -276,10 +295,29 @@ def run(
         # A tier-A stock with only a bulk read is promoted to the reader.
         if have and (tiers[t] == "B" or have == reader or have == "queued"):
             up_to_date += 1
+            if recheck_drops and have == bulk:
+                p[0]["bulk_stored"] = True
+                bulk_reads.append((tiers[t], p))
             continue
         stored[acc] = "queued"  # share classes (GOOG/GOOGL) file one document
         todo.append((tiers[t], p))
-    n_a = sum(1 for tier, _ in todo if tier == "A")
+    # Only the filings about to be read (and, with --recheck-drops, the
+    # stored bulk reads): two free SEC requests each.
+    with ThreadPoolExecutor(_SEC_WORKERS) as ex:
+        for (_, (filing, _)), drops in zip(
+            [*todo, *bulk_reads],
+            ex.map(lambda tp: income_drops(tp[1][0]), [*todo, *bulk_reads]),
+            strict=True,
+        ):
+            filing["income_drops"] = drops
+    rechecked = [tp for tp in bulk_reads if tp[1][0]["income_drops"]]
+    if recheck_drops:
+        print(
+            f"--recheck-drops: {len(rechecked)} of {len(bulk_reads)} stored bulk reads show "
+            f"a filed income drop; re-reading them on {reader}"
+        )
+        todo += rechecked
+    n_a = sum(1 for tier, (f, _) in todo if tier == "A" or f.get("bulk_stored"))
     print(
         f"{len(tiers)} stocks: {up_to_date} up to date, {skipped} without a readable filing, "
         f"{len(todo)} to read ({n_a} on {reader}, {len(todo) - n_a} on {bulk})"
@@ -327,6 +365,17 @@ def run(
                     print(_line(r, tier))
                     for reason in r.flag_reasons:
                         print(f"           flag: {reason}")
+
+    releases = 0
+    if not stopped and not recheck_drops:
+        from ..reporting.filing_alert import earnings_releases
+
+        wanted = [t for t in tickers if tiers[t] == "A"]
+        try:
+            releases = len(earnings_releases(client, db, wanted, today=today, model=reader))
+        except BudgetExceededError as e:
+            stopped = str(e)
+        print(f"{releases} new earnings releases read (8-K item 2.02, tier A)")
 
     if compare_claude and reads:
         _compare_with_claude(settings, reads[:compare_claude], today=today)
@@ -385,6 +434,11 @@ def main() -> int:
     parser.add_argument("--force", action="store_true", help="re-read filings already stored")
     parser.add_argument("--dry-run", action="store_true", help="fetch and cut, no model calls")
     parser.add_argument(
+        "--recheck-drops",
+        action="store_true",
+        help="re-read stored bulk reads whose filing shows a filed income drop (free SEC check)",
+    )
+    parser.add_argument(
         "--compare-claude",
         type=int,
         default=0,
@@ -408,6 +462,7 @@ def main() -> int:
         force=args.force,
         dry_run=args.dry_run,
         compare_claude=args.compare_claude,
+        recheck_drops=args.recheck_drops,
     )
 
 

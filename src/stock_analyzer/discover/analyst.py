@@ -47,6 +47,10 @@ The user provides:
     cut, investigation…), tone, and `vs_prior_filing` (what changed since
     the filing before). When it is present the raw excerpts below are
     empty; treat it as the filing.
+  - earnings_release (when present): the latest earnings press release
+    (8-K item 2.02) — headline, guidance and reported numbers. A 10-Q
+    seldom states guidance; this is where the company does. Newer than
+    sec_filing when its filed_on is later.
   - risk_factors_10k (annual 10-K Item 1A excerpt; empty when sec_filing is present)
   - quarterly_mda (latest 10-Q Management Discussion excerpt; empty when
     sec_filing is present)
@@ -60,7 +64,8 @@ GROUND your reasoning in this data hierarchy when forming forward thesis:
   1. recent_news — what has CHANGED in the last 30 days (guidance changes,
      deals, product launches, regulatory rulings, management departures)
   2. sec_filing (or quarterly_mda when absent) — what the company reported
-     LAST QUARTER; its `events` are facts, not boilerplate
+     LAST QUARTER; its `events` are facts, not boilerplate — with
+     earnings_release for the guidance and headline numbers
   3. earnings_transcript — management TONE and Q&A pushback signals
   4. peers — judge "cheap" or "expensive" relative to the comp set, not absolute
   5. forward fundamentals — analyst stance + forward EPS revisions
@@ -75,7 +80,7 @@ Name up to 5 FUTURE events in the next ~12 months that could move the
 stock: next earnings, guidance/investor days, product launches, FDA or
 regulatory decisions, contract awards, lockup expiries, index changes.
   - `source` MUST be the recent_news id you took it from ("news:N2"), or
-    "sec_filing", "quarterly_mda", "earnings_transcript", or "earnings_calendar" (for the
+    "sec_filing", "earnings_release", "quarterly_mda", "earnings_transcript", or "earnings_calendar" (for the
     earnings_alert / next earnings date). Anything else is discarded.
   - `expected_date` only when the source states a date or month
     (YYYY-MM-DD, or YYYY-MM). Otherwise null. Never guess a date. Events

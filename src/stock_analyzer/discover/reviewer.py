@@ -49,6 +49,10 @@ positioning around earnings are not reasons to trade. The user provides:
     cut, investigation…), tone, and `vs_prior_filing` (what changed since
     the filing before). When it is present the raw excerpts below are
     empty; treat it as the filing.
+  - earnings_release (when present): the latest earnings press release
+    (8-K item 2.02) — headline, guidance and reported numbers. A 10-Q
+    seldom states guidance; this is where the company does. Newer than
+    sec_filing when its filed_on is later.
   - risk_factors_10k (annual 10-K Item 1A excerpt; empty when sec_filing is present)
   - quarterly_mda (LATEST 10-Q Management Discussion excerpt; empty when
     sec_filing is present)
@@ -75,7 +79,8 @@ positioning around earnings are not reasons to trade. The user provides:
 
 GROUND your forward outlook in this hierarchy:
   1. sec_filing (or quarterly_mda when absent) — what the company reported
-     LAST QUARTER (most current); its `events` are facts, not boilerplate
+     LAST QUARTER (most current); its `events` are facts, not boilerplate —
+     with earnings_release for the guidance and headline numbers
   2. earnings_transcript — guidance changes + Q&A signals
   3. recent_news (then news) — fresh catalysts that postdate the latest
      filing/transcript (regulatory decisions, M&A, leadership changes,
@@ -93,7 +98,7 @@ UPCOMING CATALYSTS (structured `upcoming_catalysts` list):
 Name up to 5 FUTURE events in the next ~12 months that could move this
 holding (earnings, guidance/investor days, launches, regulatory or court
 decisions, contract awards). `source` MUST be a recent_news id ("news:N2")
-or "sec_filing" / "quarterly_mda" / "earnings_transcript" — anything else is discarded.
+or "sec_filing" / "earnings_release" / "quarterly_mda" / "earnings_transcript" — anything else is discarded.
 Set `expected_date` (YYYY-MM-DD or YYYY-MM) only when the source states
 one; never guess. Past events are not upcoming. A high-impact negative
 catalyst in the next ~90 days is legitimate "specific bearish catalyst

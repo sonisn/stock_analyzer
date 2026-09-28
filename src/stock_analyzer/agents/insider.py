@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from datetime import date
 
-from ..llm import AgnoAgent, Provider
 from ..logging import get_logger
+from ..openrouter import helper_agent
+from ..providers import HelperProvider, Provider
 
 logger = get_logger(__name__)
 
@@ -55,14 +56,21 @@ CRITICAL:
 
 
 class InsiderAgent:
-    def __init__(self, provider: Provider, model: str):
-        self.agent = AgnoAgent(
+    def __init__(
+        self,
+        provider: HelperProvider,
+        model: str,
+        *,
+        fallback: tuple[Provider, str] | None = None,
+    ):
+        self.agent = helper_agent(
             "Insider Analyst",
             provider,
             model,
             # Dated when the agent is built, not when this module is imported:
             # the import runs before the CLI switches to market time.
-            instructions=INSIDER_INSTRUCTIONS.format(today=date.today().strftime("%b %d, %Y")),
+            INSIDER_INSTRUCTIONS.format(today=date.today().strftime("%b %d, %Y")),
+            fallback=fallback,
         )
 
     def run(

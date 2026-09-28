@@ -37,14 +37,23 @@ def test_cost_uses_list_prices_and_cache_multipliers():
 
 def test_unpriced_models_report_tokens_but_flag_total_incomplete():
     t = UsageTracker()
-    t.record("Ranker", "gemini-pro-latest", _metrics(inp=500, out=100))
+    t.record("Ranker", "gemini-flash-lite-latest", _metrics(inp=500, out=100))
     t.record("Ranker", "claude-opus-5", _metrics(inp=1_000_000))
     data = t.report_data()
-    gemini = next(r for r in data["rows"] if r["model"] == "gemini-pro-latest")
+    gemini = next(r for r in data["rows"] if r["model"] == "gemini-flash-lite-latest")
     assert gemini["cost_usd"] is None
     assert gemini["input_tokens"] == 500
     assert data["total_cost_usd"] == pytest.approx(5.0)
     assert data["cost_complete"] is False
+
+
+def test_the_ranker_consensus_models_are_priced():
+    # gpt-6-astra ran uncounted by the cost cap until 2026-09-27: at $10/$50
+    # it is the dearest model in the pipeline.
+    t = UsageTracker()
+    t.record("Ranker", "gpt-6-astra", _metrics(inp=24_272, out=11_697))
+    t.record("Ranker", "gemini-pro-latest", _metrics(inp=25_801, out=12_223))
+    assert t.total_cost() == (pytest.approx(0.8277 + 0.1983, abs=1e-3), True)
 
 
 def test_rows_sorted_most_expensive_first():
@@ -78,7 +87,7 @@ def test_agent_run_records_usage_under_agent_name():
 def test_usage_section_renders_table_and_total():
     t = UsageTracker()
     t.record("Analyst", "claude-sonnet-5", _metrics(inp=1_000_000))
-    t.record("RedTeam", "gemini-pro-latest", _metrics(inp=10))
+    t.record("RedTeam", "gemini-flash-lite-latest", _metrics(inp=10))
     sections: list = []
     append_usage_section(sections, t.report_data())
     kinds = [s.kind for s in sections]

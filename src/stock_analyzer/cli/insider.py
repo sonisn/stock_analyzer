@@ -52,6 +52,7 @@ def run_analysis(settings: Settings) -> str | None:
         agent = InsiderAgent(
             settings.insider_provider or settings.llm_provider,
             settings.insider_model or settings.llm_model,
+            fallback=(settings.llm_provider, settings.llm_model),
         )
         parts.append(agent.run(political, insider, hedge_funds))
     else:

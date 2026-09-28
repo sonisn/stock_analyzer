@@ -11,6 +11,7 @@ from agno.workflow.types import StepInput, StepOutput
 from ...data.brokerage import fetch_portfolio_holdings, listed_tickers
 from ...data.earnings_calendar import batch_earnings_flags
 from ...data.eps_revisions import batch_eps_revisions
+from ...data.filing_evidence import filing_features, red_flags_from
 from ...data.finnhub import batch_finnhub_signals
 from ...data.fred_macro import fetch_regime_data, regime_summary_text
 from ...data.fundamentals import batch_fundamentals
@@ -349,6 +350,17 @@ class DataSteps(PipelineBase):
         prescreen_reasons = self.state.get("prescreen_reasons") or {}
         books = self._screen_books(fundamentals, technicals, prescreen_reasons)
         no_book_points = typical_book_points(books.values())
+        filing = filing_features(
+            self.settings.discover_db_path, list(self.state["tickers"]), today=date.today()
+        )
+        self.state["filing_features"] = filing
+        flags = red_flags_from(filing)
+        if flags:
+            logger.info(
+                "Screen: SEC filing red flags on %d names (%s)",
+                len(flags),
+                ", ".join(f"{t} {'/'.join(c)}" for t, c in sorted(flags.items())[:20]),
+            )
 
         candidates = [
             self._screen_candidate(
@@ -361,6 +373,7 @@ class DataSteps(PipelineBase):
                 books=books,
                 no_book_points=no_book_points,
                 prescreen_reasons=prescreen_reasons,
+                filing_flags=flags,
             )
             for ticker in self.state["tickers"]
         ]
@@ -450,6 +463,7 @@ class DataSteps(PipelineBase):
         books: dict[str, dict[str, Any]],
         no_book_points: float,
         prescreen_reasons: dict[str, Any],
+        filing_flags: dict[str, list[str]] | None = None,
     ) -> dict[str, Any]:
         """One ticker through the hard filter and, if it passes, the score."""
         f = fundamentals.get(ticker)
@@ -482,6 +496,7 @@ class DataSteps(PipelineBase):
                 revisions=revisions_by_t.get(ticker),
                 book=books.get(ticker.upper()),
                 no_book_points=no_book_points,
+                filing_flags=(filing_flags or {}).get(ticker.upper()),
             )
             bonus, theme_meta = theme_score_bonus(ticker, themes_by_t)
             cand["score"] = round(scored["score"] + bonus, 1)

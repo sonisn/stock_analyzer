@@ -204,6 +204,7 @@ class ReportSteps(PipelineBase):
                 self.state["candidates"],
                 self.state.get("fundamentals") or {},
                 self.state.get("eps_revisions") or {},
+                self.state.get("filing_features"),
             )
             insert_scorecards(session, run_id, self.state["analyses"])
             insert_picks(

@@ -219,6 +219,49 @@ def test_tier_b_sends_an_empty_or_failed_bulk_read_straight_to_the_reader(tmp_pa
     assert r.reader_model == "big" and r.escalated_from == "flash"
 
 
+def test_a_filed_income_drop_escalates_a_clean_bulk_read(tmp_path):
+    drop = "filed operating income -44% vs a year earlier ($695M from $1,243M)"
+    item = ({**FILING, "income_drops": [drop]}, SECTIONS)
+    c = _client(tmp_path, [(json.dumps(FACTS_OK), 0.001), (json.dumps(FACTS_OK), 0.01)])
+    r = filings.read_tiered(c, item, tier="B", reader_model="big", bulk_model="flash")
+    assert [b["model"] for b in c._http.bodies] == ["flash", "big"]  # type: ignore[attr-defined]
+    assert r.escalated_from == "flash" and r.flag_reasons == [drop]
+    # The reader is told what the figures say.
+    prompt = c._http.bodies[1]["messages"][-1]["content"]  # type: ignore[attr-defined]
+    assert "Income as filed (XBRL): operating income -44%" in prompt
+
+
+def test_recheck_drops_rereads_only_stored_bulk_reads_that_dropped(tmp_path, monkeypatch):
+    db = str(tmp_path / "t.db")
+    for t in ("AAA", "BBB"):
+        f = {**FILING, "ticker": t, "accession": f"{t}-1"}
+        read = fr.FilingRead(filing=f, reader_model="flash", facts=FACTS_OK)
+        filings.store(db, read, tier="B", today=date(2026, 9, 26))
+    monkeypatch.setattr(
+        filings, "_prepare", lambda t: ({**FILING, "ticker": t, "accession": f"{t}-1"}, SECTIONS)
+    )
+    monkeypatch.setattr(
+        filings, "income_drops", lambda f: ["filed net income -73%"] if f["ticker"] == "BBB" else []
+    )
+    c = _client(tmp_path, [(json.dumps(FACTS_OK), 0.01)])
+    monkeypatch.setattr(filings, "client_from_settings", lambda s: c)
+    monkeypatch.setattr(filings, "log_usage_summary", lambda: None)
+    settings = filings.Settings(
+        discover_db_path=db, openrouter_reader_model="big", openrouter_bulk_model="flash"
+    )
+    tiers = {"AAA": "B", "BBB": "B"}
+    assert filings.run(settings, tiers, today=date(2026, 9, 27), recheck_drops=True) == 0
+    assert [b["model"] for b in c._http.bodies] == ["big"]  # type: ignore[attr-defined]
+    with get_session(db) as s:
+        row = s.exec(select(FilingFacts).where(FilingFacts.ticker == "BBB")).one()
+        got = (row.reader_model, row.escalated_from, row.flag_reasons)
+    assert got == (
+        "big",
+        "flash",
+        "filed net income -73%",
+    )
+
+
 def test_store_keeps_two_filings_for_tier_a_and_one_for_tier_b(tmp_path):
     db = str(tmp_path / "t.db")
     for tier, ticker in (("A", "AAA"), ("B", "BBB")):
@@ -255,6 +298,9 @@ def test_run_promotes_tier_a_bulk_reads_and_skips_what_is_current(tmp_path, monk
         ),
     )
     monkeypatch.setattr(filings, "log_usage_summary", lambda: None)
+    from stock_analyzer.reporting import filing_alert
+
+    monkeypatch.setattr(filing_alert, "earnings_releases", lambda *a, **k: [])
     settings = filings.Settings(
         discover_db_path=db,
         openrouter_api_key="k",
@@ -317,3 +363,89 @@ def test_tier_a_includes_the_shortlist_of_rebalance_runs(tmp_path):
             )
             s.add(Scorecard(run_id=i, ticker=f"T{i}"))
     assert sorted(filings.analyzed_recently(db)) == ["T2", "T3", "T4"]
+
+
+def test_filing_features_count_every_category_and_red_flags_only_high(tmp_path):
+    from stock_analyzer.data.filing_evidence import filing_features, red_flags
+
+    db = str(tmp_path / "t.db")
+    caveats = [
+        {"issue": "mw", "category": "material_weakness", "severity": "high", "quote": "q"},
+        {"issue": "rs", "category": "restatement", "severity": "medium", "quote": "q"},
+        {"issue": "im", "category": "impairment", "severity": "medium", "quote": "q"},
+        {"issue": "im2", "category": "impairment", "severity": "high", "quote": "q"},
+    ]
+    rows = {
+        "AAA": ({**FACTS_OK, "caveats": caveats}, "2026-08-01", ["filed net income -40%"]),
+        "BBB": (FACTS_OK, "2026-08-01", []),
+        "OLD": ({**FACTS_OK, "caveats": caveats}, "2025-01-01", []),  # superseded
+    }
+    for t, (facts, filed, reasons) in rows.items():
+        f = {**FILING, "ticker": t, "accession": f"{t}-1", "filed_on": filed}
+        read = fr.FilingRead(filing=f, reader_model="r", facts=facts, flag_reasons=reasons)
+        filings.store(db, read, tier="B", today=date(2026, 9, 27))
+    today = date(2026, 9, 27)
+    feats = filing_features(db, ["AAA", "BBB", "OLD", "NONE"], today=today)
+    assert set(feats) == {"AAA", "BBB"}
+    assert feats["AAA"] == {
+        "filing_material_weakness": 1,
+        "filing_material_weakness_high": 1,
+        "filing_restatement": 1,
+        "filing_impairment": 2,
+        "filing_impairment_high": 1,
+        "filing_income_drop": 1.0,
+    }
+    assert feats["BBB"] == {"filing_income_drop": 0.0}
+    # Medium restatements and impairments are recorded but not scored.
+    assert red_flags(db, ["AAA", "BBB", "OLD"], today=today) == {"AAA": ["material_weakness"]}
+
+
+def test_candidate_snapshot_keeps_the_filing_facts():
+    import json as _json
+    from types import SimpleNamespace
+
+    from stock_analyzer.db.repository import insert_candidate_snapshot
+
+    added: list = []
+    session = SimpleNamespace(add=added.append)
+    insert_candidate_snapshot(
+        session,  # type: ignore[arg-type]
+        1,
+        "AAA",
+        {"market_cap": 5e9},
+        None,
+        {"filing_going_concern_high": 1},
+    )
+    assert _json.loads(added[0].data) == {"market_cap": 5e9, "filing_going_concern_high": 1}
+
+
+def test_helper_agent_on_openrouter_falls_back_but_never_past_the_cap(tmp_path):
+    from types import SimpleNamespace
+
+    from stock_analyzer.openrouter import HELPER_EXTRA, OpenRouterAgent
+
+    used = []
+
+    def fallback():
+        used.append(1)
+        return SimpleNamespace(run=lambda p: SimpleNamespace(content="from claude"))
+
+    c = _client(tmp_path, [('{"AVGO": [2]}', 0.001)])
+    agent = OpenRouterAgent("Rerank", "z-ai/glm-5.3", "sys", client=c, json_mode=True)
+    assert agent.run("news").content == '{"AVGO": [2]}'
+    body = c._http.bodies[0]  # type: ignore[attr-defined]
+    assert body["provider"] == HELPER_EXTRA["provider"] and body["response_format"]
+
+    # An empty answer or an outage goes to the fallback...
+    c = _client(tmp_path, [("", 0.001)])
+    agent = OpenRouterAgent("Insider", "z-ai/glm-5.3", "sys", client=c, fallback=fallback)
+    assert agent.run("x").content == "from claude" and used == [1]
+    no_key = OpenRouterAgent("Insider", "z-ai/glm-5.3", "sys", client=None, fallback=fallback)
+    assert no_key.run("x").content == "from claude"
+
+    # ...but a call refused by the daily cap is never re-spent elsewhere.
+    c = _client(tmp_path, [], cap=0.0)
+    agent = OpenRouterAgent("Insider", "z-ai/glm-5.3", "sys", client=c, fallback=fallback)
+    with pytest.raises(BudgetExceededError):
+        agent.run("x" * 1000)
+    assert used == [1, 1]
