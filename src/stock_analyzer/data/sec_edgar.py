@@ -189,7 +189,7 @@ def fetch_risk_factors(ticker: str) -> dict[str, Any] | None:
     except HttpClientError as e:
         logger.warning("SEC 10-K fetch failed for %s: %s", ticker, e)
         return None
-    section = _extract_item_1a(_strip_html(resp.text))
+    section = _extract_item_1a(_strip_html(capped_text(resp)))
     if not section:
         logger.debug("SEC: Item 1A not extractable for %s", ticker)
         return None
@@ -250,7 +250,7 @@ def fetch_quarterly_mda(ticker: str) -> dict[str, Any] | None:
     except HttpClientError as e:
         logger.warning("SEC 10-Q fetch failed for %s: %s", ticker, e)
         return None
-    section = _extract_item_2_mda(_strip_html(resp.text))
+    section = _extract_item_2_mda(_strip_html(capped_text(resp)))
     if not section:
         logger.debug("SEC: Item 2 MD&A not extractable for %s", ticker)
         return None
@@ -333,6 +333,7 @@ _L = {
         "operating",
         "directors",
         "information",
+        "and",
     )
 }
 
@@ -359,13 +360,22 @@ _SECTIONS: dict[str, dict[str, tuple[str, tuple[str, ...]]]] = {
     # the risk factors sit under Item 3 as "D. Risk Factors".
     "20-F": {
         "mda": (
-            rf"{_ITEM}\s*5{_SEP}{_L['operating']}\s+and\s+{_L['financial']}\s+review",
+            rf"{_ITEM}\s*5{_SEP}{_L['operating']}\s+{_L['and']}\s+{_L['financial']}\s+review",
             (rf"{_ITEM}\s*6{_SEP}{_L['directors']}",),
         ),
         "risks": (
             rf"(?:{_ITEM}\s*3{_SEP})?d{_SEP}{_L['risk']}\s+{_L['factors']}",
             (rf"{_ITEM}\s*4{_SEP}{_L['information']}", rf"{_ITEM}\s*4a{_SEP}{_L['unresolved']}"),
         ),
+    },
+    # Canadian issuers' annual report (MJDS). Its sections carry titles, not
+    # item numbers, and often sit in an exhibit (`exhibit_sections`).
+    "40-F": {
+        "mda": (
+            rf"{_L['management']}.{{0,5}}s?\s+{_L['discussion']}\s+{_L['and']}\s+analysis[^\n]{{0,160}}$",
+            (),
+        ),
+        "risks": (rf"{_L['risk']}\s+{_L['factors']}[^\n]{{0,40}}$", ()),
     },
     "10-K": {
         "mda": (
@@ -388,8 +398,20 @@ _SECTIONS: dict[str, dict[str, tuple[str, tuple[str, ...]]]] = {
 # section's title, with no "Item" before it. Some filings number only the
 # table of contents (DRVN, DBD), so the numbered match finds the contents
 # line and nothing after it.
-_UNNUMBERED = {
-    "mda": rf"{_L['management']}.{{0,5}}s?\s+{_L['discussion']}\s+and\s+analysis[^\n]{{0,100}}$",
+_UNNUMBERED: dict[str, tuple[str, ...]] = {
+    "mda": (
+        # GE's title runs to "... Results of Operations (MD&A)" and more.
+        rf"{_L['management']}.{{0,5}}s?\s+{_L['discussion']}\s+{_L['and']}\s+analysis[^\n]{{0,160}}$",
+        # Foreign filers' name for it (BHP, Rio Tinto): "Operating and
+        # Financial Review", or just "Financial review".
+        rf"(?:{_L['operating']}\s+{_L['and']}\s+)?{_L['financial']}\s+review"
+        rf"(?:\s+{_L['and']}\s+prospects)?[^\n]{{0,60}}$",
+        # The full formal title is distinctive enough to match with text
+        # running on after it on the same line (GE's 10-Q).
+        rf"{_L['management']}.{{0,5}}s?\s+{_L['discussion']}\s+{_L['and']}\s+analysis\s+of\s+"
+        rf"{_L['financial']}\s+condition\s+{_L['and']}\s+results\s+of\s+operations",
+    ),
+    "risks": (rf"{_L['risk']}\s+{_L['factors']}[^\n]{{0,40}}$",),
 }
 _UNNUMBERED_ENDS = (
     rf"{_L['quantitative']}\s+and\s+qualitative\s+disclosures?[^\n]{{0,80}}$",
@@ -397,7 +419,14 @@ _UNNUMBERED_ENDS = (
 )
 
 
-def _cut(text: str, head: str, ends: tuple[str, ...]) -> str | None:
+# A title-only match (no item number) must lead to at least this much text:
+# a real MD&A runs to tens of thousands of characters, while a 40-F's
+# exhibit list ("99.2 Management's Discussion and Analysis") is followed
+# by a page of other exhibit names.
+TITLE_MATCH_MIN_CHARS = 5_000
+
+
+def _cut(text: str, head: str, ends: tuple[str, ...], *, min_chars: int = 400) -> str | None:
     """The text after the LAST `head` that is followed by a real section
     (a 10-Q's "Item 1A" in Part II often just points at the 10-K), up to
     the first end marker. Headings start a line: "see Item 3 - Quantitative
@@ -412,7 +441,7 @@ def _cut(text: str, head: str, ends: tuple[str, ...]) -> str | None:
             if found:
                 stop = min(stop, found.start())
         section = text[m.end() : stop].strip()
-        if len(section) >= 400:
+        if len(section) >= min_chars:
             return section
     return None
 
@@ -422,17 +451,23 @@ def filing_sections(text: str, form: str, *, max_chars: dict[str, int]) -> dict[
     `max_chars[name]`. A section whose header isn't found (or is under a
     few hundred characters, i.e. only a cross-reference) is left out."""
     out: dict[str, str] = {}
-    for name, (head, ends) in _SECTIONS.get(form.replace("/A", ""), {}).items():
-        section = _cut(text, head, ends)
-        if section is None and name in _UNNUMBERED:
-            section = _cut(text, _UNNUMBERED[name], (*ends, *_UNNUMBERED_ENDS))
+    base = form.replace("/A", "")
+    for name, (head, ends) in _SECTIONS.get(base, {}).items():
+        titled = base == "40-F" and name == "mda"
+        section = _cut(text, head, ends, min_chars=TITLE_MATCH_MIN_CHARS if titled else 400)
+        for fallback in _UNNUMBERED.get(name, ()) if section is None and name == "mda" else ():
+            section = _cut(
+                text, fallback, (*ends, *_UNNUMBERED_ENDS), min_chars=TITLE_MATCH_MIN_CHARS
+            )
+            if section:
+                break
         if section:
             out[name] = section[: max_chars.get(name, 40_000)]
     return out
 
 
 def latest_filing(
-    ticker: str, forms: tuple[str, ...] = ("10-Q", "10-K", "20-F")
+    ticker: str, forms: tuple[str, ...] = ("10-Q", "10-K", "20-F", "40-F")
 ) -> dict[str, Any] | None:
     """The newest filing of `forms`: accession, form, filed_on, period_end
     and the primary document's URL. None when the ticker has no CIK or the
@@ -442,7 +477,7 @@ def latest_filing(
 
 
 def latest_filings(
-    ticker: str, n: int, forms: tuple[str, ...] = ("10-Q", "10-K", "20-F")
+    ticker: str, n: int, forms: tuple[str, ...] = ("10-Q", "10-K", "20-F", "40-F")
 ) -> list[dict[str, Any]]:
     """The `n` newest filings of `forms`, newest first (one request);
     [] when the ticker has no CIK or the SEC is unreachable."""
@@ -481,12 +516,34 @@ def latest_filings(
     return out
 
 
+# A filing's prose — MD&A, risk factors, a press release — comes before its
+# exhibits and inline-XBRL blocks, which run some 10-Ks to tens of MB.
+# Converting one of those whole costs several copies of it in memory: a
+# study reading every S&P 500 10-K reached 18 GB on four threads
+# (2026-09-28). Only the first MAX_FILING_BYTES is decoded.
+MAX_FILING_BYTES = 15_000_000
+
+
 def fetch_filing_text(url: str) -> str | None:
     try:
-        return filing_text(_HTTP.get(url).text)
+        response = _HTTP.get(url)
     except HttpClientError as e:
         logger.warning("SEC filing fetch failed (%s): %s", url, e)
         return None
+    return filing_text(capped_text(response))
+
+
+def capped_text(response: Any) -> str:
+    """The response decoded, up to MAX_FILING_BYTES."""
+    content = response.content
+    if len(content) > MAX_FILING_BYTES:
+        logger.info(
+            "SEC filing %s is %.0f MB; reading its first %.0f MB",
+            response.url,
+            len(content) / 1e6,
+            MAX_FILING_BYTES / 1e6,
+        )
+    return content[:MAX_FILING_BYTES].decode(response.encoding or "utf-8", errors="ignore")
 
 
 # --- a holding's new filings (reporting/filing_alert.py) --------------------
@@ -496,7 +553,7 @@ def filings_since(
     ticker: str,
     since: date,
     *,
-    forms: tuple[str, ...] = ("10-Q", "10-K", "20-F", "8-K"),
+    forms: tuple[str, ...] = ("10-Q", "10-K", "20-F", "40-F", "8-K"),
 ) -> list[dict[str, Any]]:
     """Filings of `forms` dated `since` or later, oldest first, each with
     its accession, 8-K item codes ("2.02", "5.02", …) and primary-document
@@ -573,3 +630,84 @@ def exhibit_99_text(filing: dict[str, Any]) -> str | None:
             return 0
 
     return fetch_filing_text(f"{folder}/{max(docs, key=size)['name']}")
+
+
+# How many of a filing's other documents to try, largest first, when its
+# MD&A is an exhibit (a 40-F's always is; a 20-F's sometimes).
+EXHIBIT_TRIES = 6
+
+
+# Titles of the financial statements, which often mention the MD&A on
+# their first page (Suncor, Kinross, IAMGOLD).
+_NOT_MDA_TITLES = (
+    "responsibility for financial",
+    "statement of responsibility",
+    "consolidated financial statements",
+    "report of independent",
+)
+
+
+def _is_mda_document(text: str) -> bool:
+    """An exhibit that IS the MD&A says so in its title — before any
+    financial-statement heading — and is long."""
+    if len(text) < TITLE_MATCH_MIN_CHARS:
+        return False
+    head = text[:1500].lower().replace("’", "'")
+    at = min(
+        (
+            i
+            for i in (head.find("discussion and analysis"), head.find("financial review"))
+            if i >= 0
+        ),
+        default=-1,
+    )
+    if at < 0:
+        return False
+    return not any(0 <= head.find(t) < at for t in _NOT_MDA_TITLES)
+
+
+def exhibit_sections(filing: dict[str, Any], *, max_chars: dict[str, int]) -> dict[str, str]:
+    """{"mda", "risks"} from the filing's other documents, largest first:
+    the MD&A is the exhibit titled as one (taken whole); the risk factors
+    are cut from any of them (a 40-F's Annual Information Form has them).
+    {} when no exhibit is an MD&A — a heading merely mentioning "MD&A"
+    inside the financial statements or an exhibit list doesn't count."""
+    folder, primary = filing["url"].rsplit("/", 1)
+    try:
+        index = _HTTP.get_json(f"{folder}/index.json")
+    except HttpClientError as e:
+        logger.info("No filing index for %s (%s)", filing.get("accession"), e)
+        return {}
+
+    def size(i: dict[str, Any]) -> int:
+        try:
+            return int(i.get("size") or 0)
+        except ValueError:
+            return 0
+
+    docs = sorted(
+        (
+            i
+            for i in index.get("directory", {}).get("item", [])
+            if i.get("name", "").lower().endswith((".htm", ".html"))
+            and i["name"] != primary
+            and not re.fullmatch(r"R\d+\.html?", i["name"])
+            and "-index" not in i["name"]
+        ),
+        key=size,
+        reverse=True,
+    )
+    found: dict[str, str] = {}
+    for doc in docs[:EXHIBIT_TRIES]:
+        text = fetch_filing_text(f"{folder}/{doc['name']}")
+        if not text:
+            continue
+        if "mda" not in found and _is_mda_document(text):
+            found["mda"] = text[: max_chars.get("mda", 40_000)]
+        if "risks" not in found:
+            risks = filing_sections(text, "40-F", max_chars=max_chars).get("risks")
+            if risks:
+                found["risks"] = risks
+        if "mda" in found and "risks" in found:
+            break
+    return found if "mda" in found else {}

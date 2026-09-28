@@ -29,7 +29,7 @@ from .sec_edgar import fetch_filing_text, filing_sections, latest_filings
 
 logger = get_logger(__name__)
 
-ANNUAL_FORMS = ("10-K", "20-F")
+ANNUAL_FORMS = ("10-K", "20-F", "40-F")
 TYPICAL_KEPT = 0.70
 LOW_KEPT = 0.48  # the bottom tenth
 RISK_CHARS = 400_000  # the whole section; a 10-K's runs to ~100k

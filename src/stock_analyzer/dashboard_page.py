@@ -150,9 +150,53 @@ function show(t){
     ? `${h.length} review${h.length>1?'s':''} on record · latest <b>${esc(h[h.length-1].v)}</b> at ${h[h.length-1].c}/10 on ${h[h.length-1].d}`
     : 'No review history.';
   $('#chart').innerHTML = h.length>1 ? spark(h) : '<p class="note">Not enough history to plot.</p>';
-  $('#dview').innerHTML = view ? `<div class="viewtext">${esc(view)}</div>` : '';
+  $('#dview').innerHTML = (view ? `<div class="viewtext">${esc(view)}</div>` : '') + secBlock(t);
   $('#detail').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
+
+/* SEC filing highlights for one holding: the facts the deciding models
+   see, read from its latest 10-Q/10-K by the open reader, each backed by
+   a quote checked against the filing. */
+function secBlock(t){
+  const s=(D.sec||{})[t]; if(!s) return '';
+  const p=s.pack, r=s.release; let h='<h3>SEC filings</h3>';
+  if(p){
+    h+=`<p class="note"><a href="${esc(p.url)}" target="_blank" rel="noopener">${esc(p.form)}</a>`+
+       ` for the period ended ${esc(p.period_end)}, filed ${esc(p.filed_on)} · quotes verified ${esc(p.quotes_verified)}</p>`;
+    if(p.summary) h+=`<div class="viewtext">${esc(p.summary)}</div>`;
+    const rows=[['Guidance',p.guidance],['Demand',p.demand],['Margins',p.margins],
+      ['Backlog',p.backlog],['Liquidity',p.liquidity],['Capital return',p.capital_return],
+      ['Risk factors vs last year',p.risk_factors_vs_last_year]].filter(x=>x[1]);
+    if(rows.length) h+='<table><tbody>'+rows.map(x=>`<tr><td class="dim">${x[0]}</td><td>${esc(x[1])}</td></tr>`).join('')+'</tbody></table>';
+    if(p.vs_prior_filing){
+      const ch=Object.entries(p.vs_prior_filing).filter(([k])=>k!=='period_end');
+      if(ch.length) h+=`<p class="note">Changed since the ${esc(p.vs_prior_filing.period_end)} filing: `+
+        ch.map(([k,v])=>`${esc(k)} ${esc(v)}`).join('; ')+'</p>';
+    }
+    (p.events||[]).forEach(e=>h+=`<p><b style="color:var(${e.severity==='high'?'--bad':'--ink'})">`+
+      `${e.severity==='high'?'⚠ ':''}${esc(e.issue)}</b> <span class="dim">[${esc(e.category)}]</span>`+
+      (e.quote?`<br><i class="dim">“${esc(e.quote)}”</i>`:'')+'</p>');
+    if((p.key_risks||[]).length) h+='<p class="note">Key risks: '+p.key_risks.map(esc).join(' · ')+'</p>';
+  }
+  if(r){
+    h+=`<p><b>Earnings release ${esc(r.filed_on)}:</b> ${esc(r.headline||'')}`+
+      (r.guidance?`<br>Guidance: ${esc(r.guidance)}`:'')+
+      ((r.numbers||[]).length?`<br><span class="dim">${r.numbers.map(esc).join(' · ')}</span>`:'')+'</p>';
+  }
+  (s.events||[]).forEach(e=>h+=`<p><span class="pill">${esc(e.kind)}</span> <span class="dim">${esc(e.d)}</span> `+
+    `<a href="${esc(e.url)}" target="_blank" rel="noopener">filing</a><br>${e.lines.map(esc).join('<br>')}</p>`);
+  return h;
+}
+
+/* every holding's SEC events of the last 90 days, newest first */
+(function(){
+  const rows=[]; Object.entries(D.sec||{}).forEach(([t,s])=>(s.events||[]).forEach(e=>rows.push({t,...e})));
+  rows.sort((a,b)=>a.d<b.d?1:-1);
+  $('#secev').innerHTML = rows.length ? rows.map(e=>`<tr data-t="${esc(e.t)}"><td class="dim">${esc(e.d)}</td>`+
+    `<td><b>${esc(e.t)}</b></td><td>${esc(e.kind)}</td><td>${esc(e.lines[0]||'')}</td></tr>`).join('')
+    : '<tr><td colspan="4" class="dim">No offerings, planned insider sales, activist stakes, late filings or material 8-Ks on your holdings in 90 days.</td></tr>';
+  document.querySelectorAll('#secev tr[data-t]').forEach(tr=>tr.onclick=()=>show(tr.dataset.t));
+})();
 
 function spark(h){
   const W=680,H=170,P={l:34,r:14,t:14,b:26};
@@ -323,6 +367,12 @@ def render_page(data: dict[str, Any]) -> str:
   <span><i style="background:var(--bad)"></i>SELL</span></div>
  <div id="chart"></div><div id="dview"></div>
 </div>
+
+<div class="card"><h2>SEC events on your holdings</h2>
+ <p class="note">Last 90 days: offerings and shelves, planned insider sales ($1M+), activist
+  stakes, late filings and material 8-Ks. Click a row for that holding’s filing highlights.</p>
+ <table><thead><tr><th>Filed</th><th>Ticker</th><th>What</th><th>Detail</th></tr></thead>
+ <tbody id="secev"></tbody></table></div>
 
 <div class="card"><h2>Suggestions, graded</h2>
  <p class="note">Every piece of advice, measured against the price record

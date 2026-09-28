@@ -528,3 +528,46 @@ def test_only_stocks_that_passed_the_screen_lately_are_eligible(tmp_path):
                 {"r": run, "t": t, "p": ok},
             )
     assert filings.passed_recently(db) == ["PASS"]
+
+
+def test_a_40f_takes_the_exhibit_titled_as_its_mda(monkeypatch):
+    from stock_analyzer.data import sec_edgar as se
+
+    mda = "MANAGEMENT'S DISCUSSION AND ANALYSIS for the year. " + "Revenue grew on copper. " * 400
+    statements = (
+        "Management's Responsibility for Financial Statements. The MD&A and the "
+        "management's discussion and analysis are ours. " + "Balance sheet. " * 600
+    )
+    aif = "ANNUAL INFORMATION FORM\nRISK FACTORS\n" + "Copper prices may fall. " * 100
+    docs = {"fs.htm": statements, "mda.htm": mda, "aif.htm": aif}
+    index = {
+        "directory": {
+            "item": [
+                {"name": "cover.htm", "size": 9},
+                {"name": "fs.htm", "size": 900},
+                {"name": "mda.htm", "size": 800},
+                {"name": "aif.htm", "size": 700},
+                {"name": "R12.htm", "size": 999},
+            ]
+        }
+    }
+    monkeypatch.setattr(se._HTTP, "get_json", lambda url: index)
+    monkeypatch.setattr(se, "fetch_filing_text", lambda url: docs.get(url.rsplit("/", 1)[1], ""))
+    filing = {"accession": "a", "form": "40-F", "url": "https://x/data/1/000/cover.htm"}
+    got = se.exhibit_sections(filing, max_chars={"mda": 100_000, "risks": 100_000})
+    assert got["mda"].startswith("MANAGEMENT'S DISCUSSION") and "Copper prices" in got["risks"]
+
+
+def test_title_only_mda_headings_need_a_real_section():
+    from stock_analyzer.data.sec_edgar import filing_sections
+
+    exhibit_list = (
+        "Exhibits\n99.2 Management's Discussion and Analysis\n99.3 Financial Statements\n"
+        + "x " * 300
+    )
+    assert "mda" not in filing_sections(exhibit_list, "40-F", max_chars={"mda": 60_000})
+    ge = (
+        "MANAGEMENT’S DISCUSSION AND ANALYSIS OF FINANCIAL CONDITION AND RESULTS OF OPERATIONS "
+        "(MD&A). The financial statements are prepared... " + "Orders rose. " * 600
+    )
+    assert "Orders rose" in filing_sections(ge, "10-Q", max_chars={"mda": 60_000})["mda"]

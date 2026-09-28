@@ -54,7 +54,13 @@ from ..agents.filing_reader import (
 from ..config import Settings
 from ..data.forecast_snapshots import tracked_tickers
 from ..data.income_drop import income_drops
-from ..data.sec_edgar import fetch_filing_text, filing_sections, latest_filing, latest_filings
+from ..data.sec_edgar import (
+    exhibit_sections,
+    fetch_filing_text,
+    filing_sections,
+    latest_filing,
+    latest_filings,
+)
 from ..data.text_change import ANNUAL_FORMS, risk_change, risk_sections
 from ..data.universe_base import all_us_2b
 from ..db.session import exec_sql, get_session
@@ -164,6 +170,20 @@ def _stored(db: str) -> dict[str, str]:
     return {acc: model for acc, model in rows}
 
 
+def foreign_aware_sections(filing: dict[str, Any], text: str) -> dict[str, str]:
+    """The filing's MD&A and risk factors. A 40-F's are exhibits, so those
+    come first; a 20-F or 10-K without them in the main document tries
+    its exhibits too (a 20-F filer's annual report is often one)."""
+    form = filing["form"]
+    if form == "40-F":
+        found = exhibit_sections(filing, max_chars=SECTION_CHARS)
+        return found or filing_sections(text, form, max_chars=SECTION_CHARS)
+    sections = filing_sections(text, form, max_chars=SECTION_CHARS)
+    if "mda" not in sections and form != "10-Q":
+        sections = {**exhibit_sections(filing, max_chars=SECTION_CHARS), **sections}
+    return sections
+
+
 def _prepare(ticker: str) -> Prepared | str:
     """(filing, sections) ready to read, or why the ticker was skipped."""
     filing = latest_filing(ticker)
@@ -172,7 +192,7 @@ def _prepare(ticker: str) -> Prepared | str:
     text = fetch_filing_text(filing["url"])
     if not text:
         return "filing text unavailable"
-    sections = filing_sections(text, filing["form"], max_chars=SECTION_CHARS)
+    sections = foreign_aware_sections(filing, text)
     if "mda" not in sections:
         return f"MD&A not found in {filing['form']}"
     if filing["form"] in ANNUAL_FORMS:

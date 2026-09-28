@@ -170,7 +170,85 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
         reasoning=reasoning,
         reviews={t: (r or "") for t, r in ledger.review_text.items()},
         ibd=_ibd_or_nothing(db, set(positions)),
+        sec=_sec_highlights(db, sorted(positions), today=today),
     )
+
+
+SEC_EVENT_DAYS = 90
+
+
+def _sec_highlights(db: str, tickers: list[str], *, today: date) -> dict[str, Any]:
+    """Per holding: the latest filing's facts as the deciding models see
+    them (data/filing_evidence), the latest earnings release, and the SEC
+    events and material 8-Ks of the last SEC_EVENT_DAYS, as plain lines.
+    {} on any failure: the rest of the page doesn't depend on it."""
+    try:
+        return _sec_highlights_or_raise(db, tickers, today=today)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("SEC highlights unavailable for the dashboard (%s)", e)
+        return {}
+
+
+def _plain(html_line: str) -> str:
+    import html
+    import re
+
+    return html.unescape(re.sub(r"<[^>]+>", "", html_line)).strip()
+
+
+def _sec_highlights_or_raise(db: str, tickers: list[str], *, today: date) -> dict[str, Any]:
+    import json
+    from datetime import timedelta
+
+    from sqlmodel import col, select
+
+    from ..data.filing_evidence import earnings_releases, evidence_packs
+    from ..db.session import get_session
+    from ..db.tables import EightKAlert, SecEvent
+    from ..reporting.filing_alert import EVENT_LABELS, event_rows
+
+    since = (today - timedelta(days=SEC_EVENT_DAYS)).isoformat()
+    packs = evidence_packs(db, tickers)
+    releases = earnings_releases(db, tickers)
+    events: dict[str, list[dict[str, Any]]] = {}
+    with get_session(db) as session:
+        for e in session.exec(
+            select(SecEvent).where(
+                col(SecEvent.ticker).in_(tickers), SecEvent.alerted, SecEvent.filed_on >= since
+            )
+        ).all():
+            filing = {"ticker": e.ticker, "form": e.form, "filed_on": e.filed_on, "url": e.url}
+            item = {"filing": filing, "event": e.kind, "facts": json.loads(e.facts or "{}")}
+            lines = [_plain(r) for r in event_rows(item)]
+            events.setdefault(e.ticker, []).append(
+                {
+                    "d": e.filed_on,
+                    "kind": EVENT_LABELS.get(e.kind, e.kind),
+                    "url": e.url,
+                    "lines": lines[1:],
+                }
+            )
+        for a in session.exec(
+            select(EightKAlert).where(
+                col(EightKAlert.ticker).in_(tickers), EightKAlert.filed_on >= since
+            )
+        ).all():
+            summary = json.loads(a.summary or "{}") if a.summary else {}
+            headline = summary.get("headline") or summary.get("what_happened")
+            if headline:
+                events.setdefault(a.ticker, []).append(
+                    {"d": a.filed_on, "kind": f"8-K ({a.items})", "url": a.url, "lines": [headline]}
+                )
+    out: dict[str, Any] = {}
+    for t in tickers:
+        entry = {
+            "pack": packs.get(t),
+            "release": releases.get(t),
+            "events": sorted(events.get(t, []), key=lambda x: x["d"], reverse=True),
+        }
+        if any(entry.values()):
+            out[t] = entry
+    return out
 
 
 def _ibd_or_nothing(db: str, held: set[str]) -> dict[str, Any]:

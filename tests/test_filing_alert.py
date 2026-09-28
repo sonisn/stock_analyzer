@@ -209,3 +209,13 @@ def test_the_latest_earnings_release_is_read_once_and_reaches_the_deciders(tmp_p
             "numbers": ["revenue $18.1B +22% y/y"],
         }
     }
+
+
+def test_a_huge_filing_is_read_only_up_to_the_cap(monkeypatch):
+    class Resp:
+        url = "u"
+        encoding = "utf-8"
+        content = b"<p>Item 7. MD&amp;A text</p>" + b"x" * 200
+
+    monkeypatch.setattr(sec_edgar, "MAX_FILING_BYTES", 40)
+    assert sec_edgar.capped_text(Resp()) == "<p>Item 7. MD&amp;A text</p>" + "x" * 12

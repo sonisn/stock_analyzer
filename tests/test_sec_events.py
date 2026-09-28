@@ -135,3 +135,36 @@ def test_late_filing_needs_no_model(tmp_path):
     item = fa.read_event(c, db, _filing("XYZ", "NT 10-Q", "n"), model="m", today=TODAY)
     assert "cannot file its report on time" in fa.filing_block(item)
     assert c._http.bodies == []  # type: ignore[attr-defined]
+
+
+def test_dashboard_sec_highlights_carry_pack_release_and_events(tmp_path):
+    from stock_analyzer.agents import filing_reader as fr
+    from stock_analyzer.cli import filings
+    from stock_analyzer.cli.dashboard import _sec_highlights
+    from stock_analyzer.dashboard_page import render_page
+
+    from .test_filing_reader import FACTS_OK, FILING
+
+    db = str(tmp_path / "t.db")
+    filings.store(
+        db, fr.FilingRead(filing=FILING, reader_model="m", facts=FACTS_OK), tier="A", today=TODAY
+    )
+    c = _client(tmp_path, [])
+    fa.read_event(c, db, _filing("ABC", "NT 10-Q", "n"), model="m", today=TODAY)
+    sec = _sec_highlights(db, ["ABC", "NONE"], today=TODAY)
+    assert set(sec) == {"ABC"}
+    assert sec["ABC"]["pack"]["tone"] == "positive"
+    assert sec["ABC"]["events"][0]["kind"] == "late-filing notice"
+    assert "cannot file its report on time" in sec["ABC"]["events"][0]["lines"][0]
+    page = render_page(
+        {
+            "holdings": [],
+            "record": {"rows": 0, "tickers": 0, "first": "", "last": ""},
+            "latest_run": 1,
+            "generated": "2026-09-28",
+            "holdings_ok": True,
+            "ibd": {},
+            "sec": sec,
+        }
+    )
+    assert "SEC events on your holdings" in page and "late-filing notice" in page

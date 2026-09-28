@@ -1099,6 +1099,20 @@ puts them in the evening alert email:
 | Form 144 | a planned insider sale of $1M+ (seller, role, shares, value, date), before its Form 4 | none |
 | Schedule 13D | a 5%+ holder: who, what percent, and whether they seek changes | GLM-5.3, ~$0.001 |
 
+The **dashboard** shows it all per holding: click a holding for its latest
+filing's highlights (summary, guidance, demand, margins, liquidity, reported
+events with their quotes, key risks, risk-factor change, what changed since
+the filing before), its latest earnings release and its SEC events; a
+"SEC events on your holdings" table lists the last 90 days.
+
+Foreign filers are read too: a Canadian 40-F's MD&A is found among its
+exhibits (the one titled as an MD&A — not the financial statements that
+mention it), and a 20-F's "Operating and Financial Review" by its title.
+Shell's and BHP's 20-Fs, which point to page numbers in a separate annual
+report, still can't be cut. Every filing is decoded only up to 15 MB — its
+prose comes before the exhibits and inline XBRL — so one giant document
+can't exhaust memory.
+
 Every night `earnings-watch` also scans EDGAR's daily index for 13Ds on
 the whole $2B+ universe. A holder the reader calls activist (board seats,
 a sale, a buyback, a strategy change — not an asset manager's routine

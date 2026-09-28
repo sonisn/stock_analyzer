@@ -29,12 +29,15 @@ from sqlmodel import select
 
 from ..agents.filing_reader import (
     MATERIAL_8K_ITEMS,
-    SECTION_CHARS,
     read_8k,
     read_filing,
 )
 from ..data.filing_evidence import evidence_packs
-from ..data.sec_edgar import exhibit_99_text, fetch_filing_text, filing_sections, filings_since
+from ..data.sec_edgar import (
+    exhibit_99_text,
+    fetch_filing_text,
+    filings_since,
+)
 from ..data.sec_events import (
     EVENT_FORMS,
     PLANNED_SALE_MIN_USD,
@@ -55,7 +58,7 @@ from ..usage import BudgetExceededError
 logger = get_logger(__name__)
 
 LOOKBACK_DAYS = 4
-PERIODIC = ("10-Q", "10-K", "20-F")
+PERIODIC = ("10-Q", "10-K", "20-F", "40-F")
 
 
 def _seen(db: str) -> set[str]:
@@ -108,7 +111,9 @@ def new_holding_filings(
 
 def _periodic(client, db, f, *, model, today, store) -> dict[str, Any] | None:
     text = fetch_filing_text(f["url"])
-    sections = filing_sections(text or "", f["form"], max_chars=SECTION_CHARS)
+    from ..cli.filings import foreign_aware_sections
+
+    sections = foreign_aware_sections(f, text or "")
     if text and f["form"] in ANNUAL_FORMS:
         try:
             f["risk_change"] = risk_change(f, risk_sections(text, f["form"]))
