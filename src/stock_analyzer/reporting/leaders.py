@@ -759,6 +759,7 @@ def collect(db: str, *, held: set[str], today: date) -> dict[str, Any]:
                 "off": r.off_high,
                 "six": r.six_month,
                 "q1": r.eps_q1,
+                "es": r.eps_source,
                 "base": r.base,
                 "wk": r.base_weeks,
                 "dep": r.base_depth,

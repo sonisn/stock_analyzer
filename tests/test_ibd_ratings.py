@@ -215,6 +215,127 @@ def test_growth_off_a_near_zero_base_is_not_a_number():
     assert eps_growth(q, [], today=date(2026, 8, 1))["q1_growth"] is None
 
 
+def test_an_empty_concept_falls_back_to_the_latest_tag_in_company_facts(monkeypatch):
+    from stock_analyzer.data import quarterly_eps as q
+
+    old = [_fact("2020-01-01", "2020-03-31", 0.5)]
+    now = [_fact("2026-04-01", "2026-06-30", 1.2)]
+    company = {
+        "facts": {
+            "us-gaap": {
+                "EarningsPerShareDiluted": {"units": {"USD/shares": old}},
+                "IncomeLossFromContinuingOperationsPerDilutedShare": {"units": {"USD/shares": now}},
+            }
+        }
+    }
+    asked = []
+
+    def get_json(url):
+        asked.append(url.rsplit("/", 1)[-1])
+        return {"units": {"USD/shares": []}} if "companyconcept" in url else company
+
+    monkeypatch.setattr(q, "load_ticker_cik_map", lambda: {"IQV": 1478242})
+    monkeypatch.setattr(q._HTTP, "get_json", get_json)
+    assert q.fetch_facts("IQV") == now
+    assert asked == ["EarningsPerShareDiluted.json", "CIK0001478242.json"]
+
+
+def test_a_stale_concept_falls_back_too(monkeypatch):
+    from stock_analyzer.data import quarterly_eps as q
+
+    stale = [_fact("2011-04-01", "2011-06-30", 0.5)]
+    now = [
+        _fact(str(date.today() - timedelta(days=120)), str(date.today() - timedelta(days=30)), 1.2)
+    ]
+    company = {
+        "facts": {
+            "us-gaap": {
+                "EarningsPerShareDiluted": {"units": {"USD/shares": stale}},
+                "IncomeLossFromContinuingOperationsPerDilutedShare": {"units": {"USD/shares": now}},
+            }
+        }
+    }
+    monkeypatch.setattr(q, "load_ticker_cik_map", lambda: {"MNST": 865752})
+    monkeypatch.setattr(
+        q._HTTP,
+        "get_json",
+        lambda url: {"units": {"USD/shares": stale}} if "companyconcept" in url else company,
+    )
+    assert q.fetch_facts("MNST") == now
+
+
+def test_yahoo_reports_are_dated_to_the_quarter_before_and_summed_into_years():
+    from stock_analyzer.data.quarterly_eps import eps_growth, yahoo_periods
+
+    # Reported in the month after each quarter; the three 2026 reports doubled.
+    days = [date(y, m, 25) for y in range(2022, 2027) for m in (1, 4, 7, 10)]
+    reports = [(d, 2.0 if d.year == 2026 else 1.0) for d in days if d <= date(2026, 7, 31)]
+    quarters, years = yahoo_periods(reports)
+    assert quarters[0][0] == date(2021, 12, 31) and quarters[-1] == (date(2026, 6, 30), 2.0)
+    assert years[-1] == (date(2026, 6, 30), 7.0)  # Q3 2025 at 1.0 + three at 2.0
+    g = eps_growth(quarters, years, today=date(2026, 8, 15))
+    assert g["q1_growth"] == pytest.approx(1.0) and g["cagr_3y"] is not None
+    # Half-yearly reporters get quarters but no summed years.
+    assert (
+        yahoo_periods(
+            [
+                (date(2025, 8, 1), 1.0),
+                (date(2026, 2, 1), 1.0),
+                (date(2026, 8, 1), 1.0),
+                (date(2027, 2, 1), 1.0),
+            ]
+        )[1]
+        == []
+    )
+
+
+def test_batch_eps_falls_back_to_yahoo_and_retries_when_yahoo_is_down(monkeypatch, tmp_path):
+    from stock_analyzer.data import quarterly_eps as q
+
+    monkeypatch.setenv("FETCH_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        q.yf_gateway, "map_symbols", lambda fn, todo, workers: ((t, fn(t)) for t in todo)
+    )
+    monkeypatch.setattr(
+        q,
+        "fetch_eps",
+        lambda t, strict: {"q1_growth": 0.1, "source": "sec"} if t == "SEC" else None,
+    )
+    yahoo = {"TSM": [(date(2025, 7, 17), 1.0), (date(2026, 7, 16), 1.5)], "DOWN": None, "NONE": []}
+    monkeypatch.setattr(q, "yahoo_reports", lambda t: yahoo[t])
+    today = date.today()
+    yahoo["TSM"] = [(today - timedelta(days=380), 1.0), (today - timedelta(days=15), 1.5)]
+    got = q.batch_eps(["SEC", "TSM", "DOWN", "NONE"])
+    assert got["SEC"]["source"] == "sec" and got["TSM"]["source"] == "yahoo"
+    assert "DOWN" not in got and "NONE" not in got
+    cached = json.loads((tmp_path / "quarterly_eps.json").read_text())
+    assert "DOWN" not in cached  # asked again next run
+    assert cached["NONE"]["value"] == {"untagged": True, "checked": True}
+
+
+def test_answers_cached_as_none_before_the_fallbacks_are_asked_again(monkeypatch, tmp_path):
+    import time
+
+    from stock_analyzer.data import quarterly_eps as q
+
+    monkeypatch.setenv("FETCH_CACHE_DIR", str(tmp_path))
+    now = time.time()
+    (tmp_path / "quarterly_eps.json").write_text(
+        json.dumps(
+            {
+                "OLD": {"at": now, "value": {"untagged": True}},
+                "NEW": {"at": now, "value": {"untagged": True, "checked": True}},
+            }
+        )
+    )
+    asked = []
+    monkeypatch.setattr(
+        q.yf_gateway, "map_symbols", lambda fn, todo, workers: asked.extend(todo) or []
+    )
+    q.batch_eps(["OLD", "NEW"])
+    assert asked == ["OLD"]
+
+
 # --- industry map --------------------------------------------------------------------
 
 

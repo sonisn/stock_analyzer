@@ -482,6 +482,7 @@ class IbdRating(SQLModel, table=True):
     off_high: float | None = None  # fraction below the 52-week high
     six_month: float | None = None
     eps_q1: float | None = None  # latest quarter's EPS growth, fraction
+    eps_source: str | None = None  # "sec" or "yahoo" (reported, adjusted EPS)
     base: str | None = None
     base_weeks: int | None = None
     base_depth: float | None = None

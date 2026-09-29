@@ -361,6 +361,7 @@ def rate_universe(
             "off_high": round(float(close[-1] / np.nanmax(a["High"][-252:]) - 1), 4),
             "rs_line_high": rs_line_at_high(close, spy_close) if spy_close is not None else None,
             "eps_q1": (eps.get(ticker) or {}).get("q1_growth"),
+            "eps_source": (eps.get(ticker) or {}).get("source", "sec") if ticker in eps else None,
             "base": base.kind if base else None,
             "base_weeks": base.weeks if base else None,
             "base_depth": base.depth if base else None,

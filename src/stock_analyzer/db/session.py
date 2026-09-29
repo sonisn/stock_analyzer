@@ -73,6 +73,8 @@ _LEGACY_MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("portfolio_snapshots", "ALTER TABLE portfolio_snapshots ADD COLUMN accounts TEXT"),
     # IBD-style history rebuilt from stored bars rather than recorded live.
     ("ibd_history", "ALTER TABLE ibd_history ADD COLUMN backfilled BOOLEAN NOT NULL DEFAULT 0"),
+    # Where the EPS Rating's figures came from once Yahoo filled SEC gaps.
+    ("ibd_ratings", "ALTER TABLE ibd_ratings ADD COLUMN eps_source TEXT"),
     ("ibd_signals", "ALTER TABLE ibd_signals ADD COLUMN backfilled BOOLEAN NOT NULL DEFAULT 0"),
     # How much a 10-K's risk factors changed from last year (data/text_change).
     ("filing_facts", "ALTER TABLE filing_facts ADD COLUMN risk_kept REAL"),

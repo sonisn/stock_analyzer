@@ -100,7 +100,8 @@ HTML = """
  <p class="note" style="margin:10px 0 0">Reconstructed from the rules Investor’s Business Daily publishes, over
   every US-listed stock worth $2B+ — not IBD’s data. <b>RS</b>: 12-month price change with the latest quarter
   counted twice, ranked 1–99. <b>EPS</b>: the last two quarters’ EPS growth year over year and the 3-year
-  annual rate, from SEC filings, ranked 1–99. <b>Group</b>: industry rank by median 6-month change
+  annual rate, from SEC filings (<sup>Y</sup>: Yahoo’s reported, adjusted EPS where the SEC has no quarterly
+  figures, as for foreign filers), ranked 1–99. <b>Group</b>: industry rank by median 6-month change
   (1 = strongest). <b>A/D</b>: 13 weeks of volume weighted by where each day closed in its range, A = heaviest
   buying. <b>Composite</b>: EPS and RS counted twice plus group, A/D and nearness to the 52-week high (IBD also
   counts sales, margins and ROE). <b>Bases</b>: flat base (≤15% deep, 5+ weeks) or cup (≤35%, 7+ weeks, with a
@@ -129,6 +130,7 @@ const fr = v => v===null||v===undefined ? dash : `<span class="${v>=0?'pos':'neg
 const mktClass = s => /correction/i.test(s)?'down':/pressure/i.test(s)?'press':'up';
 const mktIcon = s => ({up:'▲',press:'◆',down:'▼'})[mktClass(s)];
 const rate = v => v===null||v===undefined ? dash : `<span class="rate ${v<50?'lo':''}">${v}</span>`;
+const ySrc = r => r.es==='yahoo' && r.eps!==null && r.eps!==undefined ? '<sup class="dim" title="EPS from Yahoo (reported, adjusted): no quarterly SEC figures">Y</sup>' : '';
 
 /* market direction strip */
 (function(){
@@ -280,7 +282,7 @@ function list(){
     shown = rs;
     $('#ms-rows').innerHTML = rs.map(r=>`<tr data-t="${r.t}" class="${r.t===selected?'on':''}">
       <td><b>${esc(r.t)}</b>${r.rsh?' <span class="dim" title="RS line at a 52-week high">↗</span>':''}</td>
-      <td class="num">${rate(r.c)}</td><td class="num">${rate(r.eps)}</td><td class="num">${rate(r.rs)}</td>
+      <td class="num">${rate(r.c)}</td><td class="num">${rate(r.eps)}${ySrc(r)}</td><td class="num">${rate(r.rs)}</td>
       <td class="num">${r.ad?esc(r.ad):dash}</td><td>${sigs(r)}</td></tr>`).join('') ||
       '<tr><td colspan="6" class="dim">Nothing in this list today.</td></tr>';
     document.querySelectorAll('#ms-rows tr[data-t]').forEach(tr=>tr.onclick=()=>pick(tr.dataset.t));
@@ -329,7 +331,7 @@ function pick(t, scroll=true){
   if(r.base) facts.push(['Base', `${esc(r.base)}, ${r.wk} weeks, ${(r.dep*100).toFixed(0)}% deep`]);
   if(r.piv) facts.push(['Buy point', `$${fmt(r.piv)} · zone to $${fmt(r.piv*1.05)} · price ${sgn(r.vp*100)} vs pivot`]);
   facts.push(['Off 52-week high', r.off===null?'—':sgn(r.off*100)]);
-  if(r.q1!==null&&r.q1!==undefined) facts.push(['Latest quarter EPS', `${sgn(r.q1*100,0)} year over year`]);
+  if(r.q1!==null&&r.q1!==undefined) facts.push(['Latest quarter EPS', `${sgn(r.q1*100,0)} year over year${r.es==='yahoo'?' (Yahoo, adjusted)':''}`]);
   if(h) facts.push(['Your holding', `${h.verdict?esc(h.verdict)+(h.conf?` ${h.conf}/10`:''):'no review'} · ${h.value!==null?money(h.value):'—'}${h.pl!==null?` · P/L ${sgn(h.pl)}`:''}`]);
   if(o.pick) facts.push(['Discover pick', `#${o.pick.rank} on ${o.pick.d}${o.pick.conv?` · conviction ${o.pick.conv}/10`:''}${o.pick.ev!==null&&o.pick.ev!==undefined?` · EV ${sgn(o.pick.ev)}`:''}`]);
   if(o.book!==undefined) facts.push(['Contracted book', `${sgn(o.book,0)} year over year (SEC)`]);

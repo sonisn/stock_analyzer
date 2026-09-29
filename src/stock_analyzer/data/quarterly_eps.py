@@ -8,14 +8,22 @@ of the bars; the SEC's XBRL API has every 10-Q and 10-K figure since
 
 A 10-K reports the year, not the fourth quarter, so Q4 is the year less
 the three quarters inside it — close, not exact, since the share count
-moves during the year. Foreign filers (20-F, IFRS) tag no US-GAAP EPS and
-get no rating, like banks without a book in data/backlog.
+moves during the year.
+
+Two fallbacks, since about a quarter of the universe came back empty:
+
+  - the company-concept API sometimes serves an empty diluted-EPS list
+    for a company whose full facts have it, and some companies file
+    under another US-GAAP tag; both are read from the company-facts file;
+  - foreign filers (20-F, IFRS: annual XBRL only), per-class tags (Visa)
+    and partnerships get Yahoo's reported quarterly EPS instead: one
+    request per name, adjusted rather than GAAP, marked "source": "yahoo".
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from ..logging import get_logger
@@ -28,6 +36,18 @@ _CONCEPT_URL = (
     "https://data.sec.gov/api/xbrl/companyconcept/CIK{cik:010d}/us-gaap/"
     "EarningsPerShareDiluted.json"
 )
+_FACTS_URL = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
+# Where a company files per-share earnings when the diluted-EPS concept
+# comes back empty, best first; the tag with the latest period wins.
+FALLBACK_TAGS = (
+    "EarningsPerShareDiluted",
+    "EarningsPerShareBasicAndDiluted",
+    "IncomeLossFromContinuingOperationsPerDilutedShare",
+    "EarningsPerShareBasic",
+)
+# Yahoo's earnings calendar: about six years of reports, enough for the
+# three-year rate.
+YAHOO_REPORTS = 28
 _QUARTER_DAYS = (80, 100)
 _YEAR_DAYS = (350, 380)
 _YEAR_AGO = (300, 430)
@@ -35,7 +55,9 @@ _YEAR_AGO = (300, 430)
 MAX_AGE_DAYS = 200
 # Growth off a base this close to zero is noise, not growth.
 MIN_BASE = 0.01
-_UNTAGGED: dict[str, Any] = {"untagged": True}
+# "checked": both fallbacks were tried too.
+_UNTAGGED: dict[str, Any] = {"untagged": True, "checked": True}
+_FAILED = object()
 
 
 def _day(value: Any) -> date | None:
@@ -113,10 +135,32 @@ def eps_growth(
     return out
 
 
+def _usd_per_share(tags: dict[str, Any], name: str) -> list[dict[str, Any]]:
+    return ((tags.get(name) or {}).get("units") or {}).get("USD/shares") or []
+
+
+def facts_from_company(body: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """The per-share earnings facts from a company-facts file: the
+    FALLBACK_TAGS entry with the latest period (the earlier-listed on a tie)."""
+    tags = (body.get("facts") or {}).get("us-gaap") or {}
+    best: tuple[str, int] | None = None
+    pick: list[dict[str, Any]] | None = None
+    for rank, name in enumerate(FALLBACK_TAGS):
+        facts = _usd_per_share(tags, name)
+        if not facts:
+            continue
+        key = (max(str(f.get("end") or "") for f in facts), -rank)
+        if best is None or key > best:
+            best, pick = key, facts
+    return pick
+
+
 def fetch_facts(ticker: str, *, strict: bool = False) -> list[dict[str, Any]] | None:
     """Every diluted-EPS fact the company has filed, or None. `strict`
     raises on a failed request so a cache can tell "no EPS" from "could
-    not ask"; a 404 (never tagged) is None either way."""
+    not ask"; a 404 (never tagged) is None either way. An empty, missing or
+    stale concept (GD, MNST moved to another tag) falls back to the
+    company-facts file (see facts_from_company)."""
     cik = load_ticker_cik_map().get(ticker.upper())
     if not cik:
         return None
@@ -125,8 +169,24 @@ def fetch_facts(ticker: str, *, strict: bool = False) -> list[dict[str, Any]] | 
     except Exception as e:  # noqa: BLE001 — a missing concept is normal
         if strict and getattr(e, "status", None) != 404:
             raise
-        return None
-    return (body.get("units") or {}).get("USD/shares") or None
+        body = {}
+    facts = (body.get("units") or {}).get("USD/shares") or None
+    if facts and _latest_end(facts) >= date.today() - timedelta(days=MAX_AGE_DAYS):
+        return facts
+    try:
+        company = _HTTP.get_json(_FACTS_URL.format(cik=cik))
+    except Exception as e:  # noqa: BLE001 — as above
+        if strict and getattr(e, "status", None) != 404:
+            raise
+        return facts
+    other = facts_from_company(company or {})
+    if other and (not facts or _latest_end(other) > _latest_end(facts)):
+        return other
+    return facts
+
+
+def _latest_end(facts: list[dict[str, Any]]) -> date:
+    return max((_day(f.get("end")) or date.min for f in facts), default=date.min)
 
 
 def growth_as_of(facts: list[dict[str, Any]], as_of: date) -> dict[str, Any] | None:
@@ -138,22 +198,88 @@ def growth_as_of(facts: list[dict[str, Any]], as_of: date) -> dict[str, Any] | N
 
 
 def fetch_eps(ticker: str, *, strict: bool = False, today: date | None = None):
-    """EPS growth for `ticker` (see `eps_growth`), or None. `strict` raises
-    on a failed request so a cache can tell "no EPS" from "could not ask"."""
+    """EPS growth for `ticker` (see `eps_growth`) from SEC filings, or None.
+    `strict` raises on a failed request so a cache can tell "no EPS" from
+    "could not ask"."""
     facts = fetch_facts(ticker, strict=strict)
     if not facts:
         return None
     quarters, years = periods(facts)
-    return eps_growth(quarters, years, today=today or date.today())
+    got = eps_growth(quarters, years, today=today or date.today())
+    return {**got, "source": "sec"} if got else None
+
+
+def quarter_end_before(day: date) -> date:
+    """The last calendar quarter end before a report on `day`."""
+    for back in range(1, 120):
+        d = day - timedelta(days=back)
+        if (d.month, d.day) in ((3, 31), (6, 30), (9, 30), (12, 31)):
+            return d
+    return day
+
+
+def yahoo_periods(
+    reports: list[tuple[date, float]],
+) -> tuple[list[tuple[date, float]], list[tuple[date, float]]]:
+    """(quarters, years) from (report day, reported EPS): each report is
+    dated to the quarter end before it, and a year is four consecutive
+    quarters summed (none for half-yearly reporters)."""
+    by_end: dict[date, float] = {}
+    for day, eps in sorted(reports):
+        by_end[quarter_end_before(day)] = eps
+    quarters = sorted(by_end.items())
+    years = []
+    for i in range(3, len(quarters)):
+        four = quarters[i - 3 : i + 1]
+        gaps = [(b[0] - a[0]).days for a, b in zip(four, four[1:], strict=False)]
+        if all(_QUARTER_DAYS[0] <= g <= _QUARTER_DAYS[1] for g in gaps):
+            years.append((quarters[i][0], sum(v for _, v in four)))
+    return quarters, years
+
+
+def yahoo_reports(ticker: str) -> list[tuple[date, float]] | None:
+    """(report day, reported EPS) from Yahoo's earnings calendar; [] when
+    Yahoo has none, None when it could not be asked."""
+    df: Any = yf_gateway.ticker_call(
+        ticker,
+        "earnings_dates",
+        lambda t: t.get_earnings_dates(limit=YAHOO_REPORTS),
+        default=_FAILED,
+    )
+    if df is _FAILED:
+        return None
+    if df is None or getattr(df, "empty", True) or "Reported EPS" not in df:
+        return []
+    return [
+        (date.fromisoformat(str(when)[:10]), float(eps))
+        for when, eps in zip(df.index, df["Reported EPS"], strict=True)
+        if eps is not None and eps == eps  # NaN: not reported yet
+    ]
+
+
+class YahooUnavailable(Exception):
+    """Yahoo's earnings calendar could not be read (not "no EPS")."""
+
+
+def fetch_yahoo_eps(ticker: str, *, today: date | None = None) -> dict[str, Any] | None:
+    """EPS growth from Yahoo's reported EPS, or None. Raises
+    YahooUnavailable when Yahoo could not be asked."""
+    reports = yahoo_reports(ticker)
+    if reports is None:
+        raise YahooUnavailable(ticker)
+    quarters, years = yahoo_periods(reports)
+    got = eps_growth(quarters, years, today=today or date.today())
+    return {**got, "source": "yahoo"} if got else None
 
 
 def batch_eps(tickers: Iterable[str], *, refresh: Iterable[str] = ()) -> dict[str, dict[str, Any]]:
-    """`fetch_eps` across tickers through the week-long fetch cache."""
+    """EPS growth across tickers through the week-long fetch cache: SEC
+    filings first, Yahoo's reported EPS for the rest."""
     wanted = [t.upper() for t in tickers]
 
     def ask(ticker: str) -> dict[str, Any] | None:
         try:
-            return fetch_eps(ticker, strict=True) or _UNTAGGED
+            return fetch_eps(ticker, strict=True) or fetch_yahoo_eps(ticker) or _UNTAGGED
         except Exception as e:  # noqa: BLE001 — retried next run, not cached
             logger.debug("EPS fetch failed for %s (%s)", ticker, e)
             return None
@@ -161,7 +287,13 @@ def batch_eps(tickers: Iterable[str], *, refresh: Iterable[str] = ()) -> dict[st
     def fetch(todo: list[str]) -> Iterator[tuple[str, Any]]:
         yield from yf_gateway.map_symbols(ask, todo, workers=3)
 
+    # Answers cached as "none" before the fallbacks existed are asked again.
+    unchecked = [
+        t
+        for t, e in fetch_cache.entries("quarterly_eps").items()
+        if (e.get("value") or {}).get("untagged") and not (e.get("value") or {}).get("checked")
+    ]
     answers = fetch_cache.fetch_many(
-        "quarterly_eps", wanted, fetch, refresh=[t.upper() for t in refresh]
+        "quarterly_eps", wanted, fetch, refresh=[*(t.upper() for t in refresh), *unchecked]
     )
     return {t: r for t, r in answers.items() if not r.get("untagged")}
