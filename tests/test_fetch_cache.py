@@ -224,3 +224,18 @@ def test_a_past_report_date_is_rolled_forward_to_the_next_quarter():
     future = datetime(2026, 11, 17, 16, 0).timestamp()
     assert fundamentals._next_report(future, today) == "2026-11-17"
     assert fundamentals._next_report(None, today) is None
+
+
+def test_a_cache_that_cannot_be_read_back_is_not_overwritten(tmp_path, monkeypatch):
+    monkeypatch.setenv("FETCH_CACHE_DIR", str(tmp_path))
+    fetch, _ = _counting({"AAA": {"x": 1}, "BBB": {"x": 2}})
+    fetch_cache.fetch_many("k", ["AAA"], fetch)
+    good = (tmp_path / "k.json").read_text()
+
+    def no_handles(self, *a, **k):
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(type(tmp_path), "read_text", no_handles)
+    assert fetch_cache.fetch_many("k", ["BBB"], fetch) == {"BBB": {"x": 2}}
+    monkeypatch.undo()
+    assert (tmp_path / "k.json").read_text() == good  # AAA survived

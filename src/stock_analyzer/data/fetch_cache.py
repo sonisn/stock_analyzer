@@ -86,12 +86,20 @@ def _fresh(entry: Any, now: float) -> bool:
     )
 
 
-def _load(path: Path, now: float) -> Entries:
+def _load(path: Path, now: float, *, strict: bool = False) -> Entries:
+    """The unexpired entries; `strict` raises when the file exists but cannot
+    be read (out of file handles, say), so a writer never mistakes an
+    unreadable cache for an empty one and overwrites it."""
     try:
         raw = json.loads(path.read_text())
     except FileNotFoundError:
         return {}
-    except (OSError, ValueError) as e:
+    except OSError as e:
+        if strict:
+            raise
+        logger.warning("Fetch cache %s unreadable (%s) — starting fresh", path.name, e)
+        return {}
+    except ValueError as e:
         logger.warning("Fetch cache %s unreadable (%s) — starting fresh", path.name, e)
         return {}
     return {t: e for t, e in (raw or {}).items() if _fresh(e, now)}
@@ -149,7 +157,7 @@ def fetch_many(
         with _LOCK:
             try:
                 # Re-read: another run may have written since we loaded.
-                stored = _load(path, time.time())
+                stored = _load(path, time.time(), strict=True)
                 stored.update({t: {"at": now, "value": r} for t, r in fresh.items()})
                 _save(path, stored)
             except OSError as e:  # a cache that cannot write is only slower

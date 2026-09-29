@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from bisect import bisect_right
 from datetime import date, timedelta
 
@@ -74,6 +75,26 @@ def run(settings: Settings, *, today: date) -> dict:
     industries = industry_map()
     eps = batch_eps(names, refresh=fetch_cache.oldest("quarterly_eps", names))
     rows = rate_universe(bars, spy=indexes.get("SPY"), industries=industries, eps=eps)
+    before = coverage_before(db)
+    short = shortfall(coverage(rows), before)
+    if short:
+        # A failed load (2026-09-29: out of file handles) rates on bars
+        # alone and would store inflated Composites. Try once more, then
+        # fail with yesterday's ratings left in place.
+        logger.warning(
+            "IBD inputs look short (%s) — loading them again in %ds", short, RETRY_WAIT_SECONDS
+        )
+        time.sleep(RETRY_WAIT_SECONDS)
+        industries = industry_map()
+        eps = batch_eps(names)
+        rows = rate_universe(bars, spy=indexes.get("SPY"), industries=industries, eps=eps)
+        short = shortfall(coverage(rows), before)
+        if short:
+            raise RuntimeError(
+                f"IBD inputs still short after a retry ({short}); nothing stored, "
+                f"the ratings as of {before['as_of']} stay in place"
+            )
+        logger.info("IBD inputs recovered on the retry")
     market = market_direction({k: v for k, v in indexes.items() if v is not None})
     sectors = sector_direction(rows, sectors=sector_map(), etfs=etfs)
     spy = indexes.get("SPY")
@@ -151,6 +172,44 @@ def run(settings: Settings, *, today: date) -> dict:
     )
     news_for(db, featured(rows, tracked), today=today)
     return {"as_of": as_of, "rated": rated, "market": market, "sectors": sectors}
+
+
+# A run whose inputs cover less than this share of the last stored run's is
+# a failed load, not a change in the market.
+MIN_COVERAGE = {"rated": 0.8, "with_eps": 0.5, "with_industry": 0.5}
+RETRY_WAIT_SECONDS = 120
+
+
+def coverage(rows: list[dict]) -> dict[str, int]:
+    """How many rows came out rated, with an EPS rating, with an industry."""
+    return {
+        "rated": sum(1 for r in rows if r.get("composite") is not None),
+        "with_eps": sum(1 for r in rows if r.get("eps_rating") is not None),
+        "with_industry": sum(1 for r in rows if r.get("industry")),
+    }
+
+
+def coverage_before(db: str) -> dict:
+    """`coverage` of the ratings stored now (the last good run), with their
+    as-of day; zeros on the first run."""
+    with get_session(db) as session:
+        stored = session.exec(
+            select(IbdRating.as_of, IbdRating.composite, IbdRating.eps_rating, IbdRating.industry)
+        ).all()
+    return {
+        "as_of": stored[0][0] if stored else None,
+        **coverage([{"composite": c, "eps_rating": e, "industry": i} for _, c, e, i in stored]),
+    }
+
+
+def shortfall(now: dict[str, int], before: dict) -> str:
+    """What fell below MIN_COVERAGE of the last run, e.g. "with_eps 0 vs
+    1448"; "" when nothing did."""
+    return ", ".join(
+        f"{k} {now[k]} vs {before[k]}"
+        for k, share in MIN_COVERAGE.items()
+        if before.get(k) and now[k] < share * before[k]
+    )
 
 
 # News is fetched for the stocks the dashboard features, not all 1,900.

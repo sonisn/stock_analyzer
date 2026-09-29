@@ -241,6 +241,22 @@ def test_the_industry_map_is_scanned_weekly_and_a_failed_scan_keeps_the_old(monk
     assert json.loads((tmp_path / "industry_groups.json").read_text())["at"] == 1_000_000
 
 
+def test_an_industry_map_that_cannot_be_read_is_not_rescanned_over(monkeypatch, tmp_path):
+    monkeypatch.setenv("FETCH_CACHE_DIR", str(tmp_path))
+    good = {"at": 1_000_000, "map": {"NVDA": {"sector": "Technology", "industry": "Semis"}}}
+    (tmp_path / "industry_groups.json").write_text(json.dumps(good))
+
+    def no_handles(self, *a, **k):
+        raise OSError(24, "Too many open files")
+
+    monkeypatch.setattr(type(tmp_path), "read_text", no_handles)
+    scans = []
+    got = industry_groups.industry_map(now=1_000_000, rescan=lambda: scans.append(1) or {})
+    monkeypatch.undo()
+    assert got == {} and not scans
+    assert json.loads((tmp_path / "industry_groups.json").read_text()) == good
+
+
 def test_the_scan_pages_through_each_industry_in_our_spelling():
     pages = {
         ("Semis", 0): {"quotes": [{"symbol": "NVDA"}] * 1 + [{"symbol": "BRK.B"}], "total": 2},
@@ -898,3 +914,45 @@ def test_company_profiles_come_from_the_fundamentals_cache(monkeypatch):
     monkeypatch.setattr(leaders.fetch_cache, "entries", lambda kind: cache)
     got = leaders.company_profiles(["NVDA", "NONE"])
     assert got == {"NVDA": {"name": "NVIDIA", "summary": "Makes GPUs.", "market_cap": 4e12}}
+
+
+def test_a_short_load_is_retried_then_fails_without_storing(monkeypatch, tmp_path):
+    from sqlmodel import select
+
+    from stock_analyzer.cli import ibd as job
+    from stock_analyzer.config import Settings
+    from stock_analyzer.db.session import get_session
+    from stock_analyzer.db.tables import IbdHistory, IbdRating
+
+    n = 300
+    bars = {f"S{i}": _bars(_trend(n, 50 + i, 150 - i)) for i in range(6)}
+    bars["SPY"] = bars["QQQ"] = _bars(_trend(n, 100, 120))
+    full = {f"S{i}": "Semiconductors" for i in range(6)}
+    maps = [full]
+    monkeypatch.setattr(job, "all_us_2b", lambda: tuple(f"S{i}" for i in range(6)))
+    monkeypatch.setattr(job, "tracked_tickers", lambda db, today: [])
+    monkeypatch.setattr(job.yf_gateway, "daily_bars_many", lambda names, start, what: dict(bars))
+    monkeypatch.setattr(job, "industry_map", lambda: maps.pop(0))
+    monkeypatch.setattr(job, "batch_eps", lambda names, refresh=(): {})
+    monkeypatch.setattr(job.fetch_cache, "oldest", lambda kind, names: [])
+    monkeypatch.setattr(job, "news_for", lambda db, tickers, today: 0)
+    monkeypatch.setattr(job, "RETRY_WAIT_SECONDS", 0)
+    db = str(tmp_path / "d.db")
+    settings = Settings(discover_db_path=db)
+    job.run(settings, today=date(2026, 9, 27))
+
+    for k, b in bars.items():
+        bars[k] = pl.concat([b, b.tail(1).with_columns(pl.col("date") + timedelta(days=1))])
+    maps[:] = [{}, full]  # the industry map fails once, then loads
+    job.run(settings, today=date(2026, 9, 28))
+    kept = job.coverage_before(db)
+    assert kept["with_industry"] == 6 and not maps
+
+    for k, b in bars.items():
+        bars[k] = pl.concat([b, b.tail(1).with_columns(pl.col("date") + timedelta(days=1))])
+    maps[:] = [{}, {}]  # fails twice: nothing is stored
+    with pytest.raises(RuntimeError, match="with_industry 0 vs 6"):
+        job.run(settings, today=date(2026, 9, 29))
+    with get_session(db) as s:
+        assert {r.as_of for r in s.exec(select(IbdRating)).all()} == {kept["as_of"]}
+        assert len({h.day for h in s.exec(select(IbdHistory)).all()}) == 2

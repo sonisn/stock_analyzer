@@ -97,8 +97,14 @@ def industry_map(*, now: float | None = None, rescan: Callable[[], dict] = scan)
     if path is not None and path.exists():
         try:
             stored = json.loads(path.read_text())
-        except (OSError, ValueError) as e:
+        except ValueError as e:
             logger.warning("Industry map unreadable (%s) — rescanning", e)
+        except OSError as e:
+            # The file is there but cannot be read right now (out of file
+            # handles, say): a rescan would fail the same way and could
+            # overwrite a good map with a partial one.
+            logger.warning("Industry map unreadable (%s) — not rescanning", e)
+            return {}
     fresh = float(stored.get("at") or 0) >= now - MAX_AGE_DAYS * 86400
     if not fresh or not stored.get("map"):
         found = rescan()
