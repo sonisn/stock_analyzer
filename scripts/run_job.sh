@@ -34,6 +34,11 @@ cd "$PROJECT_ROOT"
 # Cron has a minimal PATH — extend it so `uv` resolves.
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 
+# Cron starts jobs with a soft limit of 1,024 open files, far below a login
+# shell's; a run that fans out over ~1,900 tickers has hit it (2026-09-29).
+# Raise it toward the hard limit — headroom, not a substitute for closing files.
+ulimit -n "$(ulimit -Hn)" 2>/dev/null || ulimit -n 65536 2>/dev/null || true
+
 LOG_FILE="$LOG_DIR/${JOB}_$(date +%Y%m%d).log"
 exec >>"$LOG_FILE" 2>&1
 

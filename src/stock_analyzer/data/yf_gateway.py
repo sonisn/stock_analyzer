@@ -49,6 +49,7 @@ Tuning knobs (env vars, all optional):
 from __future__ import annotations
 
 import contextlib
+import gc
 import logging
 import os
 import random
@@ -748,7 +749,33 @@ def _slice_days(frame: Any, start: date, end: date | None) -> Any:
 def download(symbols: Iterable[str], *, what: str = "download", **kwargs: Any):
     """Paced `yf.download` — counts as one request against the pacer."""
     kwargs.setdefault("progress", False)
-    return call(yf.download, list(symbols), what=what, **kwargs)
+    try:
+        return call(yf.download, list(symbols), what=what, **kwargs)
+    finally:
+        _release_cache_handles()
+
+
+def _release_cache_handles() -> None:
+    """Close this thread's connections to yfinance's SQLite caches.
+
+    yfinance opens its timezone / cookie / ISIN caches once per thread, and
+    `yf.download(threads=True)` spawns a thread per ticker. While any
+    connection to a cache file stays open, SQLite defers closing the file
+    handles of the ones that ended with their threads, so one long-lived
+    connection on the calling thread kept a handle per ticker ever
+    downloaded — ~3,800 on a full universe refresh, past cron's 1,024-file
+    limit (the 2026-09-29 ibd failure). The dead threads' connections sit in
+    reference cycles until a collection, so both steps are needed: collect,
+    then close ours so SQLite releases the handles. The next use reconnects.
+    """
+    from yfinance import cache
+
+    gc.collect()
+    for name in ("_TzDBManager", "_CookieDBManager", "_ISINDBManager"):
+        manager = getattr(cache, name, None)
+        if manager is not None:
+            with contextlib.suppress(Exception):
+                manager.close_db()
 
 
 # --- bounded fan-out --------------------------------------------------------
@@ -783,8 +810,11 @@ def map_symbols[T](
             return None
 
     n_workers = max(1, min(workers or BATCH_WORKERS, len(items)))
-    with ThreadPoolExecutor(max_workers=n_workers) as ex:
-        yield from zip(items, ex.map(_guarded, items), strict=False)
+    try:
+        with ThreadPoolExecutor(max_workers=n_workers) as ex:
+            yield from zip(items, ex.map(_guarded, items), strict=False)
+    finally:
+        _release_cache_handles()
 
 
 # --- yfinance's own logging -------------------------------------------------

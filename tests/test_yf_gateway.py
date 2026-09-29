@@ -7,6 +7,8 @@ network (the suite blocks sockets anyway).
 
 from __future__ import annotations
 
+import contextlib
+import os
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -313,3 +315,39 @@ def test_daily_bars_is_none_when_yahoo_has_nothing():
     fake.history.return_value = pd.DataFrame()
     with patch.object(yf_gateway.yf, "Ticker", return_value=fake):
         assert yf_gateway.daily_bars("NVDA", start=date.today()) is None
+
+
+def _open_handles(path) -> int:
+    fd_dir = "/proc/self/fd"
+    count = 0
+    for fd in os.listdir(fd_dir):
+        with contextlib.suppress(OSError):
+            count += os.readlink(f"{fd_dir}/{fd}").startswith(str(path))
+    return count
+
+
+@pytest.mark.skipif(not os.path.isdir("/proc/self/fd"), reason="needs /proc")
+def test_released_cache_handles_do_not_pile_up_across_threads(tmp_path, monkeypatch):
+    """yf.download spawns a thread per ticker, each opening yfinance's tz
+    cache; with the caller's own connection open, SQLite kept every dead
+    thread's file handle until cron's 1,024-file limit (2026-09-29)."""
+    from yfinance import cache
+
+    monkeypatch.setattr(cache._TzDBManager, "_db", None)
+    monkeypatch.setattr(cache._TzDBManager, "_cache_dir", str(tmp_path))
+    monkeypatch.setattr(cache._TzCacheManager, "_tz_cache", None)
+    monkeypatch.setattr(cache._TZ_KV._meta, "without_rowid", cache._TZ_KV._meta.without_rowid)
+    tz = cache.get_tz_cache()
+    tz.store("MAIN", "America/New_York")  # the caller's long-lived connection
+
+    for batch in range(3):
+        threads = [threading.Thread(target=tz.lookup, args=(f"T{batch}-{i}",)) for i in range(30)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        yf_gateway._release_cache_handles()
+        assert _open_handles(tmp_path) == 0
+
+    assert tz.lookup("MAIN") == "America/New_York"  # reconnects on next use
+    cache._TzDBManager.close_db()
