@@ -17,6 +17,7 @@ import numpy as np
 import polars as pl
 from sqlalchemy import text
 
+from ..data import bar_store
 from ..data.frames import DATE
 from ..db.session import exec_sql, get_session
 from ..db.tables import CandidateOutcome
@@ -61,6 +62,53 @@ def pending_labels(
     return pl.DataFrame(out, schema=_PENDING_SCHEMA, orient="row")
 
 
+# Days past a window's close after which a ticker with no stored prices
+# around its run date is dropped instead of asked for again: Yahoo never had
+# it (the first discover runs saved words like TABLE and READ as tickers),
+# and every model review spent a download on each of them.
+GIVE_UP_DAYS = 45
+
+
+def _drop_never_priced(pending: pl.DataFrame, today: date) -> pl.DataFrame:
+    """`pending` minus the rows long past their window whose ticker the bar
+    store has no prices for on the run date (it asked from before then)."""
+    if bar_store.store_dir() is None or pending.is_empty():
+        return pending
+    age = (pl.lit(today) - pl.col("run_date")).dt.total_days()
+    old = pending.filter(age >= (pl.col("horizon") + 1) * 7 / 5 + 3 + GIVE_UP_DAYS)
+    # ticker -> (asked-from, first bar), or None when nothing is stored
+    span: dict[str, tuple[date, date] | None] = {}
+    for ticker in old["ticker"].unique().to_list():
+        stored = bar_store.load(ticker)
+        span[ticker] = (
+            None
+            if stored is None or stored.frame.is_empty()
+            else (stored.requested_from, stored.frame[DATE][0])
+        )
+
+    def never_priced(ticker: str, run_date: date, horizon: int) -> bool:
+        if ticker not in span or (today - run_date).days < (horizon + 1) * 7 / 5 + 3 + GIVE_UP_DAYS:
+            return False  # still inside its grace period
+        s = span[ticker]
+        return s is None or s[0] <= run_date < s[1]
+
+    keep = [
+        not never_priced(*row)
+        for row in pending.select("ticker", "run_date", "horizon").iter_rows()
+    ]
+    kept = pending.filter(pl.Series(keep, dtype=pl.Boolean))
+    if kept.height < pending.height:
+        gone = sorted({t for t, k in zip(pending["ticker"], keep, strict=True) if not k})
+        logger.info(
+            "Labels: %d outcome(s) skipped — no prices on the run date for %d ticker(s) (%s%s)",
+            pending.height - kept.height,
+            len(gone),
+            ", ".join(gone[:8]),
+            ", ..." if len(gone) > 8 else "",
+        )
+    return kept
+
+
 def label_candidates(
     db_path: str,
     *,
@@ -76,6 +124,8 @@ def label_candidates(
     if not pending.is_empty():
         age = (pl.lit(date.today()) - pl.col("run_date")).dt.total_days()
         pending = pending.filter(age >= (pl.col("horizon") + 1) * 7 / 5 + 3)
+    if fetch_panel is None:  # the store is evidence only for its own downloads
+        pending = _drop_never_priced(pending, date.today())
     if pending.is_empty():
         return 0
     tickers = sorted(pending["ticker"].unique().to_list())

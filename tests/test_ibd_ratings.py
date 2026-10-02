@@ -586,6 +586,19 @@ def test_signals_are_graded_against_spy_over_the_same_sessions(monkeypatch, tmp_
     assert one_month["n"] == 1 and one_month["beat"] == 100 and one_month["avg_excess"] > 0
 
 
+def test_a_missing_close_is_skipped_not_divided():
+    from stock_analyzer.reporting import leaders
+
+    frame = _bars(np.linspace(100, 110, 30)).with_columns(
+        pl.when(pl.int_range(pl.len()) >= 25).then(None).otherwise(pl.col("Close")).alias("Close")
+    )
+    day = str(frame["date"][0])
+    ret, n = leaders._forward(frame, day, 29)  # the last 5 closes are missing
+    assert n == 24 and ret == pytest.approx(frame["Close"][24] / 100 - 1)
+    nan = _bars([100.0, float("nan")])
+    assert leaders._forward(nan, str(nan["date"][0]), 1) == (None, 0)
+
+
 def test_rating_history_comes_back_per_stock_in_date_order(tmp_path):
     from stock_analyzer.db.session import get_session
     from stock_analyzer.db.tables import IbdHistory

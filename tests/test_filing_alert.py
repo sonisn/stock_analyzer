@@ -219,3 +219,20 @@ def test_a_huge_filing_is_read_only_up_to_the_cap(monkeypatch):
 
     monkeypatch.setattr(sec_edgar, "MAX_FILING_BYTES", 40)
     assert sec_edgar.capped_text(Resp()) == "<p>Item 7. MD&amp;A text</p>" + "x" * 12
+
+
+def test_a_planned_sale_logs_who_and_how_much():
+    item = {
+        "kind": "event",
+        "event": "planned_sale",
+        "filing": {"ticker": "BE", "form": "144"},
+        "facts": {
+            "seller": "A. OFFICER",
+            "relationship": "Officer",
+            "value_usd": 2336880.26,
+            "sale_date": "10/01/2026",
+        },
+    }
+    assert fa.summary_line(item) == (
+        "BE planned insider sale: A. OFFICER (Officer), $2.3M around 10/01/2026"
+    )

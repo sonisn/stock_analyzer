@@ -450,4 +450,9 @@ def summary_line(item: dict[str, Any]) -> str:
     if item["kind"] == "event":
         facts = item.get("facts") or {}
         s = facts.get("read") or facts.get("offering") or {}
+        if item["event"] == "planned_sale" and facts.get("seller"):
+            s = {
+                "headline": f"{facts['seller']} ({facts.get('relationship') or '?'}), "
+                f"{_money(facts.get('value_usd'))} around {facts.get('sale_date') or '?'}"
+            }
     return f"{subject_part(item)}: {s.get('headline') or s.get('summary') or ''}"

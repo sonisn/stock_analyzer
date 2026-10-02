@@ -170,6 +170,68 @@ def test_label_backfill_writes_matured_outcomes_once(tmp_path):
     assert row[2] == pytest.approx(expected)
 
 
+def test_label_backfill_stops_asking_for_tickers_yahoo_never_priced(tmp_path, monkeypatch):
+    from stock_analyzer.data import bar_store
+    from stock_analyzer.model import labels
+
+    monkeypatch.setenv("YF_BARS_DIR", str(tmp_path / "bars"))
+    db = str(tmp_path / "l.db")
+    old, recent = date.today() - timedelta(days=300), date.today() - timedelta(days=40)
+    for run_day, tickers in ((old, ["TABLE", "LATE", "REAL"]), (recent, ["NEWJUNK"])):
+        with get_session(db) as session:
+            run_id = insert_run(
+                session,
+                universe_size=1,
+                survivors=1,
+                picks=0,
+                opus_model="o",
+                sonnet_model="s",
+                cash_budget=None,
+            )
+            session.exec(
+                text("UPDATE runs SET run_at = :r WHERE id = :i"),
+                params={"r": run_day.isoformat(), "i": run_id},
+            )
+            for t in tickers:
+                insert_candidate(
+                    session,
+                    run_id,
+                    t,
+                    passed_filter=True,
+                    fail_reasons=[],
+                    score=None,
+                    score_components=None,
+                    score_breakdown=None,
+                    sources=[],
+                    conviction=0,
+                    sector=None,
+                    price=None,
+                )
+
+    def bars(start: date, n: int) -> pl.DataFrame:
+        days = [start + timedelta(days=i) for i in range(n)]
+        one = np.full(n, 10.0)
+        return pl.DataFrame(
+            {"date": days, "Open": one, "High": one, "Low": one, "Close": one, "Volume": one}
+        )
+
+    asked_from = old - timedelta(days=700)
+    bar_store.save("REAL", bars(old - timedelta(days=30), 330), asked_from)
+    bar_store.save("LATE", bars(old + timedelta(days=60), 100), asked_from)  # listed after the run
+    asked: list[list[str]] = []
+
+    def fake_download(tickers, years=2):
+        asked.append(tickers)
+        raise RuntimeError("stop here: only the request matters")
+
+    monkeypatch.setattr(labels, "download_panel", fake_download)
+    with pytest.raises(RuntimeError):
+        labels.label_candidates(db)
+    # TABLE (no prices) and LATE (none on the run date) are dropped; REAL is
+    # priced, NEWJUNK's 21-day window closed too recently to give up on.
+    assert asked == [["NEWJUNK", "REAL"]]
+
+
 def _candidates(n: int = 6) -> list[dict]:
     return [
         {

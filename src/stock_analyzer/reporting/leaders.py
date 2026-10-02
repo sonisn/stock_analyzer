@@ -257,8 +257,16 @@ def _forward(frame, day: str, horizon: int) -> tuple[float | None, int]:
         i = days.index(day)
     except ValueError:
         return None, 0
+
+    def priced(x) -> bool:  # a missing close is None or NaN (a partial bar)
+        return bool(x) and x == x
+
+    # Back off to the last priced session: one missing close cost the whole
+    # scorecard its page on 2026-10-01.
     j = min(i + horizon, len(days) - 1)
-    if j <= i or not closes[i]:
+    while j > i and not priced(closes[j]):
+        j -= 1
+    if j <= i or not priced(closes[i]):
         return None, 0
     return closes[j] / closes[i] - 1, j - i
 
