@@ -733,6 +733,16 @@ def snapshot_only(settings: Settings, *, today: date) -> None:
         logger.info("Snapshot price note: %s", note)
     record_portfolio_snapshot(settings, holdings, prices=prices)
     logger.info("Portfolio snapshot recorded for %s (%d holdings)", today, len(tickers))
+    # The day's closes for grading. The dashboard runs before they are
+    # final (4:15 PM, 6:00 AM), so this evening job is the one that keeps
+    # the record.
+    try:
+        from ..data.price_record import record_prices, record_tickers
+
+        db = settings.discover_db_path
+        record_prices(db, record_tickers(db, tickers), today=today)
+    except Exception as e:  # noqa: BLE001 — the snapshot is already stored
+        logger.warning("Price record failed (%s)", e)
     if not settings.holding_alerts:
         return
     try:

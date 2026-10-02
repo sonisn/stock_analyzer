@@ -117,7 +117,7 @@ def _reasoning(db_path: str) -> dict[str, dict[str, Any]]:
 def collect(settings: Settings, *, today: date) -> dict[str, Any]:
     """Everything the page shows. Each source degrades on its own: a
     brokerage outage costs the holdings table, not the whole page."""
-    from ..data.price_record import coverage, record_prices, stored_history
+    from ..data.price_record import coverage, record_prices, record_tickers, stored_history
     from ..reporting.quarterly import grade_suggestions
 
     db = settings.discover_db_path
@@ -127,13 +127,9 @@ def collect(settings: Settings, *, today: date) -> dict[str, Any]:
 
     # Record today's closes before grading, so the grade is computed from
     # the record rather than from a second, possibly different, fetch.
-    tickers = sorted(
-        set(positions)
-        | {s["ticker"] for s in ledger.suggestions}
-        | {s["reinvest_into"] for s in ledger.suggestions if s["reinvest_into"]}
-        | {"SPY"}
-    )
-    record_prices(db, tickers, today=today)
+    # Before 4:30 PM New York time this records nothing; the 6:30 PM
+    # snapshot job is what records the day's closes.
+    record_prices(db, record_tickers(db, list(positions)), today=today)
 
     fetch = stored_history(db)
     holdings = _holding_rows(

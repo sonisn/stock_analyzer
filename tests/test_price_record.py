@@ -163,3 +163,48 @@ def test_nothing_is_recorded_before_the_days_close_is_final(monkeypatch, tmp_pat
     assert price_record.record_prices(db, ["NVDA"], today=monday, now=six_am) == {}
     sunday = datetime(2026, 9, 27, 18, 0, tzinfo=UTC)
     assert price_record.record_prices(db, ["NVDA"], today=date(2026, 9, 27), now=sunday) == {}
+
+
+def test_the_record_covers_holdings_suggestions_reinvestments_and_spy(tmp_path: Path):
+    from stock_analyzer.data.price_record import record_tickers
+    from stock_analyzer.db.tables import Suggestion
+
+    db = _db(tmp_path)
+    with get_session(db) as s:
+        s.add(
+            Suggestion(
+                suggested_on="2026-09-20",
+                source="daily",
+                action="SELL",
+                ticker="TSLA",
+                reinvest_into="AVGO",
+            )
+        )
+        s.add(Suggestion(suggested_on="2026-09-20", source="daily", action="BUY", ticker="LLY"))
+        s.commit()
+    assert record_tickers(db, ["NVDA"]) == ["AVGO", "LLY", "NVDA", "SPY", "TSLA"]
+
+
+def test_a_backfill_fills_missed_days_and_never_overwrites(tmp_path: Path, monkeypatch):
+    import polars as pl
+
+    from stock_analyzer.data import bar_store
+
+    db = _db(tmp_path)
+    record_prices(db, ["NVDA"], today=date(2026, 9, 28), fetch=lambda s: {"NVDA": 100.0})
+    days = [date(2026, 9, 28), date(2026, 9, 29)]
+    stored = pl.DataFrame({"date": days, "Close": [999.0, 101.0]})
+
+    class Stored:
+        frame = stored
+
+    monkeypatch.setattr(bar_store, "load", lambda t: Stored() if t == "NVDA" else None)
+    monkeypatch.setattr(
+        "stock_analyzer.data.price_record.date",
+        type("D", (date,), {"today": staticmethod(lambda: date(2026, 9, 30))}),
+    )
+    from stock_analyzer.data.price_record import backfill_from_panel
+
+    assert backfill_from_panel(db, ["NVDA"]) == 1
+    frame = stored_history(db)("NVDA", days[0], days[1])
+    assert list(frame["Close"]) == [100.0, 101.0], "the recorded close stays; the gap fills"

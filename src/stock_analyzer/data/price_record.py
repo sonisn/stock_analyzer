@@ -25,7 +25,7 @@ import polars as pl
 from sqlmodel import Session, select
 
 from ..db.session import get_session
-from ..db.tables import TickerPrice
+from ..db.tables import Suggestion, TickerPrice
 from ..logging import get_logger
 from . import frames
 from .frames import DATE
@@ -56,6 +56,14 @@ def missing_today(db_path: str, tickers: list[str], *, today: date | None = None
             r for r in session.exec(select(TickerPrice.ticker).where(TickerPrice.day == day)).all()
         }
     return sorted(wanted - have)
+
+
+def record_tickers(db_path: str, held: list[str]) -> list[str]:
+    """What the record keeps a close for: the holdings, every ticker a
+    suggestion named (and its reinvestment), and SPY to grade against."""
+    with get_session(db_path) as session:
+        named = session.exec(select(Suggestion.ticker, Suggestion.reinvest_into)).all()
+    return sorted(set(held) | {t for t, _ in named} | {r for _, r in named if r} | {"SPY"})
 
 
 def _closed(day: str, now: datetime | None) -> bool:
@@ -170,8 +178,9 @@ def coverage(db_path: str) -> dict[str, Any]:
 
 
 def backfill_from_panel(db_path: str, tickers: list[str], *, days: int = 400) -> int:
-    """Seed the record from the on-disk bar store so grading has history
-    from day one instead of starting blind. Store-only — no network."""
+    """Fill gaps in the record from the on-disk bar store — the days a run
+    missed, or history before the record began. Store-only, no network,
+    and it never overwrites a close already recorded."""
     from . import bar_store
 
     added = 0
@@ -182,9 +191,15 @@ def backfill_from_panel(db_path: str, tickers: list[str], *, days: int = 400) ->
             closes = frames.closes(stored.frame) if stored is not None else None
             if closes is None:
                 continue
+            have = set(
+                session.exec(
+                    select(TickerPrice.day).where(TickerPrice.ticker == ticker.upper())
+                ).all()
+            )
             for day, value in closes.iter_rows():
-                if day.isoformat() >= start and value and value > 0:
-                    added += store_close(session, ticker, day.isoformat(), float(value))
+                d = day.isoformat()
+                if d >= start and d not in have and value and value > 0:
+                    added += store_close(session, ticker, d, float(value))
         session.commit()
     logger.info("Price record: backfilled %d close(s) from the bar store", added)
     return added
