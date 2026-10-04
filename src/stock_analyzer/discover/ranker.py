@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..llm import (
+    Check,
     ModelAgent,
     Provider,
     RunResult,
@@ -25,6 +26,7 @@ from ..llm import (
 from ..logging import get_logger
 from ..models.llm import AnalystReport, RankerOutput
 from ..usage import BUDGET, estimate_cost
+from .answer_checks import ranker_check
 from .catalysts import format_catalyst_block
 
 logger = get_logger(__name__)
@@ -215,11 +217,11 @@ class Ranker:
         self.fallback = fallback
         self._agents = [_build_agent(provider, model, effort) for provider, model in rounds]
 
-    def _run_round(self, agent: ModelAgent, prompt: str) -> RunResult:
+    def _run_round(self, agent: ModelAgent, prompt: str, check: Check | None = None) -> RunResult:
         build_fallback = fallback_builder(
             self.fallback, agent.provider, lambda p, m: _build_agent(p, m, self.effort)
         )
-        return run_with_fallback(agent, build_fallback, prompt)
+        return run_with_fallback(agent, build_fallback, prompt, check=check)
 
     def _rank_once(
         self,
@@ -277,7 +279,7 @@ class Ranker:
             f"Current holdings summary:\n{holdings_summary or '(none)'}\n\n"
             f"Candidate analyses:\n\n{candidates_block}"
         )
-        result = self._run_round(agent, prompt).content
+        result = self._run_round(agent, prompt, ranker_check(analyses, top_n)).content
         if result is None:
             raise RuntimeError("Ranker returned no content.")
         if isinstance(result, RankerOutput):

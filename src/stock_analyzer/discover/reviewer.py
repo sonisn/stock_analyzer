@@ -21,6 +21,7 @@ from ..llm import (
 from ..logging import get_logger
 from ..models.llm import HoldingReview
 from ..serialization import dumps_prompt
+from .answer_checks import reviewer_check
 
 logger = get_logger(__name__)
 
@@ -79,6 +80,12 @@ positioning around earnings are not reasons to trade. The user provides:
     already been delivered, so re-check valuation. Address it explicitly
     in your reasoning — hold a BROKEN one only if you can say why the
     long-term thesis still stands despite the flag.
+  - previous_review (null for a holding never reviewed before): your last
+    verdict on this holding — its date, verdict, confidence and the start
+    of its reasoning. These are multi-year holdings: if your verdict now
+    differs, name in `reasoning` the specific NEW evidence (dated after
+    previous_review.date) that changed it. The same facts must not flip
+    the verdict.
 
 GROUND your forward outlook in this hierarchy:
   1. sec_filing (or quarterly_mda when absent) — what the company reported
@@ -436,7 +443,7 @@ class Reviewer:
         prompt = f"Holding: {ticker}\n\n```json\n{dumps_prompt(payload)}\n```"
         logger.info("Reviewing holding %s", ticker)
         build_fallback = fallback_builder(self.fallback, self.provider, _build_agent)
-        result = run_with_fallback(self.agent, build_fallback, prompt).content
+        result = run_with_fallback(self.agent, build_fallback, prompt, check=reviewer_check).content
         if result is None:
             logger.warning(
                 "Reviewer returned no content for %s — skipping",

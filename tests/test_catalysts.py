@@ -294,7 +294,7 @@ def test_ranker_prompt_carries_each_candidates_catalysts():
             picks=[], pairs_not_to_hold_together=[], full_text=""
         )
 
-    def _fake_round(agent, prompt):
+    def _fake_round(agent, prompt, check=None):
         captured["prompt"] = prompt
         return _Result()
 

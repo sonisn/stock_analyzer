@@ -128,6 +128,7 @@ class RebalancePlanSteps(PipelineBase):
                 self.state.get("holdings_positions") or {},
                 self.state.get("covered_call_obligations") or {},
             ),
+            held_tickers=list(self.state.get("holdings_positions") or {}),
         )
 
     def _leadership_block(self) -> str:

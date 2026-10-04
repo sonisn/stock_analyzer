@@ -167,7 +167,7 @@ class _FakeAgent:
         self._result = result
         self.calls = 0
 
-    def run(self, prompt):
+    def run(self, prompt, **_kw):
         self.calls += 1
         if self._error is not None:
             raise self._error

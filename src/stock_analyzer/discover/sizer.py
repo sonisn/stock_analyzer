@@ -11,6 +11,7 @@ from __future__ import annotations
 from ..llm import ModelAgent, Provider, fallback_builder, reasoning_settings, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import Allocation, CorrelatedPair, SizerOutput
+from .answer_checks import sizer_check
 
 logger = get_logger(__name__)
 
@@ -129,6 +130,7 @@ class Sizer:
         risk_parity_block: str = "",
         earnings_block: str = "",
         sector_block: str = "",
+        pick_tickers: list[str] | None = None,
     ) -> SizerOutput:
         budget_line = (
             f"Cash budget: ${cash_budget:,.0f}"
@@ -193,7 +195,8 @@ class Sizer:
         build_fallback = fallback_builder(
             self.fallback, self.provider, lambda p, m: _build_agent(p, m, self.effort)
         )
-        result = run_with_fallback(self.agent, build_fallback, prompt).content
+        check = sizer_check(pick_tickers) if pick_tickers else None
+        result = run_with_fallback(self.agent, build_fallback, prompt, check=check).content
         if result is None:
             raise RuntimeError("Sizer returned no content.")
         if isinstance(result, SizerOutput):

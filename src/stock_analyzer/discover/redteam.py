@@ -15,6 +15,7 @@ from __future__ import annotations
 from ..llm import ModelAgent, Provider, fallback_builder, reasoning_settings, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import RedTeamOutput
+from .answer_checks import redteam_check
 
 logger = get_logger(__name__)
 
@@ -101,13 +102,16 @@ class RedTeam:
         self.fallback = fallback
         self.agent = _build_agent(provider, model, effort)
 
-    def critique(self, picks_text: str) -> RedTeamOutput:
+    def critique(self, picks_text: str, *, pick_tickers: list[str] | None = None) -> RedTeamOutput:
+        """Bear cases for the picks. With `pick_tickers`, one per pick and
+        none for anything else (sent back once if not)."""
         prompt = f"Picks to critique:\n\n{picks_text}"
         logger.info("Red-team critique of picks (%s)", self.provider)
         build_fallback = fallback_builder(
             self.fallback, self.provider, lambda p, m: _build_agent(p, m, self.effort)
         )
-        result = run_with_fallback(self.agent, build_fallback, prompt).content
+        check = redteam_check(pick_tickers) if pick_tickers else None
+        result = run_with_fallback(self.agent, build_fallback, prompt, check=check).content
         if result is None:
             raise RuntimeError("RedTeam returned no content.")
         if isinstance(result, RedTeamOutput):

@@ -37,7 +37,7 @@ def _output(tickers: list[str]) -> RankerOutput:
 
 
 def _ranker(rounds):
-    # Real Ranker construction (builds real AgnoAgent/model dataclasses,
+    # Real Ranker construction (builds real ModelAgent objects,
     # no network call) so `rank()`'s wiring is exercised as-is; only the
     # per-round LLM call itself is stubbed.
     return Ranker(rounds)

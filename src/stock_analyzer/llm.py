@@ -15,7 +15,12 @@ of Pydantic AI:
     ceiling: a cut-off structured answer is never a result, and it is
     never retried (another attempt under the same ceiling is the same
     bill for the same cut-off);
-  - one retry on a fallback provider for outages (`run_with_fallback`).
+  - one retry on a fallback provider for outages (`run_with_fallback`);
+  - `check`: a stage's own rules about its answer (picks drawn from the
+    candidates, a sell only of something held...). An answer that breaks
+    one goes back to the model once, with the problems listed; one that
+    still breaks it is returned anyway and logged, so the caller's
+    deterministic safeguards decide — a rule never costs a stage its answer.
 
 Structured answers use the provider's native JSON-schema output, not a
 forced tool call: Claude answers a forced tool call without thinking,
@@ -38,6 +43,7 @@ from pydantic import BaseModel
 from pydantic_ai import (
     Agent,
     AgentRetries,
+    ModelRetry,
     NativeOutput,
     RunContext,
     Tool,
@@ -66,6 +72,9 @@ warnings.filterwarnings("ignore", message=r"Sampling parameters .* are not suppo
 PROVIDERS: tuple[Provider, ...] = ("claude", "gemini", "openai")
 
 Effort = Literal["low", "medium", "high"]
+
+# A stage's rules about its own answer: the problems found, or [] if none.
+Check = Callable[[Any], list[str]]
 
 # Output ceiling assumed for the cost cap when a call sets none.
 _DEFAULT_OUTPUT_ALLOWANCE = 8192
@@ -340,22 +349,44 @@ class ModelAgent:
         self.structured = output_schema is not None
         self.instructions = instructions
         self._instruction_chars = len(instructions)
-        self.agent: Agent[None, Any] = Agent(
+        self.agent: Agent[Check | None, Any] = Agent(
             output_type=NativeOutput(output_schema) if output_schema is not None else str,
             instructions=instructions or None,
             name=name,
+            deps_type=Check | None,
             model_settings=model_settings_for(provider, self.settings),
             retries=AgentRetries(tools=1, output=self.settings.output_retries),
             tools=list(tools),
             capabilities=[_Guard(self)],
         )
+        self.agent.output_validator(self._apply_check)
+
+    def _apply_check(self, ctx: RunContext[Check | None], output: Any) -> Any:
+        if ctx.deps is None or ctx.partial_output:
+            return output
+        problems = ctx.deps(output)
+        if not problems:
+            return output
+        if ctx.retry < ctx.max_retries:
+            logger.info("%s: asking the model to fix: %s", self.name, "; ".join(problems))
+            raise ModelRetry(
+                "Your answer breaks these rules. Fix them and answer again in full:\n- "
+                + "\n- ".join(problems)
+            )
+        logger.warning(
+            "%s: answer still breaks its rules after a retry (%s); keeping it for the "
+            "caller's checks",
+            self.name,
+            "; ".join(problems),
+        )
+        return output
 
     @property
     def max_output_tokens(self) -> int:
         """The most output one call may produce, for the cost cap's estimate."""
         return self.settings.max_tokens or _DEFAULT_OUTPUT_ALLOWANCE
 
-    def run(self, prompt: str) -> RunResult:
+    def run(self, prompt: str, *, check: Check | None = None) -> RunResult:
         prompt_chars = self._instruction_chars + len(prompt)
         with (
             BUDGET.hold(self.name, self.model_id, prompt_chars, self.max_output_tokens),
@@ -363,7 +394,7 @@ class ModelAgent:
         ):
             model = thread_model(self.provider, self.model_id, self.settings.http_retries)
             try:
-                result = self.agent.run_sync(prompt, model=model)
+                result = self.agent.run_sync(prompt, model=model, deps=check)
             except UnexpectedModelBehavior as e:
                 raw = next(
                     (m.text or "" for m in reversed(messages) if isinstance(m, ModelResponse)),
@@ -407,12 +438,14 @@ def run_with_fallback(
     primary: ModelAgent,
     build_fallback: Callable[[], ModelAgent] | None,
     prompt: str,
+    *,
+    check: Check | None = None,
 ) -> RunResult:
     """Run `primary`, retrying once on a fallback provider after an outage
     (`is_fallback_error`). Anything else (bad input, a cut-off or invalid
     answer, the cost cap) would fail the same way there, so it is raised."""
     try:
-        return primary.run(prompt)
+        return primary.run(prompt, check=check)
     except Exception as e:
         if build_fallback is None or not is_fallback_error(e):
             raise
@@ -423,4 +456,4 @@ def run_with_fallback(
             primary.model_id,
             e,
         )
-        return build_fallback().run(prompt)
+        return build_fallback().run(prompt, check=check)

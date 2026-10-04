@@ -50,8 +50,10 @@ def build_holding_review_payloads(
     thesis_checks: list[dict[str, Any]] | None = None,
     filing_packs: dict[str, dict[str, Any]] | None = None,
     releases: dict[str, dict[str, Any]] | None = None,
+    previous: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     recent_news = recent_news or {}
+    previous = previous or {}
     filing_packs = filing_packs or {}
     releases = releases or {}
     thesis_by_ticker = {c["ticker"]: c for c in thesis_checks or []}
@@ -110,6 +112,8 @@ def build_holding_review_payloads(
             # Only for holdings that were discover picks: how the original
             # thesis is holding up against its own targets and catalysts.
             "original_pick_thesis_check": thesis_by_ticker.get(ticker),
+            # What the last review of this holding said (review_memory.py).
+            "previous_review": previous.get(ticker.upper()),
             "tax_lots": enrich_tax_lots_with_impact(
                 tax_lots_raw.get(ticker) or {},
                 current or 0.0,

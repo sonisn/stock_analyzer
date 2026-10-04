@@ -296,7 +296,9 @@ class AnalysisSteps(PipelineBase):
             ),
         )
         try:
-            redteam_output = redteam.critique(ranker_text)
+            redteam_output = redteam.critique(
+                ranker_text, pick_tickers=[t for _, t, _ in self.state.get("picks") or []]
+            )
         except Exception as e:
             # Never let a critique failure cost the run its ranker/sizer
             # output — those already-paid-for Opus calls still get
@@ -365,6 +367,7 @@ class AnalysisSteps(PipelineBase):
                 risk_parity_block=risk_parity_block,
                 earnings_block=earnings_block,
                 sector_block=sector_block,
+                pick_tickers=sorted(picked),
             )
         except Exception as e:
             # Same rationale as step_redteam: a sizing failure shouldn't

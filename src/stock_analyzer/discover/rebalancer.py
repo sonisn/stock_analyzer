@@ -24,6 +24,7 @@ from ..llm import (
 from ..logging import get_logger
 from ..models.llm import HoldingReview
 from ..models.rebalance import RebalancePlan
+from .answer_checks import rebalancer_check
 from .rebalancer_prompt import _build_rebalancer_instructions
 
 logger = get_logger(__name__)
@@ -156,7 +157,10 @@ class Rebalancer:
         backlog_block: str = "",
         stub_income_block: str = "",
         leadership_block: str = "",
+        held_tickers: list[str] | None = None,
     ) -> RebalancePlan:
+        """The plan. With `held_tickers`, a SELL/TRIM/WRITE_CALL on anything
+        not held is sent back to the model once before it is accepted."""
         prompt, agg = _decide_prompt(
             holdings_reviews=holdings_reviews,
             picks_text=picks_text,
@@ -183,7 +187,8 @@ class Rebalancer:
             agg,
         )
         try:
-            raw = self.agent.run(prompt)
+            check = rebalancer_check(held_tickers) if held_tickers else None
+            raw = self.agent.run(prompt, check=check)
         except OutputTruncatedError as e:
             # The prose in a cut-off answer is still the only copy of
             # reasoning the run paid for, so it travels with the error

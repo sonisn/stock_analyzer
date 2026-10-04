@@ -21,6 +21,7 @@ from ...discover.rebalance_holdings import (
     build_holding_review_payloads,
     flag_drawdown_reviews,
 )
+from ...discover.review_memory import previous_reviews
 from ...discover.reviewer import REVIEWER_INSTRUCTIONS, Reviewer, review_batch
 from ...discover.tax_harvest import (
     find_harvest_candidates,
@@ -71,6 +72,7 @@ class RebalanceReviewSteps(PipelineBase):
             thesis_checks=self.state.get("thesis_checks") or [],
             filing_packs=evidence_packs(self.settings.discover_db_path, sorted(analyzable)),
             releases=earnings_releases(self.settings.discover_db_path, sorted(analyzable)),
+            previous=previous_reviews(self.settings.discover_db_path, sorted(analyzable)),
             risk_factors_chars=_RISK_FACTORS_CHARS,
             quarterly_mda_chars=_QUARTERLY_MDA_CHARS,
             transcript_chars=_TRANSCRIPT_CHARS,
