@@ -298,7 +298,7 @@ def test_html_email_renders_with_chart_refs():
 
 
 def _tiny_png_bytes() -> bytes:
-    """Generate a valid tiny PNG via Pillow (already installed for reportlab)."""
+    """Generate a valid tiny PNG via Pillow (installed with WeasyPrint)."""
     from io import BytesIO
 
     from PIL import Image as PILImage

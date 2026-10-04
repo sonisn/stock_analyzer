@@ -1,9 +1,9 @@
 """Section IR + parsing helpers + shared visual palettes for the report.
 
-The renderers (`report_html.py` and `report_pdf.py`) both build off the
-same `Section` list, so this module owns the schema, the LLM-output
-parsers (verdict / confidence / status / actions), and any palette
-constants / helper functions shared between HTML and PDF.
+The renderer (`report_html.py`, whose HTML `report_pdf.py` also prints
+to PDF) builds off the `Section` list, so this module owns the schema,
+the LLM-output parsers (verdict / confidence / status / actions), and the
+palette constants and helper functions the report draws with.
 
 The `report.py` public surface re-exports from this module so existing
 callers (`cli/discover.py`, `cli/rebalance.py`, tests) keep working.
@@ -149,8 +149,8 @@ def parse_actions(rebalance_text_or_plan: object) -> list[tuple[str, str]]:
 
 # --- visual constants -------------------------------------------------------
 
-# Color palette for verdict/action badges. Used by both HTML (hex CSS) and
-# PDF (ReportLab HexColor) renderers so they look identical.
+# Color palette for verdict/action badges (the email and the PDF print the
+# same HTML, so they look identical).
 _VERDICT_COLORS = {
     "HOLD": {"bg": "#e8f4f8", "fg": "#0c5e7c", "border": "#3b8fde"},
     "TRIM": {"bg": "#fff4e0", "fg": "#a36500", "border": "#e89c00"},

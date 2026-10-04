@@ -1,12 +1,11 @@
-"""HTML renderer for the report Section IR.
+"""HTML renderer for the report Section IR — the email body, and the page
+the PDF is printed from.
 
-Generates the email body. Reads Section objects produced by
-`report_sections.build_sections` (or by the rebalance pipeline's own
-section builder) and emits a styled HTML document with inline images
-referenced via `cid:` so the SMTP layer can attach the PNG charts.
-
-Stays in sync with `report_pdf.py` because both pull palettes from
-`report_sections` — see `_VERDICT_COLORS`, `_STATUS_COLORS`, etc.
+Reads Section objects produced by `report_sections.build_sections` (or by
+the rebalance pipeline's own section builder) and emits a styled HTML
+document. Charts are referenced by `cid:` in the email, so the SMTP layer
+can attach the PNGs, and embedded as data URIs in the PDF
+(`report_pdf.render_pdf`, which prints this same HTML with WeasyPrint).
 """
 
 from __future__ import annotations
@@ -310,10 +309,12 @@ def _equity_curve_svg(d: dict[str, Any]) -> str:
             ("Break-even", _REFERENCE_LINE, " stroke-dasharray='4 3'"),
         ]
     ]
+    # One block, so the PDF never prints the legend and the chart on
+    # different pages.
     return (
-        f"<div style='font-size:12px;color:{_INK};margin:6px 0'>"
+        f"<div class='chart'><div style='font-size:12px;color:{_INK};margin:6px 0'>"
         f"Return on invested capital — {''.join(legend_items)}</div>"
-        f"<div style='overflow-x:auto'>{''.join(parts)}</div>"
+        f"<div style='overflow-x:auto'>{''.join(parts)}</div></div>"
     )
 
 
@@ -1035,22 +1036,29 @@ def _render_premium_deployment(data: dict) -> str:
 
 
 def render_html_email(sections: list[Section], chart_cids: dict[str, str]) -> str:
+    """The email body; each chart is the `cid:` of its attached PNG."""
+    return render_html(sections, {t: f"cid:{cid}" for t, cid in chart_cids.items()})
+
+
+def render_html(sections: list[Section], image_src: dict[str, str]) -> str:
+    """The report as one HTML document; `image_src` maps a chart's ticker
+    to its `src` (a `cid:` reference or a data URI)."""
     parts: list[str] = [_HTML_HEAD]
     for s in sections:
         render = _HTML_SECTION_RENDERERS.get(s.kind)
         if render is not None:
-            parts.append(render(s, chart_cids))
+            parts.append(render(s, image_src))
     parts.append("</body></html>")
     return "".join(parts)
 
 
-def _image_html(s: Section, chart_cids: dict[str, str]) -> str:
+def _image_html(s: Section, image_src: dict[str, str]) -> str:
     ticker = s.image_ticker
-    cid = chart_cids.get(ticker) if ticker else None
-    return f"<img src='cid:{cid}' alt='{html.escape(ticker)} chart' />" if ticker and cid else ""
+    src = image_src.get(ticker) if ticker else None
+    return f"<img src='{src}' alt='{html.escape(ticker)} chart' />" if ticker and src else ""
 
 
-def _table_html(s: Section, chart_cids: dict[str, str]) -> str:
+def _table_html(s: Section, image_src: dict[str, str]) -> str:
     if not (s.table_header and s.table_rows):
         return ""
     parts = ["<table><thead><tr>"]
@@ -1066,7 +1074,7 @@ def _table_html(s: Section, chart_cids: dict[str, str]) -> str:
     return "".join(parts)
 
 
-def _status_banner_html(s: Section, chart_cids: dict[str, str]) -> str:
+def _status_banner_html(s: Section, image_src: dict[str, str]) -> str:
     cs = _STATUS_COLORS.get(s.status, _STATUS_COLORS["UNKNOWN"])
     return (
         f"<div class='banner' style='background:{cs['bg']};"
@@ -1076,7 +1084,7 @@ def _status_banner_html(s: Section, chart_cids: dict[str, str]) -> str:
     )
 
 
-def _metric_strip_html(s: Section, chart_cids: dict[str, str]) -> str:
+def _metric_strip_html(s: Section, image_src: dict[str, str]) -> str:
     if not s.metrics:
         return ""
     parts = ["<div class='metrics'>"]
@@ -1091,7 +1099,7 @@ def _metric_strip_html(s: Section, chart_cids: dict[str, str]) -> str:
     return "".join(parts)
 
 
-def _holdings_dashboard_html(s: Section, chart_cids: dict[str, str]) -> str:
+def _holdings_dashboard_html(s: Section, image_src: dict[str, str]) -> str:
     if not s.holdings:
         return ""
     parts = [
@@ -1122,10 +1130,10 @@ def _holdings_dashboard_html(s: Section, chart_cids: dict[str, str]) -> str:
 
 def _data_html(build: Callable[[Any], str]) -> Callable[[Section, dict[str, str]], str]:
     """A renderer for a kind whose builder takes the section's data."""
-    return lambda s, chart_cids: build(s.data) if s.data else ""
+    return lambda s, image_src: build(s.data) if s.data else ""
 
 
-# One renderer per SectionKind: (section, chart_cids) -> HTML.
+# One renderer per SectionKind: (section, image_src) -> HTML.
 _HTML_SECTION_RENDERERS: dict[str, Callable[[Section, dict[str, str]], str]] = {
     "heading": lambda s, c: f"<h{s.level}>{html.escape(s.text)}</h{s.level}>",
     "para": lambda s, c: f"<p>{html.escape(s.text)}</p>",
@@ -1149,5 +1157,6 @@ _HTML_SECTION_RENDERERS: dict[str, Callable[[Section, dict[str, str]], str]] = {
     "premium_income": _data_html(_render_premium_income),
     "round_lot_coverage": _data_html(_render_round_lot_coverage),
     "premium_deployment": _data_html(_render_premium_deployment),
-    "page_break": lambda s, c: "<hr/>",
+    # A rule in the email; a new page in the PDF (report_pdf's print CSS).
+    "page_break": lambda s, c: "<hr class='page-break'/>",
 }

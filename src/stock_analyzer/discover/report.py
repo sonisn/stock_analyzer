@@ -5,10 +5,9 @@ lives in three siblings:
 
   - `report_sections`: Section IR + LLM-output parsers + shared palettes
   - `report_html`:     HTML renderer (email body)
-  - `report_pdf`:      PDF renderer (email attachment)
+  - `report_pdf`:      the same HTML printed to PDF (email attachment)
 
-Both renderers consume the same `Section` list so layout stays in sync,
-and they share palettes from `report_sections` so colors stay identical.
+One renderer, so the email and the PDF always show the same thing.
 
 Existing callers (cli/discover.py, cli/rebalance.py, tests) import from
 this module — keep the re-exports stable so the split is invisible to them.

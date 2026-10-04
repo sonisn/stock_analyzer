@@ -250,7 +250,7 @@ src/stock_analyzer/
 │   ├── report.py                            # public re-exports (shim)
 │   ├── report_sections.py                   # Section IR + parsers + palettes
 │   ├── report_html.py                       # HTML email renderer
-│   └── report_pdf.py                        # ReportLab PDF renderer
+│   └── report_pdf.py                        # PDF: the email HTML printed by WeasyPrint
 ├── data/            # Provider adapters (yfinance, FinnHub, FRED, SEC EDGAR,
 │                    #                    SnapTrade, Tavily, chart-img)
 ├── agents/          # Standalone agents (insider, news reranker, portfolio)
@@ -293,8 +293,9 @@ safeguards downstream decide, so a rule never costs a stage its answer.
 ## Outputs
 
 - **HTML email** (`reporting/smtp.py`) with inline chart images via `cid:` refs
-- **PDF attachment** (ReportLab) saved locally before send so an SMTP
-  outage never costs the report
+- **PDF attachment** — the email's own HTML printed with WeasyPrint (charts
+  embedded, Letter pages, page numbers), so the two always match; saved
+  locally before send so an SMTP outage never costs the report
 - **SQLite** (`discover.db`) — every run + candidates + picks +
   holdings reviews persisted for cross-run track-record measurement
 
@@ -1238,7 +1239,7 @@ uv run ty check src        # type check
 1,100+ tests covering the high-stakes math (tax-lot computation, verdict
 auto-repair, direction-aware and horizon-separated track-record alpha,
 beta adjustment, score validation, forecast calibration, parsers,
-section-dispatch parity HTML/PDF, multi-provider ranker consensus math,
+every section kind rendering in the email and the PDF, multi-provider ranker consensus math,
 cross-source data reconciliation, macro-veto rules). The full suite runs
 in ~10s (~8s with `-n 4`). CI (`.github/workflows/ci.yml`) runs ruff, ty
 and the suite on every push and pull request.
