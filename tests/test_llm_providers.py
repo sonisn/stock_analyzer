@@ -239,3 +239,23 @@ def test_each_thread_gets_its_own_model_client():
     t.start()
     t.join()
     assert other[0] is not here
+
+
+def test_a_key_missing_from_the_environment_comes_from_settings(monkeypatch):
+    """A command that never loaded `.env` into the environment must still
+    find the key `Settings` reads from it."""
+    from types import SimpleNamespace
+
+    import stock_analyzer.config as config
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "from-env")
+    monkeypatch.setattr(
+        config,
+        "Settings",
+        lambda: SimpleNamespace(
+            anthropic_api_key="from-settings", openai_api_key="unused", google_api_key=None
+        ),
+    )
+    assert llm._api_key("claude") == "from-settings"
+    assert llm._api_key("openai") == "from-env"

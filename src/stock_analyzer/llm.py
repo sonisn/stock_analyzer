@@ -171,6 +171,28 @@ def model_settings_for(provider: Provider, s: CallSettings) -> ModelSettings:
 # own client instead of sharing one across loops.
 _local = threading.local()
 
+_KEY_ENV = {
+    "claude": ("ANTHROPIC_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+    "gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
+}
+
+
+def _api_key(provider: Provider) -> str | None:
+    """The environment's key, else the one `Settings` reads from `.env` —
+    so a command that never loaded `.env` into the environment still works."""
+    for name in _KEY_ENV[provider]:
+        if key := os.environ.get(name):
+            return key
+    from .config import Settings
+
+    s = Settings()
+    return {
+        "claude": s.anthropic_api_key,
+        "openai": s.openai_api_key,
+        "gemini": s.google_api_key,
+    }[provider]
+
 
 def _build_model(provider: Provider, model_id: str, http_retries: int) -> Model:
     if provider == "claude":
@@ -178,25 +200,25 @@ def _build_model(provider: Provider, model_id: str, http_retries: int) -> Model:
         from pydantic_ai.models.anthropic import AnthropicModel
         from pydantic_ai.providers.anthropic import AnthropicProvider
 
-        client = AsyncAnthropic(max_retries=http_retries)
+        client = AsyncAnthropic(api_key=_api_key(provider), max_retries=http_retries)
         return AnthropicModel(model_id, provider=AnthropicProvider(anthropic_client=client))
     if provider == "openai":
         from openai import AsyncOpenAI
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
 
-        client = AsyncOpenAI(max_retries=http_retries)
+        client = AsyncOpenAI(api_key=_api_key(provider), max_retries=http_retries)
         return OpenAIChatModel(model_id, provider=OpenAIProvider(openai_client=client))
     if provider == "gemini":
         from google.genai.types import HttpRetryOptions
         from pydantic_ai.models.google import GoogleModel
         from pydantic_ai.providers.google import GoogleProvider
 
-        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
         return GoogleModel(
             model_id,
             provider=GoogleProvider(
-                api_key=api_key, retry_options=HttpRetryOptions(attempts=http_retries + 1)
+                api_key=_api_key(provider),
+                retry_options=HttpRetryOptions(attempts=http_retries + 1),
             ),
         )
     raise ValueError(f"Unsupported provider {provider!r}. Expected one of {sorted(PROVIDERS)}.")
