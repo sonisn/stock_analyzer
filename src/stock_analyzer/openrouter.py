@@ -1,8 +1,10 @@
 """OpenRouter client for the open models that read, never decide.
 
-A plain chat-completions call over the shared `HttpClient` (retries on
-429/5xx): a framework would add nothing here but a dependency on its OpenAI class
-guessing at OpenRouter's extensions. Every call:
+Each call runs through Pydantic AI's OpenRouter model (the same layer as
+llm.py), which speaks OpenRouter's extensions natively: host routing
+(`provider.only` = the approved hosts), reasoning effort, and the billed
+cost and serving host on every reply. Transport retries on 429/5xx are
+the OpenAI SDK's. Every call:
 
   - is refused up front if the day's billed spend, plus calls in flight,
     plus this call's worst case would pass OPENROUTER_DAILY_CAP_USD. The
@@ -29,7 +31,6 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy import text
 
 from .db.session import exec_sql, get_session
-from .http_client import HttpClient, RetryPolicy
 from .logging import get_logger
 from .usage import TRACKER, BudgetExceededError, estimate_cost
 
@@ -38,7 +39,9 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-_URL = "https://openrouter.ai/api/v1/chat/completions"
+_BASE_URL = "https://openrouter.ai/api/v1"
+# A slow model on a long filing can take minutes.
+_TIMEOUT_S = 300.0
 # Worst case for a model with no known price: well above anything the
 # reader or checker costs, so an unpriced model can't slip past the cap.
 _UNKNOWN_PRICE_PER_MTOK = (3.0, 15.0)
@@ -155,18 +158,33 @@ class OpenRouter:
         self.excluded = excluded or {}
         self._lock = threading.Lock()
         self._pending = 0.0
-        self._http = HttpClient(
-            default_headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                # OpenRouter's attribution headers; harmless if ignored.
-                "X-Title": "stock-analyzer",
-            },
-            # A slow model on a long filing can take minutes.
-            timeout=300.0,
-            retry_policy=RetryPolicy(max_attempts=3),
-            name="openrouter",
-        )
+        self._api_key = api_key
+        self._local = threading.local()
+        # Tests route requests to a fake server: a factory of httpx2 clients.
+        self.http_client_factory: Any = None
+
+    def _model(self, model: str) -> Any:
+        """This thread's Pydantic AI model for `model` (an SDK client's pool
+        belongs to the event loop of the thread that opened it)."""
+        cache: dict[str, Any] | None = getattr(self._local, "models", None)
+        if cache is None:
+            cache = self._local.models = {}
+        if model not in cache:
+            from openai import AsyncOpenAI
+            from pydantic_ai.models.openrouter import OpenRouterModel
+            from pydantic_ai.providers.openrouter import OpenRouterProvider
+
+            client = AsyncOpenAI(
+                base_url=_BASE_URL,
+                api_key=self._api_key,
+                max_retries=2,
+                timeout=_TIMEOUT_S,
+                # OpenRouter's attribution header; harmless if ignored.
+                default_headers={"X-Title": "stock-analyzer"},
+                http_client=self.http_client_factory() if self.http_client_factory else None,
+            )
+            cache[model] = OpenRouterModel(model, provider=OpenRouterProvider(openai_client=client))
+        return cache[model]
 
     def allowed_hosts(self, model: str) -> list[str]:
         skip = self.excluded.get(model, set())
@@ -201,45 +219,25 @@ class OpenRouter:
         est = worst_case_cost(model, len(system) + len(user), max_tokens)
         self._reserve(stage, model, est)
         try:
-            body: dict[str, Any] = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                "usage": {"include": True},
-                **(extra or {}),
-            }
-            routing = body.get("provider")
-            if model in APPROVED_HOSTS and isinstance(routing, dict) and "only" not in routing:
-                allowed = self.allowed_hosts(model)
-                if not allowed:
-                    raise NoApprovedHostError(f"every approved host for {model} is excluded")
-                body["provider"] = {**routing, "only": allowed}
-            if json_mode:
-                body["response_format"] = {"type": "json_object"}
+            settings = self._settings(model, max_tokens, json_mode, temperature, extra or {})
             t0 = time.monotonic()
-            data = self._http.post_json(_URL, json=body)
-            if "error" in data:
-                raise RuntimeError(f"OpenRouter error on {model}: {data['error']}")
-            usage = data.get("usage") or {}
-            inp = int(usage.get("prompt_tokens") or 0)
-            out = int(usage.get("completion_tokens") or 0)
-            cost = usage.get("cost")
+            response = self._call(model, system, user, settings)
+            usage = response.usage
+            inp = int(usage.input_tokens or 0)
+            out = int(usage.output_tokens or 0)
+            details = response.provider_details or {}
+            cost = details.get("cost")
             if cost is None:
                 # No billed figure: price the tokens, or charge the estimate.
                 cost = estimate_cost(model, int(inp * _CHARS_PER_TOKEN), out) or est
-            message = (data.get("choices") or [{}])[0].get("message") or {}
             c = Completion(
-                text=message.get("content") or "",
+                text=response.text or "",
                 model=model,
                 input_tokens=inp,
                 output_tokens=out,
                 cost_usd=float(cost),
                 seconds=round(time.monotonic() - t0, 1),
-                provider=data.get("provider"),
+                provider=details.get("downstream_provider"),
             )
         finally:
             self._release(est)
@@ -250,6 +248,58 @@ class OpenRouter:
             SimpleNamespace(input_tokens=c.input_tokens, output_tokens=c.output_tokens),
         )
         return c
+
+    def _settings(
+        self,
+        model: str,
+        max_tokens: int,
+        json_mode: bool,
+        temperature: float,
+        extra: dict[str, Any],
+    ) -> dict[str, Any]:
+        """The request as Pydantic AI settings: `reasoning` and `provider`
+        (host routing, restricted to the approved hosts) are OpenRouter
+        settings; anything else in `extra` goes into the body as given."""
+        rest = dict(extra)
+        settings: dict[str, Any] = {
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "openrouter_usage": {"include": True},
+        }
+        if "reasoning" in rest:
+            settings["openrouter_reasoning"] = rest.pop("reasoning")
+        routing = rest.pop("provider", None)
+        if isinstance(routing, dict):
+            if model in APPROVED_HOSTS and "only" not in routing:
+                allowed = self.allowed_hosts(model)
+                if not allowed:
+                    raise NoApprovedHostError(f"every approved host for {model} is excluded")
+                routing = {**routing, "only": allowed}
+            settings["openrouter_provider"] = routing
+        if json_mode:
+            rest["response_format"] = {"type": "json_object"}
+        if rest:
+            settings["extra_body"] = rest
+        return settings
+
+    def _call(self, model: str, system: str, user: str, settings: dict[str, Any]) -> Any:
+        """The model's response. An empty or cut-off answer comes back as it
+        is (empty text) rather than as an error, and is never re-asked here:
+        the reader decides whether to retry, and how (filing_reader)."""
+        from pydantic_ai import Agent, UnexpectedModelBehavior, capture_run_messages
+        from pydantic_ai.messages import ModelResponse
+
+        agent: Agent[None, str] = Agent(
+            output_type=str, instructions=system, model_settings=cast("Any", settings), retries=0
+        )
+        with capture_run_messages() as messages:
+            try:
+                return agent.run_sync(user, model=self._model(model)).response
+            except UnexpectedModelBehavior:
+                last = next((m for m in reversed(messages) if isinstance(m, ModelResponse)), None)
+                if last is None:
+                    raise
+                return last
 
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)

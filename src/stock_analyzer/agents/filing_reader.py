@@ -24,7 +24,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..http_client import HttpClientError
+from pydantic_ai.exceptions import ModelHTTPError
+
 from ..logging import get_logger
 from ..openrouter import OpenRouter, parse_json_object
 
@@ -281,7 +282,7 @@ def read_filing(
         logger.info("%s on %s: no usable answer, retrying", filing["ticker"], model)
         try:
             facts = attempt(RETRY_EXTRA, READER_MAX_TOKENS)
-        except HttpClientError as e:
+        except ModelHTTPError as e:
             if "mandatory" not in str(e).lower():
                 raise
             facts = attempt(READER_EXTRA, RETRY_MANDATORY_REASONING_TOKENS)

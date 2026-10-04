@@ -62,9 +62,6 @@ from .usage import BUDGET, TRACKER
 
 logger = get_logger(__name__)
 
-# Pydantic AI prints a setup banner on a process's first run; in a cron log
-# it is noise. (Read when the banner would show, so setting it here works.)
-os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
 # OpenAI reasoning models take no temperature; Pydantic AI drops it from the
 # request (correctly) and warns on every call, which only fills the logs.
 warnings.filterwarnings("ignore", message=r"Sampling parameters .* are not supported")

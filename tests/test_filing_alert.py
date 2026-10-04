@@ -95,7 +95,7 @@ def test_new_filings_are_read_once_and_routine_8ks_skipped(tmp_path, monkeypatch
 
     # The next evening: both are stored, nothing is read or sent again.
     again = _client(tmp_path, [])
-    assert fa.new_holding_filings(again, db, ["ABC"], today=TODAY, model="m") == []
+    assert fa.new_holding_filings(again, db, ["ABC"], today=TODAY, model="x/m") == []
     assert again._http.bodies == []  # type: ignore[attr-defined]
 
 
@@ -199,7 +199,7 @@ def test_the_latest_earnings_release_is_read_once_and_reaches_the_deciders(tmp_p
     assert [i["filing"]["accession"] for i in got] == ["k1"] and asked == [("8-K",)]
     # Stored, so the next week reads nothing.
     again = _client(tmp_path, [])
-    assert fa.earnings_releases(again, db, ["ABC"], today=TODAY, model="m") == []
+    assert fa.earnings_releases(again, db, ["ABC"], today=TODAY, model="x/m") == []
 
     assert earnings_releases(db, ["abc", "NONE"]) == {
         "ABC": {

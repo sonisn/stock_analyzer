@@ -84,22 +84,68 @@ def test_parse_json_object_handles_fences_and_prose():
 
 
 class _Http:
+    """A fake OpenRouter: records each request body the client really sent
+    and answers from `replies` — (text, billed cost) pairs. A test may swap
+    `post_json` to fail; an `HTTPError(status, message)` becomes that HTTP
+    reply."""
+
     def __init__(self, replies):
         self.replies = list(replies)
         self.bodies = []
 
-    def post_json(self, url, json):  # noqa: A002 — mirrors HttpClient
+    def post_json(self, url, json):  # noqa: A002
         self.bodies.append(json)
         text, cost = self.replies.pop(0)
         return {
-            "choices": [{"message": {"content": text}}],
-            "usage": {"prompt_tokens": 1000, "completion_tokens": 100, "cost": cost},
+            "id": "gen-1",
+            "object": "chat.completion",
+            "created": 0,
+            "model": json["model"],
+            "provider": _served_by(json),
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": text},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 1000,
+                "completion_tokens": 100,
+                "total_tokens": 1100,
+                "cost": cost,
+            },
         }
 
 
+def _served_by(body):
+    """The host OpenRouter would name: the first one the call allowed."""
+    from stock_analyzer.openrouter import HOST_NAMES
+
+    only = (body.get("provider") or {}).get("only") or []
+    return HOST_NAMES.get(only[0], only[0]) if only else "Novita"
+
+
+class HTTPError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
+
+
 def _client(tmp_path, replies, cap=2.0) -> OpenRouter:
+    import httpx2
+
     c = OpenRouter("k", str(tmp_path / "t.db"), daily_cap_usd=cap)
-    c._http = _Http(replies)  # type: ignore[assignment]
+    c._http = _Http(replies)  # type: ignore[attr-defined]
+
+    def handle(request):
+        try:
+            data = c._http.post_json(str(request.url), json.loads(request.content))  # type: ignore[attr-defined]
+        except HTTPError as e:
+            return httpx2.Response(e.status, json={"error": {"message": str(e), "code": e.status}})
+        return httpx2.Response(200, json=data)
+
+    c.http_client_factory = lambda: httpx2.AsyncClient(transport=httpx2.MockTransport(handle))
     return c
 
 
@@ -159,8 +205,6 @@ def test_read_sends_fp8_routing_and_retries_an_empty_answer(tmp_path):
 
 
 def test_retry_keeps_thinking_on_where_the_host_requires_it(tmp_path):
-    from stock_analyzer.http_client import ClientError
-
     c = _client(tmp_path, [("", 0.001), (json.dumps(FACTS_OK), 0.002)])
     http = c._http  # type: ignore[attr-defined]
     real = http.post_json
@@ -169,7 +213,7 @@ def test_retry_keeps_thinking_on_where_the_host_requires_it(tmp_path):
     def post_json(url, json):  # noqa: A002
         calls.append(json)
         if json.get("reasoning") == {"enabled": False}:
-            raise ClientError("400: Reasoning is mandatory for this endpoint", status=400)
+            raise HTTPError(400, "Reasoning is mandatory for this endpoint")
         return real(url, json)
 
     http.post_json = post_json
@@ -182,27 +226,27 @@ def test_retry_keeps_thinking_on_where_the_host_requires_it(tmp_path):
 def test_tier_b_escalates_a_flagged_bulk_read_to_the_reader(tmp_path):
     c = _client(tmp_path, [(json.dumps(FACTS_OK), 0.001)])
     item = (FILING, SECTIONS)
-    clean = filings.read_tiered(c, item, tier="B", reader_model="big", bulk_model="flash")
-    assert clean.reader_model == "flash" and clean.escalated_from is None
+    clean = filings.read_tiered(c, item, tier="B", reader_model="x/big", bulk_model="x/flash")
+    assert clean.reader_model == "x/flash" and clean.escalated_from is None
 
     c = _client(tmp_path, [(json.dumps(FACTS_FLAGGED), 0.001), (json.dumps(FACTS_OK), 0.01)])
-    better = filings.read_tiered(c, item, tier="B", reader_model="big", bulk_model="flash")
-    assert better.reader_model == "big" and better.escalated_from == "flash"
+    better = filings.read_tiered(c, item, tier="B", reader_model="x/big", bulk_model="x/flash")
+    assert better.reader_model == "x/big" and better.escalated_from == "x/flash"
     assert better.cost_usd == pytest.approx(0.011)
     models = [b["model"] for b in c._http.bodies]  # type: ignore[attr-defined]
-    assert models == ["flash", "big"]
+    assert models == ["x/flash", "x/big"]
 
     c = _client(tmp_path, [(json.dumps(FACTS_FLAGGED), 0.01)])
-    a = filings.read_tiered(c, item, tier="A", reader_model="big", bulk_model="flash")
-    assert a.reader_model == "big" and a.flagged  # tier A is read once, on the reader
+    a = filings.read_tiered(c, item, tier="A", reader_model="x/big", bulk_model="x/flash")
+    assert a.reader_model == "x/big" and a.flagged  # tier A is read once, on the reader
 
 
 def test_tier_b_sends_an_empty_or_failed_bulk_read_straight_to_the_reader(tmp_path):
     item = (FILING, SECTIONS)
     c = _client(tmp_path, [("", 0.001), (json.dumps(FACTS_OK), 0.01)])
-    r = filings.read_tiered(c, item, tier="B", reader_model="big", bulk_model="flash")
-    assert [b["model"] for b in c._http.bodies] == ["flash", "big"]  # type: ignore[attr-defined]
-    assert r.facts == FACTS_OK and r.escalated_from == "flash"
+    r = filings.read_tiered(c, item, tier="B", reader_model="x/big", bulk_model="x/flash")
+    assert [b["model"] for b in c._http.bodies] == ["x/flash", "x/big"]  # type: ignore[attr-defined]
+    assert r.facts == FACTS_OK and r.escalated_from == "x/flash"
     assert r.cost_usd == pytest.approx(0.011)
 
     c = _client(tmp_path, [(json.dumps(FACTS_OK), 0.01)])
@@ -210,22 +254,22 @@ def test_tier_b_sends_an_empty_or_failed_bulk_read_straight_to_the_reader(tmp_pa
     real = http.post_json
 
     def post_json(url, json):  # noqa: A002
-        if json["model"] == "flash":
+        if json["model"] == "x/flash":
             raise RuntimeError("host down")
         return real(url, json)
 
     http.post_json = post_json
-    r = filings.read_tiered(c, item, tier="B", reader_model="big", bulk_model="flash")
-    assert r.reader_model == "big" and r.escalated_from == "flash"
+    r = filings.read_tiered(c, item, tier="B", reader_model="x/big", bulk_model="x/flash")
+    assert r.reader_model == "x/big" and r.escalated_from == "x/flash"
 
 
 def test_a_filed_income_drop_escalates_a_clean_bulk_read(tmp_path):
     drop = "filed operating income -44% vs a year earlier ($695M from $1,243M)"
     item = ({**FILING, "income_drops": [drop]}, SECTIONS)
     c = _client(tmp_path, [(json.dumps(FACTS_OK), 0.001), (json.dumps(FACTS_OK), 0.01)])
-    r = filings.read_tiered(c, item, tier="B", reader_model="big", bulk_model="flash")
-    assert [b["model"] for b in c._http.bodies] == ["flash", "big"]  # type: ignore[attr-defined]
-    assert r.escalated_from == "flash" and r.flag_reasons == [drop]
+    r = filings.read_tiered(c, item, tier="B", reader_model="x/big", bulk_model="x/flash")
+    assert [b["model"] for b in c._http.bodies] == ["x/flash", "x/big"]  # type: ignore[attr-defined]
+    assert r.escalated_from == "x/flash" and r.flag_reasons == [drop]
     # The reader is told what the figures say.
     prompt = c._http.bodies[1]["messages"][-1]["content"]  # type: ignore[attr-defined]
     assert "Income as filed (XBRL): operating income -44%" in prompt
@@ -235,7 +279,7 @@ def test_recheck_drops_rereads_only_stored_bulk_reads_that_dropped(tmp_path, mon
     db = str(tmp_path / "t.db")
     for t in ("AAA", "BBB"):
         f = {**FILING, "ticker": t, "accession": f"{t}-1"}
-        read = fr.FilingRead(filing=f, reader_model="flash", facts=FACTS_OK)
+        read = fr.FilingRead(filing=f, reader_model="x/flash", facts=FACTS_OK)
         filings.store(db, read, tier="B", today=date(2026, 9, 26))
     monkeypatch.setattr(
         filings, "_prepare", lambda t: ({**FILING, "ticker": t, "accession": f"{t}-1"}, SECTIONS)
@@ -247,17 +291,17 @@ def test_recheck_drops_rereads_only_stored_bulk_reads_that_dropped(tmp_path, mon
     monkeypatch.setattr(filings, "client_from_settings", lambda s: c)
     monkeypatch.setattr(filings, "log_usage_summary", lambda: None)
     settings = filings.Settings(
-        discover_db_path=db, openrouter_reader_model="big", openrouter_bulk_model="flash"
+        discover_db_path=db, openrouter_reader_model="x/big", openrouter_bulk_model="x/flash"
     )
     tiers = {"AAA": "B", "BBB": "B"}
     assert filings.run(settings, tiers, today=date(2026, 9, 27), recheck_drops=True) == 0
-    assert [b["model"] for b in c._http.bodies] == ["big"]  # type: ignore[attr-defined]
+    assert [b["model"] for b in c._http.bodies] == ["x/big"]  # type: ignore[attr-defined]
     with get_session(db) as s:
         row = s.exec(select(FilingFacts).where(FilingFacts.ticker == "BBB")).one()
         got = (row.reader_model, row.escalated_from, row.flag_reasons)
     assert got == (
-        "big",
-        "flash",
+        "x/big",
+        "x/flash",
         "filed net income -73%",
     )
 
@@ -277,7 +321,7 @@ def test_store_keeps_two_filings_per_stock(tmp_path):
 def test_run_promotes_tier_a_bulk_reads_and_skips_what_is_current(tmp_path, monkeypatch):
     db = str(tmp_path / "t.db")
     filing = {**FILING, "accession": "acc-1"}
-    for ticker, model in (("AAA", "flash"), ("BBB", "flash")):
+    for ticker, model in (("AAA", "x/flash"), ("BBB", "x/flash")):
         f = {**filing, "ticker": ticker, "accession": f"{ticker}-1"}
         filings.store(
             db,
@@ -304,8 +348,8 @@ def test_run_promotes_tier_a_bulk_reads_and_skips_what_is_current(tmp_path, monk
     settings = filings.Settings(
         discover_db_path=db,
         openrouter_api_key="k",
-        openrouter_reader_model="big",
-        openrouter_bulk_model="flash",
+        openrouter_reader_model="x/big",
+        openrouter_bulk_model="x/flash",
     )
     monkeypatch.setattr(filings, "_prepare_previous", lambda t: None)
     tiers = {"AAA": "A", "BBB": "B", "CCC": "B"}
@@ -468,7 +512,7 @@ def test_a_stock_read_for_the_first_time_gets_its_previous_filing_too(tmp_path, 
     old = {**FILING, "ticker": "OLD", "accession": "OLD-1"}
     filings.store(
         db,
-        fr.FilingRead(filing=old, reader_model="flash", facts=FACTS_OK),
+        fr.FilingRead(filing=old, reader_model="x/flash", facts=FACTS_OK),
         tier="B",
         today=date(2026, 9, 1),
     )
@@ -489,7 +533,7 @@ def test_a_stock_read_for_the_first_time_gets_its_previous_filing_too(tmp_path, 
         "read_tiered",
         lambda client, item, *, tier, reader_model, bulk_model: (
             seen.append(item[0]["accession"])
-            or fr.FilingRead(filing=item[0], reader_model="flash", facts=FACTS_OK)
+            or fr.FilingRead(filing=item[0], reader_model="x/flash", facts=FACTS_OK)
         ),
     )
     monkeypatch.setattr(filings, "log_usage_summary", lambda: None)

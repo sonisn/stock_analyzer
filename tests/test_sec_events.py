@@ -78,8 +78,8 @@ def test_small_planned_sales_are_recorded_not_alerted(tmp_path, monkeypatch):
     small = FORM_144.replace("25000000.00", "400000.00")
     monkeypatch.setattr(fa, "primary_xml", lambda f: small if f["accession"] == "s" else FORM_144)
     c = _client(tmp_path, [])
-    assert fa.read_event(c, db, _filing("AVGO", "144", "s"), model="m", today=TODAY) is None
-    big = fa.read_event(c, db, _filing("AVGO", "144", "b"), model="m", today=TODAY)
+    assert fa.read_event(c, db, _filing("AVGO", "144", "s"), model="x/m", today=TODAY) is None
+    big = fa.read_event(c, db, _filing("AVGO", "144", "b"), model="x/m", today=TODAY)
     assert big and "plans to sell 70,218 shares, $25.0M" in fa.filing_block(big)
     assert "s" in fa._seen(db)  # recorded, so not fetched again
 
@@ -96,10 +96,12 @@ def test_a_13d_is_kept_for_the_issuer_only_and_classified(tmp_path, monkeypatch)
     c = _client(tmp_path, [(json.dumps(read), 0.001)])
     # The index row for the holder's own listed company is not the target.
     assert (
-        fa.read_event(c, db, _filing("EHLD", "SCHEDULE 13D", "x", cik=222), model="m", today=TODAY)
+        fa.read_event(
+            c, db, _filing("EHLD", "SCHEDULE 13D", "x", cik=222), model="x/m", today=TODAY
+        )
         is None
     )
-    item = fa.read_event(c, db, _filing("TGT", "SCHEDULE 13D", "y"), model="m", today=TODAY)
+    item = fa.read_event(c, db, _filing("TGT", "SCHEDULE 13D", "y"), model="x/m", today=TODAY)
     assert item and "Elliott seeks board seats" in fa.filing_block(item)
     assert fa.subject_part(item) == "TGT activist stake"
     assert fa.activist_targets(db, today=TODAY) == ["TGT"]
@@ -123,7 +125,7 @@ def test_an_offering_says_what_is_sold_and_the_dilution(tmp_path, monkeypatch):
         "quote": "We may offer up to $1,000,000,000 of common stock.",
     }
     c = _client(tmp_path, [(json.dumps(offering), 0.002)])
-    item = fa.read_event(c, db, _filing("OKLO", "424B5", "o"), model="m", today=TODAY)
+    item = fa.read_event(c, db, _filing("OKLO", "424B5", "o"), model="x/m", today=TODAY)
     block = fa.filing_block(item)
     assert "common (at-the-market program), $1.00B" in block
     assert "Shares outstanding +26.0% in a year" in block
@@ -132,7 +134,7 @@ def test_an_offering_says_what_is_sold_and_the_dilution(tmp_path, monkeypatch):
 def test_late_filing_needs_no_model(tmp_path):
     db = str(tmp_path / "t.db")
     c = _client(tmp_path, [])
-    item = fa.read_event(c, db, _filing("XYZ", "NT 10-Q", "n"), model="m", today=TODAY)
+    item = fa.read_event(c, db, _filing("XYZ", "NT 10-Q", "n"), model="x/m", today=TODAY)
     assert "cannot file its report on time" in fa.filing_block(item)
     assert c._http.bodies == []  # type: ignore[attr-defined]
 
@@ -147,10 +149,10 @@ def test_dashboard_sec_highlights_carry_pack_release_and_events(tmp_path):
 
     db = str(tmp_path / "t.db")
     filings.store(
-        db, fr.FilingRead(filing=FILING, reader_model="m", facts=FACTS_OK), tier="A", today=TODAY
+        db, fr.FilingRead(filing=FILING, reader_model="x/m", facts=FACTS_OK), tier="A", today=TODAY
     )
     c = _client(tmp_path, [])
-    fa.read_event(c, db, _filing("ABC", "NT 10-Q", "n"), model="m", today=TODAY)
+    fa.read_event(c, db, _filing("ABC", "NT 10-Q", "n"), model="x/m", today=TODAY)
     sec = _sec_highlights(db, ["ABC", "NONE"], today=TODAY)
     assert set(sec) == {"ABC"}
     assert sec["ABC"]["pack"]["tone"] == "positive"
