@@ -423,7 +423,7 @@ def test_measure_track_record_counts_unmeasurable_instead_of_hiding_it():
         db_path = os.path.join(td, "discover.db")
         old = (datetime.now() - timedelta(days=120)).isoformat(timespec="seconds")
         with get_session(db_path) as session:
-            result = session.exec(
+            result = session.execute(
                 text(
                     "INSERT INTO runs (run_at, kind, universe_size, survivors, "
                     "picks, opus_model, sonnet_model) VALUES (:run_at, 'discover', 1, 1, "
@@ -433,7 +433,7 @@ def test_measure_track_record_counts_unmeasurable_instead_of_hiding_it():
             )
             rid = result.lastrowid
             for rank, ticker in ((1, "NVDA"), (2, "MCAH")):
-                session.exec(
+                session.execute(
                     text(
                         "INSERT INTO picks (run_id, rank, ticker, ranker_text, "
                         "bear_case_text, allocation_text) "
@@ -472,7 +472,7 @@ def test_fetch_recent_sells_excludes_hold_includes_sell_and_trim():
         db_path = os.path.join(td, "discover.db")
         now = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
         with get_session(db_path) as session:
-            result = session.exec(
+            result = session.execute(
                 text(
                     "INSERT INTO runs (run_at, kind, universe_size, survivors, "
                     "picks, opus_model, sonnet_model) VALUES (:run_at, 'rebalance', 0, 0, 0, "
@@ -487,7 +487,7 @@ def test_fetch_recent_sells_excludes_hold_includes_sell_and_trim():
                 ("GOOGL", "HOLD"),
                 ("MSFT", None),
             ]:
-                session.exec(
+                session.execute(
                     text(
                         "INSERT INTO holdings_reviews (run_id, ticker, verdict, "
                         "confidence, review_text) VALUES (:rid, :ticker, :verdict, 7, '')"

@@ -42,7 +42,7 @@ def _seed_db(
     """Insert one run with the given (ticker, score, components, breakdown)."""
     run_at = (datetime.now() - timedelta(days=age_days)).isoformat(timespec="seconds")
     with get_session(db_path) as session:
-        result = session.exec(
+        result = session.execute(
             text(
                 "INSERT INTO runs (run_at, kind, universe_size, survivors, picks, "
                 "opus_model, sonnet_model) "
@@ -52,7 +52,7 @@ def _seed_db(
         )
         run_id = result.lastrowid
         for ticker, score, components, breakdown in rows:
-            session.exec(
+            session.execute(
                 text(
                     "INSERT INTO candidates (run_id, ticker, passed_filter, score, "
                     "score_components, score_breakdown, conviction) "

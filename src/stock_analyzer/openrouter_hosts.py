@@ -26,8 +26,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Any
 
-from sqlalchemy import text
-from sqlmodel import select
+from sqlalchemy import select, text
 
 from .db.session import exec_sql, get_session
 from .db.tables import FilingSpotCheck, OpenRouterHostCheck
@@ -152,7 +151,7 @@ def failed_checks(db: str, *, today: date) -> dict[str, set[str]]:
     since = (today - timedelta(days=CHECK_VALID_DAYS)).isoformat()
     latest: dict[tuple[str, str], tuple[str, bool]] = {}  # (model, host) -> (day, passed)
     with get_session(db) as session:
-        for c in session.exec(
+        for c in session.scalars(
             select(OpenRouterHostCheck).where(OpenRouterHostCheck.day >= since)
         ).all():
             seen = latest.get((c.model, c.host))
@@ -222,7 +221,7 @@ def spot_check_summary(db: str, *, today: date, days: int = 120) -> list[dict[st
     since = (today - timedelta(days=days)).isoformat()
     groups: dict[tuple[str, str], list[tuple[int, int]]] = {}
     with get_session(db) as session:
-        for r in session.exec(
+        for r in session.scalars(
             select(FilingSpotCheck).where(FilingSpotCheck.checked_on >= since)
         ).all():
             groups.setdefault((r.reader_model, r.provider or "?"), []).append(

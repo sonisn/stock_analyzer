@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
-from sqlmodel import select
+from sqlalchemy import select
 
 from stock_analyzer.data import activity_ledger, reference, transactions
 from stock_analyzer.db.retention import (
@@ -72,7 +72,7 @@ def test_sync_fetches_only_new_activity_per_account(db, monkeypatch):
     # activity; the new one gets the full horizon.
     assert calls[1][1] == {"IRA": date(2026, 8, 22)}
     with get_session(db) as s:
-        sizes = [len(r.data) for r in s.exec(select(BrokerageActivity)).all()]
+        sizes = [len(r.data) for r in s.scalars(select(BrokerageActivity)).all()]
     assert len(sizes) == 4 and max(sizes) < 400  # compact: nested payloads dropped
 
 

@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from dotenv import load_dotenv
-from sqlmodel import col, select
+from sqlalchemy import select
 
 from ..config import Settings
 from ..data import frames
@@ -45,8 +45,8 @@ logger = get_logger(__name__)
 
 def _latest_review_run(db_path: str) -> int | None:
     with get_session(db_path) as session:
-        return session.exec(
-            select(HoldingReviewRow.run_id).order_by(col(HoldingReviewRow.run_id).desc())
+        return session.scalars(
+            select(HoldingReviewRow.run_id).order_by(HoldingReviewRow.run_id.desc())
         ).first()
 
 
@@ -63,28 +63,28 @@ def _reasoning(db_path: str) -> dict[str, dict[str, Any]]:
 
     out: dict[str, dict[str, Any]] = {}
     with get_session(db_path) as session:
-        scenarios = session.exec(
-            select(  # ty: ignore[no-matching-overload]  # sqlmodel types select() up to 4 columns
+        scenarios = session.execute(
+            select(
                 PickScenario.run_id,
                 PickScenario.ticker,
                 PickScenario.label,
                 PickScenario.probability,
                 PickScenario.target_return_pct,
-            ).order_by(col(PickScenario.run_id))
+            ).order_by(PickScenario.run_id)
         ).all()
-        catalysts = session.exec(
-            select(  # ty: ignore[no-matching-overload]  # sqlmodel types select() up to 4 columns
+        catalysts = session.execute(
+            select(
                 PickCatalyst.run_id,
                 PickCatalyst.ticker,
                 PickCatalyst.event,
                 PickCatalyst.expected_date,
                 PickCatalyst.direction,
                 PickCatalyst.impact,
-            ).order_by(col(PickCatalyst.run_id), col(PickCatalyst.seq))
+            ).order_by(PickCatalyst.run_id, PickCatalyst.seq)
         ).all()
-        prose = session.exec(
+        prose = session.execute(
             select(RunOutput.run_id, RunOutput.ranker_full, RunOutput.redteam_full).order_by(
-                col(RunOutput.run_id)
+                RunOutput.run_id
             )
         ).all()
 
@@ -196,7 +196,7 @@ def _sec_highlights_or_raise(db: str, tickers: list[str], *, today: date) -> dic
     import json
     from datetime import timedelta
 
-    from sqlmodel import col, select
+    from sqlalchemy import select
 
     from ..data.filing_evidence import earnings_releases, evidence_packs
     from ..db.session import get_session
@@ -208,9 +208,9 @@ def _sec_highlights_or_raise(db: str, tickers: list[str], *, today: date) -> dic
     releases = earnings_releases(db, tickers)
     events: dict[str, list[dict[str, Any]]] = {}
     with get_session(db) as session:
-        for e in session.exec(
+        for e in session.scalars(
             select(SecEvent).where(
-                col(SecEvent.ticker).in_(tickers), SecEvent.alerted, SecEvent.filed_on >= since
+                SecEvent.ticker.in_(tickers), SecEvent.alerted, SecEvent.filed_on >= since
             )
         ).all():
             filing = {"ticker": e.ticker, "form": e.form, "filed_on": e.filed_on, "url": e.url}
@@ -224,9 +224,9 @@ def _sec_highlights_or_raise(db: str, tickers: list[str], *, today: date) -> dic
                     "lines": lines[1:],
                 }
             )
-        for a in session.exec(
+        for a in session.scalars(
             select(EightKAlert).where(
-                col(EightKAlert.ticker).in_(tickers), EightKAlert.filed_on >= since
+                EightKAlert.ticker.in_(tickers), EightKAlert.filed_on >= since
             )
         ).all():
             summary = json.loads(a.summary or "{}") if a.summary else {}
@@ -297,7 +297,7 @@ def _read_ledger(db: str, run_id: int | None) -> _Ledger:
         # raises DetachedInstanceError, and nothing here needs the object.
         reviews = {
             t: (v, c)
-            for t, v, c in session.exec(
+            for t, v, c in session.execute(
                 select(
                     HoldingReviewRow.ticker,
                     HoldingReviewRow.verdict,
@@ -307,22 +307,26 @@ def _read_ledger(db: str, run_id: int | None) -> _Ledger:
         }
         review_text = {
             t: r
-            for t, r in session.exec(
+            for t, r in session.execute(
                 select(HoldingReviewRow.ticker, HoldingReviewRow.review_text).where(
                     HoldingReviewRow.run_id == run_id
                 )
             ).all()
         }
-        history_rows = session.exec(
+        history_rows = session.execute(
             select(
                 HoldingReviewRow.ticker,
                 HoldingReviewRow.run_id,
                 HoldingReviewRow.verdict,
                 HoldingReviewRow.confidence,
-            ).order_by(col(HoldingReviewRow.run_id))
+            ).order_by(HoldingReviewRow.run_id)
         ).all()
-        run_days = {r_id: d[:10] for r_id, d in session.exec(select(Run.id, Run.run_at)).all()}
-        views = {t: v for t, v in session.exec(select(StockView.ticker, StockView.view)).all()}
+        run_days = {
+            r_id: d[:10]
+            for r_id, d in session.execute(select(Run.id, Run.run_at)).all()
+            if r_id is not None  # a stored row always has its id
+        }
+        views = {t: v for t, v in session.execute(select(StockView.ticker, StockView.view)).all()}
         suggestions = [
             dict(
                 id=s.id,
@@ -336,7 +340,7 @@ def _read_ledger(db: str, run_id: int | None) -> _Ledger:
                 reinvest_into=s.reinvest_into,
                 run_id=s.run_id,
             )
-            for s in session.exec(select(Suggestion).order_by(col(Suggestion.id))).all()
+            for s in session.scalars(select(Suggestion).order_by(Suggestion.id)).all()
         ]
         runs = [
             dict(
@@ -347,7 +351,7 @@ def _read_ledger(db: str, run_id: int | None) -> _Ledger:
                 survivors=r.survivors,
                 picks=r.picks,
             )
-            for r in session.exec(select(Run).order_by(col(Run.id).desc())).all()[:20]
+            for r in session.scalars(select(Run).order_by(Run.id.desc())).all()[:20]
         ]
     return _Ledger(reviews, review_text, history_rows, run_days, views, suggestions, runs)
 

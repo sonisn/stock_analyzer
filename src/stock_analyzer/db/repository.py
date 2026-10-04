@@ -13,7 +13,8 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlmodel import Session, col, select
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from .tables import (
     Candidate,
@@ -270,11 +271,8 @@ def fetch_recent_holdings_history(
     # DESC + LIMIT to grab the most recent N rows; then reverse to chronological
     # (ascending) order so the LLM reads them oldest-first.
     recent_runs = list(
-        session.exec(
-            select(Run.id, Run.run_at)
-            .where(Run.kind == kind)
-            .order_by(col(Run.id).desc())
-            .limit(n_runs)
+        session.execute(
+            select(Run.id, Run.run_at).where(Run.kind == kind).order_by(Run.id.desc()).limit(n_runs)
         )
     )
     if not recent_runs:
@@ -282,7 +280,7 @@ def fetch_recent_holdings_history(
     recent_runs.reverse()
     out: dict[str, list[dict[str, Any]]] = {}
     for run_row in recent_runs:
-        rows = session.exec(
+        rows = session.execute(
             select(
                 HoldingReviewRow.ticker,
                 HoldingReviewRow.verdict,
@@ -305,20 +303,20 @@ def fetch_recent_picks(session: Session, *, n_runs: int = 3) -> list[tuple[str, 
     runs that made picks (discover or rebalance), newest run first. Used
     to find cash-secured-put candidates."""
     run_ids = list(
-        session.exec(
+        session.scalars(
             select(Run.id)
-            .where(col(Run.id).in_(select(Pick.run_id).distinct()))
-            .order_by(col(Run.id).desc())
+            .where(Run.id.in_(select(Pick.run_id).distinct()))
+            .order_by(Run.id.desc())
             .limit(n_runs)
         )
     )
     if not run_ids:
         return []
-    rows = session.exec(
+    rows = session.execute(
         select(Pick.ticker, Pick.rank, Run.run_at)
-        .join(Run, col(Run.id) == col(Pick.run_id))
-        .where(col(Pick.run_id).in_(run_ids))
-        .order_by(col(Run.id).desc(), col(Pick.rank))
+        .join(Run, Run.id == Pick.run_id)
+        .where(Pick.run_id.in_(run_ids))
+        .order_by(Run.id.desc(), Pick.rank)
     )
     return [(t, r, at) for t, r, at in rows]
 
@@ -340,7 +338,7 @@ def record_suggestions(session: Session, rows: list[dict[str, Any]]) -> int:
     """
     added = 0
     for row in rows:
-        existing = session.exec(
+        existing = session.scalars(
             select(Suggestion).where(
                 Suggestion.suggested_on == row["suggested_on"],
                 Suggestion.source == row["source"],
@@ -364,10 +362,10 @@ def record_suggestions(session: Session, rows: list[dict[str, Any]]) -> int:
 def fetch_suggestions(session: Session, *, start: str, end: str) -> list[Suggestion]:
     """Suggestions made on dates in [start, end] (ISO), oldest first."""
     return list(
-        session.exec(
+        session.scalars(
             select(Suggestion)
             .where(Suggestion.suggested_on >= start, Suggestion.suggested_on <= end)
-            .order_by(col(Suggestion.suggested_on), col(Suggestion.id))
+            .order_by(Suggestion.suggested_on, Suggestion.id)
         )
     )
 
@@ -426,7 +424,7 @@ def fetch_snapshots(session: Session, *, start: str | None = None) -> list[Portf
     query = select(PortfolioSnapshot).order_by(PortfolioSnapshot.day)
     if start:
         query = query.where(PortfolioSnapshot.day >= start)
-    return list(session.exec(query))
+    return list(session.scalars(query))
 
 
 # --- run outputs ----------------------------------------------------------

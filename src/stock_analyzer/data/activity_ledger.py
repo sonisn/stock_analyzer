@@ -21,7 +21,7 @@ import threading
 from datetime import date, timedelta
 from typing import Any
 
-from sqlmodel import func, select
+from sqlalchemy import func, select
 
 from ..db.session import get_session
 from ..db.tables import BrokerageActivity
@@ -106,7 +106,7 @@ def sync_activities(db_path: str, *, today: date | None = None) -> int:
     today = today or date.today()
     with get_session(db_path) as session:
         latest = dict(
-            session.exec(
+            session.execute(
                 select(BrokerageActivity.account, func.max(BrokerageActivity.trade_date)).group_by(
                     BrokerageActivity.account
                 )
@@ -145,6 +145,6 @@ def ledger_activities(
         query = query.where(BrokerageActivity.trade_date >= start.isoformat())
     out: dict[str, list[dict[str, Any]]] = {}
     with get_session(db_path) as session:
-        for row in session.exec(query):
+        for row in session.scalars(query):
             out.setdefault(row.account, []).append(json.loads(row.data))
     return out

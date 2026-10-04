@@ -22,7 +22,8 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import polars as pl
-from sqlmodel import Session, select
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from ..db.session import get_session
 from ..db.tables import Suggestion, TickerPrice
@@ -53,7 +54,8 @@ def missing_today(db_path: str, tickers: list[str], *, today: date | None = None
         return []
     with get_session(db_path) as session:
         have = {
-            r for r in session.exec(select(TickerPrice.ticker).where(TickerPrice.day == day)).all()
+            r
+            for r in session.scalars(select(TickerPrice.ticker).where(TickerPrice.day == day)).all()
         }
     return sorted(wanted - have)
 
@@ -62,7 +64,7 @@ def record_tickers(db_path: str, held: list[str]) -> list[str]:
     """What the record keeps a close for: the holdings, every ticker a
     suggestion named (and its reinvestment), and SPY to grade against."""
     with get_session(db_path) as session:
-        named = session.exec(select(Suggestion.ticker, Suggestion.reinvest_into)).all()
+        named = session.execute(select(Suggestion.ticker, Suggestion.reinvest_into)).all()
     return sorted(set(held) | {t for t, _ in named} | {r for _, r in named if r} | {"SPY"})
 
 
@@ -144,7 +146,7 @@ def stored_history(db_path: str) -> Any:
 
     def fetch(ticker: str, start: date, end: date) -> pl.DataFrame | None:
         with get_session(db_path) as session:
-            rows = session.exec(
+            rows = session.execute(
                 select(TickerPrice.day, TickerPrice.close)
                 .where(
                     TickerPrice.ticker == ticker.upper(),
@@ -165,7 +167,7 @@ def stored_history(db_path: str) -> Any:
 def coverage(db_path: str) -> dict[str, Any]:
     """How much record there is, for the dashboard's own honesty."""
     with get_session(db_path) as session:
-        rows = session.exec(select(TickerPrice.ticker, TickerPrice.day)).all()
+        rows = session.execute(select(TickerPrice.ticker, TickerPrice.day)).all()
     if not rows:
         return {"rows": 0, "tickers": 0, "first": None, "last": None}
     days = sorted({d for _, d in rows})
@@ -192,7 +194,7 @@ def backfill_from_panel(db_path: str, tickers: list[str], *, days: int = 400) ->
             if closes is None:
                 continue
             have = set(
-                session.exec(
+                session.scalars(
                     select(TickerPrice.day).where(TickerPrice.ticker == ticker.upper())
                 ).all()
             )

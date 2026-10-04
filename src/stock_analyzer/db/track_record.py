@@ -10,8 +10,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Literal
 
-from sqlalchemy import func
-from sqlmodel import Session, col, select
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from .tables import HoldingReviewRow, Pick, Run
 
@@ -25,11 +25,11 @@ def fetch_recent_pick_runs_with_model(
     them. `voting_providers` is the comma-joined string as stored; the
     caller splits it. Dedup happens in the caller."""
     cutoff = (datetime.now() - timedelta(days=lookback_days)).isoformat()
-    rows = session.exec(
+    rows = session.execute(
         select(Run.run_at, Pick.ticker, Run.opus_model, Pick.voting_providers)
-        .join(Pick, col(Pick.run_id) == col(Run.id))
+        .join(Pick, Pick.run_id == Run.id)
         .where(Run.run_at >= cutoff)
-        .order_by(col(Run.run_at).asc())
+        .order_by(Run.run_at.asc())
     )
     return [(row.run_at, row.ticker, row.opus_model, row.voting_providers) for row in rows]
 
@@ -46,12 +46,12 @@ def fetch_recent_verdict_runs(
     register. Dedup happens in the caller."""
     cutoff = (datetime.now() - timedelta(days=lookback_days)).isoformat()
     verdict_upper = func.upper(func.coalesce(HoldingReviewRow.verdict, ""))
-    rows = session.exec(
+    rows = session.execute(
         select(Run.run_at, HoldingReviewRow.ticker)
-        .join(HoldingReviewRow, col(HoldingReviewRow.run_id) == col(Run.id))
+        .join(HoldingReviewRow, HoldingReviewRow.run_id == Run.id)
         .where(Run.run_at >= cutoff)
         .where(verdict_upper == verdict)
-        .order_by(col(Run.run_at).asc())
+        .order_by(Run.run_at.asc())
     )
     return [(run_at, ticker) for run_at, ticker in rows]
 

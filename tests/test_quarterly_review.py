@@ -136,7 +136,7 @@ def _seed(db: str) -> None:
             sonnet_model="s",
             cash_budget=None,
         )
-        s.exec(
+        s.execute(
             text("UPDATE runs SET run_at='2026-08-10T10:00:00' WHERE id=:i"),
             params={"i": run_id},
         )

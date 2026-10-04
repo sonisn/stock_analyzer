@@ -43,7 +43,7 @@ def test_stores_one_row_per_ticker_per_day(tmp_path):
     again = fs.record_snapshots(db, today=TODAY, tickers=tickers, fetch=_forecast)
     assert again == {"stored": 0, "no_forecast": 1, "already": 2}
     with get_session(db) as session:
-        rows = session.exec(
+        rows = session.execute(
             text("SELECT ticker, eps_next_year, target_mean FROM forecast_snapshots ORDER BY 1")
         ).all()
     assert [tuple(r) for r in rows] == [("ANET", 5.0, 120.0), ("AVGO", 5.0, 120.0)]

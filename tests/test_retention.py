@@ -38,7 +38,7 @@ def _run(session, run_at: str) -> int:
         sonnet_model="s",
         cash_budget=None,
     )
-    session.exec(
+    session.execute(
         text("UPDATE runs SET run_at = :r WHERE id = :i"), params={"r": run_at, "i": run_id}
     )
     for ticker, passed in (("PASS", True), ("FAIL", False), ("PICKED", False)):
@@ -79,9 +79,9 @@ def _seed(db: str) -> tuple[int, int]:
         old = _run(session, "2026-01-05T10:00:00")  # older than every window
         new = _run(session, "2027-11-20T10:00:00")
         # agno's old session log (pre pipeline.py), epoch seconds.
-        session.exec(text("CREATE TABLE workflow_session (session_id TEXT, created_at INTEGER)"))
+        session.execute(text("CREATE TABLE workflow_session (session_id TEXT, created_at INTEGER)"))
         now = int(time.mktime(TODAY.timetuple()))
-        session.exec(
+        session.execute(
             text("INSERT INTO workflow_session VALUES ('old', :o), ('new', :n)"),
             params={"o": now - 90 * 86400, "n": now - 86400},
         )
@@ -123,7 +123,7 @@ def test_prune_trims_old_prose_and_logs_but_keeps_analysis_rows(tmp_path):
     assert out["model_versions"] == 2  # 15 - newest 12 - the accepted v1
     assert out["prose_fields"] == 7  # every prose column of the old run
     with get_session(db) as s:
-        q = lambda sql: s.exec(text(sql)).all()  # noqa: E731
+        q = lambda sql: s.execute(text(sql)).all()  # noqa: E731
         # Old run: prose blanked, numbers and the sizer text kept.
         assert q(
             f"SELECT ranker_full, redteam_full, sizer_full FROM run_outputs WHERE run_id={old}"

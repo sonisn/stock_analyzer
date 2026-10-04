@@ -73,7 +73,7 @@ def _seed_run(db, run_at: str, tickers: list[str], sizer: str = "") -> None:
             sonnet_model="s",
             cash_budget=None,
         )
-        session.exec(
+        session.execute(
             text("UPDATE runs SET run_at = :r WHERE id = :i"), params={"r": run_at, "i": run_id}
         )
         for rank, t in enumerate(tickers, start=1):

@@ -7,7 +7,7 @@ import json
 from datetime import date
 
 import pytest
-from sqlmodel import select
+from sqlalchemy import select
 
 from stock_analyzer import openrouter
 from stock_analyzer.agents import filing_reader as fr
@@ -297,7 +297,7 @@ def test_recheck_drops_rereads_only_stored_bulk_reads_that_dropped(tmp_path, mon
     assert filings.run(settings, tiers, today=date(2026, 9, 27), recheck_drops=True) == 0
     assert [b["model"] for b in c._http.bodies] == ["x/big"]  # type: ignore[attr-defined]
     with get_session(db) as s:
-        row = s.exec(select(FilingFacts).where(FilingFacts.ticker == "BBB")).one()
+        row = s.scalars(select(FilingFacts).where(FilingFacts.ticker == "BBB")).one()
         got = (row.reader_model, row.escalated_from, row.flag_reasons)
     assert got == (
         "x/big",
@@ -314,7 +314,7 @@ def test_store_keeps_two_filings_per_stock(tmp_path):
             read = fr.FilingRead(filing=f, reader_model="r", facts=FACTS_OK)
             filings.store(db, read, tier=tier, today=date(2026, 9, 27))
     with get_session(db) as s:
-        kept = sorted(r.accession for r in s.exec(select(FilingFacts)).all())
+        kept = sorted(r.accession for r in s.scalars(select(FilingFacts)).all())
     assert kept == ["AAA-1", "AAA-2", "BBB-1", "BBB-2"]
 
 

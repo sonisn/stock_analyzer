@@ -72,7 +72,7 @@ def test_only_the_latest_four_quarters_are_kept(tmp_path):
 
     with get_session(db) as session:
         kept = sorted(
-            p for (p,) in session.exec(text("SELECT DISTINCT period FROM fund_positions")).all()
+            p for (p,) in session.execute(text("SELECT DISTINCT period FROM fund_positions")).all()
         )
     assert kept == quarters[1:]
 

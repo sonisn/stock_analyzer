@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from sqlmodel import select
+from sqlalchemy import select
 
 from stock_analyzer.db.repository import (
     fetch_recent_holdings_history,
@@ -89,12 +89,12 @@ def test_roundtrip_through_repository(tmp_path: Path) -> None:
 
     # Read back
     with get_session(str(db_path)) as s:
-        run = s.exec(select(Run).where(Run.id == run_id)).one()
+        run = s.scalars(select(Run).where(Run.id == run_id)).one()
         assert run.universe_size == 42
         assert run.kind == "rebalance"
         assert run.cash_budget == 5000.0
 
-        cand = s.exec(
+        cand = s.scalars(
             select(Candidate).where(Candidate.run_id == run_id, Candidate.ticker == "NVDA")
         ).one()
         assert cand.passed_filter == 1
@@ -107,20 +107,20 @@ def test_roundtrip_through_repository(tmp_path: Path) -> None:
         assert json.loads(cand.sources) == ["finnhub", "yfinance"]
         assert cand.sector == "Technology"
 
-        sc = s.exec(select(Scorecard).where(Scorecard.run_id == run_id)).one()
+        sc = s.scalars(select(Scorecard).where(Scorecard.run_id == run_id)).one()
         assert sc.analyst_text == "great fundamentals"
 
-        pk = s.exec(select(Pick).where(Pick.run_id == run_id, Pick.rank == 1)).one()
+        pk = s.scalars(select(Pick).where(Pick.run_id == run_id, Pick.rank == 1)).one()
         assert pk.ticker == "NVDA"
         assert pk.ranker_text == "" and pk.allocation_text is None  # prose lives in run_outputs
         assert pk.agreement_ratio == 0.6667
         assert pk.voting_providers == "claude,openai"
 
-        hr = s.exec(select(HoldingReviewRow).where(HoldingReviewRow.run_id == run_id)).one()
+        hr = s.scalars(select(HoldingReviewRow).where(HoldingReviewRow.run_id == run_id)).one()
         assert hr.verdict == "HOLD"
         assert hr.confidence == 8
 
-        ro = s.exec(select(RunOutput).where(RunOutput.run_id == run_id)).one()
+        ro = s.scalars(select(RunOutput).where(RunOutput.run_id == run_id)).one()
         assert ro.ranker_full == "r"
         assert json.loads(ro.dashboard_data) == {"x": 1, "y": [2, 3]}
 
@@ -171,7 +171,7 @@ def test_schema_is_created_once_even_from_several_threads(tmp_path):
 
     def touch(_):
         with get_session(db) as session:
-            return session.exec(text("SELECT COUNT(*) FROM runs")).one()[0]
+            return session.execute(text("SELECT COUNT(*) FROM runs")).one()[0]
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         assert list(ex.map(touch, range(8))) == [0] * 8
@@ -181,5 +181,5 @@ def test_connections_use_wal_and_wait_for_a_busy_writer(tmp_path):
     from sqlalchemy import text
 
     with get_session(str(tmp_path / "wal.db")) as session:
-        assert session.exec(text("PRAGMA journal_mode")).one()[0] == "wal"
-        assert session.exec(text("PRAGMA busy_timeout")).one()[0] == 10000
+        assert session.execute(text("PRAGMA journal_mode")).one()[0] == "wal"
+        assert session.execute(text("PRAGMA busy_timeout")).one()[0] == 10000

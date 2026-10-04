@@ -66,7 +66,7 @@ def test_only_beats_and_past_picks_are_stored_once(tmp_path):
     assert es.record_reports(db, rows, **kwargs) == 2
     assert es.record_reports(db, rows, **kwargs) == 0
     with get_session(db) as session:
-        stored = {t for (t,) in session.exec(text("SELECT ticker FROM earnings_events")).all()}
+        stored = {t for (t,) in session.execute(text("SELECT ticker FROM earnings_events")).all()}
     assert stored == {"BEAT", "PICK"}
 
 
@@ -120,7 +120,7 @@ def test_a_night_by_night_run_confirms_only_the_real_standout(tmp_path):
     assert sorted(asked) == ["FLUKE", "GOOD", "SHRINK"]
 
     with get_session(db) as session:
-        status = dict(session.exec(text("SELECT ticker, status FROM earnings_events")).all())
+        status = dict(session.execute(text("SELECT ticker, status FROM earnings_events")).all())
     assert status == {
         "GOOD": "standout",
         "FLAT": "no",

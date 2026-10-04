@@ -138,7 +138,7 @@ def test_label_backfill_writes_matured_outcomes_once(tmp_path):
             sonnet_model="s",
             cash_budget=None,
         )
-        session.exec(
+        session.execute(
             text("UPDATE runs SET run_at = :r WHERE id = :i"),
             params={"r": run_day.isoformat(), "i": run_id},
         )
@@ -159,7 +159,7 @@ def test_label_backfill_writes_matured_outcomes_once(tmp_path):
     assert label_candidates(db, fetch_panel=lambda t: p) == 2  # 21d and 63d both closed
     assert label_candidates(db, fetch_panel=lambda t: p) == 0
     with get_session(db) as session:
-        row = session.exec(
+        row = session.execute(
             text(
                 "SELECT entry_date, exit_date, excess_pct FROM candidate_outcomes WHERE horizon_days = 21"
             )
@@ -188,7 +188,7 @@ def test_label_backfill_stops_asking_for_tickers_yahoo_never_priced(tmp_path, mo
                 sonnet_model="s",
                 cash_budget=None,
             )
-            session.exec(
+            session.execute(
                 text("UPDATE runs SET run_at = :r WHERE id = :i"),
                 params={"r": run_day.isoformat(), "i": run_id},
             )
@@ -300,7 +300,7 @@ def test_candidate_snapshot_keeps_numeric_fields_only(tmp_path):
         )
         insert_candidate_snapshot(session, run_id, "BBB", {"sector": "Tech"})  # nothing numeric
     with get_session(db) as session:
-        rows = session.exec(text("SELECT ticker, data FROM candidate_snapshots")).all()
+        rows = session.execute(text("SELECT ticker, data FROM candidate_snapshots")).all()
     assert [r[0] for r in rows] == ["AAA"]
     assert json.loads(rows[0][1]) == {
         "forward_pe": 23.46,

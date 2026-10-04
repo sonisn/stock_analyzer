@@ -301,13 +301,11 @@ class ActiveModel:
 
 def load_active_model(db_path: str) -> ActiveModel | None:
     """Latest ACCEPTED model version, or None (the screen then ignores it)."""
-    from sqlmodel import col, select
+    from sqlalchemy import select
 
     with get_session(db_path) as session:
-        row = session.exec(
-            select(ModelVersion)
-            .where(ModelVersion.accepted == 1)
-            .order_by(col(ModelVersion.id).desc())
+        row = session.scalars(
+            select(ModelVersion).where(ModelVersion.accepted == 1).order_by(ModelVersion.id.desc())
         ).first()
         if row is None:
             return None
@@ -320,10 +318,10 @@ def load_latest_model(db_path: str) -> ActiveModel | None:
     active = load_active_model(db_path)
     if active is not None:
         return active
-    from sqlmodel import col, select
+    from sqlalchemy import select
 
     with get_session(db_path) as session:
-        row = session.exec(select(ModelVersion).order_by(col(ModelVersion.id).desc())).first()
+        row = session.scalars(select(ModelVersion).order_by(ModelVersion.id.desc())).first()
         if row is None:
             return None
         return ActiveModel(

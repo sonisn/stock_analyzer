@@ -26,7 +26,7 @@ from bisect import bisect_right
 from datetime import date, timedelta
 
 from dotenv import load_dotenv
-from sqlmodel import col, delete, func, select
+from sqlalchemy import delete, func, select
 
 from ..config import Settings
 from ..data import fetch_cache, yf_gateway
@@ -35,7 +35,15 @@ from ..data.industry_groups import industry_map, sector_map
 from ..data.quarterly_eps import MAX_AGE_DAYS, batch_eps
 from ..data.universe_base import all_us_2b
 from ..db.session import get_session
-from ..db.tables import IbdHistory, IbdMarket, IbdRating, IbdSector, IbdSignal, StockNews
+from ..db.tables import (
+    IbdHistory,
+    IbdMarket,
+    IbdRating,
+    IbdSector,
+    IbdSignal,
+    StockNews,
+    column_names,
+)
 from ..discover.ibd_ratings import (
     FULL_SNAPSHOT_EVERY_DAYS,
     SECTOR_ETFS,
@@ -100,14 +108,14 @@ def run(settings: Settings, *, today: date) -> dict:
     spy = indexes.get("SPY")
     as_of = str(spy["date"][-1]) if spy is not None and spy.height else today.isoformat()
 
-    fields = set(IbdRating.model_fields)
+    fields = set(column_names(IbdRating))
     tracked = set(tracked_tickers(db, today=today))
     as_of_day = date.fromisoformat(as_of)
     with get_session(db) as session:
-        last_full = session.exec(select(func.max(IbdHistory.day)).where(col(IbdHistory.full))).one()
+        last_full = session.scalars(select(func.max(IbdHistory.day)).where(IbdHistory.full)).one()
         since_signal = (as_of_day - timedelta(days=SIGNAL_QUIET_DAYS)).isoformat()
         recent = set(
-            session.exec(select(IbdSignal.ticker).where(col(IbdSignal.day) >= since_signal)).all()
+            session.scalars(select(IbdSignal.ticker).where(IbdSignal.day >= since_signal)).all()
         )
     full = (
         last_full is None
@@ -116,10 +124,10 @@ def run(settings: Settings, *, today: date) -> dict:
     history = history_rows(rows, tracked=tracked, full=full)
     signals = new_signals(rows, recent=recent)
     with get_session(db) as session:
-        session.exec(delete(IbdRating))
+        session.execute(delete(IbdRating))
         for r in rows:
             session.add(IbdRating(as_of=as_of, **{k: v for k, v in r.items() if k in fields}))
-        hist_fields = set(IbdHistory.model_fields) - {"day"}
+        hist_fields = set(column_names(IbdHistory)) - {"day"}
         for r in history:
             session.merge(IbdHistory(day=as_of, **{k: v for k, v in r.items() if k in hist_fields}))
         for r in signals:
@@ -193,7 +201,7 @@ def coverage_before(db: str) -> dict:
     """`coverage` of the ratings stored now (the last good run), with their
     as-of day; zeros on the first run."""
     with get_session(db) as session:
-        stored = session.exec(
+        stored = session.execute(
             select(IbdRating.as_of, IbdRating.composite, IbdRating.eps_rating, IbdRating.industry)
         ).all()
     return {
@@ -254,7 +262,7 @@ def news_for(db: str, tickers: list[str], *, today: date) -> int:
     if not news:
         return 0
     with get_session(db) as session:
-        session.exec(delete(StockNews))
+        session.execute(delete(StockNews))
         for t, items in news.items():
             for i, item in enumerate(items, start=1):
                 session.add(StockNews(ticker=t, rank=i, fetched=today.isoformat(), **item))
@@ -263,7 +271,7 @@ def news_for(db: str, tickers: list[str], *, today: date) -> int:
 
 
 def _sector_row(day: str, sec: dict, *, backfilled: bool) -> IbdSector:
-    fields = set(IbdSector.model_fields) - {"day", "reasons", "backfilled"}
+    fields = set(column_names(IbdSector)) - {"day", "reasons", "backfilled"}
     return IbdSector(
         day=day,
         reasons="; ".join(sec["reasons"]),
@@ -282,7 +290,7 @@ def top_leaders(db: str, n: int, *, today: date) -> tuple[str, ...]:
     if n <= 0:
         return ()
     with get_session(db) as session:
-        rows = session.exec(
+        rows = session.execute(
             select(IbdRating.ticker, IbdRating.composite, IbdRating.base_status, IbdRating.as_of)
         ).all()
     if not rows or not rows[0][3]:
@@ -291,9 +299,12 @@ def top_leaders(db: str, n: int, *, today: date) -> tuple[str, ...]:
     if (today - as_of).days > LEADERS_MAX_AGE_DAYS:
         logger.warning("IBD ratings are from %s — not feeding leaders to discover", as_of)
         return ()
-    ranked = sorted((r for r in rows if r[1] is not None), key=lambda r: -r[1])
-    top = [r[0] for r in ranked[:n]]
-    zone = [r[0] for r in ranked if r[1] >= 90 and r[2] in SIGNAL_STATUSES]
+    ranked = sorted(
+        ((t, comp, status) for t, comp, status, _ in rows if comp is not None),
+        key=lambda r: -r[1],
+    )
+    top = [t for t, _, _ in ranked[:n]]
+    zone = [t for t, comp, status in ranked if comp >= 90 and status in SIGNAL_STATUSES]
     return tuple(dict.fromkeys(top + zone))
 
 
@@ -351,9 +362,7 @@ def backfill(settings: Settings, *, sessions: int, today: date) -> dict:
     logger.info("Backfill: %d stocks with bars, %d with SEC EPS facts", len(bars), len(facts))
 
     with get_session(db) as session:
-        live_days = set(
-            session.exec(select(IbdHistory.day).where(~col(IbdHistory.backfilled))).all()
-        )
+        live_days = set(session.scalars(select(IbdHistory.day).where(~IbdHistory.backfilled)).all())
     calendar = spy["date"].to_list()
     days = [d for d in calendar[-sessions - 1 : -1] if d.isoformat() not in live_days]
     tracked = set(tracked_tickers(db, today=today))
@@ -389,7 +398,7 @@ def backfill(settings: Settings, *, sessions: int, today: date) -> dict:
         signals = new_signals(rows, recent=recent)
         history = history_rows(rows, tracked=tracked, full=full)
         iso = day.isoformat()
-        hist_fields = set(IbdHistory.model_fields) - {"day", "backfilled"}
+        hist_fields = set(column_names(IbdHistory)) - {"day", "backfilled"}
         with get_session(db) as session:
             for r in history:
                 session.merge(

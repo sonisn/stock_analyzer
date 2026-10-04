@@ -1,7 +1,7 @@
-"""SQLModel-backed persistence layer.
+"""SQLAlchemy 2.x persistence layer.
 
 session.py:      engine + get_session() contextmanager
-tables.py:       SQLModel table classes (Run, Candidate, Pick, ...)
+tables.py:       table classes (Run, Candidate, Pick, ...)
 repository.py:   CRUD repository functions (insert_run, etc.)
 track_record.py: read-only analytics queries for return calculation
 """

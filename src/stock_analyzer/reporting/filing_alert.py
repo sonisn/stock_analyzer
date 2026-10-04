@@ -25,7 +25,7 @@ import html
 from datetime import date, timedelta
 from typing import Any
 
-from sqlmodel import select
+from sqlalchemy import select
 
 from ..agents.filing_reader import (
     MATERIAL_8K_ITEMS,
@@ -63,9 +63,9 @@ PERIODIC = ("10-Q", "10-K", "20-F", "40-F")
 
 def _seen(db: str) -> set[str]:
     with get_session(db) as session:
-        periodic = set(session.exec(select(FilingFacts.accession)).all())
-        eightks = set(session.exec(select(EightKAlert.accession)).all())
-        events = set(session.exec(select(SecEvent.accession)).all())
+        periodic = set(session.scalars(select(FilingFacts.accession)).all())
+        eightks = set(session.scalars(select(EightKAlert.accession)).all())
+        events = set(session.scalars(select(SecEvent.accession)).all())
     return periodic | eightks | events
 
 
@@ -261,7 +261,7 @@ def activist_targets(db: str, *, today: date, days: int = 60) -> list[str]:
 
     since = (today - timedelta(days=days)).isoformat()
     with get_session(db) as session:
-        rows = session.exec(
+        rows = session.execute(
             select(SecEvent.ticker, SecEvent.facts).where(
                 SecEvent.kind == "activist", SecEvent.filed_on >= since
             )

@@ -617,7 +617,7 @@ def test_rating_history_comes_back_per_stock_in_date_order(tmp_path):
 
 
 def test_the_morning_job_stores_ratings_history_and_signals(monkeypatch, tmp_path):
-    from sqlmodel import select
+    from sqlalchemy import select
 
     from stock_analyzer.cli import ibd as job
     from stock_analyzer.config import Settings
@@ -647,25 +647,25 @@ def test_the_morning_job_stores_ratings_history_and_signals(monkeypatch, tmp_pat
     settings = Settings(discover_db_path=db)
     job.run(settings, today=date(2026, 9, 27))
     with get_session(db) as s:
-        assert len(s.exec(select(IbdRating)).all()) == 6
-        first = s.exec(select(IbdHistory)).all()
+        assert len(s.scalars(select(IbdRating)).all()) == 6
+        first = s.scalars(select(IbdHistory)).all()
         assert len(first) == 6 and all(h.full for h in first)  # the first run is a full snapshot
-        assert [x.ticker for x in s.exec(select(IbdSignal)).all()] == leader
-        assert len(s.exec(select(IbdMarket)).all()) == 1
+        assert [x.ticker for x in s.scalars(select(IbdSignal)).all()] == leader
+        assert len(s.scalars(select(IbdMarket)).all()) == 1
     # The next session: a daily (partial) snapshot, and no repeat signal.
     for k, b in bars.items():
         bars[k] = pl.concat([b, b.tail(1).with_columns(pl.col("date") + timedelta(days=1))])
     job.run(settings, today=date(2026, 9, 28))
     with get_session(db) as s:
-        days = {h.day for h in s.exec(select(IbdHistory)).all()}
-        second = [h for h in s.exec(select(IbdHistory)).all() if h.day == max(days)]
+        days = {h.day for h in s.scalars(select(IbdHistory)).all()}
+        second = [h for h in s.scalars(select(IbdHistory)).all() if h.day == max(days)]
         assert len(days) == 2 and not any(h.full for h in second)
         assert {h.ticker for h in second} >= {leader[0], "S5"}  # the signal's and the tracked one
-        assert len(s.exec(select(IbdSignal)).all()) == 1
+        assert len(s.scalars(select(IbdSignal)).all()) == 1
 
 
 def test_backfill_rebuilds_past_days_without_touching_live_ones(monkeypatch, tmp_path):
-    from sqlmodel import select
+    from sqlalchemy import select
 
     from stock_analyzer.cli import ibd as job
     from stock_analyzer.config import Settings
@@ -689,7 +689,7 @@ def test_backfill_rebuilds_past_days_without_touching_live_ones(monkeypatch, tmp
     live_day = str(bars["SPY"]["date"][-1])
     job.backfill(settings, sessions=10, today=date(2026, 9, 27))
     with get_session(db) as s:
-        hist = s.exec(select(IbdHistory)).all()
+        hist = s.scalars(select(IbdHistory)).all()
         by_day = {}
         for h in hist:
             by_day.setdefault(h.day, []).append(h)
@@ -698,7 +698,7 @@ def test_backfill_rebuilds_past_days_without_touching_live_ones(monkeypatch, tmp
         rebuilt = [d for d in by_day if d != live_day]
         assert all(h.backfilled for d in rebuilt for h in by_day[d])
         assert sum(1 for d in rebuilt if all(h.full for h in by_day[d])) == 2  # weekly snapshots
-        assert len(s.exec(select(IbdMarket)).all()) == 11
+        assert len(s.scalars(select(IbdMarket)).all()) == 11
 
 
 def test_eps_as_of_uses_only_what_was_filed_by_then():
@@ -1051,7 +1051,7 @@ def test_company_profiles_come_from_the_fundamentals_cache(monkeypatch):
 
 
 def test_a_short_load_is_retried_then_fails_without_storing(monkeypatch, tmp_path):
-    from sqlmodel import select
+    from sqlalchemy import select
 
     from stock_analyzer.cli import ibd as job
     from stock_analyzer.config import Settings
@@ -1088,5 +1088,5 @@ def test_a_short_load_is_retried_then_fails_without_storing(monkeypatch, tmp_pat
     with pytest.raises(RuntimeError, match="with_industry 0 vs 6"):
         job.run(settings, today=date(2026, 9, 29))
     with get_session(db) as s:
-        assert {r.as_of for r in s.exec(select(IbdRating)).all()} == {kept["as_of"]}
-        assert len({h.day for h in s.exec(select(IbdHistory)).all()}) == 2
+        assert {r.as_of for r in s.scalars(select(IbdRating)).all()} == {kept["as_of"]}
+        assert len({h.day for h in s.scalars(select(IbdHistory)).all()}) == 2

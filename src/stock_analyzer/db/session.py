@@ -18,14 +18,13 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, cast
 
-from sqlalchemy import TextClause, event
+from sqlalchemy import TextClause, create_engine, event
 from sqlalchemy.engine import CursorResult, Engine
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session as OrmSession
-from sqlmodel import Session, SQLModel, create_engine
+from sqlalchemy.orm import Session
 
-# Import tables module so SQLModel.metadata is populated before create_all().
-from . import tables as _tables  # noqa: F401
+# The table classes register on Base.metadata, which create_all() reads.
+from .tables import Base
 
 
 @event.listens_for(Engine, "connect")
@@ -120,7 +119,7 @@ def _build_engine(db_path: str) -> Engine:
                 # so the DBAPI's same-thread assertion has to come off.
                 connect_args={"check_same_thread": False},
             )
-            SQLModel.metadata.create_all(engine)
+            Base.metadata.create_all(engine)
             _apply_legacy_migrations(engine)
             _engines[key] = engine
     return engine
@@ -154,14 +153,10 @@ def get_session(db_path: str) -> Iterator[Session]:
 
 def exec_sql(
     session: Session, statement: TextClause, params: Mapping[str, Any] | None = None
-) -> CursorResult[Any]:
-    """Run a raw `text()` statement in the session's transaction.
-
-    `session.exec(text(...))` works at runtime, but sqlmodel's overloads only
-    admit select/update/delete objects, and its `session.execute` warns that
-    it is deprecated. This calls SQLAlchemy's own `Session.execute`, which is
-    what both end up in: same transaction, same autoflush."""
-    return cast(CursorResult[Any], OrmSession.execute(session, statement, params))
+) -> CursorResult[*tuple[Any, ...]]:
+    """Run a raw `text()` statement in the session's transaction, typed as
+    the cursor result a text statement returns (rowcount, mappings)."""
+    return cast(CursorResult[*tuple[Any, ...]], session.execute(statement, params))
 
 
 __all__ = ["exec_sql", "get_session", "reset_engines"]

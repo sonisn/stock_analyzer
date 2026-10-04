@@ -59,7 +59,7 @@ def _seed_pick(
             cash_budget=None,
         )
         # insert_run stamps "now"; rewrite it so the pick has the age we want.
-        session.exec(
+        session.execute(
             text("UPDATE runs SET run_at = :run_at WHERE id = :rid"),
             params={"run_at": run_at, "rid": run_id},
         )
@@ -336,7 +336,7 @@ def test_legacy_picks_without_a_forecast_are_counted_separately():
         db_path = os.path.join(td, "discover.db")
         run_at = (datetime.now() - timedelta(days=300)).isoformat(timespec="seconds")
         with get_session(db_path) as session:
-            result = session.exec(
+            result = session.execute(
                 text(
                     "INSERT INTO runs (run_at, kind, universe_size, survivors, "
                     "picks, opus_model, sonnet_model) "
@@ -345,7 +345,7 @@ def test_legacy_picks_without_a_forecast_are_counted_separately():
                 params={"run_at": run_at},
             )
             rid = result.lastrowid
-            session.exec(
+            session.execute(
                 text(
                     "INSERT INTO picks (run_id, rank, ticker, ranker_text) "
                     "VALUES (:rid, 1, 'OLD', '')"

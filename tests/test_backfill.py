@@ -78,7 +78,7 @@ def test_backfill_fills_only_nulls_and_is_idempotent(tmp_path):
     assert backfill_pick_forecasts(db) == {"conviction": 1, "time_horizon": 2, "entry_price": 2}
     assert backfill_pick_forecasts(db) == {"conviction": 0, "time_horizon": 0, "entry_price": 0}
     with get_session(db) as session:
-        rows = session.exec(
+        rows = session.execute(
             text("SELECT ticker, conviction, time_horizon, entry_price FROM picks ORDER BY rank")
         ).all()
     assert rows == [

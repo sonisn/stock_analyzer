@@ -25,7 +25,7 @@ def _run(session, run_at: str, picks: list[str], others: tuple[str, ...] = ()) -
         sonnet_model="s",
         cash_budget=None,
     )
-    session.exec(
+    session.execute(
         text("UPDATE runs SET run_at = :r WHERE id = :i"), params={"r": run_at, "i": run_id}
     )
     for ticker in [*picks, *others]:
@@ -95,7 +95,7 @@ def test_labels_only_the_picks_including_six_months(tmp_path):
 
     assert label_candidates(db, fetch_panel=lambda t: p, only_picks=True) == 3
     with get_session(db) as session:
-        rows = session.exec(
+        rows = session.execute(
             text("SELECT ticker, horizon_days FROM candidate_outcomes ORDER BY horizon_days")
         ).all()
     assert [tuple(r) for r in rows] == [("T0", 21), ("T0", 63), ("T0", 126)]

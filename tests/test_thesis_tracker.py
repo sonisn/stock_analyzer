@@ -160,7 +160,7 @@ def test_load_open_picks_keeps_latest_thesis_per_ticker(tmp_path):
                 sonnet_model="s",
                 cash_budget=None,
             )
-            session.exec(
+            session.execute(
                 text("UPDATE runs SET run_at = :r WHERE id = :i"),
                 params={"r": run_at, "i": run_id},
             )

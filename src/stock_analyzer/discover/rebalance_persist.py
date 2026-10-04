@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from sqlmodel import Session
+from sqlalchemy.orm import Session
 
 from ..config import Settings
 from ..data.chart_img import fetch_charts

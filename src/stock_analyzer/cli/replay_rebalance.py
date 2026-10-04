@@ -29,7 +29,7 @@ import argparse
 from typing import Any
 
 from dotenv import load_dotenv
-from sqlmodel import col, select
+from sqlalchemy import select
 
 from ..config import Settings
 from ..db.session import get_session
@@ -44,19 +44,19 @@ def load_inputs(db_path: str, run_id: int | None) -> tuple[int, dict[str, str], 
     """(run_id, {ticker: review text}, ranker text) for a stored rebalance."""
     with get_session(db_path) as session:
         if run_id is None:
-            row = session.exec(
-                select(Run).where(Run.kind == "rebalance").order_by(col(Run.id).desc())
+            row = session.scalars(
+                select(Run).where(Run.kind == "rebalance").order_by(Run.id.desc())
             ).first()
             if row is None or row.id is None:
                 raise SystemExit("No rebalance run is stored yet — run rebalance-portfolio once.")
             run_id = row.id
         reviews = {
             r.ticker: r.review_text or ""
-            for r in session.exec(
+            for r in session.scalars(
                 select(HoldingReviewRow).where(HoldingReviewRow.run_id == run_id)
             ).all()
         }
-        out = session.exec(select(RunOutput).where(RunOutput.run_id == run_id)).first()
+        out = session.scalars(select(RunOutput).where(RunOutput.run_id == run_id)).first()
         ranker_text = (out.ranker_full if out else "") or ""
     if not reviews:
         raise SystemExit(f"Run {run_id} stored no holdings reviews — nothing to replay.")

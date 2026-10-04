@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlmodel import select
+from sqlalchemy import select
 
 from stock_analyzer.db.repository import record_suggestions
 from stock_analyzer.db.session import get_session
@@ -37,7 +37,7 @@ def _rows(db: str) -> list[dict]:
     with get_session(db) as s:
         return [
             dict(run_id=r, detail=d, source=src, action=a, ticker=t)
-            for r, d, src, a, t in s.exec(
+            for r, d, src, a, t in s.execute(
                 select(
                     Suggestion.run_id,
                     Suggestion.detail,

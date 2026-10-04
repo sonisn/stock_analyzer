@@ -15,13 +15,13 @@ file cache written by the jobs that fetch.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from datetime import date, timedelta
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
-from sqlalchemy import text
-from sqlmodel import col, select
+from sqlalchemy import select, text
 
 from ..data import bar_store, fetch_cache
 from ..data.filing_evidence import red_flags
@@ -43,10 +43,10 @@ PICK_DAYS = 180
 def _rows(db: str) -> tuple[list[Any], list[Any]]:
     # Plain copies: the rows are read after the session closes.
     with get_session(db) as session:
-        rows = [SimpleNamespace(**r.model_dump()) for r in session.exec(select(IbdRating))]
+        rows = [SimpleNamespace(**asdict(r)) for r in session.scalars(select(IbdRating))]
         market = [
-            SimpleNamespace(**m.model_dump())
-            for m in session.exec(select(IbdMarket).order_by(col(IbdMarket.day).desc()).limit(30))
+            SimpleNamespace(**asdict(m))
+            for m in session.scalars(select(IbdMarket).order_by(IbdMarket.day.desc()).limit(30))
         ]
     return rows, market
 

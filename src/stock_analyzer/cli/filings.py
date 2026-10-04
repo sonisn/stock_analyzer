@@ -40,8 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
-from sqlalchemy import text
-from sqlmodel import col, select
+from sqlalchemy import select, text
 
 from ..agents.filing_reader import (
     READER_INSTRUCTIONS,
@@ -64,7 +63,7 @@ from ..data.sec_edgar import (
 from ..data.text_change import ANNUAL_FORMS, risk_change, risk_sections
 from ..data.universe_base import all_us_2b
 from ..db.session import exec_sql, get_session
-from ..db.tables import FilingFacts
+from ..db.tables import FilingFacts, column_names
 from ..logging import get_logger
 from ..openrouter import OpenRouter, client_from_settings, parse_json_object, spent_today
 from ..serialization import dumps_compact
@@ -166,7 +165,7 @@ def _prepare_previous(ticker: str) -> Prepared | None:
 def _stored(db: str) -> dict[str, str]:
     """{accession: model that read it}."""
     with get_session(db) as session:
-        rows = session.exec(select(FilingFacts.accession, FilingFacts.reader_model)).all()
+        rows = session.execute(select(FilingFacts.accession, FilingFacts.reader_model)).all()
     return {acc: model for acc, model in rows}
 
 
@@ -228,10 +227,10 @@ def store(db: str, read: FilingRead, *, tier: str, today: date) -> None:
             )
         )
         session.flush()
-        rows = session.exec(
+        rows = session.scalars(
             select(FilingFacts)
             .where(FilingFacts.ticker == f["ticker"])
-            .order_by(col(FilingFacts.filed_on).desc())
+            .order_by(FilingFacts.filed_on.desc())
         ).all()
         for old in rows[KEEP.get(tier, 1) :]:
             session.delete(old)
@@ -524,16 +523,16 @@ def spot_check(settings: Settings, n: int, *, today: date, seed: int | None = No
     db = settings.discover_db_path
     since = date.fromordinal(today.toordinal() - SPOT_CHECK_DAYS).isoformat()
     with get_session(db) as session:
-        done = set(session.exec(select(FilingSpotCheck.accession)).all())
+        done = set(session.scalars(select(FilingSpotCheck.accession)).all())
         rows = [
             r
-            for r in session.exec(
+            for r in session.scalars(
                 select(FilingFacts).where(FilingFacts.read_on >= since, FilingFacts.facts != "")
             ).all()
             if r.accession not in done
         ]
         rows = [
-            {k: getattr(r, k) for k in FilingFacts.model_fields}  # detached copies
+            {k: getattr(r, k) for k in column_names(FilingFacts)}  # detached copies
             for r in rows
         ]
     rng = random.Random(seed)

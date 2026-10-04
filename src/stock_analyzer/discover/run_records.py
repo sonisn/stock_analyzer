@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlmodel import Session
+from sqlalchemy.orm import Session
 
 from ..db.repository import (
     insert_candidate,

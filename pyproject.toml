@@ -24,8 +24,7 @@ dependencies = [
     "reportlab>=5.0.1",
     "rich>=15.0",
     "snaptrade-python-sdk>=13.0.30",
-    "sqlalchemy>=2.0.54,<2.1",  # sqlmodel 0.0.47 caps it below 2.1
-    "sqlmodel>=0.0.47",
+    "sqlalchemy>=2.1.3",
     "tavily-python>=0.8.4",
     "yfinance>=1.7.0",
 ]
