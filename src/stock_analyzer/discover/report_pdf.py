@@ -43,6 +43,8 @@ tr, .banner, .metrics, .metric, .badge, .pie-wrap, .chart, svg, blockquote {
 }
 img { max-height: 3.4in; break-inside: avoid; break-before: avoid; }
 pre { white-space: pre-wrap; overflow-x: visible; }
+/* The email's tile minimum wraps a 4th metric; a Letter page fits five. */
+.metric { min-width: 0; }
 /* WeasyPrint stacks inline-flex legend entries; keep them on one line. */
 .chart span { display: inline-block !important; margin-right: 14px; }
 .chart span svg { vertical-align: middle; margin-right: 4px; }
