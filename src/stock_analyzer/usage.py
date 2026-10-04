@@ -2,9 +2,8 @@
 
 Every model response is recorded here under the agent's name (the pipeline
 stage): `llm.ModelAgent` per response, retries included; OpenRouter calls
-by their client. The
-report shows the per-stage totals so the cost of a run is visible instead
-of discovered on the provider bill.
+by their client. The report shows the per-stage totals so the cost of a
+run is visible instead of discovered on the provider bill.
 
 Prices are first-party list rates (USD per million tokens). A model
 without a known price still reports tokens; its cost is shown as unknown

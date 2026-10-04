@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import date
+from datetime import date, timedelta
 
 from sqlalchemy import text
 
@@ -23,7 +23,7 @@ from stock_analyzer.db.retention import (
     run_history_upkeep,
 )
 from stock_analyzer.db.session import get_session
-from stock_analyzer.db.tables import ModelVersion
+from stock_analyzer.db.tables import ModelVersion, PipelineStep
 
 TODAY = date(2027, 12, 1)
 
@@ -78,12 +78,24 @@ def _seed(db: str) -> tuple[int, int]:
     with get_session(db) as session:
         old = _run(session, "2026-01-05T10:00:00")  # older than every window
         new = _run(session, "2027-11-20T10:00:00")
+        # agno's old session log (pre pipeline.py), epoch seconds.
         session.exec(text("CREATE TABLE workflow_session (session_id TEXT, created_at INTEGER)"))
         now = int(time.mktime(TODAY.timetuple()))
         session.exec(
             text("INSERT INTO workflow_session VALUES ('old', :o), ('new', :n)"),
             params={"o": now - 90 * 86400, "n": now - 86400},
         )
+        for step, day in (("old", TODAY - timedelta(days=90)), ("new", TODAY)):
+            session.add(
+                PipelineStep(
+                    run_key=step,
+                    pipeline="t",
+                    step=step,
+                    started_at=f"{day.isoformat()}T10:00:00",
+                    seconds=1.0,
+                    status="ok",
+                )
+            )
         for i in range(15):
             session.add(
                 ModelVersion(
@@ -107,6 +119,7 @@ def test_prune_trims_old_prose_and_logs_but_keeps_analysis_rows(tmp_path):
     out = prune_database(db, RetentionPolicy(keep_models=12), today=TODAY)
 
     assert out["failed_candidates"] == 1 and out["workflow_session"] == 1
+    assert out["pipeline_steps"] == 1
     assert out["model_versions"] == 2  # 15 - newest 12 - the accepted v1
     assert out["prose_fields"] == 7  # every prose column of the old run
     with get_session(db) as s:
@@ -128,6 +141,7 @@ def test_prune_trims_old_prose_and_logs_but_keeps_analysis_rows(tmp_path):
         assert q(f"SELECT ranker_full FROM run_outputs WHERE run_id={new}") == [("ranker prose",)]
         assert len(q(f"SELECT 1 FROM candidates WHERE run_id={new}")) == 3
         assert q("SELECT session_id FROM workflow_session") == [("new",)]
+        assert q("SELECT step FROM pipeline_steps") == [("new",)]
         assert q("SELECT id FROM model_versions WHERE id = 1") == [(1,)]  # accepted kept
     # Idempotent.
     assert sum(prune_database(db, RetentionPolicy(), today=TODAY).values()) == 0

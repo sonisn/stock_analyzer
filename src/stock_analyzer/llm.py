@@ -1,9 +1,9 @@
 """LLM layer: one `ModelAgent` over Pydantic AI for Claude, Gemini and OpenAI.
 
-Every deciding and helper call in the app goes through `ModelAgent.run`
-(OpenRouter's open models have their own client, `openrouter.py`, for
-its host allowlist and billed-cost ledger). What this layer adds on top
-of Pydantic AI:
+Every deciding and helper call on these three providers goes through
+`ModelAgent.run`. OpenRouter's open models run on Pydantic AI too, through
+`openrouter.py`, which adds their host allowlist, daily cap and billed-cost
+ledger. What this layer adds on top of Pydantic AI:
 
   - `CallSettings`, one provider-neutral description of a call (output
     ceiling, thinking effort, prompt caching, retries), translated here

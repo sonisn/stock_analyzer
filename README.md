@@ -45,7 +45,7 @@ and GLM-5.3 writes the insider summary and ranks the news.
 | Macro veto | — (deterministic) | Suppress high-momentum picks in a risk-off FRED regime |
 | Red-team | Gemini (default) | Bear case per pick with fragility rank + watch metric |
 | Sizer | Opus | Allocate new capital; flag concentration / correlation; weights by consensus agreement |
-| Holdings review | Sonnet | HOLD / TRIM / SELL per position with tax-lot plan |
+| Holdings review | Sonnet | HOLD / TRIM / SELL per position with tax-lot plan; sees its last verdict on the holding and must name new evidence to change it |
 | Rebalance | Opus | Structured action plan with aggressiveness knob |
 | Pre-mortem | Opus | Adversarial hindsight on the rebalance plan |
 
@@ -131,8 +131,10 @@ uv run ops doctor                 # free check of every key, model id and source
 uv run stock-analyzer --help      # every command in one list
 ```
 
-`rebalance-portfolio` and `discover-stocks` have no `--help`: any
-argument starts a live (paid) run. Read the module docstring instead.
+`discover-stocks --help` and `rebalance-portfolio --help` print their
+usage without starting a run; with no flag, both start a live (paid) run.
+A run whose step fails stops there and exits 1; each step's timing and
+summary (or error) is kept in the `pipeline_steps` table.
 
 ## Required env vars
 
@@ -235,6 +237,9 @@ src/stock_analyzer/
 ├── discover/        # Multi-agent pipeline modules
 │   ├── analyst.py / ranker.py / redteam.py / sizer.py
 │   ├── reviewer.py / rebalancer.py / premortem.py
+│   ├── answer_checks.py                     # rules each stage's answer must keep
+│   │                                          # (sent back to the model once if broken)
+│   ├── review_memory.py                     # the Reviewer's last verdict per holding
 │   ├── market_themes.py / track_record.py / tax_lot_helper.py
 │   ├── calibration.py                       # grade the ranker's own EV + conviction,
 │   │                                          # plus factor-similar past setups
@@ -251,7 +256,9 @@ src/stock_analyzer/
 ├── agents/          # Standalone agents (insider, news reranker, portfolio)
 ├── reporting/       # SMTP + analyst-report HTML renderer
 ├── llm.py           # ModelAgent on Pydantic AI (Claude + Gemini + OpenAI): settings,
-│                    #   cost cap, output ceiling, provider fallback
+│                    #   cost cap, output ceiling, answer checks, provider fallback
+├── openrouter.py    # Open models over OpenRouter, also on Pydantic AI: approved
+│                    #   hosts only, daily cap, billed-cost ledger
 ├── pipeline.py      # Step runner for discover/rebalance (step log in pipeline_steps)
 ├── http_client.py   # Shared retry / rate-limit HTTP client
 └── preflight.py     # Fail-fast startup checks
@@ -272,6 +279,16 @@ Pydantic outputs everywhere so every LLM stage is a field read, not
 a regex — returned as the provider's native JSON-schema output (Claude
 keeps its thinking; a forced tool call would switch it off) and sent back
 to the model once with the validation errors when it doesn't fit.
+
+**Answer rules** (`discover/answer_checks.py`): each deciding stage's
+answer is checked against facts the run already holds — the Ranker picks
+only from the candidates analysed (once each, as many as asked, ranks
+1..n, bull/base/bear scenarios), the Red team writes one bear case per
+pick, the Sizer allocates only to the picks, the Reviewer's TRIM/SELL
+needs confidence ≥ 7, and the Rebalancer sells, trims or writes calls
+only on positions held. A broken answer goes back to the model once with
+the problems listed; one still broken is kept and the deterministic
+safeguards downstream decide, so a rule never costs a stage its answer.
 
 ## Outputs
 
@@ -1228,5 +1245,9 @@ and the suite on every push and pull request.
 
 `tests/conftest.py` points `Settings` at no env file and blocks outbound
 sockets for the whole suite, so a test can never read your real `.env` or
-spend real API quota. A test that genuinely needs the network must be
+spend real API quota. Model calls are scripted with
+`tests/llm_fakes.script(monkeypatch, replies)` (a Pydantic AI
+`FunctionModel` behind the real `ModelAgent`); OpenRouter calls run the
+real client against a mock transport (`tests/test_filing_reader._client`),
+so tests assert on the request bodies actually sent. A test that genuinely needs the network must be
 marked `@pytest.mark.allow_network`.
