@@ -14,7 +14,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..llm import AgnoAgent, Provider, fallback_builder, reasoning_model_kwargs, run_with_fallback
+from ..llm import (
+    ModelAgent,
+    Provider,
+    RunResult,
+    fallback_builder,
+    reasoning_settings,
+    run_with_fallback,
+)
 from ..logging import get_logger
 from ..models.llm import AnalystReport, RankerOutput
 from ..usage import BUDGET, estimate_cost
@@ -153,22 +160,21 @@ conviction numbers.\
 RANKER_MAX_OUTPUT_TOKENS = 32000
 
 
-def _build_agent(provider: Provider, model: str, effort: str) -> AgnoAgent:
+def _build_agent(provider: Provider, model: str, effort: str) -> ModelAgent:
     # Opus 4.7+ adaptive thinking spends part of `max_tokens` on the
     # thinking trace, so the JSON output competes with it. Our response is
     # rich (5 picks × 3 scenarios × bull/bear prose + pairs_not_to_hold_
     # together + full_text) and we hit truncation mid-string at ~4500
     # visible tokens when capped at 8000. 16000 is the value that later cut
-    # the rebalance plan off, so the Ranker gets twice that — past the SDK's
-    # non-streaming limit, so Claude's kwargs carry an explicit timeout.
-    # The same budget applies across providers.
-    return AgnoAgent(
+    # the rebalance plan off, so the Ranker gets twice that (a Claude call
+    # that large is streamed). The same budget applies across providers.
+    return ModelAgent(
         "Ranker",
         provider,
         model,
-        model_kwargs=reasoning_model_kwargs(provider, effort, max_tokens=RANKER_MAX_OUTPUT_TOKENS),
         instructions=RANKER_INSTRUCTIONS,
         output_schema=RankerOutput,
+        settings=reasoning_settings(effort, max_tokens=RANKER_MAX_OUTPUT_TOKENS),
     )
 
 
@@ -176,7 +182,7 @@ def _build_agent(provider: Provider, model: str, effort: str) -> AgnoAgent:
 EXPECTED_ROUND_OUTPUT_TOKENS = 12000
 
 
-def _round_affordable(agent: AgnoAgent, prompt_chars: int) -> bool:
+def _round_affordable(agent: ModelAgent, prompt_chars: int) -> bool:
     """Whether another consensus round fits without touching the budget kept
     for the stages after the Ranker. Unpriced models always fit."""
     available = BUDGET.available_for()
@@ -209,15 +215,15 @@ class Ranker:
         self.fallback = fallback
         self._agents = [_build_agent(provider, model, effort) for provider, model in rounds]
 
-    def _run_round(self, agent: AgnoAgent, *args: Any, **kwargs: Any) -> Any:
+    def _run_round(self, agent: ModelAgent, prompt: str) -> RunResult:
         build_fallback = fallback_builder(
             self.fallback, agent.provider, lambda p, m: _build_agent(p, m, self.effort)
         )
-        return run_with_fallback(agent, build_fallback, *args, **kwargs)
+        return run_with_fallback(agent, build_fallback, prompt)
 
     def _rank_once(
         self,
-        agent: AgnoAgent,
+        agent: ModelAgent,
         analyses: dict[str, Any],
         holdings_summary: str,
         top_n: int,

@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from agno.workflow.types import StepInput, StepOutput
-
 from ...data.brokerage import fetch_portfolio_holdings
 from ...data.filing_evidence import earnings_releases, evidence_packs, prefer_pack
 from ...data.fundamentals import batch_fundamentals
@@ -64,21 +62,21 @@ class AnalysisSteps(PipelineBase):
                 self.state["leadership_ratings"] = {}
         return self.state["leadership_ratings"]
 
-    def step_analyst(self, step_input: StepInput) -> StepOutput:
+    def step_analyst(self) -> str:
         survivors = self.state.get("survivors") or []
         if not survivors:
             # Empty after screen short-circuited. Set everything downstream
             # depends on so the rest of the pipeline degrades cleanly.
             self.state["analyses"] = {}
-            return StepOutput(content="analyst: no survivors; skipping")
+            return "analyst: no survivors; skipping"
         payloads = self._analyst_payloads(survivors)
         analyses, catalyst_warnings = self._run_analysts(survivors, payloads)
         self.state["analyses"] = analyses
         self.state["catalyst_warnings"] = catalyst_warnings
         if not self.state["analyses"]:
             logger.error("Analyst: all calls failed; downstream LLM stages will skip")
-            return StepOutput(content="Analyst: all calls failed; downstream will skip")
-        return StepOutput(content=f"Analyst: {len(self.state['analyses'])} scorecards")
+            return "Analyst: all calls failed; downstream will skip"
+        return f"Analyst: {len(self.state['analyses'])} scorecards"
 
     def _analyst_payloads(self, survivors: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         """Everything the Analyst sees about each survivor."""
@@ -203,7 +201,7 @@ class AnalysisSteps(PipelineBase):
         payloads = {t: payloads[t] for t in keep}
         return repair_catalysts(analyze_tiered(deep, light, payloads, deep_tickers), recent_news)
 
-    def step_holdings(self, step_input: StepInput) -> StepOutput:
+    def step_holdings(self) -> str:
         try:
             # step_universe already fetched these to build the sampling
             # frame; reuse so the brokerage is hit once per run.
@@ -217,15 +215,15 @@ class AnalysisSteps(PipelineBase):
             self.state["holdings_summary"] = ""
             self.state["holdings_table_rows"] = []
         n = self.state["holdings_summary"].count("\n") + 1 if self.state["holdings_summary"] else 0
-        return StepOutput(content=f"Holdings: {n} positions" if n else "Holdings: none")
+        return f"Holdings: {n} positions" if n else "Holdings: none"
 
-    def step_ranker(self, step_input: StepInput) -> StepOutput:
+    def step_ranker(self) -> str:
         analyses = self.state.get("analyses") or {}
         if not analyses:
             self.state["ranker_output"] = None
             self.state["ranker_text"] = ""
             self.state["picks"] = []
-            return StepOutput(content="ranker: no analyses; skipping")
+            return "ranker: no analyses; skipping"
         ranker = Ranker(
             self.settings.resolve_ranker_rounds(),
             fallback=(
@@ -264,12 +262,12 @@ class AnalysisSteps(PipelineBase):
         for w in warnings:
             logger.warning("Output sanity check: %s", w)
 
-        return StepOutput(content=f"Ranker picked {len(picked)}: {picked}")
+        return f"Ranker picked {len(picked)}: {picked}"
 
-    def step_macro_veto(self, step_input: StepInput) -> StepOutput:
+    def step_macro_veto(self) -> str:
         output = self.state.get("ranker_output")
         if output is None:
-            return StepOutput(content="macro_veto: no ranker output; skipping")
+            return "macro_veto: no ranker output; skipping"
         trimmed, reasons = apply_macro_veto(
             output,
             self.state.get("macro_data"),
@@ -280,15 +278,15 @@ class AnalysisSteps(PipelineBase):
         self.state["picks"] = parse_picks(trimmed)
         self.state["macro_veto_reasons"] = reasons
         if not reasons:
-            return StepOutput(content="macro_veto: no suppressions")
-        return StepOutput(content=f"macro_veto: suppressed {len(reasons)} pick(s)")
+            return "macro_veto: no suppressions"
+        return f"macro_veto: suppressed {len(reasons)} pick(s)"
 
-    def step_redteam(self, step_input: StepInput) -> StepOutput:
+    def step_redteam(self) -> str:
         ranker_text = self.state.get("ranker_text") or ""
         if not ranker_text:
             self.state["redteam_output"] = None
             self.state["redteam_text"] = ""
-            return StepOutput(content="redteam: no picks; skipping")
+            return "redteam: no picks; skipping"
         redteam = RedTeam(
             self.settings.discover_redteam_provider,
             self.settings.resolve_redteam_model(),
@@ -306,17 +304,17 @@ class AnalysisSteps(PipelineBase):
             logger.warning("Red-team critique failed (%s) — report will omit bear cases", e)
             self.state["redteam_output"] = None
             self.state["redteam_text"] = ""
-            return StepOutput(content="redteam: failed; continuing without bear cases")
+            return "redteam: failed; continuing without bear cases"
         self.state["redteam_output"] = redteam_output
         self.state["redteam_text"] = redteam_output.full_text
-        return StepOutput(content="Red-team critique complete")
+        return "Red-team critique complete"
 
-    def step_sizer(self, step_input: StepInput) -> StepOutput:
+    def step_sizer(self) -> str:
         ranker_text = self.state.get("ranker_text") or ""
         if not ranker_text:
             self.state["sizer_output"] = None
             self.state["sizer_text"] = ""
-            return StepOutput(content="sizer: no picks; skipping")
+            return "sizer: no picks; skipping"
         # Build deterministic EV table from the ranker's probability-weighted
         # scenarios — feeds Sizer as primary ranking signal.
         from ...models.llm import RankerOutput
@@ -374,7 +372,7 @@ class AnalysisSteps(PipelineBase):
             logger.warning("Sizer failed (%s) — report will omit position sizing", e)
             self.state["sizer_output"] = None
             self.state["sizer_text"] = ""
-            return StepOutput(content="sizer: failed; continuing without sizing")
+            return "sizer: failed; continuing without sizing"
         if correlated_pairs:
             sizer_output = enforce_correlation_caps(
                 sizer_output,
@@ -399,7 +397,7 @@ class AnalysisSteps(PipelineBase):
             )
         self.state["sizer_output"] = sizer_output
         self.state["sizer_text"] = sizer_output.full_text
-        return StepOutput(content="Position sizing complete")
+        return "Position sizing complete"
 
     def _apply_model_scores(
         self, candidates: list[dict[str, Any]], technicals: dict[str, dict[str, Any]]

@@ -15,10 +15,11 @@ from __future__ import annotations
 from typing import Any
 
 from ..llm import (
-    AgnoAgent,
+    InvalidOutputError,
+    ModelAgent,
     OutputTruncatedError,
     Provider,
-    claude_thinking_kwargs,
+    reasoning_settings,
 )
 from ..logging import get_logger
 from ..models.llm import HoldingReview
@@ -49,10 +50,10 @@ def format_accounts_block(
 
 
 # What the rebalancer asks for. Three runs died at this step on
-# 2026-09-20: 16,000 cut the JSON off mid-string, 32,000 was refused
-# before it was sent (no timeout — see llm.MAX_NONSTREAMING_OUTPUT_TOKENS),
-# and agno's stream flag did not reach the API. With an explicit timeout
-# the budget can finally sit where truncation stops being the constraint.
+# 2026-09-20: 16,000 cut the JSON off mid-string, and 32,000 was refused
+# by the Anthropic SDK before it was sent (an unstreamed call that large).
+# Pydantic AI streams a call that size, so the budget sits where
+# truncation stops being the constraint.
 REBALANCER_MAX_OUTPUT_TOKENS = 64_000
 
 
@@ -115,10 +116,10 @@ class Rebalancer:
         )
         # Opus 4.7+ adaptive thinking — high effort for the deepest synthesis
         # (combining holdings reviews + new picks + cash math + concentration).
-        # output_schema=RebalancePlan gets agno to validate the model's
-        # response against the Pydantic schema so downstream callers never
-        # have to regex-parse plain text again.
-        self.agent = AgnoAgent(
+        # output_schema=RebalancePlan: the provider returns JSON against the
+        # schema and it is validated here, so downstream callers never
+        # regex-parse plain text.
+        self.agent = ModelAgent(
             "Rebalancer",
             provider,
             model,
@@ -131,11 +132,10 @@ class Rebalancer:
             # on plans with WRITE_CALLs. 16000 then did the same on
             # 2026-09-20 — a 16-holding book with CC and CSP context
             # ran the JSON out at exactly 16,000 output tokens, and the
-            # whole plan was lost. Past the SDK's non-streaming limit the
-            # kwargs carry an explicit timeout, which is load-bearing.
-            model_kwargs=claude_thinking_kwargs(effort, REBALANCER_MAX_OUTPUT_TOKENS),
+            # whole plan was lost.
             instructions=instructions,
             output_schema=RebalancePlan,
+            settings=reasoning_settings(effort, max_tokens=REBALANCER_MAX_OUTPUT_TOKENS),
         )
 
     def decide(
@@ -189,6 +189,10 @@ class Rebalancer:
             # reasoning the run paid for, so it travels with the error
             # instead of dying in a log line.
             raise RebalancePlanUnparseable(str(e), raw_text=e.raw_text, truncated=True) from e
+        except InvalidOutputError as e:
+            # Finished inside the budget but still failed the schema after
+            # the model was shown the errors once. Keep the text all the same.
+            raise RebalancePlanUnparseable(str(e), raw_text=e.raw_text) from e
         return _parse_plan(raw.content)
 
 
@@ -304,8 +308,8 @@ def _parse_plan(result: object) -> RebalancePlan:
             "cannot be rendered. Check provider rate limits and retry."
         )
     if not isinstance(result, RebalancePlan):
-        # agno returns the parsed Pydantic instance when output_schema is set;
-        # if for some reason we got a str, parse it.
+        # The agent returns the validated instance; a str (a test double, a
+        # replayed answer) is parsed here.
         if isinstance(result, str):
             try:
                 result = RebalancePlan.model_validate_json(result)

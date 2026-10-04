@@ -1,7 +1,8 @@
 """Per-run LLM token accounting and cost estimate.
 
-Every model call goes through `llm.AgnoAgent.run`, which records the run's
-token metrics here under the agent's name (the pipeline stage). The
+Every model response is recorded here under the agent's name (the pipeline
+stage): `llm.ModelAgent` per response, retries included; OpenRouter calls
+by their client. The
 report shows the per-stage totals so the cost of a run is visible instead
 of discovered on the provider bill.
 
@@ -89,10 +90,8 @@ class UsageTracker:
             row = self._rows.setdefault((stage, model), UsageRow(stage, model))
             row.calls += 1
             row.input_tokens += getattr(metrics, "input_tokens", 0) or 0
+            # Thinking is billed as output and counted in it (Gemini's too).
             row.output_tokens += getattr(metrics, "output_tokens", 0) or 0
-            if model.startswith("gemini"):
-                # Gemini reports thinking apart from output, and bills it as output.
-                row.output_tokens += getattr(metrics, "reasoning_tokens", 0) or 0
             row.cache_read_tokens += getattr(metrics, "cache_read_tokens", 0) or 0
             row.cache_write_tokens += getattr(metrics, "cache_write_tokens", 0) or 0
 

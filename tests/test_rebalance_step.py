@@ -49,7 +49,7 @@ def _run(outcome, **patched):
         patch.object(plan_steps, "_build_history_block", return_value=""),
         patch.multiple(plan_steps, **patched) if patched else nullcontext(),
     ):
-        out = p.step_rebalance(None)
+        out = p.step_rebalance()
     return p, out
 
 
@@ -70,7 +70,7 @@ def _boom(*a, **k):
 )
 def test_a_lost_plan_is_recorded_as_lost_not_as_no_action(error, note):
     p, out = _run(error)
-    assert out.content.startswith("rebalance: PLAN LOST")
+    assert out.startswith("rebalance: PLAN LOST")
     assert p.state["rebalance_plan"] is None
     assert note in p.state["rebalance_failed"]
 
@@ -85,7 +85,7 @@ def test_a_crashed_put_validator_drops_every_put():
     plan = p.state["rebalance_plan"]
     assert [a.action for a in plan.actions] == ["SELL"]
     assert "all puts dropped" in p.state["csp_warnings"][0]
-    assert out.content.startswith("Rebalance plan generated")
+    assert out.startswith("Rebalance plan generated")
 
 
 def test_a_crashed_call_validator_keeps_the_plan_and_says_so():

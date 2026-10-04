@@ -155,7 +155,7 @@ class Settings(BaseSettings):
     llm_prices: str = ""
     # Per-run history upkeep (db/retention.py), the last step of every run:
     # adds backfilled pick fields + survivor outcome labels, then trims LLM
-    # prose older than the text window, agno step logs, failed-screen
+    # prose older than the text window, pipeline step logs, failed-screen
     # candidates past the longest lookback any check uses, old model
     # versions, and stale log / price-cache files. Analysis rows the track
     # record, calibration and model read are never deleted.

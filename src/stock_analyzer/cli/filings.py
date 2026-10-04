@@ -310,14 +310,14 @@ def compare(a: dict[str, Any] | None, b: dict[str, Any] | None) -> dict[str, boo
 
 
 def claude_read(settings: Settings, filing: dict[str, Any], sections: dict[str, str]) -> Any:
-    from ..llm import AgnoAgent, deterministic_model_kwargs
+    from ..llm import ModelAgent, deterministic_settings
 
-    agent = AgnoAgent(
+    agent = ModelAgent(
         "FilingReader (Claude)",
         "claude",
         settings.discover_sonnet_model,
         instructions=READER_INSTRUCTIONS,
-        model_kwargs={**deterministic_model_kwargs("claude"), "max_tokens": READER_MAX_TOKENS},
+        settings=deterministic_settings(max_tokens=READER_MAX_TOKENS),
     )
     return parse_json_object(agent.run(filing_prompt(filing, sections)).content or "")
 

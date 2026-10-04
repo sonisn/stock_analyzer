@@ -712,6 +712,23 @@ class FilingSpotCheck(SQLModel, table=True):
     cost_usd: float = 0.0
 
 
+class PipelineStep(SQLModel, table=True):
+    """One step of a discover/rebalance run (pipeline.py): when it ran, how
+    long it took, and its summary line or error."""
+
+    __tablename__ = "pipeline_steps"
+
+    id: int | None = Field(default=None, primary_key=True)
+    run_key: str = Field(index=True)  # one id per pipeline run
+    pipeline: str
+    step: str
+    block: str | None = None  # the parallel block it ran in, if any
+    started_at: str = Field(index=True)
+    seconds: float
+    status: str  # "ok" | "failed"
+    detail: str | None = None
+
+
 __all__ = [
     "SecEvent",
     "FilingSpotCheck",
@@ -748,4 +765,5 @@ __all__ = [
     "CandidateSnapshot",
     "CandidateOutcome",
     "ModelVersion",
+    "PipelineStep",
 ]

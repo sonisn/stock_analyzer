@@ -5,8 +5,6 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from agno.workflow.types import StepInput, StepOutput
-
 from ...db.session import get_session
 from ...discover.rebalance_csp import (
     csp_report_data,
@@ -35,7 +33,7 @@ logger = get_logger("stock_analyzer.cli.rebalance")
 
 
 class RebalanceReportSteps(PipelineBase):
-    def step_persist_and_email_rebalance(self, step_input: StepInput) -> StepOutput:
+    def step_persist_and_email_rebalance(self) -> str:
         candidates = self.state.get("candidates") or []
         survivors = self.state.get("survivors") or []
         picks = self.state.get("picks") or []
@@ -114,11 +112,9 @@ class RebalanceReportSteps(PipelineBase):
         self.state["pdf_bytes"] = pdf_bytes
         self.state["local_pdf_path"] = str(local_pdf_path)
         status = "emailed" if delivered else "persisted (no email)"
-        return StepOutput(
-            content=(
-                f"Rebalance run #{run_id} {status}; PDF {len(pdf_bytes)} bytes "
-                f"(saved to {local_pdf_path})"
-            )
+        return (
+            f"Rebalance run #{run_id} {status}; PDF {len(pdf_bytes)} bytes "
+            f"(saved to {local_pdf_path})"
         )
 
     def _rebalance_report_sections(

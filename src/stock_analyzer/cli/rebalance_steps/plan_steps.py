@@ -6,8 +6,6 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from agno.workflow.types import StepInput, StepOutput
-
 from ...db.session import get_session
 from ...discover.premortem import PreMortemAgent
 from ...discover.rebalance_cc import (
@@ -38,7 +36,7 @@ logger = get_logger("stock_analyzer.cli.rebalance")
 
 
 class RebalancePlanSteps(PipelineBase):
-    def step_rebalance(self, step_input: StepInput) -> StepOutput:
+    def step_rebalance(self) -> str:
         history_block = _build_history_block(self.settings.discover_db_path)
         if history_block:
             logger.info(
@@ -78,13 +76,11 @@ class RebalancePlanSteps(PipelineBase):
         self.state["harvest_candidates"] = harvest_report_data(
             flag_plan_conflicts(self.state.get("harvest_candidates_obj") or [], plan)
         )
-        return StepOutput(
-            content=(
-                f"Rebalance plan generated "
-                f"(status={plan.status}, "
-                f"aggressiveness={plan.aggressiveness_applied}, "
-                f"actions={len(plan.actions)})"
-            )
+        return (
+            f"Rebalance plan generated "
+            f"(status={plan.status}, "
+            f"aggressiveness={plan.aggressiveness_applied}, "
+            f"actions={len(plan.actions)})"
         )
 
     def _build_rebalancer(self) -> Rebalancer:
@@ -149,7 +145,7 @@ class RebalancePlanSteps(PipelineBase):
             logger.warning("Market leadership block unavailable (%s)", e)
             return ""
 
-    def _record_lost_plan(self, e: Exception) -> StepOutput:
+    def _record_lost_plan(self, e: Exception) -> str:
         # Every way the plan call can fail has to land here, not just bad
         # JSON. On 2026-09-20 the second attempt died on a ValueError
         # from the SDK (max_tokens too high to run unstreamed), which
@@ -180,7 +176,7 @@ class RebalancePlanSteps(PipelineBase):
         self.state["harvest_candidates"] = harvest_report_data(
             self.state.get("harvest_candidates_obj") or []
         )
-        return StepOutput(content=f"rebalance: PLAN LOST ({type(e).__name__}: {e})")
+        return f"rebalance: PLAN LOST ({type(e).__name__}: {e})"
 
     def _validate_covered_calls(self, plan: Any) -> Any:
         """Check WRITE_CALLs against the fetched chains. A crash keeps the
@@ -250,7 +246,7 @@ class RebalancePlanSteps(PipelineBase):
             self.state["csp_warnings"] = csp_warnings
         return plan
 
-    def step_premortem(self, step_input: StepInput) -> StepOutput:
+    def step_premortem(self) -> str:
         """Adversarial hindsight on the rebalance plan: imagine reading the
         news 6 months from now where this plan went wrong, and write the
         post-mortem from that future. Skips on NO_ACTION (nothing to
@@ -260,10 +256,10 @@ class RebalancePlanSteps(PipelineBase):
             # An absent plan is a failure, not a decision. Saying
             # "NO_ACTION" here is what hid a lost plan for a whole run.
             self.state["premortem"] = None
-            return StepOutput(content="premortem: skipped (no plan — the rebalance step failed)")
+            return "premortem: skipped (no plan — the rebalance step failed)"
         if getattr(plan, "status", None) != "ACTION":
             self.state["premortem"] = None
-            return StepOutput(content="premortem: skipped (plan recommends no action)")
+            return "premortem: skipped (plan recommends no action)"
         # Format the holdings_reviews into a single text blob for the agent.
         from ...models.llm import HoldingReview
 
@@ -280,15 +276,13 @@ class RebalancePlanSteps(PipelineBase):
             )
         except BudgetExceededError:
             self.state["premortem"] = None
-            return StepOutput(content="premortem: skipped (cost cap)")
+            return "premortem: skipped (cost cap)"
         self.state["premortem"] = premortem
         if premortem is None:
-            return StepOutput(content="premortem: agent returned no content")
-        return StepOutput(
-            content=(
-                f"Pre-mortem: verdict={premortem.overall_verdict}, "
-                f"{len(premortem.failures)} failure mode(s)"
-            )
+            return "premortem: agent returned no content"
+        return (
+            f"Pre-mortem: verdict={premortem.overall_verdict}, "
+            f"{len(premortem.failures)} failure mode(s)"
         )
 
     def _add_on_block(self) -> str:

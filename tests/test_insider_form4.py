@@ -124,4 +124,4 @@ def test_the_prompt_is_dated_when_the_agent_is_built():
 
     assert "{today}" in agents_insider.INSIDER_INSTRUCTIONS
     agent = agents_insider.InsiderAgent("claude", "claude-haiku-4-5")
-    assert "{today}" not in agent.agent.agent.instructions
+    assert "{today}" not in agent.agent.instructions

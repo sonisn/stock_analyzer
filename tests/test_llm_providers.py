@@ -1,111 +1,214 @@
-"""Provider-specific reasoning kwargs and the fallback wrapper.
+"""The model layer (llm.py): settings per provider, fallback, the output
+ceiling, validation retries and the cost ledger. No network: the provider
+model is scripted (tests/llm_fakes.py).
 
-Ranker/RedTeam/Sizer used to build one Claude-only `model_kwargs` dict
-unconditionally; adding Gemini/OpenAI rounds means each provider's agno
-model class needs its own kwargs (different field names, different
-supported knobs). A wrong branch here breaks a whole provider silently
-(TypeError on an unexpected kwarg), so each is asserted directly.
+A wrong provider mapping breaks a whole provider silently (a 400 on a
+field it doesn't take), so each provider's request fields are asserted
+directly.
 """
 
 from __future__ import annotations
 
+import pytest
+from pydantic import BaseModel
+from pydantic_ai.exceptions import ModelHTTPError
+from pydantic_ai.usage import RequestUsage
+
+from stock_analyzer import llm
 from stock_analyzer.llm import (
-    AgnoAgent,
+    CallSettings,
+    InvalidOutputError,
+    ModelAgent,
+    OutputTruncatedError,
+    deterministic_settings,
     fallback_builder,
-    reasoning_model_kwargs,
+    model_settings_for,
+    reasoning_settings,
     run_with_fallback,
 )
+from stock_analyzer.usage import TRACKER
+
+from .llm_fakes import script
 
 
-def test_claude_kwargs_use_adaptive_thinking_and_send_no_temperature():
-    kwargs = reasoning_model_kwargs("claude", "high", temperature=0.3, max_tokens=1234)
-    assert kwargs["thinking"] == {"type": "adaptive"}
-    assert kwargs["output_config"] == {"effort": "high"}
-    assert kwargs["max_tokens"] == 1234
-    # Current Claude models removed the sampling parameters.
-    assert "temperature" not in kwargs
-    # Short budgets stay under the SDK's non-streaming guard on their own.
-    assert "timeout" not in kwargs
+class _Out(BaseModel):
+    x: int
 
 
-def test_a_claude_budget_past_the_unstreamed_limit_carries_a_timeout():
-    """The SDK refuses an unstreamed request whose budget could outlast its
-    default timeout, before a token is sent. An explicit timeout is the one
-    thing that skips that guard."""
-    from stock_analyzer.llm import MAX_NONSTREAMING_OUTPUT_TOKENS
-
-    kwargs = reasoning_model_kwargs("claude", "high", max_tokens=MAX_NONSTREAMING_OUTPUT_TOKENS + 1)
-    assert kwargs["timeout"] > 0
+# --- request fields per provider ----------------------------------------------
 
 
-def test_openai_kwargs_use_reasoning_effort_and_max_completion_tokens():
-    # Reasoning-tier OpenAI models reject `max_tokens` (400 "Unsupported
-    # parameter") and require `max_completion_tokens` instead — confirmed
-    # against a real API call.
-    kwargs = reasoning_model_kwargs("openai", "medium", max_tokens=999)
-    assert kwargs == {"reasoning_effort": "medium", "max_completion_tokens": 999}
-    assert "temperature" not in kwargs
-    assert "thinking" not in kwargs
-    assert "max_tokens" not in kwargs
+def test_claude_reasoning_sends_thinking_effort_and_no_temperature():
+    s = model_settings_for("claude", reasoning_settings("high", max_tokens=1234, temperature=0.3))
+    # Pydantic AI turns `thinking` into adaptive thinking at that effort.
+    assert s == {"max_tokens": 1234, "thinking": "high"}
 
 
-def test_gemini_kwargs_use_thinking_level_and_max_output_tokens():
-    kwargs = reasoning_model_kwargs("gemini", "high", temperature=0.7, max_tokens=555)
-    assert kwargs["thinking_level"] == "high"
-    assert kwargs["max_output_tokens"] == 555
-    assert kwargs["temperature"] == 0.7
-    # Gemini's field name differs from Claude/OpenAI's max_tokens.
-    assert "max_tokens" not in kwargs
+def test_openai_reasoning_sends_no_temperature():
+    # Reasoning-tier OpenAI models reject a caller-set temperature.
+    s = model_settings_for("openai", reasoning_settings("medium", max_tokens=999))
+    assert s == {"max_tokens": 999, "thinking": "medium"}
 
 
-def test_gemini_low_effort_maps_to_low_thinking_level():
-    assert reasoning_model_kwargs("gemini", "low")["thinking_level"] == "low"
+def test_gemini_reasoning_keeps_its_temperature():
+    s = model_settings_for("gemini", reasoning_settings("high", max_tokens=555, temperature=0.7))
+    assert s == {"max_tokens": 555, "thinking": "high", "temperature": 0.7}
 
 
-# --- run_with_fallback -------------------------------------------------
+def test_deterministic_calls_send_temperature_zero_except_to_claude():
+    # Claude gets the 8k ceiling a plain answer always had, not the model max.
+    assert model_settings_for("claude", deterministic_settings()) == {"max_tokens": 8192}
+    assert model_settings_for("openai", deterministic_settings()) == {"temperature": 0}
+    assert model_settings_for("gemini", deterministic_settings()) == {"temperature": 0}
+
+
+def test_prompt_caching_is_a_claude_setting():
+    cached = deterministic_settings(cache_instructions=True)
+    assert model_settings_for("claude", cached)["anthropic_cache_instructions"] is True
+    assert "anthropic_cache_instructions" not in model_settings_for("gemini", cached)
+
+
+def test_an_unknown_effort_is_refused():
+    with pytest.raises(ValueError, match="effort"):
+        reasoning_settings("extreme")
+
+
+def test_an_unknown_provider_is_refused():
+    with pytest.raises(ValueError, match="provider"):
+        ModelAgent("T", "mistral", "m")  # ty: ignore[invalid-argument-type]
+
+
+def test_every_provider_builds_without_a_network_call():
+    for provider in ("claude", "gemini", "openai"):
+        agent = ModelAgent("T", provider, "some-model", settings=reasoning_settings("low"))
+        assert agent.provider == provider
+
+
+# --- running -------------------------------------------------------------------
+
+
+def test_a_structured_answer_comes_back_validated(monkeypatch):
+    seen = script(monkeypatch, [('{"x": 3}', "stop")])
+    agent = ModelAgent("T", "claude", "claude-sonnet-5", output_schema=_Out)
+    result = agent.run("prompt")
+    assert result.content == _Out(x=3)
+    assert result.finish_reason == "stop"
+    assert seen.calls == 1
+
+
+def test_a_text_agent_returns_text(monkeypatch):
+    script(monkeypatch, [("plain words", "stop")])
+    assert ModelAgent("T", "claude", "m").run("p").content == "plain words"
+
+
+def test_an_invalid_answer_goes_back_to_the_model_once(monkeypatch):
+    seen = script(monkeypatch, [("not json", "stop"), ('{"x": 5}', "stop")])
+    agent = ModelAgent("T", "claude", "m", output_schema=_Out)
+    assert agent.run("p").content == _Out(x=5)
+    assert seen.calls == 2
+
+
+def test_an_answer_still_invalid_after_the_retry_raises_with_its_text(monkeypatch):
+    script(monkeypatch, [("nope", "stop"), ("still nope", "stop")])
+    agent = ModelAgent("T", "claude", "m", output_schema=_Out)
+    with pytest.raises(InvalidOutputError) as e:
+        agent.run("p")
+    assert e.value.raw_text == "still nope"
+
+
+# --- the output ceiling -------------------------------------------------------------
+
+
+def test_a_structured_answer_cut_off_at_the_ceiling_raises_and_is_not_retried(monkeypatch):
+    """A cut-off JSON document used to come back as a plain string and read
+    downstream as an empty result. Retrying under the same ceiling would
+    pay for the same cut-off again."""
+    seen = script(monkeypatch, [('{"x": 1, "prose": "sell MR', "length")])
+    agent = ModelAgent(
+        "T", "claude", "m", output_schema=_Out, settings=CallSettings(max_tokens=16000)
+    )
+    with pytest.raises(OutputTruncatedError) as e:
+        agent.run("p")
+    assert e.value.raw_text.startswith('{"x": 1')
+    assert e.value.max_output_tokens == 16000
+    assert seen.calls == 1
+
+
+def test_a_cut_off_text_answer_is_returned_with_its_stop_reason(monkeypatch):
+    script(monkeypatch, [("half a sente", "length")])
+    result = ModelAgent("T", "claude", "m").run("p")
+    assert (result.content, result.finish_reason) == ("half a sente", "length")
+
+
+# --- the cost ledger ------------------------------------------------------------------
+
+
+def test_every_response_is_recorded_with_cached_input_split_out(monkeypatch):
+    TRACKER.reset()
+    usage = RequestUsage(input_tokens=1000, cache_read_tokens=800, output_tokens=50)
+    script(monkeypatch, [("bad", "stop"), ('{"x": 1}', "stop")], usage=usage)
+    ModelAgent("Sizer", "claude", "claude-opus-5", output_schema=_Out).run("p")
+    (row,) = TRACKER.rows()
+    # Both responses count, the rejected one included.
+    assert (row.stage, row.model, row.calls) == ("Sizer", "claude-opus-5", 2)
+    assert (row.input_tokens, row.cache_read_tokens, row.output_tokens) == (400, 1600, 100)
+    TRACKER.reset()
+
+
+# --- fallback --------------------------------------------------------------------------
 
 
 class _FakeAgent:
-    def __init__(self, provider, name, *, fails=False, result="ok"):
+    def __init__(self, provider, *, error=None, result="ok"):
         self.provider = provider
-        self.name = name
+        self.name = "Ranker"
         self.model_id = "m"
-        self._fails = fails
+        self._error = error
         self._result = result
         self.calls = 0
 
-    def run(self, *args, **kwargs):
+    def run(self, prompt):
         self.calls += 1
-        if self._fails:
-            from agno.exceptions import ModelProviderError
-
-            raise ModelProviderError("boom", status_code=502)
+        if self._error is not None:
+            raise self._error
         return self._result
 
 
+def _outage():
+    return ModelHTTPError(status_code=502, model_name="m", body="bad gateway")
+
+
 def test_run_with_fallback_uses_primary_when_it_succeeds():
-    primary = _FakeAgent("claude", "Ranker")
-    result = run_with_fallback(primary, lambda: _FakeAgent("gemini", "Ranker"), "prompt")
-    assert result == "ok"
+    primary = _FakeAgent("claude")
+    assert run_with_fallback(primary, lambda: _FakeAgent("gemini"), "prompt") == "ok"
     assert primary.calls == 1
 
 
-def test_run_with_fallback_retries_on_fallback_after_provider_error():
-    primary = _FakeAgent("claude", "Ranker", fails=True)
-    fallback = _FakeAgent("gemini", "Ranker", result="fallback-ok")
-    result = run_with_fallback(primary, lambda: fallback, "prompt")
-    assert result == "fallback-ok"
-    assert primary.calls == 1
-    assert fallback.calls == 1
+def test_run_with_fallback_retries_on_fallback_after_an_outage():
+    primary = _FakeAgent("claude", error=_outage())
+    fallback = _FakeAgent("gemini", result="fallback-ok")
+    assert run_with_fallback(primary, lambda: fallback, "prompt") == "fallback-ok"
+    assert (primary.calls, fallback.calls) == (1, 1)
 
 
 def test_run_with_fallback_reraises_when_no_fallback_given():
-    import pytest
-    from agno.exceptions import ModelProviderError
+    with pytest.raises(ModelHTTPError):
+        run_with_fallback(_FakeAgent("claude", error=_outage()), None, "prompt")
 
-    primary = _FakeAgent("claude", "Ranker", fails=True)
-    with pytest.raises(ModelProviderError):
-        run_with_fallback(primary, None, "prompt")
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ModelHTTPError(status_code=400, model_name="m", body="prompt is too long"),
+        OutputTruncatedError("Ranker", 100, ""),
+        InvalidOutputError("Ranker", "bad", ""),
+    ],
+)
+def test_errors_the_fallback_would_repeat_are_not_retried(error):
+    fallback = _FakeAgent("gemini")
+    with pytest.raises(type(error)):
+        run_with_fallback(_FakeAgent("claude", error=error), lambda: fallback, "prompt")
+    assert fallback.calls == 0
 
 
 def test_fallback_builder_skips_a_missing_or_same_provider_fallback():
@@ -122,120 +225,17 @@ def test_fallback_builder_skips_a_missing_or_same_provider_fallback():
     assert make() == "agent" and built == [("gemini", "gemini-pro-latest")]
 
 
-def test_agno_agent_accepts_openai_provider():
-    # Construction only — no network call. Confirms the registry wiring
-    # (Provider Literal + _MODEL_REGISTRY) actually includes "openai".
-    agent = AgnoAgent("Test", "openai", "gpt-5.4-mini", model_kwargs={"reasoning_effort": "low"})
-    assert agent.provider == "openai"
+def test_each_thread_gets_its_own_model_client():
+    """An SDK client's connection pool belongs to the event loop that opened
+    it, and each thread runs its own loop."""
+    import threading
 
-
-# --- AgnoAgent.run() raising on agno 3.0's swallowed-error responses ---
-
-
-def test_agno_agent_run_raises_when_agno_returns_status_error():
-    """agno 3.0's Agent.run() stopped raising once it exhausts its own
-    internal retries — it now returns a RunOutput with status=ERROR and
-    content=str(exception) instead. Confirmed against a real 404
-    (nonexistent Gemini model id) in production: without this check,
-    that string gets fed straight into `RankerOutput.model_validate_json`
-    and fails with a confusing "Field required: picks, full_text" error
-    instead of the actual provider error. AgnoAgent.run() must convert
-    that back into a raised ModelProviderError so every existing
-    except-based error path (run_with_fallback, and every stage's own
-    `except Exception` wrapper) keeps working."""
-    import pytest
-    from agno.exceptions import ModelProviderError
-    from agno.run.base import RunStatus
-
-    class _FakeRunOutput:
-        status = RunStatus.error
-        content = '{"error": {"code": 404, "message": "model not found"}}'
-
-    agent = AgnoAgent("Test", "claude", "claude-haiku-4-5")
-    agent.agent.run = lambda *a, **k: _FakeRunOutput()
-
-    with pytest.raises(ModelProviderError, match="model not found"):
-        agent.run("prompt")
-
-
-def test_agno_agent_run_passes_through_on_success():
-    from agno.run.base import RunStatus
-
-    class _FakeRunOutput:
-        status = RunStatus.completed
-        content = "all good"
-
-    agent = AgnoAgent("Test", "claude", "claude-haiku-4-5")
-    agent.agent.run = lambda *a, **k: _FakeRunOutput()
-
-    result = agent.run("prompt")
-    assert result.content == "all good"
-
-
-# --- AgnoAgent.run() and the output ceiling ---------------------------------
-
-
-class _Metrics:
-    def __init__(self, output_tokens, reasoning_tokens=0):
-        self.output_tokens = output_tokens
-        self.reasoning_tokens = reasoning_tokens
-
-
-def _structured_agent(provider, max_tokens, content, metrics):
-    from agno.run.base import RunStatus
-    from pydantic import BaseModel
-
-    class _Out(BaseModel):
-        x: int
-
-    class _FakeRunOutput:
-        status = RunStatus.completed
-
-    _FakeRunOutput.content = content
-    _FakeRunOutput.metrics = metrics
-    key = {"claude": "max_tokens", "gemini": "max_output_tokens"}[provider]
-    agent = AgnoAgent(
-        "Test", provider, "some-model", model_kwargs={key: max_tokens}, output_schema=_Out
+    here = llm.thread_model("claude", "claude-haiku-4-5")
+    assert llm.thread_model("claude", "claude-haiku-4-5") is here
+    other = []
+    t = threading.Thread(
+        target=lambda: other.append(llm.thread_model("claude", "claude-haiku-4-5"))
     )
-    agent.agent.run = lambda *a, **k: _FakeRunOutput()
-    return agent, _Out
-
-
-def test_a_structured_answer_cut_off_at_the_ceiling_raises_with_its_text():
-    """agno drops the provider's stop reason, so a cut-off JSON document
-    used to come back as a plain string and read downstream as an empty
-    result. Spending the whole budget without a parsed answer is the
-    signal."""
-    import pytest
-
-    from stock_analyzer.llm import OutputTruncatedError
-
-    agent, _ = _structured_agent("claude", 16000, '{"x": 1, "prose": "sell MR', _Metrics(16000))
-    with pytest.raises(OutputTruncatedError) as e:
-        agent.run("prompt")
-    assert e.value.raw_text.startswith('{"x": 1')
-    assert e.value.max_output_tokens == 16000
-
-
-def test_an_answer_that_ends_inside_the_budget_is_left_alone():
-    agent, _ = _structured_agent("claude", 16000, "not json", _Metrics(9000))
-    assert agent.run("prompt").content == "not json"
-
-
-def test_a_parsed_answer_is_kept_even_at_the_ceiling():
-    agent, out = _structured_agent("claude", 100, None, _Metrics(100))
-    parsed = out(x=1)
-    agent.agent.run = lambda *a, **k: type(
-        "R", (), {"status": None, "content": parsed, "metrics": _Metrics(100)}
-    )()
-    assert agent.run("prompt").content == parsed
-
-
-def test_gemini_thinking_counts_against_its_ceiling():
-    import pytest
-
-    from stock_analyzer.llm import OutputTruncatedError
-
-    agent, _ = _structured_agent("gemini", 16000, "{", _Metrics(4000, reasoning_tokens=12000))
-    with pytest.raises(OutputTruncatedError):
-        agent.run("prompt")
+    t.start()
+    t.join()
+    assert other[0] is not here

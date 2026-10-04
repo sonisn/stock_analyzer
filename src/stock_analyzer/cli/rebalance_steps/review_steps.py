@@ -5,8 +5,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from agno.workflow.types import StepInput, StepOutput
-
 from ...data.filing_evidence import earnings_releases, evidence_packs
 from ...db.repository import fetch_recent_picks
 from ...db.session import get_session
@@ -42,7 +40,7 @@ logger = get_logger("stock_analyzer.cli.rebalance")
 
 
 class RebalanceReviewSteps(PipelineBase):
-    def step_review_holdings(self, step_input: StepInput) -> StepOutput:
+    def step_review_holdings(self) -> str:
         # `holdings_positions` deliberately carries everything, including
         # symbols no market data exists for — they are still valued and
         # taxed. Reviewing them is a different matter: a revoked CUSIP has
@@ -96,7 +94,7 @@ class RebalanceReviewSteps(PipelineBase):
         if drawdown_notes:
             self.state["stop_loss_warnings"] = drawdown_notes
         self.state["holdings_reviews"] = reviews
-        return StepOutput(content=f"Reviewed {len(self.state['holdings_reviews'])} holdings")
+        return f"Reviewed {len(self.state['holdings_reviews'])} holdings"
 
     def _reviewer_model(self, payloads: dict[str, dict[str, Any]]) -> str:
         """Sonnet, unless reviewing every holding on it would not fit the cost
@@ -118,11 +116,11 @@ class RebalanceReviewSteps(PipelineBase):
         )
         return haiku
 
-    def step_cc_data(self, step_input: StepInput) -> StepOutput:
+    def step_cc_data(self) -> str:
         """Build the COVERED-CALL CONTEXT block consumed by the rebalancer."""
         if not self.settings.cc_enabled:
             self.state.update(cc_empty_state())
-            return StepOutput(content="cc_data: disabled via CC_ENABLED=0")
+            return "cc_data: disabled via CC_ENABLED=0"
 
         self.state.update(cc_empty_state())
         try:
@@ -137,7 +135,7 @@ class RebalanceReviewSteps(PipelineBase):
             # Holdings where the premium is too cheap to be worth the cap:
             # not silence, a reason.
             self.state["cc_cheap_premium"] = result.cheap_premium
-            return StepOutput(content=result.content)
+            return result.content
         except Exception as e:
             logger.error(
                 "step_cc_data crashed (%s) — rebalance will run WITHOUT "
@@ -145,15 +143,13 @@ class RebalanceReviewSteps(PipelineBase):
                 e,
                 exc_info=True,
             )
-            return StepOutput(
-                content=f"cc_data: failed ({type(e).__name__}); CC disabled for this run"
-            )
+            return f"cc_data: failed ({type(e).__name__}); CC disabled for this run"
 
-    def step_csp_data(self, step_input: StepInput) -> StepOutput:
+    def step_csp_data(self) -> str:
         """Build the CASH-SECURED PUT CONTEXT block consumed by the rebalancer."""
         self.state.update(csp_empty_state())
         if not self.settings.csp_enabled:
-            return StepOutput(content="csp_data: disabled via CSP_ENABLED=0")
+            return "csp_data: disabled via CSP_ENABLED=0"
         try:
             with get_session(self.settings.discover_db_path) as session:
                 recent = fetch_recent_picks(session, n_runs=self.settings.csp_pick_lookback_runs)
@@ -164,9 +160,7 @@ class RebalanceReviewSteps(PipelineBase):
                 e,
                 exc_info=True,
             )
-            return StepOutput(
-                content=f"csp_data: failed ({type(e).__name__}); puts disabled for this run"
-            )
+            return f"csp_data: failed ({type(e).__name__}); puts disabled for this run"
         self.state["csp_context_block"] = result.context_block
         self.state["csp_eligibility"] = result.eligibility
         self.state["csp_chains"] = result.chains
@@ -175,9 +169,9 @@ class RebalanceReviewSteps(PipelineBase):
         # A put that isn't offered still owes the reader a reason.
         self.state["csp_blocked_note"] = result.blocked_note
         self.state["csp_cheap_premium"] = result.cheap_premium
-        return StepOutput(content=result.content)
+        return result.content
 
-    def step_tax_harvest(self, step_input: StepInput) -> StepOutput:
+    def step_tax_harvest(self) -> str:
         """Deterministic tax-loss harvesting candidates (no LLM), fed to the
         Rebalancer and shown in the report."""
         try:
@@ -202,6 +196,4 @@ class RebalanceReviewSteps(PipelineBase):
         self.state["harvest_candidates_obj"] = candidates
         self.state["harvest_block"] = format_harvest_block(candidates)
         total = sum(-c.loss_usd for c in candidates)
-        return StepOutput(
-            content=f"Tax-loss harvest: {len(candidates)} candidates, ${total:,.0f} of losses"
-        )
+        return f"Tax-loss harvest: {len(candidates)} candidates, ${total:,.0f} of losses"

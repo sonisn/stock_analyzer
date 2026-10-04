@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from agno.exceptions import ModelProviderError
+from pydantic_ai.exceptions import ModelHTTPError
 
 from stock_analyzer.discover import peers, reviewer
 
@@ -26,7 +26,7 @@ class _FakeAgent:
     def run(self, *args, **kwargs):
         self.calls += 1
         if self._fails:
-            raise ModelProviderError("boom", status_code=502)
+            raise ModelHTTPError(status_code=502, model_name="m", body="boom")
         return SimpleNamespace(content=self._content)
 
 

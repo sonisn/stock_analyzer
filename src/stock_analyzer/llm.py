@@ -1,21 +1,54 @@
-"""LLM provider abstraction — wraps `agno.Agent` for Claude, Gemini, and OpenAI."""
+"""LLM layer: one `ModelAgent` over Pydantic AI for Claude, Gemini and OpenAI.
+
+Every deciding and helper call in the app goes through `ModelAgent.run`
+(OpenRouter's open models have their own client, `openrouter.py`, for
+its host allowlist and billed-cost ledger). What this layer adds on top
+of Pydantic AI:
+
+  - `CallSettings`, one provider-neutral description of a call (output
+    ceiling, thinking effort, prompt caching, retries), translated here
+    into each provider's request fields;
+  - the run's cost cap (`usage.BUDGET`) and per-stage token ledger
+    (`usage.TRACKER`), recorded per model response so retried and failed
+    calls are counted too;
+  - `OutputTruncatedError` the moment a response stops at its output
+    ceiling: a cut-off structured answer is never a result, and it is
+    never retried (another attempt under the same ceiling is the same
+    bill for the same cut-off);
+  - one retry on a fallback provider for outages (`run_with_fallback`).
+
+Structured answers use the provider's native JSON-schema output, not a
+forced tool call: Claude answers a forced tool call without thinking,
+which would quietly turn every high-effort stage into a no-thinking one.
+A structured answer that fails validation is sent back to the model once
+with the validation errors (`output_retries`) before the call fails.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
+import os
+import threading
+import warnings
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any, Literal
 
-from agno.agent import Agent
-from agno.exceptions import (
-    ModelAuthenticationError,
-    ModelProviderError,
-    RemoteServerUnavailableError,
-)
-from agno.models.anthropic import Claude
-from agno.models.google import Gemini
-from agno.models.openai import OpenAIChat
-from agno.run.base import RunStatus
 from pydantic import BaseModel
+from pydantic_ai import (
+    Agent,
+    AgentRetries,
+    NativeOutput,
+    RunContext,
+    Tool,
+    UnexpectedModelBehavior,
+    capture_run_messages,
+)
+from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.messages import ModelResponse
+from pydantic_ai.models import Model, ModelRequestContext
+from pydantic_ai.settings import ModelSettings
 
 from .logging import get_logger
 from .providers import Provider
@@ -23,86 +56,267 @@ from .usage import BUDGET, TRACKER
 
 logger = get_logger(__name__)
 
-_MODEL_REGISTRY: dict[Provider, type] = {
-    "claude": Claude,
-    "gemini": Gemini,
-    "openai": OpenAIChat,
-}
+# Pydantic AI prints a setup banner on a process's first run; in a cron log
+# it is noise. (Read when the banner would show, so setting it here works.)
+os.environ.setdefault("PYDANTIC_AI_NO_BANNER", "1")
+# OpenAI reasoning models take no temperature; Pydantic AI drops it from the
+# request (correctly) and warns on every call, which only fills the logs.
+warnings.filterwarnings("ignore", message=r"Sampling parameters .* are not supported")
 
-# Errors worth retrying on a fallback provider: auth failures, rate limits,
-# 5xx/overload responses, and the remote endpoint being unreachable. Anything
-# else (bad input, context-window overflow, schema validation) would fail
-# identically on the fallback provider too, so it isn't worth the extra call.
-_FALLBACK_ERRORS: tuple[type[Exception], ...] = (
-    ModelAuthenticationError,
-    ModelProviderError,
-    RemoteServerUnavailableError,
-)
+PROVIDERS: tuple[Provider, ...] = ("claude", "gemini", "openai")
 
+Effort = Literal["low", "medium", "high"]
 
-# Output ceiling assumed for the cost cap when a call sets no max-tokens
-# field (agno's Claude default is 8192).
+# Output ceiling assumed for the cost cap when a call sets none.
 _DEFAULT_OUTPUT_ALLOWANCE = 8192
 
-# The Anthropic SDK refuses a long non-streaming request rather than risk
-# a silent HTTP timeout — `3600 * max_tokens / 128_000 > 600` seconds —
-# which caps an unstreamed call at 21,333 output tokens. The guard is
-# skipped when the caller sets its own timeout:
-#
-#     if not stream and not is_given(timeout) and client.timeout == DEFAULT
-#
-# so an explicit timeout is what buys the headroom, not streaming. agno's
-# `stream=True` was tried on 2026-09-20 and does not help: it streams
-# agno's own event iterator while the model layer still issues a
-# non-streaming HTTP call, so the guard fired anyway.
-MAX_NONSTREAMING_OUTPUT_TOKENS = 128_000 * 600 // 3600  # 21,333
-# Long enough for a 64k-token answer to arrive at Opus's pace.
-LONG_OUTPUT_TIMEOUT_S = 1800.0
+# HTTP statuses that say the request itself is wrong (bad input, context
+# overflow, schema rejected). Another provider would get the same request,
+# so these never fall back.
+_REQUEST_ERROR_STATUSES = frozenset({400, 413, 422})
+
+
+@dataclass(frozen=True)
+class CallSettings:
+    """How a stage calls its model, whatever the provider.
+
+    `thinking` is the reasoning effort (adaptive thinking on Claude,
+    reasoning effort on OpenAI, thinking level on Gemini); None leaves the
+    model at its default. `temperature` is sent only where the model takes
+    one: never to Claude (current models removed the sampling parameters),
+    never to an OpenAI model that is reasoning.
+    """
+
+    max_tokens: int | None = None
+    thinking: Effort | None = None
+    temperature: float | None = None
+    # Claude only: cache the (long, shared) system prompt across a fan-out.
+    cache_instructions: bool = False
+    # Transport retries on 429/5xx inside the SDK, with its backoff.
+    http_retries: int = 2
+    # Times a structured answer that fails validation goes back to the model.
+    output_retries: int = 1
+
+
+def reasoning_settings(
+    effort: Effort | str, *, max_tokens: int = 16000, temperature: float = 1
+) -> CallSettings:
+    """A high-effort reasoning call (Ranker, Red team, Sizer, Rebalancer...)."""
+    return CallSettings(
+        max_tokens=max_tokens,
+        thinking=_effort(effort),
+        temperature=temperature,
+    )
+
+
+def deterministic_settings(
+    *,
+    max_tokens: int | None = None,
+    cache_instructions: bool = False,
+    http_retries: int = 2,
+) -> CallSettings:
+    """A plain low-temperature call (Analyst, Reviewer, readers...)."""
+    return CallSettings(
+        max_tokens=max_tokens,
+        temperature=0,
+        cache_instructions=cache_instructions,
+        http_retries=http_retries,
+    )
+
+
+def _effort(effort: str) -> Effort:
+    if effort in ("low", "medium", "high"):
+        return effort
+    raise ValueError(f"Unsupported reasoning effort {effort!r}; expected low, medium or high.")
+
+
+def model_settings_for(provider: Provider, s: CallSettings) -> ModelSettings:
+    """The request fields `s` becomes on `provider`.
+
+    Pydantic AI maps `max_tokens` to each API's own field (OpenAI's
+    `max_completion_tokens`, Gemini's `max_output_tokens`) and `thinking`
+    to each one's reasoning knob (Claude: adaptive thinking at that effort).
+    """
+    out: dict[str, Any] = {}
+    if s.max_tokens is not None:
+        out["max_tokens"] = s.max_tokens
+    elif provider == "claude":
+        # Claude requires a ceiling; left unset, Pydantic AI asks for the
+        # model's maximum (128k). Keep the 8k a plain answer has always had.
+        out["max_tokens"] = _DEFAULT_OUTPUT_ALLOWANCE
+    if s.thinking is not None:
+        out["thinking"] = s.thinking
+    sends_temperature = provider == "gemini" or (provider == "openai" and s.thinking is None)
+    if s.temperature is not None and sends_temperature:
+        out["temperature"] = s.temperature
+    if s.cache_instructions and provider == "claude":
+        out["anthropic_cache_instructions"] = True
+    return ModelSettings(**out)
+
+
+# --- models, one per thread ------------------------------------------------
+
+# Pydantic AI runs each synchronous call on the calling thread's event loop,
+# and an SDK client's connection pool belongs to the loop that opened it.
+# The pipelines fan calls out over thread pools, so each thread builds its
+# own client instead of sharing one across loops.
+_local = threading.local()
+
+
+def _build_model(provider: Provider, model_id: str, http_retries: int) -> Model:
+    if provider == "claude":
+        from anthropic import AsyncAnthropic
+        from pydantic_ai.models.anthropic import AnthropicModel
+        from pydantic_ai.providers.anthropic import AnthropicProvider
+
+        client = AsyncAnthropic(max_retries=http_retries)
+        return AnthropicModel(model_id, provider=AnthropicProvider(anthropic_client=client))
+    if provider == "openai":
+        from openai import AsyncOpenAI
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+
+        client = AsyncOpenAI(max_retries=http_retries)
+        return OpenAIChatModel(model_id, provider=OpenAIProvider(openai_client=client))
+    if provider == "gemini":
+        from google.genai.types import HttpRetryOptions
+        from pydantic_ai.models.google import GoogleModel
+        from pydantic_ai.providers.google import GoogleProvider
+
+        api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        return GoogleModel(
+            model_id,
+            provider=GoogleProvider(
+                api_key=api_key, retry_options=HttpRetryOptions(attempts=http_retries + 1)
+            ),
+        )
+    raise ValueError(f"Unsupported provider {provider!r}. Expected one of {sorted(PROVIDERS)}.")
+
+
+def thread_model(provider: Provider, model_id: str, http_retries: int = 2) -> Model:
+    """This thread's model client for (provider, model, retries)."""
+    cache: dict[tuple[str, str, int], Model] | None = getattr(_local, "models", None)
+    if cache is None:
+        cache = _local.models = {}
+    key = (provider, model_id, http_retries)
+    if key not in cache:
+        cache[key] = _build_model(provider, model_id, http_retries)
+    return cache[key]
+
+
+# --- errors ------------------------------------------------------------------
 
 
 class OutputTruncatedError(RuntimeError):
     """The model stopped because it ran into its output ceiling.
 
-    Raised only when a structured answer was expected and did not parse —
-    a cut-off JSON document is not a result, and treating it as one is how
+    A cut-off JSON document is not a result, and treating it as one is how
     a lost plan used to read downstream as "hold everything". Carries the
     raw text so a caller that paid for it can still show it. Deliberately
     not a fallback error: another provider under the same ceiling would
     run out the same way.
     """
 
-    def __init__(self, stage: str, max_output_tokens: int, raw_text: str) -> None:
-        super().__init__(
-            f"{stage} hit its {max_output_tokens:,}-token output ceiling before the "
-            "structured answer was complete"
-        )
+    def __init__(self, stage: str, max_output_tokens: int | None, raw_text: str) -> None:
+        ceiling = f"{max_output_tokens:,}-token" if max_output_tokens else "provider's"
+        super().__init__(f"{stage} hit its {ceiling} output ceiling before the answer was complete")
         self.stage = stage
         self.max_output_tokens = max_output_tokens
         self.raw_text = raw_text
 
 
-def output_tokens_used(provider: str, metrics: Any) -> int:
-    """Tokens a call spent against its output ceiling.
+class InvalidOutputError(RuntimeError):
+    """A structured answer still failed validation after it was sent back to
+    the model. Carries the last raw text for callers that keep it."""
 
-    agno never copies the provider's stop reason onto the run, so hitting
-    the ceiling has to be read off the token count instead. Claude and
-    OpenAI count thinking inside `output_tokens`; Gemini reports it
-    separately as `reasoning_tokens`, and it counts against the ceiling.
+    def __init__(self, stage: str, message: str, raw_text: str) -> None:
+        super().__init__(f"{stage}: {message}")
+        self.stage = stage
+        self.raw_text = raw_text
+
+
+def is_fallback_error(e: BaseException) -> bool:
+    """Worth retrying on another provider: an outage, a rate limit, a bad
+    key or model id, a dropped connection. Not a request the API rejected
+    as malformed (the fallback would reject it too)."""
+    if isinstance(e, ModelHTTPError):
+        return e.status_code not in _REQUEST_ERROR_STATUSES
+    return isinstance(e, ModelAPIError)
+
+
+# --- the agent -------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CallUsage:
+    """Token counts in the ledger's terms: `input_tokens` uncached."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class RunResult:
+    """What a call returned: the parsed model (structured) or text, and how
+    it ended."""
+
+    content: Any
+    finish_reason: str | None
+    usage: CallUsage
+    provider: Provider
+    model_id: str
+
+
+def _ledger_usage(response: ModelResponse) -> SimpleNamespace:
+    u = response.usage
+    cache_read = u.cache_read_tokens or 0
+    cache_write = u.cache_write_tokens or 0
+    return SimpleNamespace(
+        input_tokens=max(0, (u.input_tokens or 0) - cache_read - cache_write),
+        output_tokens=u.output_tokens or 0,
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
+    )
+
+
+class _Guard(AbstractCapability[Any]):
+    """Per response: record its tokens, and stop the run at the ceiling."""
+
+    def __init__(self, agent: ModelAgent) -> None:
+        self._agent = agent
+
+    async def after_model_request(
+        self,
+        ctx: RunContext[Any],
+        *,
+        request_context: ModelRequestContext,
+        response: ModelResponse,
+    ) -> ModelResponse:
+        a = self._agent
+        TRACKER.record(a.name, a.model_id, _ledger_usage(response))
+        if response.finish_reason == "length":
+            logger.warning(
+                "%s on %s/%s stopped at its output ceiling (%s tokens) — the answer was cut off",
+                a.name,
+                a.provider,
+                a.model_id,
+                a.settings.max_tokens or "provider default",
+            )
+            if a.structured:
+                raise OutputTruncatedError(a.name, a.settings.max_tokens, response.text or "")
+        return response
+
+
+class ModelAgent:
+    """One stage's model: instructions, an optional output schema, settings.
+
+    `run(prompt)` returns a `RunResult` whose `content` is the validated
+    schema instance (or text when no schema is set). Raises the provider's
+    error (`ModelAPIError`), `OutputTruncatedError`, `InvalidOutputError`
+    or `usage.BudgetExceededError`.
     """
-    used = int(getattr(metrics, "output_tokens", 0) or 0)
-    if provider == "gemini":
-        used += int(getattr(metrics, "reasoning_tokens", 0) or 0)
-    return used
-
-
-def hit_output_ceiling(provider: str, metrics: Any, max_output_tokens: int) -> bool:
-    # A few tokens of slack: providers stop at, not past, the ceiling, and
-    # a count within 1% of it is not a natural end.
-    return output_tokens_used(provider, metrics) >= max_output_tokens * 0.99
-
-
-class AgnoAgent:
-    """Factory wrapper around `agno.agent.Agent` supporting multiple providers."""
 
     def __init__(
         self,
@@ -110,165 +324,76 @@ class AgnoAgent:
         provider: Provider,
         model: str,
         *,
-        model_kwargs: dict[str, Any] | None = None,
-        **agent_kwargs: Any,
+        instructions: str = "",
+        output_schema: type[BaseModel] | None = None,
+        settings: CallSettings | None = None,
+        tools: Sequence[Tool[Any] | Callable[..., Any]] = (),
     ) -> None:
-        if provider not in _MODEL_REGISTRY:
+        if provider not in PROVIDERS:
             raise ValueError(
-                f"Unsupported provider {provider!r}. Expected one of {sorted(_MODEL_REGISTRY)}."
+                f"Unsupported provider {provider!r}. Expected one of {sorted(PROVIDERS)}."
             )
-
         self.name = name
         self.provider: Provider = provider
         self.model_id = model
-        # For the cost cap's worst-case estimate: system prompt size and the
-        # most output the model is allowed to produce on one call.
-        kw = model_kwargs or {}
-        explicit_max = (
-            kw.get("max_tokens") or kw.get("max_completion_tokens") or kw.get("max_output_tokens")
+        self.settings = settings or CallSettings()
+        self.structured = output_schema is not None
+        self.instructions = instructions
+        self._instruction_chars = len(instructions)
+        self.agent: Agent[None, Any] = Agent(
+            output_type=NativeOutput(output_schema) if output_schema is not None else str,
+            instructions=instructions or None,
+            name=name,
+            model_settings=model_settings_for(provider, self.settings),
+            retries=AgentRetries(tools=1, output=self.settings.output_retries),
+            tools=list(tools),
+            capabilities=[_Guard(self)],
         )
-        self._max_output_tokens = int(explicit_max or _DEFAULT_OUTPUT_ALLOWANCE)
-        # Truncation is only judged against a ceiling this code chose; with
-        # none set, the provider default is unknown and nothing is flagged.
-        self._explicit_max_output = int(explicit_max) if explicit_max else None
-        self._structured = agent_kwargs.get("output_schema") is not None
-        self._instruction_chars = len(str(agent_kwargs.get("instructions") or ""))
 
-        model_cls = _MODEL_REGISTRY[provider]
-        self._model = model_cls(id=model, **(model_kwargs or {}))
-        self.agent = Agent(name=name, model=self._model, **agent_kwargs)
+    @property
+    def max_output_tokens(self) -> int:
+        """The most output one call may produce, for the cost cap's estimate."""
+        return self.settings.max_tokens or _DEFAULT_OUTPUT_ALLOWANCE
 
-    def run(self, *args: Any, **kwargs: Any) -> Any:
-        prompt_chars = self._instruction_chars + sum(
-            len(a) for a in (*args, *kwargs.values()) if isinstance(a, str)
+    def run(self, prompt: str) -> RunResult:
+        prompt_chars = self._instruction_chars + len(prompt)
+        with (
+            BUDGET.hold(self.name, self.model_id, prompt_chars, self.max_output_tokens),
+            capture_run_messages() as messages,
+        ):
+            model = thread_model(self.provider, self.model_id, self.settings.http_retries)
+            try:
+                result = self.agent.run_sync(prompt, model=model)
+            except UnexpectedModelBehavior as e:
+                raw = next(
+                    (m.text or "" for m in reversed(messages) if isinstance(m, ModelResponse)),
+                    "",
+                )
+                raise InvalidOutputError(self.name, str(e), raw) from e
+        usage = result.usage
+        cache_read, cache_write = usage.cache_read_tokens or 0, usage.cache_write_tokens or 0
+        return RunResult(
+            content=result.output,
+            finish_reason=result.response.finish_reason,
+            usage=CallUsage(
+                input_tokens=max(0, (usage.input_tokens or 0) - cache_read - cache_write),
+                output_tokens=usage.output_tokens or 0,
+                cache_read_tokens=cache_read,
+                cache_write_tokens=cache_write,
+            ),
+            provider=self.provider,
+            model_id=self.model_id,
         )
-        with BUDGET.hold(self.name, self.model_id, prompt_chars, self._max_output_tokens):
-            result = self.agent.run(*args, **kwargs)
-            TRACKER.record(self.name, self.model_id, getattr(result, "metrics", None))
-        # agno 3.0's Agent.run() no longer raises once it has exhausted its
-        # own internal retries (Model.retries, default 0 — so effectively
-        # on the very first non-retryable provider error, e.g. an HTTP 404
-        # for a bad model id). Instead it swallows the exception and
-        # returns a RunOutput with status=RunStatus.error and content set
-        # to str(exception) — which would otherwise fail Pydantic
-        # validation against whatever output_schema was expected, instead
-        # of surfacing as the provider error it actually is. Every caller
-        # in this codebase goes through this method, so raising here once
-        # is what makes every existing `except Exception` wrapper (and
-        # run_with_fallback below) work the way it did under agno 2.x.
-        if getattr(result, "status", None) == RunStatus.error:
-            message = str(getattr(result, "content", None) or "Agent.run() returned status=ERROR")
-            raise ModelProviderError(message=message, model_name=self.name, model_id=self.model_id)
-        self._check_truncation(result)
-        return result
-
-    def _check_truncation(self, result: Any) -> None:
-        ceiling = self._explicit_max_output
-        metrics = getattr(result, "metrics", None)
-        if ceiling is None or metrics is None:
-            return
-        if not hit_output_ceiling(self.provider, metrics, ceiling):
-            return
-        content = getattr(result, "content", None)
-        logger.warning(
-            "%s on %s/%s used %d of its %d output tokens — the answer was likely cut off",
-            self.name,
-            self.provider,
-            self.model_id,
-            output_tokens_used(self.provider, metrics),
-            ceiling,
-        )
-        if self._structured and not isinstance(content, BaseModel):
-            raise OutputTruncatedError(
-                self.name, ceiling, content if isinstance(content, str) else ""
-            )
-
-    def print_response(self, *args: Any, **kwargs: Any) -> Any:
-        return self.agent.print_response(*args, **kwargs)
 
 
-def reasoning_model_kwargs(
-    provider: Provider,
-    effort: str,
-    *,
-    temperature: float = 1,
-    max_tokens: int = 16000,
-) -> dict[str, Any]:
-    """Provider-specific kwargs for a high-effort reasoning call.
-
-    Each provider's agno model class names its reasoning/thinking knob (and
-    its max-output-tokens field) differently, and not every provider accepts
-    an arbitrary `temperature` alongside reasoning effort — so this can't be
-    one dict passed unconditionally to all three, the way `Ranker`/`RedTeam`
-    used to (Claude-only) before other providers were wired in.
-    """
-    if provider == "claude":
-        return claude_thinking_kwargs(effort, max_tokens)
-    if provider == "openai":
-        # Reasoning-tier OpenAI models reject a caller-set temperature, so it
-        # is omitted rather than passed and rejected by the API. Reasoning-
-        # tier models (this is always a reasoning call — see
-        # `reasoning_effort` above) also reject plain `max_tokens`: OpenAI
-        # requires `max_completion_tokens` instead once a model reasons,
-        # since that budget covers hidden reasoning tokens too, not just
-        # the visible output. `max_tokens` fails with a 400
-        # "Unsupported parameter" — confirmed against a real call.
-        return {
-            "reasoning_effort": effort,
-            "max_completion_tokens": max_tokens,
-        }
-    if provider == "gemini":
-        return {
-            "thinking_level": "low" if effort == "low" else "high",
-            "max_output_tokens": max_tokens,
-            "temperature": temperature,
-        }
-    raise ValueError(f"Unsupported provider {provider!r}.")
-
-
-def claude_thinking_kwargs(effort: str, max_tokens: int) -> dict[str, Any]:
-    """Adaptive thinking at `effort`, with room for `max_tokens` of output.
-
-    No `temperature`: current Claude models have removed the sampling
-    parameters (adaptive thinking runs at the model's own setting), so
-    sending one is at best a no-op and at worst a 400 on the next model.
-    A budget past the SDK's non-streaming limit gets an explicit timeout —
-    see MAX_NONSTREAMING_OUTPUT_TOKENS.
-    """
-    kwargs: dict[str, Any] = {
-        "thinking": {"type": "adaptive"},
-        "output_config": {"effort": effort},
-        "max_tokens": max_tokens,
-    }
-    if max_tokens > MAX_NONSTREAMING_OUTPUT_TOKENS:
-        kwargs["timeout"] = LONG_OUTPUT_TIMEOUT_S
-    return kwargs
-
-
-def deterministic_model_kwargs(provider: Provider) -> dict[str, Any]:
-    """Kwargs for a plain (non-thinking) low-temperature call.
-
-    Claude 5-generation models (confirmed on claude-sonnet-5) reject an
-    explicit `temperature` outside of adaptive-thinking mode — a 400
-    "`temperature` is deprecated for this model" — so it's omitted
-    entirely for claude and the model runs at its own default instead.
-    (claude-haiku-4-5 still accepts temperature=0 fine as of this writing,
-    but the safer default going forward is to not pass it for any claude
-    model, since Anthropic is clearly phasing this out model-by-model and
-    there's no cheap way to know in advance which model id will reject it
-    next.) Gemini/OpenAI still accept and want an explicit temperature=0
-    for deterministic, non-reasoning calls.
-    """
-    if provider == "claude":
-        return {}
-    return {"temperature": 0}
+# --- fallback ----------------------------------------------------------------------
 
 
 def fallback_builder(
     fallback: tuple[Provider, str] | None,
     primary_provider: str,
-    build: Callable[[Provider, str], AgnoAgent],
-) -> Callable[[], AgnoAgent] | None:
+    build: Callable[[Provider, str], ModelAgent],
+) -> Callable[[], ModelAgent] | None:
     """The `build_fallback` that `run_with_fallback` takes: builds the
     fallback agent on demand, or None when there is no fallback or it is the
     primary's own provider (the same outage would fail it too)."""
@@ -279,21 +404,17 @@ def fallback_builder(
 
 
 def run_with_fallback(
-    primary: AgnoAgent,
-    build_fallback: Callable[[], AgnoAgent] | None,
-    *args: Any,
-    **kwargs: Any,
-) -> Any:
-    """Run `primary.run(...)`, retrying once on a fallback provider.
-
-    Only retries on auth/rate-limit/provider/connectivity errors — anything
-    else (bad input, schema mismatch) would fail identically on the fallback
-    provider, so it isn't retried.
-    """
+    primary: ModelAgent,
+    build_fallback: Callable[[], ModelAgent] | None,
+    prompt: str,
+) -> RunResult:
+    """Run `primary`, retrying once on a fallback provider after an outage
+    (`is_fallback_error`). Anything else (bad input, a cut-off or invalid
+    answer, the cost cap) would fail the same way there, so it is raised."""
     try:
-        return primary.run(*args, **kwargs)
-    except _FALLBACK_ERRORS as e:
-        if build_fallback is None:
+        return primary.run(prompt)
+    except Exception as e:
+        if build_fallback is None or not is_fallback_error(e):
             raise
         logger.warning(
             "%s call failed on %s/%s (%s) — retrying on fallback provider",
@@ -302,5 +423,4 @@ def run_with_fallback(
             primary.model_id,
             e,
         )
-        fallback = build_fallback()
-        return fallback.run(*args, **kwargs)
+        return build_fallback().run(prompt)

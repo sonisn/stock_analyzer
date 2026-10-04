@@ -7,8 +7,6 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from agno.workflow.types import StepInput, StepOutput
-
 from ...data.chart_img import fetch_charts
 from ...db.repository import (
     insert_run,
@@ -42,7 +40,7 @@ logger = get_logger("stock_analyzer.cli.discover")
 
 
 class ReportSteps(PipelineBase):
-    def step_refresh_dashboard(self, step_input: StepInput) -> StepOutput:
+    def step_refresh_dashboard(self) -> str:
         """Rewrite the static dashboard so it reflects the run that just
         finished.
 
@@ -57,7 +55,7 @@ class ReportSteps(PipelineBase):
         cosmetic problem, and the next scheduled build fixes it.
         """
         if not self.settings.dashboard_after_run:
-            return StepOutput(content="dashboard: disabled via DASHBOARD_AFTER_RUN=0")
+            return "dashboard: disabled via DASHBOARD_AFTER_RUN=0"
         from datetime import date as _date
         from pathlib import Path
 
@@ -71,19 +69,17 @@ class ReportSteps(PipelineBase):
             out.write_text(render_page(data))
         except Exception as e:  # noqa: BLE001 — cosmetic, never fatal
             logger.warning("Dashboard refresh failed (%s) — the scheduled build will retry", e)
-            return StepOutput(content=f"dashboard: failed ({type(e).__name__})")
-        return StepOutput(
-            content=(
-                f"dashboard: {len(data['holdings'])} holding(s), "
-                f"{len(data['suggestions'])} graded suggestion(s) -> {out}"
-            )
+            return f"dashboard: failed ({type(e).__name__})"
+        return (
+            f"dashboard: {len(data['holdings'])} holding(s), "
+            f"{len(data['suggestions'])} graded suggestion(s) -> {out}"
         )
 
-    def step_history_upkeep(self, step_input: StepInput) -> StepOutput:
+    def step_history_upkeep(self) -> str:
         """Last step of every run: add new history, trim old (db/retention.py).
         Never fails the run — every sub-step only logs on error."""
         if not self.settings.history_upkeep:
-            return StepOutput(content="history upkeep: disabled")
+            return "history upkeep: disabled"
         from ...db.retention import RetentionPolicy, default_file_targets, run_history_upkeep
 
         report = run_history_upkeep(
@@ -100,7 +96,7 @@ class ReportSteps(PipelineBase):
             ),
             file_targets=default_file_targets(self.settings.model_cache_dir),
         )
-        return StepOutput(content=report.summary())
+        return report.summary()
 
     def _record_pick_suggestions(self, run_id: int) -> None:
         """Keep this run's picks in the suggestions ledger with the shares
@@ -135,7 +131,7 @@ class ReportSteps(PipelineBase):
         except Exception as e:
             logger.warning("Could not record the picks as suggestions (%s)", e)
 
-    def step_persist_and_report(self, step_input: StepInput) -> StepOutput:
+    def step_persist_and_report(self) -> str:
         run_id = self._persist_run()
         self._record_pick_suggestions(run_id)
 
@@ -178,11 +174,7 @@ class ReportSteps(PipelineBase):
         if log_path:
             print(f"Log file:  {log_path}")
         status = "emailed" if delivered else "persisted (no email)"
-        return StepOutput(
-            content=(
-                f"Run #{run_id} {status}; PDF {len(pdf_bytes)} bytes (saved to {local_pdf_path})"
-            )
-        )
+        return f"Run #{run_id} {status}; PDF {len(pdf_bytes)} bytes (saved to {local_pdf_path})"
 
     def _persist_run(self) -> int:
         """The run, its candidates, snapshots, scorecards, picks and outputs."""

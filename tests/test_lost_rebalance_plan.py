@@ -52,9 +52,8 @@ def test_the_error_carries_the_text_the_run_paid_for():
 
 
 def test_a_cut_off_plan_keeps_its_text_and_says_it_was_truncated(monkeypatch):
-    """agno never reports the stop reason, so the check used to read a
-    field that was always empty and call every lost plan "malformed". The
-    token count is what shows the ceiling was hit."""
+    """A plan that stops at its output ceiling must say it was cut off,
+    not that it was malformed, and keep the text the run paid for."""
     from stock_analyzer.discover.rebalancer import Rebalancer
     from stock_analyzer.llm import OutputTruncatedError
 
@@ -192,16 +191,33 @@ def test_a_budget_over_the_unstreamed_ceiling_needs_an_explicit_timeout():
     assert configured <= 128_000, "128k is the model's own output limit"
 
 
-def test_the_timeout_actually_reaches_the_model():
-    """The bypass only works if the timeout lands on the Anthropic client,
-    so assert it is on the model the agent was built with."""
+def test_the_output_budget_reaches_the_request():
+    """The budget only helps if it is on the request the agent sends. (A
+    Claude call past the SDK's unstreamed limit is streamed by Pydantic AI,
+    so no timeout is needed to get it sent.)"""
     from stock_analyzer.discover import rebalancer as r
-    from stock_analyzer.llm import MAX_NONSTREAMING_OUTPUT_TOKENS
 
-    model = r.Rebalancer("claude", "claude-opus-5").agent._model
-    assert model.max_tokens == r.REBALANCER_MAX_OUTPUT_TOKENS
-    if r.REBALANCER_MAX_OUTPUT_TOKENS > MAX_NONSTREAMING_OUTPUT_TOKENS:
-        assert (model.timeout or 0) > 0
+    agent = r.Rebalancer("claude", "claude-opus-5").agent
+    assert agent.agent.model_settings == {
+        "max_tokens": r.REBALANCER_MAX_OUTPUT_TOKENS,
+        "thinking": "high",
+    }
+
+
+def test_a_plan_that_fails_the_schema_twice_keeps_its_text(monkeypatch):
+    from stock_analyzer.discover.rebalancer import Rebalancer
+    from stock_analyzer.llm import InvalidOutputError
+
+    rb = Rebalancer("claude", "claude-opus-5")
+
+    def _invalid(*_a, **_k):
+        raise InvalidOutputError("Rebalancer", "bad", "SELL MRVL because")
+
+    monkeypatch.setattr(rb.agent, "run", _invalid)
+    with pytest.raises(RebalancePlanUnparseable) as e:
+        rb.decide({}, "", 1000.0)
+    assert e.value.truncated is False
+    assert e.value.raw_text == "SELL MRVL because"
 
 
 def test_replay_reads_a_stored_run_back(tmp_path):

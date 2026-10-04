@@ -28,9 +28,9 @@ from __future__ import annotations
 from typing import Any
 
 from ..llm import (
-    AgnoAgent,
+    ModelAgent,
     Provider,
-    deterministic_model_kwargs,
+    deterministic_settings,
     fallback_builder,
     run_with_fallback,
 )
@@ -161,28 +161,20 @@ def _format_revisions_summary(eps_revisions: dict) -> str:
     return out
 
 
-def _build_agent(provider: Provider, model: str) -> AgnoAgent:
-    return AgnoAgent(
+def _build_agent(provider: Provider, model: str) -> ModelAgent:
+    return ModelAgent(
         "MarketThemes",
         provider,
         model,
-        model_kwargs={
-            **deterministic_model_kwargs(provider),
-            "retries": 3,
-            "exponential_backoff": True,
-            "delay_between_retries": 10,
-            # 8 themes x (description + 10-25 members) plus the rendered
-            # full_text block runs well past the provider default, and a
-            # truncated response is not recoverable: the JSON ends
-            # mid-string and the whole themes object is dropped
-            # ("Unterminated string ... Failed to convert response to
-            # output_schema"). Budget for the full object — and for the
-            # thinking current Sonnet models do by default, which spends
-            # from the same budget.
-            "max_tokens": 16000,
-        },
         instructions=MARKET_THEMES_INSTRUCTIONS,
         output_schema=MarketThemes,
+        # 8 themes x (description + 10-25 members) plus the rendered
+        # full_text block runs well past the provider default, and a
+        # truncated response is not recoverable: the JSON ends mid-string
+        # and the whole themes object is dropped. Budget for the full
+        # object — and for the thinking current Sonnet models do by
+        # default, which spends from the same budget.
+        settings=deterministic_settings(max_tokens=16000, http_retries=3),
     )
 
 

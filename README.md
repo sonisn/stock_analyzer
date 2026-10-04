@@ -250,7 +250,9 @@ src/stock_analyzer/
 │                    #                    SnapTrade, Tavily, chart-img)
 ├── agents/          # Standalone agents (insider, news reranker, portfolio)
 ├── reporting/       # SMTP + analyst-report HTML renderer
-├── llm.py           # AgnoAgent factory (Claude + Gemini + OpenAI) + provider fallback
+├── llm.py           # ModelAgent on Pydantic AI (Claude + Gemini + OpenAI): settings,
+│                    #   cost cap, output ceiling, provider fallback
+├── pipeline.py      # Step runner for discover/rebalance (step log in pipeline_steps)
 ├── http_client.py   # Shared retry / rate-limit HTTP client
 └── preflight.py     # Fail-fast startup checks
 ```
@@ -267,7 +269,9 @@ the actual universe + RS data (`_validate_and_correct_themes`); a
 verdict auto-repair pass (`_repair_verdict_inconsistencies`) rewrites
 SELL/TRIM verdicts that contradict their own prose; structured
 Pydantic outputs everywhere so every LLM stage is a field read, not
-a regex.
+a regex — returned as the provider's native JSON-schema output (Claude
+keeps its thinking; a forced tool call would switch it off) and sent back
+to the model once with the validation errors when it doesn't fit.
 
 ## Outputs
 
@@ -1171,9 +1175,9 @@ email says so instead of arriving empty, and when every source fails it is
 not sent and the job alerts.
 
 Structured LLM stages detect an answer cut off at its output ceiling
-(agno does not pass the provider's stop reason through, so it is read off
-the token count) and raise `OutputTruncatedError` with the raw text,
-rather than handing a half-written JSON document downstream.
+(the provider's stop reason) and raise `OutputTruncatedError` with the raw
+text, rather than handing a half-written JSON document downstream or
+paying for a retry under the same ceiling.
 
 
 ### Off-site backup

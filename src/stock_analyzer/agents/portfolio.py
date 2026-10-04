@@ -8,7 +8,7 @@ from typing import Any
 
 from ..data.market_news import fetch_market_sentiment_news
 from ..data.ticker import fetch_ticker_data
-from ..llm import AgnoAgent, Provider
+from ..llm import ModelAgent, Provider
 from ..logging import get_logger
 from ..providers import HelperProvider
 from ..serialization import dumps_prompt
@@ -82,14 +82,14 @@ class PortfolioAgent:
         self.name = name
         self.model = model
 
-        self.sentiment_agent = AgnoAgent(
+        self.sentiment_agent = ModelAgent(
             f"{name} (sentiment)",
             sentiment_provider or provider,
             sentiment_model or model,
             instructions=SENTIMENT_INSTRUCTIONS,
         )
 
-        self.ticker_agent = AgnoAgent(
+        self.ticker_agent = ModelAgent(
             f"{name} (ticker)",
             ticker_provider or provider,
             ticker_model or model,

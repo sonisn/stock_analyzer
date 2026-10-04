@@ -8,7 +8,7 @@ concentration).
 
 from __future__ import annotations
 
-from ..llm import AgnoAgent, Provider, fallback_builder, reasoning_model_kwargs, run_with_fallback
+from ..llm import ModelAgent, Provider, fallback_builder, reasoning_settings, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import Allocation, CorrelatedPair, SizerOutput
 
@@ -89,17 +89,17 @@ prose plan in `full_text`. Structured fields must match the prose.\
 """
 
 
-def _build_agent(provider: Provider, model: str, effort: str) -> AgnoAgent:
+def _build_agent(provider: Provider, model: str, effort: str) -> ModelAgent:
     # Adaptive thinking is sufficient for sizing (constraint optimization,
     # not open-ended reasoning). Medium effort. Thinking spends from the
     # same budget as the answer, so 4,000 left too little for the JSON.
-    return AgnoAgent(
+    return ModelAgent(
         "Sizer",
         provider,
         model,
-        model_kwargs=reasoning_model_kwargs(provider, effort, max_tokens=16000),
         instructions=SIZER_INSTRUCTIONS,
         output_schema=SizerOutput,
+        settings=reasoning_settings(effort, max_tokens=16000),
     )
 
 

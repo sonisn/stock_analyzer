@@ -241,7 +241,7 @@ def _step(monkeypatch, survivors, books, *, boom=False):
 
     monkeypatch.setattr(backlog, "batch_rpo", fake_batch)
     wf = _FakeWorkflow(survivors)
-    return DiscoverPipeline.step_contracted_book(wf, None), wf
+    return DiscoverPipeline.step_contracted_book(wf), wf
 
 
 def test_the_step_fetches_books_for_survivors(monkeypatch):
@@ -251,20 +251,20 @@ def test_the_step_fetches_books_for_survivors(monkeypatch):
     }
     out, wf = _step(monkeypatch, ["AVGO", "TSLA", "BE"], books)
     assert set(wf.state["contracted_book"]) == {"AVGO", "TSLA"}
-    assert "2/3 tag one" in out.content
-    assert "1 growing" in out.content  # TSLA's is shrinking
+    assert "2/3 tag one" in out
+    assert "1 growing" in out  # TSLA's is shrinking
 
 
 def test_no_survivors_needs_no_request(monkeypatch):
     out, wf = _step(monkeypatch, [], {})
     assert wf.state["contracted_book"] == {}
-    assert "no survivors" in out.content
+    assert "no survivors" in out
 
 
 def test_a_failed_fetch_does_not_stop_the_run(monkeypatch):
     out, wf = _step(monkeypatch, ["AVGO"], {}, boom=True)
     assert wf.state["contracted_book"] == {}
-    assert "0/1" in out.content
+    assert "0/1" in out
 
 
 def test_the_analyst_is_told_what_a_missing_book_means():

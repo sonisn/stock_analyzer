@@ -20,9 +20,9 @@ from typing import Any
 from ..data.fundamentals import fetch_fundamentals
 from ..data.sec_edgar import load_ticker_cik_map
 from ..llm import (
-    AgnoAgent,
+    ModelAgent,
     Provider,
-    deterministic_model_kwargs,
+    deterministic_settings,
     fallback_builder,
     run_with_fallback,
 )
@@ -67,13 +67,13 @@ _PEER_FIELDS = (
 )
 
 
-def _build_agent(provider: Provider, model: str) -> AgnoAgent:
-    return AgnoAgent(
+def _build_agent(provider: Provider, model: str) -> ModelAgent:
+    return ModelAgent(
         "PeerFinder",
         provider,
         model,
-        model_kwargs=deterministic_model_kwargs(provider),
         instructions=PEER_FINDER_INSTRUCTIONS,
+        settings=deterministic_settings(),
     )
 
 

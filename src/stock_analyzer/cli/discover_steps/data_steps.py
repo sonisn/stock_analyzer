@@ -6,8 +6,6 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
-from agno.workflow.types import StepInput, StepOutput
-
 from ...data.brokerage import fetch_portfolio_holdings, listed_tickers
 from ...data.earnings_calendar import batch_earnings_flags
 from ...data.eps_revisions import batch_eps_revisions
@@ -84,7 +82,7 @@ def holdings_frame(holdings: dict[str, list[dict[str, Any]]]) -> tuple[str, ...]
 class DataSteps(PipelineBase):
     # --- step executors ------------------------------------------------
 
-    def step_universe(self, step_input: StepInput) -> StepOutput:
+    def step_universe(self) -> str:
         # Holdings belong in the sampling frame: a name you already own is
         # always worth re-evaluating. Fetched here (not in step_holdings,
         # which runs later) and cached in state so the brokerage is only
@@ -164,19 +162,17 @@ class DataSteps(PipelineBase):
         self.state["universe"] = universe
         self.state["tickers"] = list(universe.keys())
         frame_size = sum(1 for d in universe.values() if d.get("in_base_universe"))
-        return StepOutput(
-            content=(
-                f"Universe: {len(universe)} candidates "
-                f"({frame_size} in frame, {len(universe) - frame_size} news-only)"
-            )
+        return (
+            f"Universe: {len(universe)} candidates "
+            f"({frame_size} in frame, {len(universe) - frame_size} news-only)"
         )
 
-    def step_technicals(self, step_input: StepInput) -> StepOutput:
+    def step_technicals(self) -> str:
         tickers = self.state["tickers"]
         self.state["technicals"] = batch_technicals(tickers)
-        return StepOutput(content=f"Technicals: {len(self.state['technicals'])}/{len(tickers)}")
+        return f"Technicals: {len(self.state['technicals'])}/{len(tickers)}"
 
-    def step_prescreen(self, step_input: StepInput) -> StepOutput:
+    def step_prescreen(self) -> str:
         """Narrow the frame to names that can still pass the hard filter.
 
         Technicals cost one request per ticker; fundamentals and EPS
@@ -214,32 +210,28 @@ class DataSteps(PipelineBase):
             len(passed),
             3 * (len(tickers) - len(passed)),
         )
-        return StepOutput(
-            content=f"Prescreen: {len(passed)}/{len(tickers)} names cleared the trend gate"
-        )
+        return f"Prescreen: {len(passed)}/{len(tickers)} names cleared the trend gate"
 
-    def step_fundamentals(self, step_input: StepInput) -> StepOutput:
+    def step_fundamentals(self) -> str:
         tickers = self.state.get("screen_tickers") or self.state["tickers"]
         self.state["fundamentals"] = batch_fundamentals(tickers)
-        return StepOutput(content=f"Fundamentals: {len(self.state['fundamentals'])}/{len(tickers)}")
+        return f"Fundamentals: {len(self.state['fundamentals'])}/{len(tickers)}"
 
-    def step_historical_volatility(self, step_input: StepInput) -> StepOutput:
+    def step_historical_volatility(self) -> str:
         # Used post-ranker to sanity-check stated scenario returns against
         # each ticker's own realized volatility (output_validation.py) —
         # not part of the score or any LLM prompt.
         tickers = self.state.get("screen_tickers") or self.state["tickers"]
         self.state["historical_volatility"] = fetch_realized_volatility(tickers)
-        return StepOutput(
-            content=f"Historical volatility: {len(self.state['historical_volatility'])}/{len(tickers)}"
-        )
+        return f"Historical volatility: {len(self.state['historical_volatility'])}/{len(tickers)}"
 
-    def step_sector_rotation(self, step_input: StepInput) -> StepOutput:
+    def step_sector_rotation(self) -> str:
         self.state["sector_rotation"] = sector_rotation_summary(months=6)
         leaders = self.state["sector_rotation"].get("leaders", [])
         laggards = self.state["sector_rotation"].get("laggards", [])
-        return StepOutput(content=f"Sector leaders (6mo): {leaders}; laggards: {laggards}")
+        return f"Sector leaders (6mo): {leaders}; laggards: {laggards}"
 
-    def step_macro_regime(self, step_input: StepInput) -> StepOutput:
+    def step_macro_regime(self) -> str:
         data = fetch_regime_data(self.settings.fred_api_key)
         self.state["macro_data"] = data
         summary = regime_summary_text(data)
@@ -258,9 +250,9 @@ class DataSteps(PipelineBase):
             logger.warning("World markets unavailable (%s) — US macro only", e)
         self.state["macro_summary"] = summary
         # Truncate for terminal preview.
-        return StepOutput(content=self.state["macro_summary"][:200])
+        return self.state["macro_summary"][:200]
 
-    def step_track_record(self, step_input: StepInput) -> StepOutput:
+    def step_track_record(self) -> str:
         record = measure_track_record(self.settings.discover_db_path)
         self.state["track_record"] = record
         self.state["track_record_summary"] = format_track_record_summary(record)
@@ -294,9 +286,9 @@ class DataSteps(PipelineBase):
         except Exception as e:
             logger.warning("paper ledger failed (%s) — report will omit it", e)
             self.state["paper_ledger"] = None
-        return StepOutput(content=self.state["track_record_summary"])
+        return self.state["track_record_summary"]
 
-    def step_thesis_check(self, step_input: StepInput) -> StepOutput:
+    def step_thesis_check(self) -> str:
         """Re-check every recent pick's thesis (no LLM). Runs after the
         screen so this run's EPS revisions are available."""
         try:
@@ -307,14 +299,14 @@ class DataSteps(PipelineBase):
         except Exception as e:
             logger.warning("thesis check failed (%s) — report will omit it", e)
             self.state["thesis_checks"] = []
-            return StepOutput(content="thesis check: failed; skipping")
+            return "thesis check: failed; skipping"
         self.state["thesis_checks"] = thesis_report_data(checks)
         flagged = [f"{c.ticker} {c.status}" for c in checks if c.status != "INTACT"]
         for line in flagged:
             logger.info("Thesis check: %s", line)
-        return StepOutput(content=f"Thesis check: {len(checks)} open picks, {len(flagged)} flagged")
+        return f"Thesis check: {len(checks)} open picks, {len(flagged)} flagged"
 
-    def step_market_themes(self, step_input: StepInput) -> StepOutput:
+    def step_market_themes(self) -> str:
         """Detect 3-8 named market themes that are visible in the
         universe's actual price action + EPS revisions. Grounded in
         real data (top/bottom performers, revision direction) rather
@@ -348,14 +340,12 @@ class DataSteps(PipelineBase):
         self.state["themes_by_ticker"] = themes_by_ticker(themes)
         if themes is None:
             self.state["market_themes_block"] = ""
-            return StepOutput(content="market_themes: detection failed; skipping bias")
+            return "market_themes: detection failed; skipping bias"
         self.state["market_themes_block"] = themes.full_text
         names = [t.name for t in themes.themes]
-        return StepOutput(
-            content=f"Market themes: {len(themes.themes)} detected ({', '.join(names[:5])})"
-        )
+        return f"Market themes: {len(themes.themes)} detected ({', '.join(names[:5])})"
 
-    def step_screen(self, step_input: StepInput) -> StepOutput:
+    def step_screen(self) -> str:
         universe = self.state["universe"]
         fundamentals = self.state["fundamentals"]
         technicals = self.state["technicals"]
@@ -420,13 +410,10 @@ class DataSteps(PipelineBase):
         self._add_similar_setups(survivors)
 
         if not survivors:
-            # Don't raise — agno doesn't propagate state from a step that
-            # raises, which leaves every enrichment step in the next
-            # parallel block reading a missing survivor_tickers key and
-            # cascading 4 retry attempts × 10 steps of KeyError noise.
-            # Log loudly + return so state is preserved; downstream
-            # steps short-circuit on the empty list and the run lands as
-            # an honest 0-candidates row in the DB.
+            # Don't raise — a step that raises stops the run, and an empty
+            # shortlist is a result, not a failure. Log loudly + return;
+            # downstream steps short-circuit on the empty list and the run
+            # lands as an honest 0-candidates row in the DB.
             logger.error(
                 "Screen: no candidates passed hard filters out of %d "
                 "(top fail reasons: %s). Continuing with empty survivors "
@@ -434,10 +421,8 @@ class DataSteps(PipelineBase):
                 len(candidates),
                 _top_fail_reasons(candidates),
             )
-            return StepOutput(content=f"Screen: 0/{len(candidates)} passed — no survivors")
-        return StepOutput(
-            content=f"Screen: {passed}/{len(candidates)} passed; top {len(survivors)} → LLM"
-        )
+            return f"Screen: 0/{len(candidates)} passed — no survivors"
+        return f"Screen: {passed}/{len(candidates)} passed; top {len(survivors)} → LLM"
 
     def _screen_books(
         self,
@@ -600,23 +585,23 @@ class DataSteps(PipelineBase):
         except Exception as e:
             logger.warning("similar-past-setups lookup failed (%s) — continuing without", e)
 
-    def step_risk_factors(self, step_input: StepInput) -> StepOutput:
+    def step_risk_factors(self) -> str:
         tickers = self.state.get("survivor_tickers") or []
         if not tickers:
             self.state["risk_factors"] = {}
-            return StepOutput(content="risk_factors: no survivors; skipping")
+            return "risk_factors: no survivors; skipping"
         self.state["risk_factors"] = batch_risk_factors(tickers)
-        return StepOutput(content=f"SEC 10-K: {len(self.state['risk_factors'])}/{len(tickers)}")
+        return f"SEC 10-K: {len(self.state['risk_factors'])}/{len(tickers)}"
 
-    def step_news(self, step_input: StepInput) -> StepOutput:
+    def step_news(self) -> str:
         tickers = self.state.get("survivor_tickers") or []
         if not tickers:
             self.state["news"] = {}
             self.state["recent_news"] = {}
-            return StepOutput(content="news: no survivors; skipping")
+            return "news: no survivors; skipping"
         self.state["news"] = _batch_news(tickers)
         self.state["recent_news"] = self._fetch_recent_news(tickers)
-        return StepOutput(content=f"News fetched for {len(tickers)}")
+        return f"News fetched for {len(tickers)}"
 
     def _fetch_recent_news(self, tickers: list[str]) -> dict[str, list[dict[str, Any]]]:
         fundamentals = {
@@ -628,43 +613,37 @@ class DataSteps(PipelineBase):
             list(tickers), names, days=self.settings.discover_catalyst_news_days
         )
 
-    def step_earnings(self, step_input: StepInput) -> StepOutput:
+    def step_earnings(self) -> str:
         tickers = self.state.get("survivor_tickers") or []
         if not tickers:
             self.state["earnings_alerts"] = {}
-            return StepOutput(content="earnings: no survivors; skipping")
+            return "earnings: no survivors; skipping"
         self.state["earnings_alerts"] = batch_earnings_flags(
             tickers, within_days=5, db_path=self.settings.discover_db_path
         )
-        return StepOutput(
-            content=(
-                f"Earnings within 5d: {len(self.state['earnings_alerts'])}/{len(tickers)} flagged"
-            )
-        )
+        return f"Earnings within 5d: {len(self.state['earnings_alerts'])}/{len(tickers)} flagged"
 
-    def step_insider_selling(self, step_input: StepInput) -> StepOutput:
+    def step_insider_selling(self) -> str:
         # Kept for back-compat when FINNHUB_API_KEY is unset; the new
         # Finnhub-backed insider activity in `step_finnhub_signals` is
         # strictly richer (real Form 4 filings vs news-mention heuristic).
         tickers = set(self.state.get("survivor_tickers") or [])
         if not tickers:
             self.state["insider_selling"] = {}
-            return StepOutput(content="insider_selling: no survivors; skipping")
+            return "insider_selling: no survivors; skipping"
         self.state["insider_selling"] = insider_selling_mentions(tickers, days=14)
-        return StepOutput(
-            content=f"Insider selling: {len(self.state['insider_selling'])} survivors flagged"
-        )
+        return f"Insider selling: {len(self.state['insider_selling'])} survivors flagged"
 
-    def step_finnhub_signals(self, step_input: StepInput) -> StepOutput:
+    def step_finnhub_signals(self) -> str:
         tickers = list(self.state.get("survivor_tickers") or [])
         if not tickers:
             self.state["finnhub_signals"] = {}
-            return StepOutput(content="finnhub_signals: no survivors; skipping")
+            return "finnhub_signals: no survivors; skipping"
         self.state["finnhub_signals"] = batch_finnhub_signals(tickers)
         n = sum(1 for v in self.state["finnhub_signals"].values() if v)
-        return StepOutput(content=f"Finnhub signals: {n}/{len(tickers)} tickers covered")
+        return f"Finnhub signals: {n}/{len(tickers)} tickers covered"
 
-    def step_eps_revisions(self, step_input: StepInput) -> StepOutput:
+    def step_eps_revisions(self) -> str:
         """Analyst EPS-estimate revisions over the last 7 and 30 days.
         One of the strongest forward-thesis signals available.
 
@@ -675,7 +654,7 @@ class DataSteps(PipelineBase):
         tickers = list(self.state.get("screen_tickers") or self.state.get("tickers") or [])
         if not tickers:
             self.state["eps_revisions"] = {}
-            return StepOutput(content="eps_revisions: empty universe; skipping")
+            return "eps_revisions: empty universe; skipping"
         self.state["eps_revisions"] = batch_eps_revisions(tickers)
         raising = sum(
             1 for v in self.state["eps_revisions"].values() if v.get("direction_30d") == "raising"
@@ -683,27 +662,25 @@ class DataSteps(PipelineBase):
         lowering = sum(
             1 for v in self.state["eps_revisions"].values() if v.get("direction_30d") == "lowering"
         )
-        return StepOutput(
-            content=(
-                f"EPS revisions: {len(self.state['eps_revisions'])}/{len(tickers)} "
-                f"covered ({raising} raising, {lowering} lowering, "
-                f"rest stable or no coverage)"
-            )
+        return (
+            f"EPS revisions: {len(self.state['eps_revisions'])}/{len(tickers)} "
+            f"covered ({raising} raising, {lowering} lowering, "
+            f"rest stable or no coverage)"
         )
 
-    def step_quarterly_mda(self, step_input: StepInput) -> StepOutput:
+    def step_quarterly_mda(self) -> str:
         tickers = self.state.get("survivor_tickers") or []
         if not tickers:
             self.state["quarterly_mda"] = {}
-            return StepOutput(content="quarterly_mda: no survivors; skipping")
+            return "quarterly_mda: no survivors; skipping"
         self.state["quarterly_mda"] = batch_quarterly_mda(tickers)
-        return StepOutput(content=f"10-Q MD&A: {len(self.state['quarterly_mda'])}/{len(tickers)}")
+        return f"10-Q MD&A: {len(self.state['quarterly_mda'])}/{len(tickers)}"
 
-    def step_peer_comparison(self, step_input: StepInput) -> StepOutput:
+    def step_peer_comparison(self) -> str:
         tickers = self.state.get("survivor_tickers") or []
         if not tickers:
             self.state["peer_comparison"] = {}
-            return StepOutput(content="peer_comparison: no survivors; skipping")
+            return "peer_comparison: no survivors; skipping"
         fundamentals = self.state.get("fundamentals", {})
         target_meta = {
             t: {
@@ -720,38 +697,32 @@ class DataSteps(PipelineBase):
                 self.settings.resolve_fallback_model(),
             ),
         )
-        return StepOutput(
-            content=f"Peer comparison: {len(self.state['peer_comparison'])}/{len(tickers)}"
-        )
+        return f"Peer comparison: {len(self.state['peer_comparison'])}/{len(tickers)}"
 
-    def step_earnings_transcripts(self, step_input: StepInput) -> StepOutput:
+    def step_earnings_transcripts(self) -> str:
         tickers = self.state.get("survivor_tickers") or []
         if not tickers:
             self.state["earnings_transcripts"] = {}
-            return StepOutput(content="earnings_transcripts: no survivors; skipping")
+            return "earnings_transcripts: no survivors; skipping"
         self.state["earnings_transcripts"] = batch_transcript_snippets(tickers)
-        return StepOutput(
-            content=f"Transcripts: {len(self.state['earnings_transcripts'])}/{len(tickers)}"
-        )
+        return f"Transcripts: {len(self.state['earnings_transcripts'])}/{len(tickers)}"
 
-    def step_share_trades(self, step_input: StepInput) -> StepOutput:
+    def step_share_trades(self) -> str:
         tickers = self.state.get("survivor_tickers") or []
         if not tickers:
             self.state["share_trades"] = {}
-            return StepOutput(content="share_trades: no survivors; skipping")
+            return "share_trades: no survivors; skipping"
         self.state["share_trades"] = batch_share_trade_data(tickers)
         signals = {
             (data.get("insider_summary_6mo") or {}).get("insider_signal", "neutral")
             for data in self.state["share_trades"].values()
         }
-        return StepOutput(
-            content=(
-                f"Share trades fetched for {len(self.state['share_trades'])}"
-                f"/{len(tickers)}; signals seen: {sorted(signals)}"
-            )
+        return (
+            f"Share trades fetched for {len(self.state['share_trades'])}"
+            f"/{len(tickers)}; signals seen: {sorted(signals)}"
         )
 
-    def step_contracted_book(self, step_input: StepInput) -> StepOutput:
+    def step_contracted_book(self) -> str:
         """Signed orders each survivor has not delivered yet (data/backlog).
 
         The only forward number in the payload that is not a forecast:
@@ -766,7 +737,7 @@ class DataSteps(PipelineBase):
         survivors = [c["ticker"] for c in (self.state.get("survivors") or [])]
         if not survivors:
             self.state["contracted_book"] = {}
-            return StepOutput(content="contracted_book: no survivors")
+            return "contracted_book: no survivors"
         try:
             from ...data.backlog import batch_rpo
 
@@ -776,9 +747,7 @@ class DataSteps(PipelineBase):
             books = {}
         self.state["contracted_book"] = books
         growing = sum(1 for b in books.values() if (b.get("yoy_pct") or 0) > 0)
-        return StepOutput(
-            content=(
-                f"contracted_book: {len(books)}/{len(survivors)} tag one, "
-                f"{growing} growing year-on-year"
-            )
+        return (
+            f"contracted_book: {len(books)}/{len(survivors)} tag one, "
+            f"{growing} growing year-on-year"
         )

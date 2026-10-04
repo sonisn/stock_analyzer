@@ -5,10 +5,11 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pydantic_ai.usage import RequestUsage
 
 from stock_analyzer.discover.analyst import analyze_tiered
 from stock_analyzer.discover.report_sections import append_usage_section
-from stock_analyzer.llm import AgnoAgent
+from stock_analyzer.llm import ModelAgent
 from stock_analyzer.usage import TRACKER, UsageTracker
 
 
@@ -69,13 +70,12 @@ def test_missing_metrics_is_ignored():
     assert t.rows() == []
 
 
-def test_agent_run_records_usage_under_agent_name():
+def test_agent_run_records_usage_under_agent_name(monkeypatch):
+    from .llm_fakes import script
+
     TRACKER.reset()
-    agent = AgnoAgent("Sizer", "claude", "claude-opus-5")
-    agent.agent = SimpleNamespace(
-        run=lambda *a, **k: SimpleNamespace(status=None, content="x", metrics=_metrics(out=2000))
-    )
-    agent.run("prompt")
+    script(monkeypatch, [("x", "stop")], usage=RequestUsage(output_tokens=2000))
+    ModelAgent("Sizer", "claude", "claude-opus-5").run("prompt")
     (row,) = TRACKER.rows()
     assert (row.stage, row.model, row.output_tokens) == ("Sizer", "claude-opus-5", 2000)
     TRACKER.reset()

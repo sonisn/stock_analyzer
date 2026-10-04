@@ -8,8 +8,6 @@ in the inbox.
 
 from __future__ import annotations
 
-import inspect
-
 from stock_analyzer.cli.discover import DiscoverPipeline
 from stock_analyzer.cli.rebalance import RebalancePipeline
 from stock_analyzer.config import Settings
@@ -22,11 +20,9 @@ class _Pipe(DiscoverPipeline):
 
 
 def test_both_pipelines_end_by_refreshing_the_page():
-    for module in (
-        inspect.getsource(RebalancePipeline),
-        inspect.getsource(DiscoverPipeline),
-    ):
-        assert 'Step(name="dashboard"' in module, "a run must leave the page current"
+    for pipeline in (RebalancePipeline, DiscoverPipeline):
+        last = pipeline(Settings()).steps()[-1]
+        assert last.name == "dashboard", "a run must leave the page current"
 
 
 def test_the_refresh_never_fails_the_run(monkeypatch):
@@ -39,14 +35,14 @@ def test_the_refresh_never_fails_the_run(monkeypatch):
 
     monkeypatch.setattr(disc, "logger", disc.logger)
     monkeypatch.setattr("stock_analyzer.cli.dashboard.collect", boom)
-    out = _Pipe(Settings()).step_refresh_dashboard(None)
-    assert "failed" in out.content
-    assert "RuntimeError" in out.content
+    out = _Pipe(Settings()).step_refresh_dashboard()
+    assert "failed" in out
+    assert "RuntimeError" in out
 
 
 def test_it_can_be_turned_off():
-    out = _Pipe(Settings(dashboard_after_run=False)).step_refresh_dashboard(None)
-    assert "disabled" in out.content
+    out = _Pipe(Settings(dashboard_after_run=False)).step_refresh_dashboard()
+    assert "disabled" in out
 
 
 def test_it_writes_where_the_cli_writes(tmp_path, monkeypatch):
@@ -68,8 +64,8 @@ def test_it_writes_where_the_cli_writes(tmp_path, monkeypatch):
             "record": {"rows": 0, "tickers": 0, "first": None, "last": None},
         },
     )
-    out = _Pipe(settings).step_refresh_dashboard(None)
-    assert target.exists(), out.content
+    out = _Pipe(settings).step_refresh_dashboard()
+    assert target.exists(), out
     assert "<html" in target.read_text()
 
 

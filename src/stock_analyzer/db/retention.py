@@ -14,7 +14,8 @@ TRIM — only data nothing reads back at full fidelity:
     text, ranker / red-team / rebalance text, dashboard JSON) is blanked;
     the rows and every number in them stay. `run_outputs.sizer_full` is
     never trimmed: the paper-portfolio ledger re-reads it for every run;
-  - agno's step-by-step session log older than `session_days`;
+  - the pipeline step log (`pipeline_steps`) older than `session_days`, and
+    what is left of agno's old session log (`workflow_session*`);
   - candidates that FAILED the screen, older than `candidate_days` (the
     longest window any check reads — validate-screen and calibration look
     back 540 days); screen survivors, picks, scenarios, catalysts, review
@@ -122,6 +123,16 @@ def prune_database(db_path: str, policy: RetentionPolicy, *, today: date) -> dic
             r[0]
             for r in exec_sql(session, text("SELECT name FROM sqlite_master WHERE type = 'table'"))
         }
+        if "pipeline_steps" in tables:
+            out["pipeline_steps"] = (
+                exec_sql(
+                    session,
+                    text("DELETE FROM pipeline_steps WHERE started_at < :cutoff"),
+                    params={"cutoff": (today - timedelta(days=policy.session_days)).isoformat()},
+                ).rowcount
+                or 0
+            )
+        # agno's session log, from before pipeline.py: no new rows arrive.
         for table in ("workflow_session_runs", "workflow_session"):
             if table in tables:
                 out[table] = (

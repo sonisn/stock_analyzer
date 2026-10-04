@@ -64,7 +64,7 @@ def _run(p, smtp):
         patch(f"{STEPS}.print_terminal_summary"),
         patch("builtins.print"),
     ):
-        return p.step_persist_and_report(None)
+        return p.step_persist_and_report()
 
 
 def _count(db, table):
@@ -79,7 +79,7 @@ def test_the_run_is_stored_and_emailed_with_its_pdf(tmp_path):
 
     db = tmp_path / "d.db"
     assert (_count(db, "candidates"), _count(db, "picks"), _count(db, "suggestions")) == (3, 2, 2)
-    assert out.content.startswith("Run #1 emailed")
+    assert out.startswith("Run #1 emailed")
     (to, subject, _html), kw = smtp_calls[0]
     assert subject.endswith("NVDA, AMD")
     assert kw["attachments"][0][0].endswith(".pdf")
@@ -90,7 +90,7 @@ def test_the_run_is_stored_and_emailed_with_its_pdf(tmp_path):
 def test_no_recipient_still_persists(tmp_path):
     p = _pipeline(tmp_path, None)
     out = _run(p, SimpleNamespace(send_email=lambda *a, **k: pytest.fail("no email expected")))
-    assert out.content.startswith("Run #1 persisted (no email)")
+    assert out.startswith("Run #1 persisted (no email)")
     assert _count(tmp_path / "d.db", "picks") == 2
 
 
@@ -100,6 +100,6 @@ def test_a_failed_delivery_does_not_lose_the_run(tmp_path):
 
     p = _pipeline(tmp_path, "me@example.com")
     out = _run(p, SimpleNamespace(send_email=down))
-    assert out.content.startswith("Run #1 persisted (no email)")
+    assert out.startswith("Run #1 persisted (no email)")
     assert _count(tmp_path / "d.db", "picks") == 2
     assert p.state["pdf_bytes"]

@@ -504,7 +504,7 @@ def test_rebalance_workflow_has_csp_step():
     from stock_analyzer.cli.rebalance import RebalancePipeline
     from stock_analyzer.config import Settings
 
-    names = [getattr(s, "name", None) for s in RebalancePipeline(Settings()).build_workflow().steps]
+    names = [s.name for s in RebalancePipeline(Settings()).steps()]
     assert names.index("cc_data") < names.index("csp_data") < names.index("rebalance")
 
 

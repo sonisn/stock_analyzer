@@ -3,8 +3,6 @@ and the holdings-specific overrides of the discover enrichment steps."""
 
 from __future__ import annotations
 
-from agno.workflow.types import StepInput, StepOutput
-
 from ...data.brokerage import (
     fetch_account_cash,
     fetch_account_meta,
@@ -36,7 +34,7 @@ logger = get_logger("stock_analyzer.cli.rebalance")
 class RebalanceDataSteps(PipelineBase):
     # --- new step executors -------------------------------------------------
 
-    def step_holdings_fetch(self, step_input: StepInput) -> StepOutput:
+    def step_holdings_fetch(self) -> str:
         try:
             holdings = fetch_portfolio_holdings()
         except Exception as e:
@@ -78,14 +76,12 @@ class RebalanceDataSteps(PipelineBase):
         self.state["holdings_tickers"] = [t for t in positions if t in set(analyzable)]
         ta_count = sum(1 for v in position_splits.values() if v.get("has_tax_advantaged"))
         cash_str = f"${cash:,.0f}" if cash is not None else "unknown"
-        return StepOutput(
-            content=(
-                f"Holdings: {len(positions)} positions ({ta_count} with "
-                f"tax-advantaged exposure); cash {cash_str}"
-            )
+        return (
+            f"Holdings: {len(positions)} positions ({ta_count} with "
+            f"tax-advantaged exposure); cash {cash_str}"
         )
 
-    def step_holdings_data(self, step_input: StepInput) -> StepOutput:
+    def step_holdings_data(self) -> str:
         tickers = self.state["holdings_tickers"]
         self.state["holdings_fundamentals"] = batch_fundamentals(tickers)
         self.state["holdings_technicals"] = batch_technicals(tickers)
@@ -110,29 +106,25 @@ class RebalanceDataSteps(PipelineBase):
             ),
         )
         self.state["holdings_transcripts"] = batch_transcript_snippets(tickers)
-        return StepOutput(
-            content=(
-                f"Holdings enrichment: fundamentals={len(self.state['holdings_fundamentals'])}, "
-                f"10-Q MD&A={len(self.state['holdings_quarterly_mda'])}, "
-                f"peers={len(self.state['holdings_peers'])}, "
-                f"transcripts={len(self.state['holdings_transcripts'])}"
-            )
+        return (
+            f"Holdings enrichment: fundamentals={len(self.state['holdings_fundamentals'])}, "
+            f"10-Q MD&A={len(self.state['holdings_quarterly_mda'])}, "
+            f"peers={len(self.state['holdings_peers'])}, "
+            f"transcripts={len(self.state['holdings_transcripts'])}"
         )
 
-    def step_transaction_history(self, step_input: StepInput) -> StepOutput:
+    def step_transaction_history(self) -> str:
         """Pull 3yr of SnapTrade activities and build per-ticker tax lot summaries.
         Runs independently of survivors — relies only on SnapTrade auth."""
         summaries = fetch_transaction_history(db_path=self.settings.discover_db_path)
         self.state["tax_lots"] = to_tax_payloads(summaries)
         n_lots = sum(s.get("lot_count", 0) for s in self.state["tax_lots"].values())
-        return StepOutput(
-            content=(
-                f"Tax lots: {len(self.state['tax_lots'])} tickers, "
-                f"{n_lots} total lots over 3yr lookback"
-            )
+        return (
+            f"Tax lots: {len(self.state['tax_lots'])} tickers, "
+            f"{n_lots} total lots over 3yr lookback"
         )
 
-    def step_news(self, step_input: StepInput) -> StepOutput:
+    def step_news(self) -> str:
         """Override: include holdings tickers so reviewer sees recent catalysts."""
         from ..discover_steps.helpers import _batch_news
 
@@ -142,36 +134,34 @@ class RebalanceDataSteps(PipelineBase):
         if not tickers:
             self.state["news"] = {}
             self.state["recent_news"] = {}
-            return StepOutput(content="news: no tickers; skipping")
+            return "news: no tickers; skipping"
         self.state["news"] = _batch_news(list(tickers))
         self.state["recent_news"] = self._fetch_recent_news(sorted(tickers))
-        return StepOutput(content=f"News fetched for {len(tickers)} tickers")
+        return f"News fetched for {len(tickers)} tickers"
 
-    def step_insider_selling(self, step_input: StepInput) -> StepOutput:
+    def step_insider_selling(self) -> str:
         """Override: include holdings tickers so reviewer sees selling on them too."""
         tickers = set(self.state.get("survivor_tickers") or [])
         if self.state.get("holdings_tickers"):
             tickers |= set(self.state["holdings_tickers"])
         if not tickers:
             self.state["insider_selling"] = {}
-            return StepOutput(content="insider_selling: no tickers; skipping")
+            return "insider_selling: no tickers; skipping"
         self.state["insider_selling"] = insider_selling_mentions(tickers, days=14)
-        return StepOutput(content=f"Insider selling: {len(self.state['insider_selling'])} flagged")
+        return f"Insider selling: {len(self.state['insider_selling'])} flagged"
 
-    def step_share_trades(self, step_input: StepInput) -> StepOutput:
+    def step_share_trades(self) -> str:
         """Override: fetch insider/institutional data for both survivors AND holdings."""
         tickers = set(self.state.get("survivor_tickers") or [])
         if self.state.get("holdings_tickers"):
             tickers |= set(self.state["holdings_tickers"])
         if not tickers:
             self.state["share_trades"] = {}
-            return StepOutput(content="share_trades: no tickers; skipping")
+            return "share_trades: no tickers; skipping"
         self.state["share_trades"] = batch_share_trade_data(list(tickers))
-        return StepOutput(
-            content=f"Share trades fetched for {len(self.state['share_trades'])}/{len(tickers)}"
-        )
+        return f"Share trades fetched for {len(self.state['share_trades'])}/{len(tickers)}"
 
-    def step_finnhub_signals(self, step_input: StepInput) -> StepOutput:
+    def step_finnhub_signals(self) -> str:
         """Earnings surprise + recommendation trend + price targets +
         Form-4 insider activity for survivors AND current holdings."""
         tickers = set(self.state.get("survivor_tickers") or [])
@@ -179,12 +169,12 @@ class RebalanceDataSteps(PipelineBase):
             tickers |= set(self.state["holdings_tickers"])
         if not tickers:
             self.state["finnhub_signals"] = {}
-            return StepOutput(content="finnhub_signals: no tickers; skipping")
+            return "finnhub_signals: no tickers; skipping"
         self.state["finnhub_signals"] = batch_finnhub_signals(list(tickers))
         n = sum(1 for v in self.state["finnhub_signals"].values() if v)
-        return StepOutput(content=f"Finnhub signals: {n}/{len(tickers)} tickers covered")
+        return f"Finnhub signals: {n}/{len(tickers)} tickers covered"
 
-    def step_contracted_book(self, step_input: StepInput) -> StepOutput:
+    def step_contracted_book(self) -> str:
         """SEC-filed order books for the holdings, for the sell decisions.
 
         Free (SEC XBRL), deterministic, and the one forward-looking number
@@ -195,7 +185,7 @@ class RebalanceDataSteps(PipelineBase):
 
         tickers = self.state.get("holdings_tickers") or []
         if not tickers:
-            return StepOutput(content="contracted_book: no analyzable holdings")
+            return "contracted_book: no analyzable holdings"
         try:
             books = batch_rpo(list(tickers))
         except Exception as e:  # noqa: BLE001
@@ -215,4 +205,4 @@ class RebalanceDataSteps(PipelineBase):
                 )
                 or "no YoY comparison yet",
             )
-        return StepOutput(content=f"contracted_book: {len(books)}/{len(tickers)} tagged")
+        return f"contracted_book: {len(books)}/{len(tickers)} tagged"

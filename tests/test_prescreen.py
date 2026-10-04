@@ -3,8 +3,6 @@ names eliminated before their fundamentals were ever fetched."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 from stock_analyzer.cli.discover import DiscoverPipeline
 from stock_analyzer.config import Settings
 from stock_analyzer.discover.screen import passes_hard_filter, passes_trend_gate
@@ -67,7 +65,7 @@ def test_trend_gate_rejects_missing_technicals():
 
 def test_prescreen_keeps_only_uptrending_names():
     pipe = _pipeline(["AAA", "BBB"], {"AAA": UPTREND, "BBB": DOWNTREND})
-    pipe.step_prescreen(MagicMock())
+    pipe.step_prescreen()
     assert pipe.state["screen_tickers"] == ["AAA"]
     assert "BBB" in pipe.state["prescreen_reasons"]
 
@@ -84,7 +82,7 @@ def test_prescreen_keeps_holdings_and_watchlist_regardless_of_trend():
         {"AAA": DOWNTREND, "OWNED": DOWNTREND, "WATCHED": DOWNTREND},
         universe,
     )
-    pipe.step_prescreen(MagicMock())
+    pipe.step_prescreen()
     assert set(pipe.state["screen_tickers"]) == {"OWNED", "WATCHED"}
 
 
@@ -97,7 +95,7 @@ def test_prescreen_caps_survivors_by_relative_strength():
     pipe = _pipeline(
         tickers, technicals, discover_max_screen_candidates=2, discover_trend_gate="strict"
     )
-    pipe.step_prescreen(MagicMock())
+    pipe.step_prescreen()
     assert set(pipe.state["screen_tickers"]) == {"X", "Y"}
     assert pipe.state["prescreen_reasons"]["W"] == ["outside the screen cap for deep analysis"]
 
@@ -117,7 +115,7 @@ def test_soft_gate_admits_dips_and_caps_by_entry_zone_not_momentum():
         "NEAR": {**UPTREND, "rs_6mo": 0.05, "dist_from_52w_high": -0.14},
     }
     pipe = _pipeline(list(technicals), technicals, discover_max_screen_candidates=2)
-    pipe.step_prescreen(MagicMock())
+    pipe.step_prescreen()
     assert set(pipe.state["screen_tickers"]) == {"IDEAL", "NEAR"}
 
 
@@ -127,11 +125,11 @@ def test_screen_reports_the_real_reason_for_prescreened_names():
     pipe = _pipeline(
         ["AAA", "BBB"], {"AAA": UPTREND, "BBB": DOWNTREND}, discover_trend_gate="strict"
     )
-    pipe.step_prescreen(MagicMock())
+    pipe.step_prescreen()
     pipe.state["fundamentals"] = {"AAA": GOOD_FUNDAMENTALS}
     pipe.state["eps_revisions"] = {}
     pipe.state["sector_rotation"] = {}
-    pipe.step_screen(MagicMock())
+    pipe.step_screen()
 
     by_ticker = {c["ticker"]: c for c in pipe.state["candidates"]}
     assert by_ticker["AAA"]["passed_filter"]

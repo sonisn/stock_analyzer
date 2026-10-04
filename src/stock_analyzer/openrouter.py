@@ -1,7 +1,7 @@
 """OpenRouter client for the open models that read, never decide.
 
 A plain chat-completions call over the shared `HttpClient` (retries on
-429/5xx): agno would add nothing here but a dependency on its OpenAI class
+429/5xx): a framework would add nothing here but a dependency on its OpenAI class
 guessing at OpenRouter's extensions. Every call:
 
   - is refused up front if the day's billed spend, plus calls in flight,
@@ -306,7 +306,7 @@ HELPER_MAX_TOKENS = 8000
 
 
 class OpenRouterAgent:
-    """Stands in for `llm.AgnoAgent` in a helper role: `.run(prompt)`
+    """Stands in for `llm.ModelAgent` in a helper role: `.run(prompt)`
     returns an object with `.content`. Billed and capped like every other
     OpenRouter call. `fallback` builds the agent to use when OpenRouter
     fails, answers empty, or fails `validate` (prompt, reply → problems) —
@@ -366,13 +366,13 @@ def helper_agent(
     fallback: tuple[str, str] | None = None,
     validate: Any = None,
 ) -> Any:
-    """An agent for a helper role: `llm.AgnoAgent` for claude/gemini/openai,
+    """An agent for a helper role: `llm.ModelAgent` for claude/gemini/openai,
     `OpenRouterAgent` for "openrouter" (with `fallback` = (provider, model)
     to use if OpenRouter fails)."""
-    from .llm import AgnoAgent
+    from .llm import ModelAgent
 
     if provider != "openrouter":
-        return AgnoAgent(name, cast("Provider", provider), model, instructions=instructions)
+        return ModelAgent(name, cast("Provider", provider), model, instructions=instructions)
     from .config import Settings
 
     back = None
@@ -380,7 +380,7 @@ def helper_agent(
         fb_provider, fb_model = fallback
 
         def back() -> Any:
-            return AgnoAgent(
+            return ModelAgent(
                 name, cast("Provider", fb_provider), fb_model, instructions=instructions
             )
 

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from stock_analyzer import usage
+from stock_analyzer import llm, usage
 from stock_analyzer.discover.analyst import (
     ANALYST_INSTRUCTIONS,
     EXPECTED_OUTPUT_TOKENS,
@@ -14,7 +14,7 @@ from stock_analyzer.discover.analyst import (
 )
 from stock_analyzer.discover.ranker import Ranker
 from stock_analyzer.discover.report_sections import append_usage_section
-from stock_analyzer.llm import AgnoAgent, run_with_fallback
+from stock_analyzer.llm import ModelAgent, run_with_fallback
 from stock_analyzer.usage import BUDGET, TRACKER, BudgetExceededError, estimate_cost
 
 from .test_ranker_consensus import _output
@@ -61,10 +61,12 @@ def test_hold_refuses_calls_that_would_pass_the_cap_including_in_flight():
         pass  # unknown prices never block
 
 
-def test_agent_run_is_refused_and_never_falls_back():
+def test_agent_run_is_refused_and_never_falls_back(monkeypatch):
     BUDGET.configure(0.01)
-    agent = AgnoAgent("Analyst", "claude", "claude-sonnet-4-6", instructions="x" * 100_000)
-    agent.agent.run = lambda *a, **k: pytest.fail("the model must not be called")
+    agent = ModelAgent("Analyst", "claude", "claude-sonnet-4-6", instructions="x" * 100_000)
+    monkeypatch.setattr(
+        llm, "thread_model", lambda *a, **k: pytest.fail("the model must not be called")
+    )
     with pytest.raises(BudgetExceededError):
         run_with_fallback(agent, lambda: pytest.fail("no fallback on a budget refusal"), "hi")
 

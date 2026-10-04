@@ -400,7 +400,7 @@ def test_orchestrator_imports():
 
 
 def test_rebalance_pipeline_imports_and_assembles(tmp_path, monkeypatch):
-    """RebalancePipeline must construct and produce a 10-step workflow.
+    """RebalancePipeline must construct and list its steps.
 
     Hermetic: forces DISCOVER_DB_PATH to a tmp dir so the test doesn't
     depend on whatever path the developer's real .env points to (which
@@ -410,9 +410,7 @@ def test_rebalance_pipeline_imports_and_assembles(tmp_path, monkeypatch):
 
     monkeypatch.setenv("DISCOVER_DB_PATH", str(tmp_path / "test.db"))
     pipeline = RebalancePipeline(Settings.from_env())
-    wf = pipeline.build_workflow()
-    assert wf.name == "Portfolio Rebalance"
-    step_names = [getattr(step, "name", type(step).__name__) for step in wf.steps]
+    step_names = [step.name for step in pipeline.steps()]
     # Rebalance adds 3 steps vs discover's 10; persist step is renamed.
     assert "review_holdings" in step_names
     assert "rebalance" in step_names
@@ -664,7 +662,7 @@ def test_step_cc_data_swallows_unexpected_errors():
     """Production safety: if any internal call in step_cc_data throws
     unexpectedly, the rebalance pipeline must continue with empty CC
     state — not crash."""
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     from stock_analyzer.cli.rebalance import RebalancePipeline
     from stock_analyzer.config import Settings
@@ -681,12 +679,12 @@ def test_step_cc_data_swallows_unexpected_errors():
         "stock_analyzer.data.options_chain.fetch_chains",
         side_effect=RuntimeError("simulated upstream failure"),
     ):
-        out = pipe.step_cc_data(MagicMock())
+        out = pipe.step_cc_data()
 
     # Pipeline must continue — not raise — and state must have safe defaults.
     assert pipe.state["cc_context_block"] == ""
     assert pipe.state["cc_eligibility"] == {}
-    assert "failed" in out.content.lower()
+    assert "failed" in out.lower()
 
 
 def test_validation_summary_log_includes_per_call_details(caplog):
@@ -805,20 +803,18 @@ def test_rebalancer_prompt_documents_account_in_write_call():
     assert "account" in text.lower()
 
 
-def test_workflow_steps_never_auto_retry():
-    # A retried LLM step re-pays every call it already made.
+def test_every_pipeline_step_is_a_bound_step_method():
+    # The runner calls each step with no arguments; a step still written
+    # for the old workflow signature would fail only when the run got there.
+    import inspect
+
     from stock_analyzer.cli.discover import DiscoverPipeline
     from stock_analyzer.cli.rebalance import RebalancePipeline
     from stock_analyzer.config import Settings
+    from stock_analyzer.pipeline import Parallel
 
     for pipeline in (DiscoverPipeline, RebalancePipeline):
-        retrying: list[str] = []
-
-        def walk(steps, retrying=retrying):
-            for step in steps or []:
-                if getattr(step, "max_retries", 0):
-                    retrying.append(step.name)
-                walk(getattr(step, "steps", None))
-
-        walk(pipeline(Settings()).build_workflow().steps)
-        assert retrying == [], (pipeline.__name__, retrying)
+        for item in pipeline(Settings()).steps():
+            for step in item.steps if isinstance(item, Parallel) else (item,):
+                assert inspect.signature(step.run).parameters == {}, step.name
+                assert step.run.__name__.startswith("step_"), step.name

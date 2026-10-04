@@ -6,8 +6,6 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
-from agno.workflow import Parallel, Step, Workflow
-
 from ...data import yf_gateway
 from ...logging import get_logger
 
@@ -454,33 +452,3 @@ def _holdings_value_by_sector(
             if value > 0 and sector:
                 out[sector] = out.get(sector, 0.0) + value
     return out
-
-
-# --- pipeline ----------------------------------------------------------------
-
-
-def without_step_retries(workflow: Workflow) -> Workflow:
-    """Turn off agno's automatic step re-run (default: 3 retries).
-
-    A step that raises would otherwise be executed again from the top —
-    re-paying every LLM call it already made (the Analyst fan-out, all
-    Ranker rounds, the Opus Rebalancer). Provider failures are already
-    retried once on the fallback provider inside the step (llm.py
-    run_with_fallback); data fetches retry in the HTTP/yfinance layers.
-    """
-
-    def walk(steps) -> None:
-        for step in steps or []:
-            if hasattr(step, "max_retries"):
-                step.max_retries = 0
-            walk(getattr(step, "steps", None))
-
-    walk(workflow.steps)
-    return workflow
-
-
-def parallel(*steps: Step, name: str) -> Parallel:
-    """`Parallel(*steps, name=...)`. agno annotates the positional steps as
-    `str | list[...]` though it takes each Step on its own, so a type
-    checker rejects every correct call; the one suppression lives here."""
-    return Parallel(*steps, name=name)  # ty: ignore[invalid-argument-type]

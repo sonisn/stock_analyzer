@@ -12,9 +12,9 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ..llm import (
-    AgnoAgent,
+    ModelAgent,
     Provider,
-    deterministic_model_kwargs,
+    deterministic_settings,
     fallback_builder,
     run_with_fallback,
 )
@@ -407,22 +407,16 @@ def _repair_verdict_inconsistencies(review: HoldingReview, ticker: str) -> Holdi
     return review.model_copy(update=updates)
 
 
-def _build_agent(provider: Provider, model: str) -> AgnoAgent:
-    model_kwargs: dict[str, Any] = {
-        **deterministic_model_kwargs(provider),
-        "retries": 3,
-        "exponential_backoff": True,
-        "delay_between_retries": 10,
-    }
-    if provider == "claude":
-        model_kwargs["cache_system_prompt"] = True
-    return AgnoAgent(
+def _build_agent(provider: Provider, model: str) -> ModelAgent:
+    return ModelAgent(
         "Reviewer",
         provider,
         model,
-        model_kwargs=model_kwargs,
         instructions=REVIEWER_INSTRUCTIONS,
         output_schema=HoldingReview,
+        # The fan-out shares one long system prompt (cached on Claude) and
+        # leans on transport retries for residual 429s.
+        settings=deterministic_settings(cache_instructions=True, http_retries=3),
     )
 
 

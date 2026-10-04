@@ -12,7 +12,7 @@ model's own blind spots).
 
 from __future__ import annotations
 
-from ..llm import AgnoAgent, Provider, fallback_builder, reasoning_model_kwargs, run_with_fallback
+from ..llm import ModelAgent, Provider, fallback_builder, reasoning_settings, run_with_fallback
 from ..logging import get_logger
 from ..models.llm import RedTeamOutput
 
@@ -72,16 +72,16 @@ must match the prose.\
 """
 
 
-def _build_agent(provider: Provider, model: str, effort: str) -> AgnoAgent:
-    return AgnoAgent(
+def _build_agent(provider: Provider, model: str, effort: str) -> ModelAgent:
+    return ModelAgent(
         "RedTeam",
         provider,
         model,
-        # 6000 max_tokens truncated the JSON mid-string on every run at
-        # "high" effort thinking; same fix as the ranker's 8000->16000 bump.
-        model_kwargs=reasoning_model_kwargs(provider, effort, max_tokens=16000),
         instructions=REDTEAM_INSTRUCTIONS,
         output_schema=RedTeamOutput,
+        # 6000 max_tokens truncated the JSON mid-string on every run at
+        # "high" effort thinking; same fix as the ranker's 8000->16000 bump.
+        settings=reasoning_settings(effort, max_tokens=16000),
     )
 
 
