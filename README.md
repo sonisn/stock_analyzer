@@ -325,6 +325,32 @@ system's own accuracy:
   construction, so every row also carries `beta-adj` alpha
   (`ret - β·spy_ret`), with β estimated only on pre-decision data.
 
+## Fifteen-year factor study
+
+```bash
+uv run factor-study                      # both parts (~10 min first time, SEC download)
+uv run factor-study --part risk          # prices only
+uv run factor-study --part fundamentals --refresh-sec
+```
+
+The live record grows by one cohort a month, so it takes years to grade a
+screen rule. This study grades them on month-ends since 2012 instead, using
+only free data and no LLM calls:
+
+- **Fundamentals** — each of the screen's measures (and its 0-45 points and
+  hard rules, computed with `screen.py` itself), plus gross profitability
+  and the earnings surprise, read point-in-time from SEC company facts:
+  only what had been *filed* by each month-end counts
+  (`model/sec_history.py`; files cached 30 days). Market cap uses the
+  actually traded close (the bar store's are split- and dividend-adjusted).
+  Financials are excluded.
+- **Risk** — whether volatility persists, the low-volatility quintiles, and
+  monthly equal- vs inverse-volatility-weighted baskets against SPY.
+
+The universe is today's S&P 500, so names that fell out are missing; that
+flatters high-volatility and turnaround names most. The report is printed
+and saved under `~/.stock_analyzer/reports/`.
+
 ## Grading the system's own forecasts
 
 ```bash

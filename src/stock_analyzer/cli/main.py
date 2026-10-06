@@ -25,6 +25,11 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
     "tax-planner": ("tax_planner", "tax-planner", "year-end tax plan"),
     "plan-check": ("plan_check", "plan-check", "asset location + goal projection"),
     "train-model": ("train_model", "train-model", "train the forward-return model"),
+    "factor-study": (
+        "factor_study",
+        "factor-study",
+        "15-year test of fundamentals and volatility sizing",
+    ),
     "validate-screen": ("validate_screen", "validate-screen", "does the screen score predict?"),
     "score-attribution": ("score_attribution", "score-attribution", "which score parts earn"),
     "replay-rebalance": ("replay_rebalance", "replay-rebalance", "re-run a stored rebalance plan"),
