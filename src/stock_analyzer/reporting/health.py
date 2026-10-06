@@ -705,6 +705,11 @@ def _pick_scorecard_html(h: PortfolioHealth) -> str:
         _scorecard_block(sc, "Discover picks", "Picked", "pick"),
         _vs_screen_html(sc.get("vs_screen") or []),
         _calibration_html(sc.get("calibration") or {}),
+        _calibration_html(
+            sc.get("analyst") or {},
+            title="Does the Analyst's score mean anything?",
+            what="Analyst scores",
+        ),
         _scorecard_block(sc.get("standouts") or {}, "Earnings standouts", "Shown", "standout"),
         _scorecard_block(sc.get("insider") or {}, "Insider-buying clusters", "Shown", "cluster"),
     ]
@@ -744,8 +749,14 @@ def _vs_screen_html(rows: list[dict[str, Any]]) -> str:
     )
 
 
-def _calibration_html(cal: dict[str, Any]) -> str:
-    """Graded picks by the model's conviction and by provider agreement."""
+def _calibration_html(
+    cal: dict[str, Any],
+    *,
+    title: str = "Does conviction mean anything?",
+    what: str = "Conviction",
+) -> str:
+    """Graded names by a model's own rating: the picks by conviction and
+    provider agreement, or every analysed name by the Analyst's score."""
     from ..discover.pick_scorecard import CALIBRATION_MIN_PICKS
 
     graded = cal.get("graded") or 0
@@ -753,10 +764,10 @@ def _calibration_html(cal: dict[str, Any]) -> str:
         return ""
     if graded < CALIBRATION_MIN_PICKS:
         return (
-            '<p style="font-size:13px;color:#6b7280">Conviction check: shown once '
-            f"{CALIBRATION_MIN_PICKS} picks are graded ({graded} so far).</p>"
+            f'<p style="font-size:13px;color:#6b7280">{html.escape(what)} check: shown once '
+            f"{CALIBRATION_MIN_PICKS} names are graded ({graded} so far).</p>"
         )
-    return "<h4>Does conviction mean anything?</h4>" + _table(
+    return f"<h4>{html.escape(title)}</h4>" + _table(
         ["Picks", "Count", "vs SPY", "Beat SPY"],
         [
             [

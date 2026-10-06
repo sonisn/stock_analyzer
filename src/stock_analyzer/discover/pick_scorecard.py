@@ -29,6 +29,11 @@ Two checks ride along with the picks:
   - `calibration`: graded picks split by the model's conviction and by how
     many providers agreed, shown once CALIBRATION_MIN_PICKS are graded —
     whether either one deserves to size a position.
+  - `analyst`: the Analyst's own 1-10 score ("Score: N" in each stored
+    scorecard) for every name it read, ~25 a run against ~5 picks, so the
+    verdict on the model's judgement arrives five times sooner. In May 2026
+    it pointed the wrong way (63 days: scored 7-10 -4.7% median vs SPY,
+    1-5 +2.0%; n=26, noise-level).
 
 No LLM calls. Picks and screen survivors read stored outcomes
 (`label_candidates(only_passed=True)` writes them first); standouts read
@@ -37,6 +42,7 @@ closes from the bar store.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from statistics import mean
@@ -53,6 +59,13 @@ HORIZON_DAYS = 126  # trading days ≈ 6 months
 SCREEN_TOP = 10  # the screen's own choice: its top names by score per run
 CALIBRATION_MIN_PICKS = 50  # below this a conviction split is noise
 HIGH_CONVICTION = 7  # conviction runs 1-10; the picks so far sit at 5-8
+# The Analyst's score bands, as validate-screen groups the ranker's conviction.
+ANALYST_BANDS: tuple[tuple[str, int, int], ...] = (
+    ("Scored 8-10", 8, 10),
+    ("Scored 6-7", 6, 7),
+    ("Scored 1-5", 1, 5),
+)
+_ANALYST_SCORE = re.compile(r"^\s*Score:\s*(\d+)", re.MULTILINE)
 
 # Which pool discover picked from, from each date on. Picks from different
 # pools are different experiments, so the card never blends them: cohorts
@@ -129,6 +142,17 @@ def pick_scorecard(
             ),
             params={"h": horizon},
         ).all()
+        analysed = exec_sql(
+            session,
+            text(
+                "SELECT s.ticker, r.run_at, s.analyst_text, o.return_pct, o.spy_return_pct "
+                "FROM scorecards s JOIN runs r ON r.id = s.run_id "
+                "LEFT JOIN candidate_outcomes o ON o.run_id = s.run_id "
+                "AND o.ticker = s.ticker AND o.horizon_days = :h "
+                "ORDER BY r.run_at"
+            ),
+            params={"h": horizon},
+        ).all()
     entries = [
         (t, datetime.fromisoformat(str(run_at)).date(), ret, spy, conv, agree)
         for t, run_at, ret, spy, conv, agree in picks
@@ -145,7 +169,40 @@ def pick_scorecard(
             top.append(entry)
     card["vs_screen"] = _vs_screen([e[:4] for e in entries], top, pool, eras=eras)
     card["calibration"] = _calibration(entries)
+    card["analyst"] = _analyst_bands(
+        [
+            (t, datetime.fromisoformat(str(run_at)).date(), ret, spy, analyst_score(body))
+            for t, run_at, body, ret, spy in analysed
+        ]
+    )
     return card
+
+
+def analyst_score(body: str | None) -> int | None:
+    """The 1-10 "Score: N" line of an Analyst scorecard, or None."""
+    m = _ANALYST_SCORE.search(body or "")
+    score = int(m.group(1)) if m else None
+    return score if score is not None and 1 <= score <= 10 else None
+
+
+def _analyst_bands(entries: list[tuple[Any, ...]]) -> dict[str, Any]:
+    """{"graded": n, "rows": [{"group", **_cohort}]}: every name the Analyst
+    scored, graded, by score band (one decision per ticker per month)."""
+    graded = [
+        e
+        for e in _first_per_month([e for e in entries if e[4] is not None])
+        if e[2] is not None and e[3] is not None
+    ]
+    rows = []
+    for name, lo, hi in ANALYST_BANDS:
+        band = [
+            {"return_pct": e[2], "spy_pct": e[3], "excess_pct": e[2] - e[3]}
+            for e in graded
+            if lo <= e[4] <= hi
+        ]
+        if band:
+            rows.append({"group": name, **_cohort(band, name)})
+    return {"graded": len(graded), "rows": rows}
 
 
 Entry = tuple[str, date, float | None, float | None]

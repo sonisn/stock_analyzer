@@ -245,9 +245,37 @@ def test_screen_comparison_and_calibration_render():
     body = render_health_html(build_portfolio_health({}, pick_scorecard=lambda: sc))
     assert "Picks vs the screen they came from" in body and "Screen top 10" in body
     assert "+3.5% <small>(50% of 60)</small>" in body
-    assert "shown once 50 picks are graded (12 so far)" in body
+    assert "shown once 50 names are graded (12 so far)" in body
 
     rows = [{"group": "Conviction 7+", **c(4.0, 30)}, {"group": "Split vote", **c(-1.0, 25)}]
     sc["calibration"] = {"graded": 55, "rows": rows}
     body = render_health_html(build_portfolio_health({}, pick_scorecard=lambda: sc))
     assert "Does conviction mean anything?" in body and "Conviction 7+" in body
+
+
+def test_every_analysed_name_is_graded_by_the_analysts_score(tmp_path):
+    from stock_analyzer.db.tables import Scorecard
+    from stock_analyzer.discover.pick_scorecard import analyst_score
+
+    assert analyst_score("TICKER: ADI\nScore: 7\nOne-liner: x") == 7
+    assert analyst_score("no score here") is None and analyst_score("Score: 42") is None
+    db = str(tmp_path / "a.db")
+    with get_session(db) as session:
+        run = _run(session, "2026-01-12T10:00:00", ["HI"], others=("MID", "LO", "BLANK"))
+        again = _run(session, "2026-01-20T10:00:00", [], others=("HI",))
+        for run_id, t, score in ((run, "HI", 9), (run, "MID", 6), (run, "LO", 3), (again, "HI", 2)):
+            session.add(
+                Scorecard(run_id=run_id, ticker=t, analyst_text=f"TICKER: {t}\nScore: {score}")
+            )
+        session.add(Scorecard(run_id=run, ticker="BLANK", analyst_text=""))
+        for t, ret in (("HI", 10.0), ("MID", 2.0), ("LO", -6.0), ("BLANK", 50.0)):
+            _outcome(session, run, t, ret, 2.0)
+
+    card = pick_scorecard(db, today=date(2026, 9, 26))["analyst"]
+    # HI's second read the same month is the same decision; BLANK has no score.
+    assert card["graded"] == 3
+    assert [(r["group"], r["picks"], r["excess_pct"]) for r in card["rows"]] == [
+        ("Scored 8-10", 1, 8.0),
+        ("Scored 6-7", 1, 0.0),
+        ("Scored 1-5", 1, -8.0),
+    ]
