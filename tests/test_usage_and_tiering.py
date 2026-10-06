@@ -148,3 +148,21 @@ def test_deep_failures_are_simply_dropped():
     out = analyze_tiered(deep, _FakeAnalyst("light"), _PAYLOADS, {"A"})
     assert "A" not in out
     assert list(out) == ["B", "C", "D"]
+
+
+def test_a_billed_cost_replaces_the_list_price_estimate():
+    """OpenRouter bills the cheap host it routed to, well under list price."""
+
+    t = UsageTracker()
+    t.record(
+        "Reader", "z-ai/glm-5.3", SimpleNamespace(input_tokens=10**6, output_tokens=0, cost_usd=0.5)
+    )
+    t.record(
+        "Reader",
+        "z-ai/glm-5.3",
+        SimpleNamespace(input_tokens=10**6, output_tokens=0, cost_usd=0.25),
+    )
+    assert t.rows()[0].cost_usd == 0.75
+    # One call without a billed figure: back to the (higher) list-price estimate.
+    t.record("Reader", "z-ai/glm-5.3", _metrics(inp=10))
+    assert t.rows()[0].cost_usd != 0.75

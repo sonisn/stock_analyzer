@@ -245,7 +245,9 @@ class OpenRouter:
         TRACKER.record(
             stage,
             model,
-            SimpleNamespace(input_tokens=c.input_tokens, output_tokens=c.output_tokens),
+            SimpleNamespace(
+                input_tokens=c.input_tokens, output_tokens=c.output_tokens, cost_usd=c.cost_usd
+            ),
         )
         return c
 

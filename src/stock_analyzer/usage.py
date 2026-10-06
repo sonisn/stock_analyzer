@@ -62,9 +62,16 @@ class UsageRow:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # What the provider billed, for calls that report it (OpenRouter does).
+    # List prices overstate an OpenRouter row ~3x: it routes to the cheapest
+    # approved host ($3.75 logged vs $1.23 billed on 2026-10-03).
+    billed_usd: float = 0.0
+    billed_calls: int = 0
 
     @property
     def cost_usd(self) -> float | None:
+        if self.calls and self.billed_calls == self.calls:
+            return self.billed_usd
         price = price_for(self.model)
         if price is None:
             return None
@@ -93,6 +100,10 @@ class UsageTracker:
             row.output_tokens += getattr(metrics, "output_tokens", 0) or 0
             row.cache_read_tokens += getattr(metrics, "cache_read_tokens", 0) or 0
             row.cache_write_tokens += getattr(metrics, "cache_write_tokens", 0) or 0
+            billed = getattr(metrics, "cost_usd", None)
+            if billed is not None:
+                row.billed_usd += billed
+                row.billed_calls += 1
 
     def rows(self) -> list[UsageRow]:
         with self._lock:
