@@ -615,3 +615,25 @@ def test_title_only_mda_headings_need_a_real_section():
         "(MD&A). The financial statements are prepared... " + "Orders rose. " * 600
     )
     assert "Orders rose" in filing_sections(ge, "10-Q", max_chars={"mda": 60_000})["mda"]
+
+
+def test_an_mda_exhibit_title_may_wrap_across_lines():
+    """Agnico Eagle's exhibit 99.3 title: "Management's / Discussion and / Analysis"."""
+    from stock_analyzer.data.sec_edgar import _is_mda_document
+
+    text = "Exhibit 99.3\nManagement’s\nDiscussion and\nAnalysis\n" + "Gold output rose. " * 400
+    assert _is_mda_document(text)
+
+
+def test_a_20f_annual_report_falls_back_to_its_group_results():
+    """Shell's 20-F Item 5 only lists page numbers in the annual report."""
+    from stock_analyzer.data.sec_edgar import filing_sections
+
+    text = (
+        "Item 5. | Operating and Financial Review and Prospects | A. | Operating results | 23-30\n"
+        + "Strategic report\n"
+        + "x " * 300
+        + "\nGroup results\n"
+        + "Income rose on LNG margins. " * 400
+    )
+    assert "LNG margins" in filing_sections(text, "20-F", max_chars={"mda": 60_000})["mda"]

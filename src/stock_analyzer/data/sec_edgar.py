@@ -406,6 +406,9 @@ _UNNUMBERED: dict[str, tuple[str, ...]] = {
         # Financial Review", or just "Financial review".
         rf"(?:{_L['operating']}\s+{_L['and']}\s+)?{_L['financial']}\s+review"
         rf"(?:\s+{_L['and']}\s+prospects)?[^\n]{{0,60}}$",
+        # A UK annual report filed as the 20-F (Shell): its Item 5 is only
+        # page numbers, and the results discussion is titled "Group results".
+        r"group\s+results[^\n]{0,40}$",
         # The full formal title is distinctive enough to match with text
         # running on after it on the same line (GE's 10-Q).
         rf"{_L['management']}.{{0,5}}s?\s+{_L['discussion']}\s+{_L['and']}\s+analysis\s+of\s+"
@@ -652,7 +655,8 @@ def _is_mda_document(text: str) -> bool:
     financial-statement heading — and is long."""
     if len(text) < TITLE_MATCH_MIN_CHARS:
         return False
-    head = text[:1500].lower().replace("’", "'")
+    # Titles wrap: Agnico Eagle's reads "Management's\nDiscussion and\nAnalysis".
+    head = " ".join(text[:1500].split()).lower().replace("’", "'")
     at = min(
         (
             i
