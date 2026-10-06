@@ -44,6 +44,12 @@ QUOTE_RATE_FLOOR = 0.97
 MIN_QUOTES = 50  # below this a host's rate is noise
 UNUSABLE_CEILING = 0.10
 MIN_READS = 20
+# The `detail` of a check whose host had no endpoint for the model (404): it
+# dropped the model or now serves it only below the reader's precision
+# (io-net, sail-research and parasail on 2026-10-03). Still skipped until a
+# check passes, but it says nothing about the host's answers, so the doctor
+# lists it rather than failing on it.
+UNAVAILABLE = "unavailable"
 
 # A made-up 10-Q with known answers. Names and places sit inside the
 # sentences a reader must quote, so masked input shows up as quotes that
@@ -117,7 +123,11 @@ def canary(client: OpenRouter, model: str, host: str, *, today: date) -> OpenRou
 
         if isinstance(e, BudgetExceededError):
             raise
-        problems, cost = [f"call failed: {str(e)[:120]}"], 0.0
+        if getattr(e, "status_code", None) == 404:
+            problems = [f"{UNAVAILABLE}: no endpoint serves {model} at the reader's precision"]
+        else:
+            problems = [f"call failed: {str(e)[:120]}"]
+        cost = 0.0
     return OpenRouterHostCheck(
         day=today.isoformat(),
         model=model,
@@ -147,20 +157,36 @@ def run_canaries(
     return checks
 
 
-def failed_checks(db: str, *, today: date) -> dict[str, set[str]]:
-    """{model: hosts whose latest check (within CHECK_VALID_DAYS) failed}."""
+def _latest_failures(db: str, *, today: date) -> list[tuple[str, str, str]]:
+    """(model, host, detail) for each pair whose latest check (within
+    CHECK_VALID_DAYS) failed."""
     since = (today - timedelta(days=CHECK_VALID_DAYS)).isoformat()
-    latest: dict[tuple[str, str], tuple[str, bool]] = {}  # (model, host) -> (day, passed)
+    # (model, host) -> (day, passed, detail)
+    latest: dict[tuple[str, str], tuple[str, bool, str]] = {}
     with get_session(db) as session:
         for c in session.exec(
             select(OpenRouterHostCheck).where(OpenRouterHostCheck.day >= since)
         ).all():
             seen = latest.get((c.model, c.host))
             if seen is None or c.day >= seen[0]:
-                latest[(c.model, c.host)] = (c.day, bool(c.passed))
+                latest[(c.model, c.host)] = (c.day, bool(c.passed), c.detail or "")
+    return [(m, h, detail) for (m, h), (_, passed, detail) in latest.items() if not passed]
+
+
+def failed_checks(db: str, *, today: date) -> dict[str, set[str]]:
+    """{model: hosts whose latest check (within CHECK_VALID_DAYS) failed},
+    unavailable ones included."""
     out: dict[str, set[str]] = {}
-    for (model, host), (_, passed) in latest.items():
-        if not passed:
+    for model, host, _ in _latest_failures(db, today=today):
+        out.setdefault(model, set()).add(host)
+    return out
+
+
+def unavailable_hosts(db: str, *, today: date) -> dict[str, set[str]]:
+    """The part of `failed_checks` that failed only for want of an endpoint."""
+    out: dict[str, set[str]] = {}
+    for model, host, detail in _latest_failures(db, today=today):
+        if detail.startswith(UNAVAILABLE):
             out.setdefault(model, set()).add(host)
     return out
 

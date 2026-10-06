@@ -16,7 +16,7 @@ from stock_analyzer.db.session import get_session
 from stock_analyzer.db.tables import OpenRouterHostCheck
 from stock_analyzer.openrouter import APPROVED_HOSTS, NoApprovedHostError, OpenRouterAgent
 
-from .test_filing_reader import FACTS_OK, FILING, SECTIONS, _client
+from .test_filing_reader import FACTS_OK, FILING, SECTIONS, HTTPError, _client
 
 TODAY = date(2026, 9, 28)
 CANARY_OK = {
@@ -74,6 +74,33 @@ def test_known_answer_check_fails_masked_input_and_excludes_the_host(tmp_path):
             OpenRouterHostCheck(day="2026-09-29", model="z-ai/glm-5.3", host=hosts[1], passed=True)
         )
     assert oh.excluded_hosts(db, today=date(2026, 9, 29)) == {}
+
+
+def test_a_host_with_no_endpoint_is_skipped_but_not_a_doctor_failure(tmp_path):
+    """io-net dropped glm-5.3 and two flash hosts went fp4-only (2026-10-03):
+    OpenRouter's 404 kept the host out, and the doctor reported it as a
+    failed known-answer check."""
+    from stock_analyzer.cli.ops import openrouter_host_problems
+
+    db = str(tmp_path / "t.db")
+    hosts = APPROVED_HOSTS["z-ai/glm-5.3"]
+    c = _client(tmp_path, [(json.dumps(CANARY_OK), 0.003)] * (len(hosts) - 1))
+    c.db_path = db
+    post = c._http.post_json  # type: ignore[attr-defined]
+
+    def post_json(url, json):  # noqa: A002
+        if json["provider"]["only"] == [hosts[0]]:
+            raise HTTPError(404, "No endpoints found for the request with quantization")
+        return post(url, json)
+
+    c._http.post_json = post_json  # type: ignore[attr-defined]
+    checks = oh.run_canaries(c, db, ["z-ai/glm-5.3"], today=TODAY)
+    assert checks[0].detail.startswith("unavailable:") and not checks[0].passed
+    assert all(ch.passed for ch in checks[1:])
+    assert oh.excluded_hosts(db, today=TODAY) == {"z-ai/glm-5.3": {hosts[0]}}
+    problems, summary = openrouter_host_problems(db, today=TODAY)
+    assert problems == []
+    assert summary.endswith(f"no endpoint at the last check: {hosts[0]} (z-ai/glm-5.3)")
 
 
 def test_canary_problems_name_each_miss():

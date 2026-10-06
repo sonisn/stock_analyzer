@@ -371,14 +371,21 @@ SPOT_CHECK_MIN_FIELDS = 20
 
 def openrouter_host_problems(db: str, *, today: date) -> tuple[list[str], str]:
     """(problems, summary) for the OpenRouter hosts: failed known-answer
-    checks, read quality below the floor, Claude agreement below it."""
+    checks, read quality below the floor, Claude agreement below it. A host
+    with no endpoint for its model is named in the summary, not a problem."""
     from ..openrouter import APPROVED_HOSTS
-    from ..openrouter_hosts import failed_checks, host_quality, spot_check_summary
+    from ..openrouter_hosts import (
+        failed_checks,
+        host_quality,
+        spot_check_summary,
+        unavailable_hosts,
+    )
 
+    unavailable = unavailable_hosts(db, today=today)
     problems = [
         f"{model} on {host}: failed its last known-answer check"
         for model, hosts in sorted(failed_checks(db, today=today).items())
-        for host in sorted(hosts)
+        for host in sorted(hosts - unavailable.get(model, set()))
     ]
     problems += [
         f"{q['model']} on {q['provider']}: {q['problem']}"
@@ -395,7 +402,11 @@ def openrouter_host_problems(db: str, *, today: date) -> tuple[list[str], str]:
                 f"{sc['agreed']}/{sc['compared']} fields"
             )
     hosts = sum(len(h) for h in APPROVED_HOSTS.values())
-    return problems, f"{hosts} approved model/host pairs, none flagged"
+    summary = f"{hosts} approved model/host pairs, none flagged"
+    gone = [f"{h} ({m})" for m, hs in sorted(unavailable.items()) for h in sorted(hs)]
+    if gone:
+        summary += f"; no endpoint at the last check: {', '.join(gone)}"
+    return problems, summary
 
 
 def _openrouter_checks(settings: Settings) -> list[Check]:
