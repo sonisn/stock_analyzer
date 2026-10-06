@@ -15,7 +15,14 @@ from stock_analyzer.reporting.health import build_portfolio_health, render_healt
 from tests.test_model_training import _panel
 
 
-def _run(session, run_at: str, picks: list[str], others: tuple[str, ...] = ()) -> int:
+def _run(
+    session,
+    run_at: str,
+    picks: list[str],
+    others: tuple[str, ...] = (),
+    scores: dict[str, float] | None = None,
+    convictions: dict[str, tuple[int, float]] | None = None,
+) -> int:
     run_id = insert_run(
         session,
         universe_size=1,
@@ -35,7 +42,7 @@ def _run(session, run_at: str, picks: list[str], others: tuple[str, ...] = ()) -
             ticker,
             passed_filter=True,
             fail_reasons=[],
-            score=None,
+            score=(scores or {}).get(ticker),
             score_components=None,
             score_breakdown=None,
             sources=[],
@@ -44,7 +51,10 @@ def _run(session, run_at: str, picks: list[str], others: tuple[str, ...] = ()) -
             price=None,
         )
     for rank, ticker in enumerate(picks, 1):
-        insert_pick(session, run_id, rank=rank, ticker=ticker)
+        conv, agree = (convictions or {}).get(ticker, (None, None))
+        insert_pick(
+            session, run_id, rank=rank, ticker=ticker, conviction=conv, agreement_ratio=agree
+        )
     return run_id
 
 
@@ -156,3 +166,88 @@ def test_picks_from_different_universes_are_never_blended():
     ]
     one = _summarize(entries[:1], horizon=126, today=date(2027, 6, 1), eras=eras)
     assert one["cohorts"][0]["cohort"] == "Sep 2026" and one["overall_by_universe"] == []
+
+
+def test_picks_are_set_against_the_screens_own_choice(tmp_path, monkeypatch):
+    from stock_analyzer.discover import pick_scorecard as ps
+
+    monkeypatch.setattr(ps, "SCREEN_TOP", 2)
+    db = str(tmp_path / "v.db")
+    with get_session(db) as session:
+        # The screen ranks TOP1/TOP2 first; the model picked LOW instead.
+        run = _run(
+            session,
+            "2026-01-12T10:00:00",
+            ["LOW"],
+            others=("TOP1", "TOP2", "MID"),
+            scores={"TOP1": 90, "TOP2": 80, "MID": 50, "LOW": 10},
+        )
+        later = _run(session, "2026-01-13T10:00:00", ["LOW"], others=("TOP1",))
+        for t, ret in (("LOW", -2.0), ("TOP1", 12.0), ("TOP2", 6.0), ("MID", 0.0)):
+            _outcome(session, run, t, ret, 2.0)
+        _outcome(session, later, "TOP1", 50.0, 2.0)  # same month: not counted twice
+        _run(session, "2026-01-14T10:00:00", [], others=("NOPICKS",), scores={"NOPICKS": 99})
+
+    (row,) = pick_scorecard(db, today=date(2026, 9, 26))["vs_screen"]
+    assert row["cohort"] == "Jan 2026"
+    assert (row["picks"]["picks"], row["picks"]["excess_pct"]) == (1, -4.0)
+    assert (row["top"]["picks"], row["top"]["excess_pct"]) == (2, 7.0)
+    # Every survivor of a run with picks, LOW included; not the pick-less run.
+    assert (row["pool"]["picks"], row["pool"]["excess_pct"]) == (4, 2.0)
+
+
+def test_calibration_splits_graded_picks_by_conviction_and_agreement(tmp_path):
+    db = str(tmp_path / "c.db")
+    with get_session(db) as session:
+        run = _run(
+            session,
+            "2026-01-12T10:00:00",
+            ["HI", "LO", "NONE"],
+            convictions={"HI": (8, 1.0), "LO": (5, 1 / 3)},
+        )
+        _outcome(session, run, "HI", 10.0, 2.0)
+        _outcome(session, run, "LO", -4.0, 2.0)
+        _outcome(session, run, "NONE", 0.0, 2.0)
+
+    cal = pick_scorecard(db, today=date(2026, 9, 26))["calibration"]
+    assert cal["graded"] == 3
+    assert [(r["group"], r["picks"], r["excess_pct"]) for r in cal["rows"]] == [
+        ("Conviction 7+", 1, 8.0),
+        ("Conviction under 7", 1, -6.0),
+        ("All providers agreed", 1, 8.0),
+        ("Split vote", 1, -6.0),
+    ]
+
+
+def test_screen_comparison_and_calibration_render():
+    def c(excess, n):
+        return {
+            "cohort": "x",
+            "picks": n,
+            "return_pct": 0,
+            "spy_pct": 0,
+            "excess_pct": excess,
+            "beat_spy": 0.5,
+        }
+
+    sc = {
+        "horizon": 126,
+        "cohorts": [{**c(-8.0, 22), "cohort": "May 2026"}],
+        "overall": None,
+        "maturing": 0,
+        "next_due": None,
+        "unmeasured": [],
+        "vs_screen": [
+            {"cohort": "May 2026", "picks": c(-8.0, 22), "top": c(3.5, 60), "pool": None}
+        ],
+        "calibration": {"graded": 12, "rows": []},
+    }
+    body = render_health_html(build_portfolio_health({}, pick_scorecard=lambda: sc))
+    assert "Picks vs the screen they came from" in body and "Screen top 10" in body
+    assert "+3.5% <small>(50% of 60)</small>" in body
+    assert "shown once 50 picks are graded (12 so far)" in body
+
+    rows = [{"group": "Conviction 7+", **c(4.0, 30)}, {"group": "Split vote", **c(-1.0, 25)}]
+    sc["calibration"] = {"graded": 55, "rows": rows}
+    body = render_health_html(build_portfolio_health({}, pick_scorecard=lambda: sc))
+    assert "Does conviction mean anything?" in body and "Conviction 7+" in body

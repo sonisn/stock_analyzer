@@ -703,12 +703,71 @@ def _pick_scorecard_html(h: PortfolioHealth) -> str:
         return ""
     parts = [
         _scorecard_block(sc, "Discover picks", "Picked", "pick"),
+        _vs_screen_html(sc.get("vs_screen") or []),
+        _calibration_html(sc.get("calibration") or {}),
         _scorecard_block(sc.get("standouts") or {}, "Earnings standouts", "Shown", "standout"),
         _scorecard_block(sc.get("insider") or {}, "Insider-buying clusters", "Shown", "cluster"),
     ]
     if not any(parts):
         return ""
     return "<h3>Scorecard: six months after each idea</h3>" + "".join(parts)
+
+
+def _vs_screen_html(rows: list[dict[str, Any]]) -> str:
+    """Picks against the screen's own top names and its whole pool."""
+    if not rows:
+        return ""
+    from ..discover.pick_scorecard import SCREEN_TOP
+
+    def cell(c: dict[str, Any] | None) -> str:
+        if c is None:
+            return "—"
+        return f"{c['excess_pct']:+.1f}% <small>({c['beat_spy']:.0%} of {c['picks']})</small>"
+
+    return (
+        "<h4>Picks vs the screen they came from</h4>"
+        + _table(
+            ["Picked", "Picks vs SPY", f"Screen top {SCREEN_TOP}", "Everything that passed"],
+            [
+                [
+                    html.escape(r["cohort"]),
+                    f"<b>{cell(r['picks'])}</b>",
+                    cell(r["top"]),
+                    cell(r["pool"]),
+                ]
+                for r in rows
+            ],
+        )
+        + '<p style="font-size:13px;color:#6b7280">Average return over SPY, and how many beat '
+        f"it. If the picks keep trailing the screen's top {SCREEN_TOP}, the model step is "
+        "not adding to what the score already chose.</p>"
+    )
+
+
+def _calibration_html(cal: dict[str, Any]) -> str:
+    """Graded picks by the model's conviction and by provider agreement."""
+    from ..discover.pick_scorecard import CALIBRATION_MIN_PICKS
+
+    graded = cal.get("graded") or 0
+    if not graded:
+        return ""
+    if graded < CALIBRATION_MIN_PICKS:
+        return (
+            '<p style="font-size:13px;color:#6b7280">Conviction check: shown once '
+            f"{CALIBRATION_MIN_PICKS} picks are graded ({graded} so far).</p>"
+        )
+    return "<h4>Does conviction mean anything?</h4>" + _table(
+        ["Picks", "Count", "vs SPY", "Beat SPY"],
+        [
+            [
+                html.escape(r["group"]),
+                str(r["picks"]),
+                f"<b>{r['excess_pct']:+.1f}%</b>",
+                f"{r['beat_spy']:.0%}",
+            ]
+            for r in cal["rows"]
+        ],
+    )
 
 
 def _scorecard_block(sc: dict[str, Any], title: str, when: str, noun: str) -> str:

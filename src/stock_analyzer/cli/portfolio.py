@@ -234,9 +234,11 @@ class _LiveHealthSources:
         from ..discover.pick_scorecard import pick_scorecard, suggestion_scorecard
         from ..model.labels import label_candidates
 
-        # Only the picks: a few dozen names from the bar store, not the
-        # hundreds of screened candidates the monthly model review labels.
-        label_candidates(self.db, only_picks=True)
+        # The screen's survivors (the picks are among them), so the card can
+        # set the picks against the screen's own choice. Only closed windows
+        # are fetched, from the bar store the morning IBD job keeps current;
+        # the monthly model review labels the rest of the candidates.
+        label_candidates(self.db, only_passed=True)
         card = pick_scorecard(self.db)
         card["standouts"] = suggestion_scorecard(self.db, yf_gateway.daily_closes)
         card["insider"] = suggestion_scorecard(

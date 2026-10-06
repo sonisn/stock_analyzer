@@ -18,8 +18,21 @@ The earnings standouts and insider-buying clusters the daily email showed
 get the same card (`suggestion_scorecard`), from the first close after
 the email.
 
-No LLM calls. Picks read stored outcomes (`label_candidates(only_picks=True)`
-writes them first); standouts read closes from the bar store.
+Two checks ride along with the picks:
+
+  - `vs_screen`: per cohort, the picks against what the screen alone would
+    have chosen from the same runs — its top SCREEN_TOP by score, and every
+    name that passed it. If the picks keep trailing the screen's top, the
+    model step is not earning its cost (May 2026 at 63 days: picks -10.1%
+    median vs SPY, screen pool -11.1%; Sept so far: picks +1.8%, screen
+    top 10 +4.0%).
+  - `calibration`: graded picks split by the model's conviction and by how
+    many providers agreed, shown once CALIBRATION_MIN_PICKS are graded —
+    whether either one deserves to size a position.
+
+No LLM calls. Picks and screen survivors read stored outcomes
+(`label_candidates(only_passed=True)` writes them first); standouts read
+closes from the bar store.
 """
 
 from __future__ import annotations
@@ -37,6 +50,9 @@ from ..data import frames
 from ..db.session import exec_sql, get_session
 
 HORIZON_DAYS = 126  # trading days ≈ 6 months
+SCREEN_TOP = 10  # the screen's own choice: its top names by score per run
+CALIBRATION_MIN_PICKS = 50  # below this a conviction split is noise
+HIGH_CONVICTION = 7  # conviction runs 1-10; the picks so far sit at 5-8
 
 # Which pool discover picked from, from each date on. Picks from different
 # pools are different experiments, so the card never blends them: cohorts
@@ -81,13 +97,16 @@ def pick_scorecard(
     eras: tuple[tuple[date, str], ...] = UNIVERSE_ERAS,
 ) -> dict[str, Any]:
     """{"cohorts": [...], "overall": {...} | None, "maturing": n,
-    "next_due": date | None, "unmeasured": [ticker, ...]}. Due dates
-    count weekdays, not exchange holidays, so they are approximate."""
+    "next_due": date | None, "unmeasured": [ticker, ...], "vs_screen": [...],
+    "calibration": {...}}. Due dates count weekdays, not exchange holidays,
+    so they are approximate."""
+    today = today or date.today()
     with get_session(db_path) as session:
         picks = exec_sql(
             session,
             text(
-                "SELECT p.ticker, r.run_at, o.return_pct, o.spy_return_pct "
+                "SELECT p.ticker, r.run_at, o.return_pct, o.spy_return_pct, "
+                "p.conviction, p.agreement_ratio "
                 "FROM picks p JOIN runs r ON r.id = p.run_id "
                 "LEFT JOIN candidate_outcomes o ON o.run_id = p.run_id "
                 "AND o.ticker = p.ticker AND o.horizon_days = :h "
@@ -95,10 +114,132 @@ def pick_scorecard(
             ),
             params={"h": horizon},
         ).all()
+        # Everything that passed the screen in a run that made picks, best
+        # score first within each run.
+        screened = exec_sql(
+            session,
+            text(
+                "SELECT c.run_id, c.ticker, r.run_at, c.score, o.return_pct, o.spy_return_pct "
+                "FROM candidates c JOIN runs r ON r.id = c.run_id "
+                "LEFT JOIN candidate_outcomes o ON o.run_id = c.run_id "
+                "AND o.ticker = c.ticker AND o.horizon_days = :h "
+                "WHERE c.passed_filter = 1 "
+                "AND c.run_id IN (SELECT DISTINCT run_id FROM picks) "
+                "ORDER BY r.run_at, c.run_id, c.score IS NULL, c.score DESC"
+            ),
+            params={"h": horizon},
+        ).all()
     entries = [
-        (t, datetime.fromisoformat(str(run_at)).date(), ret, spy) for t, run_at, ret, spy in picks
+        (t, datetime.fromisoformat(str(run_at)).date(), ret, spy, conv, agree)
+        for t, run_at, ret, spy, conv, agree in picks
     ]
-    return _summarize(entries, horizon=horizon, today=today or date.today(), eras=eras)
+    card = _summarize([e[:4] for e in entries], horizon=horizon, today=today, eras=eras)
+    pool: list[Entry] = []
+    top: list[Entry] = []
+    taken: dict[int, int] = {}
+    for run_id, t, run_at, score, ret, spy in screened:
+        entry = (t, datetime.fromisoformat(str(run_at)).date(), ret, spy)
+        pool.append(entry)
+        if score is not None and taken.get(run_id, 0) < SCREEN_TOP:
+            taken[run_id] = taken.get(run_id, 0) + 1
+            top.append(entry)
+    card["vs_screen"] = _vs_screen([e[:4] for e in entries], top, pool, eras=eras)
+    card["calibration"] = _calibration(entries)
+    return card
+
+
+Entry = tuple[str, date, float | None, float | None]
+
+
+def _first_per_month(entries: list[Any]) -> list[Any]:
+    """One decision per ticker per month: the earliest entry is kept."""
+    seen: set[tuple[str, str]] = set()
+    out = []
+    for e in entries:
+        key = (e[0], e[1].strftime("%Y-%m"))
+        if key not in seen:
+            seen.add(key)
+            out.append(e)
+    return out
+
+
+def _graded_by_cohort(
+    entries: list[Entry], eras: tuple[tuple[date, str], ...] | None
+) -> dict[tuple[str, str], list[dict[str, Any]]]:
+    """{(month, universe): graded rows}, one decision per ticker per month."""
+    out: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for ticker, day, ret, spy in _first_per_month(entries):
+        if ret is None or spy is None:
+            continue
+        pool = universe_on(day, eras) if eras else ""
+        out.setdefault((day.strftime("%Y-%m"), pool), []).append(
+            {"ticker": ticker, "return_pct": ret, "spy_pct": spy, "excess_pct": ret - spy}
+        )
+    return out
+
+
+def _vs_screen(
+    picks: list[Entry],
+    top: list[Entry],
+    pool: list[Entry],
+    *,
+    eras: tuple[tuple[date, str], ...] | None,
+) -> list[dict[str, Any]]:
+    """Per graded cohort of picks: {"cohort", "picks", "top", "pool"}, each
+    a `_cohort` dict (None when that group has nothing graded), plus an
+    "All" row per universe once there is more than one cohort."""
+    groups = [_graded_by_cohort(g, eras) for g in (picks, top, pool)]
+    keys = sorted(groups[0])
+    pools = list(dict.fromkeys(p for _, p in keys))
+    split = len(pools) > 1
+
+    def label(month: str, pool_name: str) -> str:
+        name = datetime.strptime(month, "%Y-%m").strftime("%b %Y")
+        return f"{name} · {pool_name}" if split else name
+
+    def row(name: str, wanted: list[tuple[str, str]]) -> dict[str, Any]:
+        out: dict[str, Any] = {"cohort": name}
+        for kind, g in zip(("picks", "top", "pool"), groups, strict=True):
+            rows = [r for k in wanted for r in g.get(k, [])]
+            out[kind] = _cohort(rows, name) if rows else None
+        return out
+
+    out = [row(label(*k), [k]) for k in keys]
+    if len(keys) > 1:
+        for pool_name in pools:
+            out.append(
+                row(
+                    f"All · {pool_name}" if split else "All", [k for k in keys if k[1] == pool_name]
+                )
+            )
+    return out
+
+
+def _calibration(entries: list[tuple[Any, ...]]) -> dict[str, Any]:
+    """{"graded": n, "rows": [{"group", **_cohort}]}: graded picks split by
+    conviction and by provider agreement (one decision per ticker per month)."""
+    graded = [e for e in _first_per_month(entries) if e[2] is not None and e[3] is not None]
+
+    def group(name: str, keep: Callable[[Any, Any], bool]) -> dict[str, Any] | None:
+        rows = [
+            {"return_pct": e[2], "spy_pct": e[3], "excess_pct": e[2] - e[3]}
+            for e in graded
+            if keep(e[4], e[5])
+        ]
+        return {"group": name, **_cohort(rows, name)} if rows else None
+
+    splits = [
+        group(
+            f"Conviction {HIGH_CONVICTION}+", lambda c, _: c is not None and c >= HIGH_CONVICTION
+        ),
+        group(
+            f"Conviction under {HIGH_CONVICTION}",
+            lambda c, _: c is not None and c < HIGH_CONVICTION,
+        ),
+        group("All providers agreed", lambda _, a: a is not None and a >= 1),
+        group("Split vote", lambda _, a: a is not None and a < 1),
+    ]
+    return {"graded": len(graded), "rows": [r for r in splits if r]}
 
 
 def suggestion_scorecard(
@@ -164,15 +305,11 @@ def _summarize(
     """Group (ticker, day, return %, SPY %) by month, one decision per
     ticker per month; a missing return is maturing or unmeasured. With
     `eras`, also by universe, labelled once graded picks span two."""
-    seen: set[tuple[str, str]] = set()
     graded: dict[tuple[str, str], list[dict[str, Any]]] = {}
     maturing: list[date] = []
     unmeasured: list[str] = []
-    for ticker, day, ret, spy in entries:
+    for ticker, day, ret, spy in _first_per_month(entries):
         month = day.strftime("%Y-%m")
-        if (ticker, month) in seen:
-            continue
-        seen.add((ticker, month))
         if ret is None or spy is None:
             if _due(day, horizon) > today:
                 maturing.append(_due(day, horizon))
