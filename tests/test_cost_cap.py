@@ -65,7 +65,7 @@ def test_agent_run_is_refused_and_never_falls_back(monkeypatch):
     BUDGET.configure(0.01)
     agent = ModelAgent("Analyst", "claude", "claude-sonnet-4-6", instructions="x" * 100_000)
     monkeypatch.setattr(
-        llm, "thread_model", lambda *a, **k: pytest.fail("the model must not be called")
+        llm, "open_model", lambda *a, **k: pytest.fail("the model must not be called")
     )
     with pytest.raises(BudgetExceededError):
         run_with_fallback(agent, lambda: pytest.fail("no fallback on a budget refusal"), "hi")

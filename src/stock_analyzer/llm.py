@@ -31,10 +31,11 @@ with the validation errors (`output_retries`) before the call fails.
 
 from __future__ import annotations
 
+import asyncio
 import os
-import threading
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any, Literal
@@ -160,13 +161,14 @@ def model_settings_for(provider: Provider, s: CallSettings) -> ModelSettings:
     return ModelSettings(**out)
 
 
-# --- models, one per thread ------------------------------------------------
+# --- models, one per call --------------------------------------------------
 
-# Pydantic AI runs each synchronous call on the calling thread's event loop,
-# and an SDK client's connection pool belongs to the loop that opened it.
-# The pipelines fan calls out over thread pools, so each thread builds its
-# own client instead of sharing one across loops.
-_local = threading.local()
+# An SDK client's connection pool belongs to the event loop that opened it,
+# and the pipelines fan calls out over thread pools, each with its own loop.
+# A client left to the garbage collector schedules its close on whatever loop
+# is running at the time — another thread's — and fails with "Event loop is
+# closed" (16 tracebacks in the 2026-10-03 filings run). So each call opens
+# its client and closes it on the loop that used it.
 
 _KEY_ENV = {
     "claude": ("ANTHROPIC_API_KEY",),
@@ -191,21 +193,23 @@ def _api_key(provider: Provider) -> str | None:
     }[provider]
 
 
-def _build_model(provider: Provider, model_id: str, http_retries: int) -> Model:
+def _build_model(provider: Provider, model_id: str, http_retries: int) -> tuple[Model, Any]:
+    """The model, and the SDK client this module opened for it (None when the
+    provider opens and owns its own, which `async with model` closes)."""
     if provider == "claude":
         from anthropic import AsyncAnthropic
         from pydantic_ai.models.anthropic import AnthropicModel
         from pydantic_ai.providers.anthropic import AnthropicProvider
 
         client = AsyncAnthropic(api_key=_api_key(provider), max_retries=http_retries)
-        return AnthropicModel(model_id, provider=AnthropicProvider(anthropic_client=client))
+        return AnthropicModel(model_id, provider=AnthropicProvider(anthropic_client=client)), client
     if provider == "openai":
         from openai import AsyncOpenAI
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
 
         client = AsyncOpenAI(api_key=_api_key(provider), max_retries=http_retries)
-        return OpenAIChatModel(model_id, provider=OpenAIProvider(openai_client=client))
+        return OpenAIChatModel(model_id, provider=OpenAIProvider(openai_client=client)), client
     if provider == "gemini":
         from google.genai.types import HttpRetryOptions
         from pydantic_ai.models.google import GoogleModel
@@ -217,19 +221,22 @@ def _build_model(provider: Provider, model_id: str, http_retries: int) -> Model:
                 api_key=_api_key(provider),
                 retry_options=HttpRetryOptions(attempts=http_retries + 1),
             ),
-        )
+        ), None
     raise ValueError(f"Unsupported provider {provider!r}. Expected one of {sorted(PROVIDERS)}.")
 
 
-def thread_model(provider: Provider, model_id: str, http_retries: int = 2) -> Model:
-    """This thread's model client for (provider, model, retries)."""
-    cache: dict[tuple[str, str, int], Model] | None = getattr(_local, "models", None)
-    if cache is None:
-        cache = _local.models = {}
-    key = (provider, model_id, http_retries)
-    if key not in cache:
-        cache[key] = _build_model(provider, model_id, http_retries)
-    return cache[key]
+@asynccontextmanager
+async def open_model(
+    provider: Provider, model_id: str, http_retries: int = 2
+) -> AsyncIterator[Model]:
+    """A model client for one call, closed on the loop that used it."""
+    model, client = _build_model(provider, model_id, http_retries)
+    try:
+        async with model:
+            yield model
+    finally:
+        if client is not None:
+            await client.close()
 
 
 # --- errors ------------------------------------------------------------------
@@ -411,9 +418,15 @@ class ModelAgent:
             BUDGET.hold(self.name, self.model_id, prompt_chars, self.max_output_tokens),
             capture_run_messages() as messages,
         ):
-            model = thread_model(self.provider, self.model_id, self.settings.http_retries)
+
+            async def call() -> Any:
+                async with open_model(
+                    self.provider, self.model_id, self.settings.http_retries
+                ) as model:
+                    return await self.agent.run(prompt, model=model, deps=check)
+
             try:
-                result = self.agent.run_sync(prompt, model=model, deps=check)
+                result = asyncio.run(call())
             except UnexpectedModelBehavior as e:
                 raw = next(
                     (m.text or "" for m in reversed(messages) if isinstance(m, ModelResponse)),

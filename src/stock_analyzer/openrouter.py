@@ -19,10 +19,13 @@ provider outage — a refused call must never fall back to a paid provider.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import threading
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -159,32 +162,30 @@ class OpenRouter:
         self._lock = threading.Lock()
         self._pending = 0.0
         self._api_key = api_key
-        self._local = threading.local()
         # Tests route requests to a fake server: a factory of httpx2 clients.
         self.http_client_factory: Any = None
 
-    def _model(self, model: str) -> Any:
-        """This thread's Pydantic AI model for `model` (an SDK client's pool
-        belongs to the event loop of the thread that opened it)."""
-        cache: dict[str, Any] | None = getattr(self._local, "models", None)
-        if cache is None:
-            cache = self._local.models = {}
-        if model not in cache:
-            from openai import AsyncOpenAI
-            from pydantic_ai.models.openrouter import OpenRouterModel
-            from pydantic_ai.providers.openrouter import OpenRouterProvider
+    @asynccontextmanager
+    async def _open(self, model: str) -> AsyncIterator[Any]:
+        """A Pydantic AI model for one call, its client closed on the loop
+        that used it (see `llm.open_model` for why nothing is cached)."""
+        from openai import AsyncOpenAI
+        from pydantic_ai.models.openrouter import OpenRouterModel
+        from pydantic_ai.providers.openrouter import OpenRouterProvider
 
-            client = AsyncOpenAI(
-                base_url=_BASE_URL,
-                api_key=self._api_key,
-                max_retries=2,
-                timeout=_TIMEOUT_S,
-                # OpenRouter's attribution header; harmless if ignored.
-                default_headers={"X-Title": "stock-analyzer"},
-                http_client=self.http_client_factory() if self.http_client_factory else None,
-            )
-            cache[model] = OpenRouterModel(model, provider=OpenRouterProvider(openai_client=client))
-        return cache[model]
+        client = AsyncOpenAI(
+            base_url=_BASE_URL,
+            api_key=self._api_key,
+            max_retries=2,
+            timeout=_TIMEOUT_S,
+            # OpenRouter's attribution header; harmless if ignored.
+            default_headers={"X-Title": "stock-analyzer"},
+            http_client=self.http_client_factory() if self.http_client_factory else None,
+        )
+        try:
+            yield OpenRouterModel(model, provider=OpenRouterProvider(openai_client=client))
+        finally:
+            await client.close()
 
     def allowed_hosts(self, model: str) -> list[str]:
         skip = self.excluded.get(model, set())
@@ -294,9 +295,14 @@ class OpenRouter:
         agent: Agent[None, str] = Agent(
             output_type=str, instructions=system, model_settings=cast("Any", settings), retries=0
         )
+
+        async def call() -> Any:
+            async with self._open(model) as m:
+                return (await agent.run(user, model=m)).response
+
         with capture_run_messages() as messages:
             try:
-                return agent.run_sync(user, model=self._model(model)).response
+                return asyncio.run(call())
             except UnexpectedModelBehavior:
                 last = next((m for m in reversed(messages) if isinstance(m, ModelResponse)), None)
                 if last is None:

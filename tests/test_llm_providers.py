@@ -225,20 +225,18 @@ def test_fallback_builder_skips_a_missing_or_same_provider_fallback():
     assert make() == "agent" and built == [("gemini", "gemini-pro-latest")]
 
 
-def test_each_thread_gets_its_own_model_client():
-    """An SDK client's connection pool belongs to the event loop that opened
-    it, and each thread runs its own loop."""
-    import threading
+def test_each_call_closes_its_client_on_its_own_loop():
+    """A client left open outlives the thread's loop, and its garbage-collected
+    close then lands on another thread's loop ("Event loop is closed")."""
+    import asyncio
 
-    here = llm.thread_model("claude", "claude-haiku-4-5")
-    assert llm.thread_model("claude", "claude-haiku-4-5") is here
-    other = []
-    t = threading.Thread(
-        target=lambda: other.append(llm.thread_model("claude", "claude-haiku-4-5"))
-    )
-    t.start()
-    t.join()
-    assert other[0] is not here
+    async def use():
+        async with llm.open_model("claude", "claude-haiku-4-5") as model:
+            client = model.provider.client
+            assert not client.is_closed()
+        return client
+
+    assert asyncio.run(use()).is_closed()
 
 
 def test_a_key_missing_from_the_environment_comes_from_settings(monkeypatch):

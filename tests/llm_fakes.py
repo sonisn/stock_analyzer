@@ -8,6 +8,7 @@ messages), so a test can assert what was sent and how many calls it took.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -48,5 +49,10 @@ def script(
         )
 
     model = FunctionModel(answer, model_name="scripted")
-    monkeypatch.setattr(llm, "thread_model", lambda *_a, **_k: model)
+
+    @asynccontextmanager
+    async def open_model(*_a, **_k):
+        yield model
+
+    monkeypatch.setattr(llm, "open_model", open_model)
     return seen
