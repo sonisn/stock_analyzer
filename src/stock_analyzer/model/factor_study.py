@@ -17,8 +17,15 @@ names and over the screen's trend-gated names — against SPY.
 
 Both use today's S&P 500 members, so names that fell out of the index are
 missing and absolute returns look better than they were. Rankings within a
-month are much less affected, which is what the information coefficient
-(IC: per-month Spearman correlation of measure and outcome) measures.
+month are less affected, which is what the information coefficient (IC:
+per-month Spearman correlation of measure and outcome) measures — but not
+immune: today's list also holds small companies that later grew into it,
+the winners of their day. So every fundamental measure is also graded
+among companies already worth LARGE_THEN_CAP at the time, and a verdict
+that only holds across all names is reported as "survivorship?". The
+first run showed why: operating margin "pointed the wrong way" (252-day IC
+-0.067, t -3.2) and among companies already $20B+ it was noise (-0.026,
+t -1.3) — small low-margin names that later made the index had won.
 Months overlap at these horizons, so t-statistics use Newey-West errors
 with a lag of one horizon. No LLM calls.
 """
@@ -38,6 +45,7 @@ from .dataset import PricePanel, forward_returns
 from .features import panel_features
 
 HORIZONS = (126, 252)
+LARGE_THEN_CAP = 20e9  # the survivorship check: already this big on the date
 MIN_NAMES = 30  # a month with fewer names carrying the measure is skipped
 QUINTILES = 5
 
@@ -84,9 +92,10 @@ class FactorResult:
     first_half: float | None
     second_half: float | None
     spread: float | None  # top-quintile minus bottom-quintile mean outcome, in %
+    large: FactorResult | None = None  # the same, among companies already large
 
     @property
-    def verdict(self) -> str:
+    def own_verdict(self) -> str:
         if self.mean_ic is None or self.t is None:
             return "no data"
         halves = (self.first_half or 0) * (self.second_half or 0) > 0
@@ -95,6 +104,19 @@ class FactorResult:
         if abs(self.t) >= 2:
             return "one era only"
         return "no edge"
+
+    @property
+    def verdict(self) -> str:
+        """`own_verdict`, unless a result across all names does not hold
+        among the companies that were already large."""
+        own = self.own_verdict
+        if (
+            own in ("works", "WRONG WAY")
+            and self.large is not None
+            and self.large.own_verdict != own
+        ):
+            return "survivorship?"
+        return own
 
 
 def evaluate(frame: pl.DataFrame, factor: str, label: str, horizon: int) -> FactorResult:
@@ -273,12 +295,14 @@ def fundamentals_study(
     frame = screen_measures(keep).join(labels, on=[DATE, "ticker"], how="inner")
     factors = list(FUNDAMENTAL_FACTORS)
     frame = _winsor(frame, factors)
-    results = [
-        evaluate(frame, f, label, h)
-        for f in factors
-        for h in HORIZONS
-        for label in (f"fwd_{h}", f"fwd_{h}_badj")
-    ]
+    large = frame.filter(pl.col("market_cap") >= LARGE_THEN_CAP)
+    results = []
+    for f in factors:
+        for h in HORIZONS:
+            for label in (f"fwd_{h}", f"fwd_{h}_badj"):
+                r = evaluate(frame, f, label, h)
+                r.large = evaluate(large, f, label, h)
+                results.append(r)
     rules = {}
     for h in HORIZONS:
         monthly = (
@@ -460,17 +484,21 @@ def format_fundamentals(study: dict[str, Any]) -> str:
         f"{study['tickers']} S&P 500 names (financials excluded)",
         "=" * 78,
         "IC = per-month rank correlation with the excess return over SPY that followed;",
-        "t = Newey-West; 'works' needs |t| >= 2 and the same sign in both halves.",
+        "t = Newey-West; 'works' needs |t| >= 2 and the same sign in both halves;",
+        f"'large then' = the same among companies already ${LARGE_THEN_CAP / 1e9:.0f}B+ on the "
+        "date, where a verdict must hold too (else 'survivorship?').",
         "",
         f"{'measure':<20}{'label':<14}{'IC':>7}{'t':>7}{'IC>0':>6}{'1st/2nd half':>16}"
-        f"{'Q5-Q1':>9}{'names':>7}  verdict",
+        f"{'Q5-Q1':>9}{'names':>7}{'large then':>15}  verdict",
     ]
     for r in study["results"]:
+        big = r.large
+        large_then = f"{_f(big.mean_ic, '+.3f')} t{_f(big.t, '+.1f')}" if big else "n/a"
         lines.append(
             f"{r.factor:<20}{r.label:<14}{_f(r.mean_ic, '+.3f'):>7}{_f(r.t, '+.1f'):>7}"
             f"{_f(r.positive, '.0%'):>6}"
             f"{_f(r.first_half, '+.3f') + ' / ' + _f(r.second_half, '+.3f'):>16}"
-            f"{_f(r.spread, '+.1f') + '%':>9}{r.names:>7.0f}  {r.verdict}"
+            f"{_f(r.spread, '+.1f') + '%':>9}{r.names:>7.0f}{large_then:>15}  {r.verdict}"
         )
     lines += ["", "Screen hard rules (passed minus failed, mean excess return over SPY):"]
     for h, r in study["rules"].items():

@@ -161,3 +161,24 @@ def test_screen_measures_use_the_screens_own_rules():
     assert out["passes_rules"].to_list() == [True, False]
     assert out["screen_points"][0] == 45.0  # full marks on all four parts
     assert out["low_debt"].to_list() == [-0.3, -1.0]
+
+
+def test_a_verdict_that_fails_among_large_companies_is_flagged():
+    rng = np.random.default_rng(1)
+    rows = []
+    for m in range(60):
+        day = date(2015 + m // 12, m % 12 + 1, 1)
+        for i in range(80):
+            small = i < 40
+            signal = rng.normal()
+            # Only the small names' outcomes follow the measure.
+            outcome = (0.5 * signal if small else 0.0) + rng.normal()
+            rows.append(
+                {"date": day, "ticker": f"T{i}", "m": signal, "fwd_126": outcome, "small": small}
+            )
+    frame = pl.DataFrame(rows)
+    r = fs.evaluate(frame, "m", "fwd_126", 126)
+    r.large = fs.evaluate(frame.filter(~pl.col("small")), "m", "fwd_126", 126)
+    assert r.own_verdict == "works" and r.verdict == "survivorship?"
+    r.large = fs.evaluate(frame, "m", "fwd_126", 126)
+    assert r.verdict == "works"

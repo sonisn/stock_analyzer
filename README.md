@@ -348,7 +348,11 @@ only free data and no LLM calls:
   monthly equal- vs inverse-volatility-weighted baskets against SPY.
 
 The universe is today's S&P 500, so names that fell out are missing; that
-flatters high-volatility and turnaround names most. The report is printed
+flatters high-volatility and turnaround names most. It also holds small
+companies that later grew into the index, so every fundamental measure is
+graded a second time among companies already $20B+ on the date, and a
+verdict that only holds across all names reads "survivorship?" (the first
+run's "operating margin points the wrong way" was exactly that). The report is printed
 and saved under `~/.stock_analyzer/reports/`.
 
 ## Grading the system's own forecasts
