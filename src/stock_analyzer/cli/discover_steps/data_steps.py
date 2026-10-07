@@ -384,6 +384,7 @@ class DataSteps(PipelineBase):
             for ticker in self.state["tickers"]
         ]
         self._apply_model_scores(candidates, technicals)
+        self._apply_evidence_scores(candidates, books)
         passed_all = [c for c in candidates if c["passed_filter"]]
         for c in passed_all:
             f = fundamentals.get(c["ticker"]) or {}
@@ -512,6 +513,51 @@ class DataSteps(PipelineBase):
         cand["sector_bias"] = sector_bias(cand["sector"], self.state.get("sector_rotation", {}))
 
         return cand
+
+    def _apply_evidence_scores(
+        self, candidates: list[dict[str, Any]], books: dict[str, dict[str, Any]]
+    ) -> None:
+        """Record each survivor's evidence score (discover/evidence.py) in
+        its score_breakdown. It never moves the ranking and the LLM stages
+        never see it: it is the control the pick scorecard grades the
+        picks against."""
+        from ...data.insider_buying import clusters
+        from ...discover.evidence import evidence_scores
+        from ...model.sec_history import current_gross_profitability
+
+        passed = [c for c in candidates if c["passed_filter"] and c["score_breakdown"]]
+        if not passed:
+            return
+        tickers = [c["ticker"].upper() for c in passed]
+        today = date.today()
+        try:
+            gp = current_gross_profitability(tickers, self.settings.model_cache_dir, today=today)
+        except Exception as e:  # noqa: BLE001 — a benchmark, not a dependency
+            logger.warning("Evidence score: gross profitability unavailable (%s)", e)
+            gp = {}
+        try:
+            insiders = {
+                c["ticker"].upper() for c in clusters(self.settings.discover_db_path, today=today)
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Evidence score: insider clusters unavailable (%s)", e)
+            insiders = set()
+        book_yoy = {
+            t: rec["yoy_pct"] for t, rec in books.items() if rec and rec.get("yoy_pct") is not None
+        }
+        scores = evidence_scores(
+            tickers, book_yoy=book_yoy, gross_profitability=gp, insider_clusters=insiders
+        )
+        for c in passed:
+            c["score_breakdown"] = {**c["score_breakdown"], "evidence": scores[c["ticker"].upper()]}
+        logger.info(
+            "Evidence score: %d survivors (%d with gross profitability, %d with a book, "
+            "%d in an insider cluster)",
+            len(passed),
+            sum(t in gp for t in tickers),
+            sum(t in book_yoy for t in tickers),
+            sum(t in insiders for t in tickers),
+        )
 
     def _log_screen_funnel(
         self,

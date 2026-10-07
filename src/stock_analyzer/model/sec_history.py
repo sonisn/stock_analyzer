@@ -539,6 +539,27 @@ def build_panel(
     )
 
 
+def current_gross_profitability(
+    tickers: Iterable[str], cache_dir: str, *, today: date
+) -> dict[str, float]:
+    """{ticker: trailing gross profit over total assets as filed by
+    `today`} for the names the SEC has facts for — the same definition the
+    factor study tested, for the live evidence score."""
+    from ..data.sec_edgar import load_ticker_cik_map
+
+    ciks = load_ticker_cik_map()
+    out: dict[str, float] = {}
+    for ticker in tickers:
+        cik = ciks.get(ticker) or ciks.get(ticker.replace("-", "."))
+        body = company_facts(cik, cache_dir) if cik else None
+        if body is None:
+            continue
+        (row,) = company_rows(ticker, body, {}, [today])
+        if row["gross_profitability"] is not None:
+            out[ticker] = row["gross_profitability"]
+    return out
+
+
 def month_ends(start: date, end: date) -> list[date]:
     out = []
     day = date(start.year, start.month, 1)
@@ -559,6 +580,7 @@ __all__ = [
     "build_panel",
     "company_facts",
     "company_rows",
+    "current_gross_profitability",
     "latest_ttm",
     "month_ends",
     "quarterly_eps",

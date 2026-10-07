@@ -732,20 +732,29 @@ def _vs_screen_html(rows: list[dict[str, Any]]) -> str:
     return (
         "<h4>Picks vs the screen they came from</h4>"
         + _table(
-            ["Picked", "Picks vs SPY", f"Screen top {SCREEN_TOP}", "Everything that passed"],
+            [
+                "Picked",
+                "Picks vs SPY",
+                f"Screen top {SCREEN_TOP}",
+                f"Evidence top {SCREEN_TOP}",
+                "Everything that passed",
+            ],
             [
                 [
                     html.escape(r["cohort"]),
                     f"<b>{cell(r['picks'])}</b>",
                     cell(r["top"]),
+                    cell(r.get("evidence")),
                     cell(r["pool"]),
                 ]
                 for r in rows
             ],
         )
         + '<p style="font-size:13px;color:#6b7280">Average return over SPY, and how many beat '
-        f"it. If the picks keep trailing the screen's top {SCREEN_TOP}, the model step is "
-        "not adding to what the score already chose.</p>"
+        f"it. The evidence top {SCREEN_TOP} ranks only on signals that held up when tested "
+        "(contracted backlog growth, gross profitability, insider-buying clusters) and the "
+        "model never sees it. If the picks keep trailing either, the model step is not "
+        "adding to what measured evidence already chose.</p>"
     )
 
 

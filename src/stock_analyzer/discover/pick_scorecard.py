@@ -26,6 +26,9 @@ Two checks ride along with the picks:
     model step is not earning its cost (May 2026 at 63 days: picks -10.1%
     median vs SPY, screen pool -11.1%; Sept so far: picks +1.8%, screen
     top 10 +4.0%).
+  - `vs_screen` also carries the top SCREEN_TOP by the evidence score
+    (discover/evidence.py): a ranking from only the signals that held up
+    when tested, which the model never sees. Recorded from 2026-10-07 on.
   - `calibration`: graded picks split by the model's conviction and by how
     many providers agreed, shown once CALIBRATION_MIN_PICKS are graded —
     whether either one deserves to size a position.
@@ -42,8 +45,9 @@ closes from the bar store.
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import date, datetime, timedelta
 from statistics import mean
 from typing import Any
@@ -132,7 +136,8 @@ def pick_scorecard(
         screened = exec_sql(
             session,
             text(
-                "SELECT c.run_id, c.ticker, r.run_at, c.score, o.return_pct, o.spy_return_pct "
+                "SELECT c.run_id, c.ticker, r.run_at, c.score, o.return_pct, o.spy_return_pct, "
+                "c.score_breakdown "
                 "FROM candidates c JOIN runs r ON r.id = c.run_id "
                 "LEFT JOIN candidate_outcomes o ON o.run_id = c.run_id "
                 "AND o.ticker = c.ticker AND o.horizon_days = :h "
@@ -161,13 +166,25 @@ def pick_scorecard(
     pool: list[Entry] = []
     top: list[Entry] = []
     taken: dict[int, int] = {}
-    for run_id, t, run_at, score, ret, spy in screened:
+    by_evidence: dict[int, list[tuple[float, Entry]]] = {}
+    for run_id, t, run_at, score, ret, spy, breakdown in screened:
         entry = (t, datetime.fromisoformat(str(run_at)).date(), ret, spy)
         pool.append(entry)
         if score is not None and taken.get(run_id, 0) < SCREEN_TOP:
             taken[run_id] = taken.get(run_id, 0) + 1
             top.append(entry)
-    card["vs_screen"] = _vs_screen([e[:4] for e in entries], top, pool, eras=eras)
+        ev = evidence_of(breakdown)
+        if ev is not None:
+            by_evidence.setdefault(run_id, []).append((ev, entry))
+    evidence = [
+        e
+        for ranked in by_evidence.values()
+        for _, e in sorted(ranked, key=lambda x: -x[0])[:SCREEN_TOP]
+    ]
+    evidence.sort(key=lambda e: e[1])
+    card["vs_screen"] = _vs_screen(
+        [e[:4] for e in entries], top, pool, evidence=evidence, eras=eras
+    )
     card["calibration"] = _calibration(entries)
     card["analyst"] = _analyst_bands(
         [
@@ -176,6 +193,19 @@ def pick_scorecard(
         ]
     )
     return card
+
+
+def evidence_of(breakdown: Any) -> float | None:
+    """A candidate's evidence score (discover/evidence.py) from its stored
+    score_breakdown, or None for runs before it was recorded."""
+    if isinstance(breakdown, str):
+        try:
+            breakdown = json.loads(breakdown)
+        except ValueError:
+            return None
+    ev = (breakdown or {}).get("evidence") if isinstance(breakdown, dict) else None
+    score = ev.get("score") if isinstance(ev, dict) else None
+    return float(score) if isinstance(score, (int, float)) else None
 
 
 def analyst_score(body: str | None) -> int | None:
@@ -240,12 +270,15 @@ def _vs_screen(
     top: list[Entry],
     pool: list[Entry],
     *,
+    evidence: Sequence[Entry] = (),
     eras: tuple[tuple[date, str], ...] | None,
 ) -> list[dict[str, Any]]:
-    """Per graded cohort of picks: {"cohort", "picks", "top", "pool"}, each
-    a `_cohort` dict (None when that group has nothing graded), plus an
-    "All" row per universe once there is more than one cohort."""
-    groups = [_graded_by_cohort(g, eras) for g in (picks, top, pool)]
+    """Per graded cohort of picks: {"cohort", "picks", "top", "evidence",
+    "pool"}, each a `_cohort` dict (None when that group has nothing
+    graded), plus an "All" row per universe once there is more than one
+    cohort."""
+    kinds = ("picks", "top", "evidence", "pool")
+    groups = [_graded_by_cohort(list(g), eras) for g in (picks, top, evidence, pool)]
     keys = sorted(groups[0])
     pools = list(dict.fromkeys(p for _, p in keys))
     split = len(pools) > 1
@@ -256,7 +289,7 @@ def _vs_screen(
 
     def row(name: str, wanted: list[tuple[str, str]]) -> dict[str, Any]:
         out: dict[str, Any] = {"cohort": name}
-        for kind, g in zip(("picks", "top", "pool"), groups, strict=True):
+        for kind, g in zip(kinds, groups, strict=True):
             rows = [r for k in wanted for r in g.get(k, [])]
             out[kind] = _cohort(rows, name) if rows else None
         return out

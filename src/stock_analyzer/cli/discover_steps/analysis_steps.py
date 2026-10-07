@@ -11,6 +11,7 @@ from ...data.fundamentals import batch_fundamentals
 from ...discover.analyst import Analyst, analyze_tiered, plan_under_budget
 from ...discover.catalysts import repair_catalysts
 from ...discover.data_reconciliation import reconcile_price_targets
+from ...discover.evidence import hidden_from_model
 from ...discover.macro_filter import apply_macro_veto
 from ...discover.output_validation import validate_pick_scenarios
 from ...discover.ranker import Ranker
@@ -135,7 +136,9 @@ class AnalysisSteps(PipelineBase):
                     "conviction": c["conviction"],
                 },
                 "score": c["score"],
-                "score_breakdown": c["score_breakdown"],
+                # The evidence score is the control the picks are graded
+                # against; the model must not see it.
+                "score_breakdown": hidden_from_model(c["score_breakdown"]),
                 "sector_bias": c.get("sector_bias"),
                 "market_themes": c.get("themes") or [],
                 "earnings_alert": earnings_alerts.get(ticker),
