@@ -12,6 +12,11 @@ obligations in the prompt so the model can plan around them, and
 `validate_sales` re-checks the plan it produces against the same numbers
 — the prompt is advice, the validator is arithmetic. That is the split
 the covered-call and put paths already use.
+
+A dropped sale can leave a buy without its money: on 2026-10-07 the
+plan put "~$40,200" into NVDA counting on a TSLA trim the validator had
+to drop, with $21,404 actually in the account. `resize_unfunded_buys`
+shrinks such buys to the cash that is there and says so in the summary.
 """
 
 from __future__ import annotations
@@ -25,6 +30,8 @@ from ..models.rebalance import RebalanceAction, RebalancePlan
 logger = get_logger(__name__)
 
 SALE_ACTIONS = frozenset({"SELL", "TRIM"})
+BUY_ACTIONS = frozenset({"ADD", "BUY"})
+_MIN_BUY_USD = 100.0
 
 
 def free_shares(
@@ -89,8 +96,10 @@ def validate_sales(
     *,
     positions: dict[str, dict[str, Any]],
     obligations: dict[str, dict[str, Any]],
+    account_cash: dict[str, float] | None = None,
 ) -> tuple[RebalancePlan, list[str]]:
-    """Drop sale actions that would sell promised shares.
+    """Drop sale actions that would sell promised shares, then shrink the
+    buys they were paying for (`resize_unfunded_buys`, given `account_cash`).
 
     A sale is only dropped when the numbers say so outright: the ticker
     has an obligation, the sizing can be read as a share count, and that
@@ -133,4 +142,117 @@ def validate_sales(
         logger.warning("Sale validation: %s", warnings[-1])
     if not warnings:
         return plan, []
+    dropped = [a for a in plan.actions if a not in kept]
+    plan = plan.model_copy(update={"actions": kept})
+    plan, buy_warnings = resize_unfunded_buys(
+        plan, dropped=dropped, positions=positions, account_cash=account_cash
+    )
+    return _note_adjustments(plan, [*warnings, *buy_warnings]), [*warnings, *buy_warnings]
+
+
+def _dollars(sizing: str) -> float | None:
+    """The first dollar amount in a sizing string ("~$40,200", "$12k")."""
+    m = re.search(r"\$\s*(\d[\d,]*\.?\d*)\s*([kK]\b)?", str(sizing or ""))
+    if not m:
+        return None
+    value = float(m.group(1).replace(",", ""))
+    return value * 1000 if m.group(2) else value
+
+
+def _account(sizing: str, accounts: list[str]) -> str | None:
+    """The account a sizing string names (longest match), if any."""
+    text = str(sizing or "").lower()
+    named = [a for a in accounts if a and a.lower() in text]
+    return max(named, key=len) if named else None
+
+
+def _sale_proceeds(action: RebalanceAction, positions: dict[str, dict[str, Any]]) -> float:
+    """Roughly what a kept sale brings in, at the broker's price."""
+    pos = positions.get(action.ticker) or {}
+    units = float(pos.get("units") or 0.0)
+    if units <= 0:
+        return 0.0
+    shares = _requested_shares(action.sizing, units)
+    if shares is not None:
+        return min(shares, units) * float(pos.get("value") or 0.0) / units
+    return _dollars(action.sizing) or 0.0
+
+
+def resize_unfunded_buys(
+    plan: RebalancePlan,
+    *,
+    dropped: list[RebalanceAction],
+    positions: dict[str, dict[str, Any]],
+    account_cash: dict[str, float] | None,
+) -> tuple[RebalancePlan, list[str]]:
+    """Shrink dollar-sized buys to the cash left once `dropped` sales are gone.
+
+    Buys are grouped by the account their sizing names (unnamed ones
+    share the total cash). A group's budget is its cash plus what its
+    kept sales bring in; when its dollar buys exceed that, each is scaled
+    down in proportion, rounded down to $100, and dropped below $100.
+    Buys without a dollar figure are left alone.
+    """
+    if not dropped or account_cash is None:
+        return plan, []
+    accounts = list(account_cash)
+    total_cash = sum(account_cash.values())
+    budgets: dict[str | None, float] = {}
+    buys: dict[str | None, list[tuple[int, float]]] = {}
+    for i, action in enumerate(plan.actions):
+        acct = _account(action.sizing, accounts)
+        if action.action in SALE_ACTIONS:
+            budgets[acct] = budgets.get(acct, 0.0) + _sale_proceeds(action, positions)
+        elif action.action in BUY_ACTIONS and (usd := _dollars(action.sizing)):
+            buys.setdefault(acct, []).append((i, usd))
+    lost = ", ".join(f"{a.ticker} {a.action.lower()}" for a in dropped)
+    actions = list(plan.actions)
+    removed: set[int] = set()
+    warnings: list[str] = []
+    for acct, group in buys.items():
+        cash = account_cash.get(acct, 0.0) if acct else total_cash
+        budget = max(0.0, cash + budgets.get(acct, 0.0) + (budgets.get(None, 0.0) if acct else 0.0))
+        wanted = sum(usd for _, usd in group)
+        if wanted <= budget + 1.0:
+            continue
+        scale = budget / wanted
+        where = acct or "your accounts"
+        for i, usd in group:
+            action = actions[i]
+            new = (usd * scale) // 100 * 100
+            if new < _MIN_BUY_USD:
+                removed.add(i)
+                warnings.append(
+                    f"{action.ticker}: dropped {action.action} of ~${usd:,.0f} — it counted on "
+                    f"the {lost} that was dropped, and {where} has no cash left for it."
+                )
+                continue
+            actions[i] = action.model_copy(
+                update={
+                    "sizing": f"~${new:,.0f} in {where} (cut from: {action.sizing}) — "
+                    f"the {lost} it counted on was dropped"
+                }
+            )
+            warnings.append(
+                f"{action.ticker}: {action.action} cut from ~${usd:,.0f} to ~${new:,.0f} — the "
+                f"{lost} it counted on was dropped; {where} has ~${budget:,.0f} to spend."
+            )
+    for w in warnings:
+        logger.warning("Sale validation: %s", w)
+    if not warnings:
+        return plan, []
+    kept = [a for i, a in enumerate(actions) if i not in removed]
     return plan.model_copy(update={"actions": kept}), warnings
+
+
+def _note_adjustments(plan: RebalancePlan, warnings: list[str]) -> RebalancePlan:
+    """Say in the summary and the plan text what changed after the model
+    wrote them, so neither describes a trade that is no longer there."""
+    note = "Changed after planning: " + " ".join(warnings)
+    full = "ADJUSTED AFTER PLANNING\n" + "\n".join(f"- {w}" for w in warnings)
+    return plan.model_copy(
+        update={
+            "summary": f"{note} Original plan: {plan.summary}".strip(),
+            "full_text": f"{full}\n\n{plan.full_text}",
+        }
+    )

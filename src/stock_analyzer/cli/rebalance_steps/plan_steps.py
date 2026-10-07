@@ -72,6 +72,7 @@ class RebalancePlanSteps(PipelineBase):
             plan,
             positions=self.state.get("holdings_positions") or {},
             obligations=self.state.get("covered_call_obligations") or {},
+            account_cash=self.state.get("account_cash"),
         )
         if sale_warnings or core_warnings:
             self.state["sale_warnings"] = [*sale_warnings, *core_warnings]

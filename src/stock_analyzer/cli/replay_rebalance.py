@@ -104,7 +104,8 @@ def main(argv: list[str] | None = None) -> None:
                 positions.setdefault(t, {"units": 0.0})["units"] += float(h.get("units") or 0)
     obligations = fetch_covered_call_obligations()
     books = batch_rpo([t for t in reviews if t in positions])
-    cash = args.cash if args.cash is not None else sum(fetch_account_cash().values())
+    account_cash = fetch_account_cash() if args.cash is None else None
+    cash = args.cash if args.cash is not None else sum((account_cash or {}).values())
     logger.info(
         "Live context: %d position(s), %d with written calls, %d with a contracted book, cash $%s",
         len(positions),
@@ -122,7 +123,9 @@ def main(argv: list[str] | None = None) -> None:
         obligations_block=covered_call_block(positions, obligations),
         backlog_block=backlog_block(books),
     )
-    plan, sale_warnings = validate_sales(plan, positions=positions, obligations=obligations)
+    plan, sale_warnings = validate_sales(
+        plan, positions=positions, obligations=obligations, account_cash=account_cash
+    )
 
     print(f"\nstatus      : {plan.status}")
     print(f"actions     : {len(plan.actions)}")

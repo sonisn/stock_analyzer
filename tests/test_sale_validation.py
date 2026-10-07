@@ -124,3 +124,72 @@ def test_the_prompt_says_what_is_free():
     assert "0.37 share(s) are free to sell" in block
     assert "turns that call naked" in block
     assert covered_call_block(POSITIONS, {}) == ""
+
+
+# Run #40, 2026-10-07: the TSLA trim was dropped, and the NVDA add it was
+# funding still asked for ~$40,200 with $21,404 in the IRA.
+OCT7_POSITIONS = {
+    "TSLA": {"units": 200.37, "value": 200.37 * 450.0},
+    "OKLO": {"units": 3.0, "value": 3 * 36.32},
+}
+OCT7_CASH = {"Traditional IRA": 21_404.0, "HSA": 31.0, "Robinhood": 1.0}
+OCT7_PLAN = (
+    ("TRIM", "TSLA", "25% — 50 shares (~$22,500) in Traditional IRA"),
+    ("TRIM", "OKLO", "33% — 1 share (~$36) in Traditional IRA"),
+    (
+        "ADD",
+        "NVDA",
+        "~$40,200 less the TSLA call buy-to-close debit (~165-170 shares) in Traditional IRA",
+    ),
+)
+
+
+def _oct7(*actions, cash=OCT7_CASH):
+    plan = _plan(*actions).model_copy(update={"summary": "Trim TSLA, redeploy into NVDA."})
+    return validate_sales(
+        plan, positions=OCT7_POSITIONS, obligations=OBLIGATIONS, account_cash=cash
+    )
+
+
+def test_a_buy_funded_by_a_dropped_sale_shrinks_to_the_cash_there():
+    plan, warnings = _oct7(*OCT7_PLAN)
+    assert [a.ticker for a in plan.actions] == ["OKLO", "NVDA"]
+    nvda = plan.actions[1].sizing
+    # $21,404 cash + ~$36 from the OKLO share, rounded down to $100.
+    assert nvda.startswith("~$21,400 in Traditional IRA")
+    assert "TSLA trim it counted on was dropped" in nvda
+    assert any("NVDA: ADD cut from ~$40,200 to ~$21,400" in w for w in warnings)
+    # Neither the summary nor the plan text still reads as the old trade.
+    assert plan.summary.startswith("Changed after planning:")
+    assert plan.summary.endswith("Original plan: Trim TSLA, redeploy into NVDA.")
+    assert plan.full_text.startswith("ADJUSTED AFTER PLANNING\n- TSLA: dropped TRIM")
+
+
+def test_a_buy_the_cash_already_covers_is_left_alone():
+    plan, warnings = _oct7(OCT7_PLAN[0], ("ADD", "NVDA", "~$15,000 in Traditional IRA"))
+    assert plan.actions[0].sizing == "~$15,000 in Traditional IRA"
+    assert len(warnings) == 1  # just the dropped trim
+
+
+def test_a_buy_with_no_cash_left_is_dropped():
+    plan, warnings = _oct7(OCT7_PLAN[0], ("BUY", "LLY", "~$5,000 in HSA"), cash={"HSA": 31.0})
+    assert plan.actions == []
+    assert any("LLY: dropped BUY of ~$5,000" in w for w in warnings)
+
+
+def test_buys_split_the_cash_in_proportion_and_unnamed_ones_use_the_total():
+    plan, _ = _oct7(
+        OCT7_PLAN[0],
+        ("BUY", "LLY", "~$30,000"),
+        ("ADD", "NVDA", "~$10,000"),
+        cash={"Traditional IRA": 20_000.0},
+    )
+    assert [a.sizing.split(" in ")[0] for a in plan.actions] == ["~$15,000", "~$5,000"]
+
+
+def test_buys_are_untouched_when_no_sale_was_dropped_or_cash_is_unknown():
+    over = ("ADD", "NVDA", "~$90,000 in Traditional IRA")
+    plan, warnings = _oct7(over)
+    assert plan.actions[0].sizing == over[2] and warnings == []
+    plan, warnings = _oct7(OCT7_PLAN[0], over, cash=None)
+    assert plan.actions[0].sizing == over[2] and len(warnings) == 1
