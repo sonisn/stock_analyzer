@@ -63,9 +63,10 @@ def _aggregate_positions(
             avg = h.get("average_purchase_price") or 0
             if not ticker or not units:
                 continue
-            cur = agg.setdefault(ticker, {"units": 0.0, "cost": 0.0})
+            cur = agg.setdefault(ticker, {"units": 0.0, "cost": 0.0, "value": 0.0})
             cur["units"] += float(units)
             cur["cost"] += float(units) * float(avg)
+            cur["value"] += float(units) * float(h.get("price") or 0)
     out: dict[str, dict[str, float]] = {}
     for ticker, v in agg.items():
         if v["units"]:
@@ -73,6 +74,8 @@ def _aggregate_positions(
                 "units": v["units"],
                 "avg_buy_price": v["cost"] / v["units"],
                 "cost_basis": v["cost"],
+                # At the broker's price: what the core-fund share is measured on.
+                "value": v["value"],
             }
     return out
 

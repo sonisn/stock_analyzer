@@ -157,6 +157,7 @@ class Rebalancer:
         backlog_block: str = "",
         stub_income_block: str = "",
         leadership_block: str = "",
+        core_block: str = "",
         held_tickers: list[str] | None = None,
     ) -> RebalancePlan:
         """The plan. With `held_tickers`, a SELL/TRIM/WRITE_CALL on anything
@@ -178,6 +179,7 @@ class Rebalancer:
             backlog_block=backlog_block,
             leadership_block=leadership_block,
             stub_income_block=stub_income_block,
+            core_block=core_block,
         )
         logger.info(
             "Generating rebalance plan with Opus (adaptive thinking, "
@@ -219,6 +221,7 @@ def _decide_prompt(
     backlog_block: str = "",
     stub_income_block: str = "",
     leadership_block: str = "",
+    core_block: str = "",
 ) -> tuple[str, str]:
     """The user message for the rebalancer, and the aggressiveness applied."""
     # Accept either the new structured form ({ticker: HoldingReview})
@@ -271,6 +274,8 @@ def _decide_prompt(
     # worse than no sale, and this is the only input that says which
     # shares are already spoken for.
     obligations_section = f"{obligations_block}\n\n" if obligations_block else ""
+    # The investor's own allocation rule, ahead of any stock idea.
+    core_section = f"{core_block}\n\n" if core_block else ""
     # Signed orders behind a holding, and the premium a part-lot is
     # one purchase away from earning. Both bear on trims, and neither
     # was visible to this agent before 2026-09-20.
@@ -289,6 +294,7 @@ def _decide_prompt(
         f"'Tax-agnostic alternative' section is MANDATORY in any "
         f"NO ACTION output.)\n\n"
         f"{obligations_section}"
+        f"{core_section}"
         f"{backlog_section}"
         f"{stub_income_section}"
         f"{macro_block}"

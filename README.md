@@ -1020,6 +1020,18 @@ monthly contribution that would make the odds 75%. Contributions default to
 last year's median month of deposits and payroll plan purchases (one-off
 lumps like a rollover don't count); `GOAL_MONTHLY_CONTRIBUTION` overrides.
 
+**Core and satellite.** The goal section also shows the same projection
+with 0 / 25 / 50 / 75 / 100% of the money in an S&P 500 index fund, at the
+same average return, so only the swings differ. For a stretch target a
+swingier mix reaches it more often and fares far worse in the middle and
+bad cases; the table shows both, and the choice is the investor's.
+`CORE_TARGET_PCT` (0 = off) makes the rebalancer build that core
+(`discover/core_satellite.py`): every S&P 500 / total-market fund held
+counts toward it, each run moves at most `CORE_STEP_PCT` (10%) of the
+portfolio into `CORE_FUND` (VOO), funded from idle cash and then trims in
+tax-advantaged accounts (never a taxable sale just for the core), and a
+plan that skips a due step is flagged in the report.
+
 **Asset location.** Accounts are taxable, tax-deferred (Traditional IRA,
 401(k)) or tax-free (Roth, HSA). For each holding: what it costs in tax a
 year in a taxable account — trailing dividends (REITs at the short-term

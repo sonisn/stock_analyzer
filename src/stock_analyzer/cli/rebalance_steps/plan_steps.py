@@ -7,6 +7,7 @@ from datetime import date
 from typing import Any
 
 from ...db.session import get_session
+from ...discover.core_satellite import check_core, core_block, core_status
 from ...discover.premortem import PreMortemAgent
 from ...discover.rebalance_cc import (
     apply_cc_plan_validation,
@@ -61,6 +62,9 @@ class RebalancePlanSteps(PipelineBase):
             return self._record_lost_plan(e)
         plan = self._validate_covered_calls(plan)
         plan = self._validate_puts(plan)
+        core_warnings = check_core(
+            plan, self.state.get("core_status"), step_pct=self.settings.core_step_pct
+        )
         # Last, and deterministic: the prompt block above asks the model to
         # plan around promised shares; this checks that it did. A sale of
         # shares backing a short call cannot be executed at all.
@@ -69,8 +73,8 @@ class RebalancePlanSteps(PipelineBase):
             positions=self.state.get("holdings_positions") or {},
             obligations=self.state.get("covered_call_obligations") or {},
         )
-        if sale_warnings:
-            self.state["sale_warnings"] = sale_warnings
+        if sale_warnings or core_warnings:
+            self.state["sale_warnings"] = [*sale_warnings, *core_warnings]
         self.state["rebalance_plan"] = plan
         self.state["rebalance_text"] = plan.full_text
         self.state["harvest_candidates"] = harvest_report_data(
@@ -124,12 +128,31 @@ class RebalancePlanSteps(PipelineBase):
             backlog_block=self.state.get("backlog_block") or "",
             stub_income_block=self.state.get("stub_income_block") or "",
             leadership_block=self._leadership_block(),
+            core_block=self._core_block(),
             obligations_block=covered_call_block(
                 self.state.get("holdings_positions") or {},
                 self.state.get("covered_call_obligations") or {},
             ),
             held_tickers=list(self.state.get("holdings_positions") or {}),
         )
+
+    def _core_block(self) -> str:
+        status = core_status(
+            self.state.get("holdings_positions") or {},
+            self.state.get("cash_balance"),
+            fund=self.settings.core_fund,
+            target_pct=self.settings.core_target_pct,
+        )
+        self.state["core_status"] = status
+        if status is not None:
+            logger.info(
+                "Core index fund: %.1f%% of %s against a %.0f%% target (%s due)",
+                status.core_pct,
+                f"${status.total_value:,.0f}",
+                status.target_pct,
+                f"${status.step_usd(self.settings.core_step_pct):,.0f}",
+            )
+        return core_block(status, step_pct=self.settings.core_step_pct)
 
     def _leadership_block(self) -> str:
         """Sector direction and IBD-style ratings for the holdings and the

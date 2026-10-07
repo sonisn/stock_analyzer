@@ -338,6 +338,12 @@ class Settings(BaseSettings):
     # A holding's yearly tax cost in a taxable account must reach this
     # before moving it is suggested, and the tax paid to move it must be
     # earned back within `asset_location_max_breakeven_years`.
+    # Core and satellite (discover/core_satellite.py): this share of the
+    # portfolio in a broad index fund, CORE_FUND to buy. 0 = off. Each
+    # rebalance moves at most `core_step_pct` of the portfolio toward it.
+    core_target_pct: float = 0.0
+    core_fund: str = "VOO"
+    core_step_pct: float = 10.0
     asset_location_min_drag_usd: float = 150.0
     asset_location_max_breakeven_years: float = 3.0
 

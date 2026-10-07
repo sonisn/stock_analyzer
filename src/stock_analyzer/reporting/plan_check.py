@@ -44,6 +44,8 @@ def render_goal_html(
     goal_date: date | None,
     contribution_note: str,
     left_out: list[str] | tuple[str, ...] = (),
+    core_mixes: list[dict[str, float]] | tuple[dict[str, float], ...] = (),
+    core_target_pct: float = 0.0,
 ) -> str:
     if p is None:
         return (
@@ -99,6 +101,7 @@ def render_goal_html(
                 "produces more of them; it produces more bad ones too, as the bad cases show"
             )
     parts.append(f"<p>{html.escape(concentration)}.</p>")
+    parts.append(_core_mix_html(core_mixes, p, core_target_pct))
     filled = (
         f" Too young for the full window, so SPY's months stand in: "
         f"{html.escape(', '.join(p.filled_from_spy))}."
@@ -117,6 +120,51 @@ def render_goal_html(
         f"invested like the rest. Nominal dollars.{filled}</p></section>"
     )
     return "".join(parts)
+
+
+def _core_mix_html(
+    mixes: list[dict[str, float]] | tuple[dict[str, float], ...],
+    p: Projection,
+    target_pct: float,
+) -> str:
+    """Odds of the goal with part of the money in an S&P 500 index fund
+    (CORE_TARGET_PCT; discover/core_satellite.py)."""
+    if not mixes:
+        return ""
+    has_target = p.target is not None and p.odds is not None
+    rows = []
+    for m in mixes:
+        share = m["core_share"]
+        label = f"{share:.0%} in the index fund"
+        if share == 0:
+            label += " (today's stocks)"
+        if target_pct and abs(share * 100 - target_pct) < 0.5:
+            label += " — your target"
+        row = [label]
+        if has_target:
+            row.append(f"<b>{_pct(m['odds'])}</b>")
+        row += [_money(m["p10"]), _money(m["p50"]), _pct(m["volatility"])]
+        rows.append(row)
+    head = [
+        "Mix",
+        *(["Odds of the target"] if has_target else []),
+        "Bad case",
+        "Middle",
+        "Swings/yr",
+    ]
+    setting = (
+        f"Set CORE_TARGET_PCT (now {target_pct:.0f}%) to have the rebalancer build it, "
+        "a step at a time and from tax-free sales inside the IRA first."
+        if target_pct
+        else "CORE_TARGET_PCT is 0 (off): set it to have the rebalancer build the core, a step "
+        "at a time and from tax-free sales inside the IRA first."
+    )
+    return (
+        "<h3>With part of it in an index fund</h3>"
+        + _table(head, rows)
+        + f"<p {_NOTE}>Each mix keeps the same average return, so only the swings differ: "
+        f"a calmer mix gives up the lucky outcomes and most of the bad ones. {setting}</p>"
+    )
 
 
 def asset_location_headline(r: AssetLocationReport | None) -> str:

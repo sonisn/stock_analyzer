@@ -176,6 +176,59 @@ def _deep_drawdown_odds(growth: np.ndarray, start_value: float, contribution: fl
     return float((drawdown.max(axis=1) >= DEEP_DRAWDOWN).mean())
 
 
+# Core shares the plan check compares (discover/core_satellite.py).
+CORE_SHARES: tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
+
+
+def core_mix(
+    *,
+    weights: dict[str, float],
+    returns: pl.DataFrame,
+    start_value: float,
+    months: int,
+    monthly_contribution: float,
+    expected_return: float,
+    target: float | None,
+    shares: tuple[float, ...] = CORE_SHARES,
+    benchmark: str = "SPY",
+) -> list[dict[str, float]]:
+    """For each core share s: the holdings scaled to 1 - s and an S&P 500
+    fund (the benchmark's months) for s, projected like `project`. Every
+    mix is centred on the same average return, so the odds differ only by
+    how much each mix swings."""
+    total = sum(weights.values())
+    out: list[dict[str, float]] = []
+    if total <= 0:
+        return out
+    for s in shares:
+        mixed = {t: v * (1 - s) for t, v in weights.items() if v * (1 - s) > 0}
+        if s > 0:
+            mixed[benchmark] = mixed.get(benchmark, 0.0) + total * s
+        p = project(
+            weights=mixed,
+            returns=returns,
+            start_value=start_value,
+            months=months,
+            monthly_contribution=monthly_contribution,
+            expected_return=expected_return,
+            target=target,
+            benchmark=benchmark,
+        )
+        if p is None:
+            continue
+        out.append(
+            {
+                "core_share": s,
+                "odds": p.odds if p.odds is not None else float("nan"),
+                "p10": p.p10,
+                "p50": p.p50,
+                "volatility": p.annual_volatility,
+                "deep_drawdown_odds": p.deep_drawdown_odds,
+            }
+        )
+    return out
+
+
 def project(
     *,
     weights: dict[str, float],

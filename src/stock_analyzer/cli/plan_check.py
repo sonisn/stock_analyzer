@@ -174,6 +174,7 @@ def build_plan_check(
 
     # --- goal projection ---
     projection = None
+    mixes: list[dict[str, float]] = []
     contribution, source = 0.0, ""
     left_out: list[str] = []
     goal_date = settings.goal_date
@@ -201,13 +202,27 @@ def build_plan_check(
             expected_return=settings.goal_expected_return,
             target=settings.goal_target_usd,
         )
+        mixes = gp.core_mix(
+            weights=weights,
+            returns=gp.monthly_returns(bars),
+            start_value=_start_value(settings, sum(weights.values())),
+            months=months,
+            monthly_contribution=contribution,
+            expected_return=settings.goal_expected_return,
+            target=settings.goal_target_usd,
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning("Goal projection failed (%s)", e)
 
     return PlanCheck(
         asset_html=render_asset_location_html(report),
         goal_html=render_goal_html(
-            projection, goal_date=goal_date, contribution_note=source, left_out=left_out
+            projection,
+            goal_date=goal_date,
+            contribution_note=source,
+            left_out=left_out,
+            core_mixes=mixes,
+            core_target_pct=settings.core_target_pct,
         ),
         headlines=[goal_headline(projection, goal_date), asset_location_headline(report)],
     )
