@@ -4,6 +4,7 @@ next six to twelve months' returns, and does sizing by volatility help?
     uv run factor-study                  # both studies
     uv run factor-study --part risk      # prices only: seconds once bars are on disk
     uv run factor-study --part fundamentals --refresh-sec
+    uv run factor-study --part fundamentals --universe us2b --band mid   # mid caps
 
 Free data only: the bar store (Yahoo, extended to today) and the SEC's
 company facts (one request per company, cached for 30 days). No LLM calls.
@@ -31,6 +32,18 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--part", choices=("all", "fundamentals", "risk"), default="all")
     parser.add_argument("--years", type=int, default=15)
     parser.add_argument(
+        "--universe",
+        choices=("sp500", "us2b"),
+        default="sp500",
+        help="sp500 = today's S&P 500; us2b = every US stock worth $2B+ today (~1,900)",
+    )
+    parser.add_argument(
+        "--band",
+        choices=("all", "mid", "large"),
+        default="all",
+        help="only companies whose market cap on each date was $2-20B (mid) or $20B+ (large)",
+    )
+    parser.add_argument(
         "--refresh-sec", action="store_true", help="download SEC company facts even if cached"
     )
     args = parser.parse_args(argv)
@@ -38,12 +51,13 @@ def main(argv: list[str] | None = None) -> None:
 
     from ..data import yf_gateway
     from ..data.industry_groups import sector_map
-    from ..data.universe_base import sp500
+    from ..data.universe_base import all_us_2b, sp500
     from ..model import factor_study as fs
     from ..model.dataset import panel_from_bars
     from ..model.sec_history import build_panel
 
-    universe = sorted(sp500())
+    universe = sorted(sp500() if args.universe == "sp500" else {*all_us_2b(), *sp500()})
+    label = "S&P 500" if args.universe == "sp500" else "US $2B+"
     start = date.today() - timedelta(days=round(args.years * 365.25))
     bars = yf_gateway.daily_bars_many(sorted({*universe, "SPY"}), start=start, what="factor-study")
     panel = panel_from_bars(bars)
@@ -62,7 +76,9 @@ def main(argv: list[str] | None = None) -> None:
             cache_dir=settings.model_cache_dir,
             refresh=args.refresh_sec,
         )
-        study = fs.fundamentals_study(fund, fs.outcomes(panel, dates), sector_map())
+        study = fs.fundamentals_study(
+            fund, fs.outcomes(panel, dates), sector_map(), band=args.band, universe=label
+        )
         sections.append(fs.format_fundamentals(study))
     report = "\n\n".join(sections)
     print(report)
@@ -70,7 +86,10 @@ def main(argv: list[str] | None = None) -> None:
     out_dir = Path(os.path.expanduser(settings.dashboard_path)).parent
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
-        path = out_dir / f"factor_study_{args.part}_{date.today():%Y-%m-%d}.txt"
+        name = "_".join(
+            p for p in (args.part, args.universe, args.band) if p not in ("sp500", "all")
+        )
+        path = out_dir / f"factor_study_{name or 'all'}_{date.today():%Y-%m-%d}.txt"
         path.write_text(report + "\n")
         print(f"\nSaved to {path}")
     except OSError as e:

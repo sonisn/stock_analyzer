@@ -46,6 +46,15 @@ from .features import panel_features
 
 HORIZONS = (126, 252)
 LARGE_THEN_CAP = 20e9  # the survivorship check: already this big on the date
+# Market-cap bands on the date itself, for `--band`. Mid caps are less
+# watched than the S&P 500, the reason to test there; they are also where
+# a list of today's companies is most biased (the ones that shrank below
+# $2B or delisted are gone), so a "works" there is an upper bound.
+BANDS: dict[str, tuple[float, float | None]] = {
+    "all": (0.0, None),
+    "mid": (2e9, LARGE_THEN_CAP),
+    "large": (LARGE_THEN_CAP, None),
+}
 MIN_NAMES = 30  # a month with fewer names carrying the measure is skipped
 QUINTILES = 5
 
@@ -286,22 +295,34 @@ def _winsor(frame: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
 
 
 def fundamentals_study(
-    fund: pl.DataFrame, labels: pl.DataFrame, sectors: dict[str, str]
+    fund: pl.DataFrame,
+    labels: pl.DataFrame,
+    sectors: dict[str, str],
+    *,
+    band: str = "all",
+    universe: str = "S&P 500",
 ) -> dict[str, Any]:
-    """{"results": [FactorResult], "rules": {...}, "coverage": {...}}."""
+    """{"results": [FactorResult], "rules": {...}, "coverage": {...}}.
+    `band` keeps only companies whose market cap on each date fell in
+    BANDS[band]; the "large then" survivorship check runs for "all" only."""
     keep = fund.filter(
         ~pl.col("ticker").replace_strict(sectors, default="").is_in(EXCLUDED_SECTORS)
     )
+    lo, hi = BANDS[band]
+    if band != "all":
+        cap = pl.col("market_cap")
+        keep = keep.filter((cap >= lo) & (cap < hi) if hi is not None else cap >= lo)
     frame = screen_measures(keep).join(labels, on=[DATE, "ticker"], how="inner")
     factors = list(FUNDAMENTAL_FACTORS)
     frame = _winsor(frame, factors)
-    large = frame.filter(pl.col("market_cap") >= LARGE_THEN_CAP)
+    large = frame.filter(pl.col("market_cap") >= LARGE_THEN_CAP) if band == "all" else None
     results = []
     for f in factors:
         for h in HORIZONS:
             for label in (f"fwd_{h}", f"fwd_{h}_badj"):
                 r = evaluate(frame, f, label, h)
-                r.large = evaluate(large, f, label, h)
+                if large is not None:
+                    r.large = evaluate(large, f, label, h)
                 results.append(r)
     rules = {}
     for h in HORIZONS:
@@ -330,6 +351,8 @@ def fundamentals_study(
         if f in frame.columns and frame.height
     }
     return {
+        "band": band,
+        "universe": universe,
         "results": results,
         "rules": rules,
         "coverage": coverage,
@@ -477,11 +500,26 @@ def _f(x: float | None, fmt: str) -> str:
     return "n/a" if x is None or (isinstance(x, float) and not math.isfinite(x)) else format(x, fmt)
 
 
+def _band_note(band: str) -> str:
+    if band == "all":
+        return ""
+    lo, hi = BANDS[band]
+    span = f"${lo / 1e9:.0f}B-${hi / 1e9:.0f}B" if hi else f"${lo / 1e9:.0f}B+"
+    note = f", only companies worth {span} on each date"
+    if band == "mid":
+        note += (
+            "\n(today's list misses mid caps that shrank or delisted, so treat a 'works' "
+            "here as an upper bound)"
+        )
+    return note
+
+
 def format_fundamentals(study: dict[str, Any]) -> str:
     lines = [
         "=" * 78,
         f"FUNDAMENTALS (SEC point-in-time), {study['start']} to {study['end']}, "
-        f"{study['tickers']} S&P 500 names (financials excluded)",
+        f"{study['tickers']} {study.get('universe', 'S&P 500')} names (financials excluded)"
+        + _band_note(study.get("band", "all")),
         "=" * 78,
         "IC = per-month rank correlation with the excess return over SPY that followed;",
         "t = Newey-West; 'works' needs |t| >= 2 and the same sign in both halves;",

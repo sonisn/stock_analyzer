@@ -182,3 +182,44 @@ def test_a_verdict_that_fails_among_large_companies_is_flagged():
     assert r.own_verdict == "works" and r.verdict == "survivorship?"
     r.large = fs.evaluate(frame, "m", "fwd_126", 126)
     assert r.verdict == "works"
+
+
+def test_a_band_keeps_only_companies_of_that_size_on_each_date():
+    rows, labels = [], []
+    rng = np.random.default_rng(2)
+    for m in range(24):
+        day = date(2020 + m // 12, m % 12 + 1, 28)
+        for i in range(90):
+            cap = 5e9 if i < 45 else 50e9  # half mid, half large
+            rows.append(
+                {
+                    "date": day,
+                    "ticker": f"T{i}",
+                    "market_cap": cap,
+                    "revenue_growth": rng.normal(0.1, 0.1),
+                    "operating_margin": rng.normal(0.2, 0.05),
+                    "fcf_yield": rng.normal(0.04, 0.01),
+                    "free_cash_flow": 1e9,
+                    "operating_cash_flow": 2e9,
+                    "debt_to_equity": 0.5,
+                    "roe": 0.2,
+                    "gross_profitability": 0.3,
+                    "sue": rng.normal(),
+                }
+            )
+            labels.append(
+                {
+                    "date": day,
+                    "ticker": f"T{i}",
+                    **{
+                        c: rng.normal()
+                        for c in ("fwd_126", "fwd_126_badj", "fwd_252", "fwd_252_badj")
+                    },
+                }
+            )
+    fund, lab = pl.DataFrame(rows), pl.DataFrame(labels)
+    everything = fs.fundamentals_study(fund, lab, {})
+    mid = fs.fundamentals_study(fund, lab, {}, band="mid", universe="US $2B+")
+    assert everything["results"][0].names == 90 and everything["results"][0].large is not None
+    assert mid["results"][0].names == 45 and mid["results"][0].large is None
+    assert "only companies worth $2B-$20B" in fs.format_fundamentals(mid)

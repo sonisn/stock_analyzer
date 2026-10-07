@@ -331,6 +331,7 @@ system's own accuracy:
 uv run factor-study                      # both parts (~10 min first time, SEC download)
 uv run factor-study --part risk          # prices only
 uv run factor-study --part fundamentals --refresh-sec
+uv run factor-study --part fundamentals --universe us2b --band mid   # $2-20B on each date
 ```
 
 The live record grows by one cohort a month, so it takes years to grade a
