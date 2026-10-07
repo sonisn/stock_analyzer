@@ -102,3 +102,9 @@ def test_rebalance_report_puts_the_bar_under_picks_and_holding_reviews():
     )
     assert "12 analysts · rated buy" in html
     assert render_pdf(s, {})  # the PDF takes the section as a text line
+
+
+def test_yahoo_none_rating_is_left_out():
+    data = _data()
+    data["analyst_targets"]["rating"] = "none"
+    assert "rated" not in analyst_target_html(data)

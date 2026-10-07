@@ -83,6 +83,8 @@ def _describe(data: dict[str, Any], s: dict[str, float]) -> tuple[str, str]:
     t = data.get("analyst_targets") or {}
     count = t.get("count")
     rating = str(t.get("rating") or "").replace("_", " ")
+    if rating.lower() == "none":  # Yahoo's word for no consensus rating
+        rating = ""
     who = (f"{int(count)} analysts" if count else "Analysts") + (
         f" · rated {rating}" if rating else ""
     )
