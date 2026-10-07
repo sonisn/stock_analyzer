@@ -8,6 +8,7 @@ from typing import Any
 
 from ...db.session import get_session
 from ...discover.core_satellite import check_core, core_block, core_status
+from ...discover.position_cap import cap_positions
 from ...discover.premortem import PreMortemAgent
 from ...discover.rebalance_cc import (
     apply_cc_plan_validation,
@@ -60,22 +61,26 @@ class RebalancePlanSteps(PipelineBase):
             plan = self._request_plan(rebalancer, ranker_text, history_block)
         except Exception as e:  # noqa: BLE001 — see _record_lost_plan
             return self._record_lost_plan(e)
-        plan = self._validate_covered_calls(plan)
-        plan = self._validate_puts(plan)
-        core_warnings = check_core(
-            plan, self.state.get("core_status"), step_pct=self.settings.core_step_pct
-        )
-        # Last, and deterministic: the prompt block above asks the model to
-        # plan around promised shares; this checks that it did. A sale of
-        # shares backing a short call cannot be executed at all.
+        # First, and deterministic: the prompt asks the model to plan around
+        # promised shares; this checks that it did. A sale of shares backing
+        # a short call cannot be executed at all, and the buys it was paying
+        # for shrink with it. It runs before the put and core checks so they
+        # see the plan as it will be traded: the put check counts sale
+        # proceeds as collateral, and a dropped sale brings in nothing.
         plan, sale_warnings = validate_sales(
             plan,
             positions=self.state.get("holdings_positions") or {},
             obligations=self.state.get("covered_call_obligations") or {},
             account_cash=self.state.get("account_cash"),
         )
-        if sale_warnings or core_warnings:
-            self.state["sale_warnings"] = [*sale_warnings, *core_warnings]
+        plan, cap_warnings = self._cap_positions(plan)
+        plan = self._validate_covered_calls(plan)
+        plan = self._validate_puts(plan)
+        core_warnings = check_core(
+            plan, self.state.get("core_status"), step_pct=self.settings.core_step_pct
+        )
+        if sale_warnings or cap_warnings or core_warnings:
+            self.state["sale_warnings"] = [*sale_warnings, *cap_warnings, *core_warnings]
         self.state["rebalance_plan"] = plan
         self.state["rebalance_text"] = plan.full_text
         self.state["harvest_candidates"] = harvest_report_data(
@@ -202,6 +207,20 @@ class RebalancePlanSteps(PipelineBase):
             self.state.get("harvest_candidates_obj") or []
         )
         return f"rebalance: PLAN LOST ({type(e).__name__}: {e})"
+
+    def _cap_positions(self, plan: Any) -> tuple[Any, list[str]]:
+        """REBALANCE_MAX_POSITION_PCT in code, not only in the prompt."""
+        account_cash = self.state.get("account_cash") or {}
+        return cap_positions(
+            plan,
+            positions=self.state.get("holdings_positions") or {},
+            cash=self.state.get("cash_balance"),
+            max_pct=self.settings.rebalance_max_position_pct,
+            prices={
+                t: (v or {}).get("price") for t, v in (self.state.get("technicals") or {}).items()
+            },
+            accounts=list(account_cash),
+        )
 
     def _validate_covered_calls(self, plan: Any) -> Any:
         """Check WRITE_CALLs against the fetched chains. A crash keeps the

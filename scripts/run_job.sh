@@ -39,13 +39,15 @@ export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:/usr/bin:/bin:$PAT
 # Raise it toward the hard limit — headroom, not a substitute for closing files.
 ulimit -n "$(ulimit -Hn)" 2>/dev/null || ulimit -n 65536 2>/dev/null || true
 
-LOG_FILE="$LOG_DIR/${JOB}_$(date +%Y%m%d).log"
+# Named by the New York day, the calendar the Python side runs on
+# (market_time.py): the 22:00 NY earnings watch is 02:00 UTC tomorrow.
+LOG_FILE="$LOG_DIR/${JOB}_$(TZ=America/New_York date +%Y%m%d).log"
 exec >>"$LOG_FILE" 2>&1
 
-echo "=== ${JOB}: $(date '+%Y-%m-%d %H:%M:%S %Z') ==="
+echo "=== ${JOB}: $(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z') ==="
 "$@"
 status=$?
-echo "=== finished (status ${status}): $(date '+%Y-%m-%d %H:%M:%S %Z') ==="
+echo "=== finished (status ${status}): $(TZ=America/New_York date '+%Y-%m-%d %H:%M:%S %Z') ==="
 
 if [ "$status" -ne 0 ]; then
     uv run ops alert "$JOB" "$LOG_FILE" "$status" || echo "alert email failed too"

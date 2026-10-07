@@ -44,7 +44,8 @@ class Catalyst(BaseModel):
         ...,
         description=(
             "Where this came from: a recent_news id like 'news:N2', or one of "
-            "'sec_filing', 'quarterly_mda', 'earnings_transcript', 'earnings_calendar'."
+            "'sec_filing', 'earnings_release', 'quarterly_mda', 'earnings_transcript', "
+            "'earnings_calendar', 'risk_factors_10k'."
         ),
     )
 

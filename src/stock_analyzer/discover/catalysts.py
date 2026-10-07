@@ -22,8 +22,19 @@ from ..models.llm import Catalyst
 logger = get_logger(__name__)
 
 _FIXED_SOURCES = frozenset(
-    {"sec_filing", "earnings_release", "quarterly_mda", "earnings_transcript", "earnings_calendar"}
+    {
+        "sec_filing",
+        "earnings_release",
+        "quarterly_mda",
+        "earnings_transcript",
+        "earnings_calendar",
+        # The 10-K risk-factor excerpt a holding review is given.
+        "risk_factors_10k",
+    }
 )
+# "news:N5" is the form asked for; models also write the field's name,
+# "recent_news:N5". Same item, so both resolve to its id.
+_NEWS_PREFIXES = ("news:", "recent_news:")
 
 
 def _parse_date(value: str) -> date | None:
@@ -47,7 +58,9 @@ def validate_catalysts(
     warnings: list[str] = []
     for c in catalysts:
         source = c.source.strip()
-        news_id = source.removeprefix("news:")
+        news_id = next(
+            (source.removeprefix(p) for p in _NEWS_PREFIXES if source.startswith(p)), source
+        )
         if source not in _FIXED_SOURCES and news_id not in news_ids:
             warnings.append(f"{ticker}: dropped catalyst citing unknown source {source!r}")
             continue

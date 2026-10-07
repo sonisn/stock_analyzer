@@ -138,8 +138,43 @@ def test_a_host_whose_quotes_slip_is_excluded(tmp_path):
     assert oh.excluded_hosts(db, today=TODAY) == {"z-ai/glm-5.3": {"novita"}}
     from stock_analyzer.cli.ops import openrouter_host_problems
 
+    # Already skipped by every run: a note, not a doctor failure.
+    problems, summary = openrouter_host_problems(db, today=TODAY)
+    assert problems == []
+    assert "skipped until they pass: novita (z-ai/glm-5.3): quote match 90.0% < 97%" in summary
+
+
+def test_the_doctor_fails_only_when_a_model_has_no_host_left(tmp_path):
+    """2026-10-05: three hosts failed the known-answer check and were
+    already skipped, yet the doctor emailed FAILED."""
+    from stock_analyzer.cli.ops import openrouter_host_problems
+
+    db = str(tmp_path / "t.db")
+    hosts = APPROVED_HOSTS["z-ai/glm-5.3"]
+    with get_session(db) as session:
+        for h in hosts[:-1]:
+            session.merge(
+                OpenRouterHostCheck(
+                    day=TODAY.isoformat(), model="z-ai/glm-5.3", host=h, passed=False, detail="x"
+                )
+            )
+    problems, summary = openrouter_host_problems(db, today=TODAY)
+    assert problems == []
+    assert f"{hosts[0]} (z-ai/glm-5.3): failed its last known-answer check" in summary
+    with get_session(db) as session:
+        session.merge(
+            OpenRouterHostCheck(
+                day=TODAY.isoformat(),
+                model="z-ai/glm-5.3",
+                host=hosts[-1],
+                passed=False,
+                detail="x",
+            )
+        )
     problems, _ = openrouter_host_problems(db, today=TODAY)
-    assert problems == ["z-ai/glm-5.3 on Novita: quote match 90.0% < 97%"]
+    assert problems == [
+        f"z-ai/glm-5.3: no usable host left — all {len(hosts)} approved hosts are skipped"
+    ]
 
 
 def test_a_placeholder_in_any_read_flags_it_for_the_better_reader():

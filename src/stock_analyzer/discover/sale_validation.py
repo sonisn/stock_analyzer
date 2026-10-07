@@ -147,7 +147,7 @@ def validate_sales(
     plan, buy_warnings = resize_unfunded_buys(
         plan, dropped=dropped, positions=positions, account_cash=account_cash
     )
-    return _note_adjustments(plan, [*warnings, *buy_warnings]), [*warnings, *buy_warnings]
+    return note_adjustments(plan, [*warnings, *buy_warnings]), [*warnings, *buy_warnings]
 
 
 def _dollars(sizing: str) -> float | None:
@@ -245,14 +245,23 @@ def resize_unfunded_buys(
     return plan.model_copy(update={"actions": kept}), warnings
 
 
-def _note_adjustments(plan: RebalancePlan, warnings: list[str]) -> RebalancePlan:
+_NOTE = "Changed after planning: "
+_HEADER = "ADJUSTED AFTER PLANNING\n"
+
+
+def note_adjustments(plan: RebalancePlan, warnings: list[str]) -> RebalancePlan:
     """Say in the summary and the plan text what changed after the model
-    wrote them, so neither describes a trade that is no longer there."""
-    note = "Changed after planning: " + " ".join(warnings)
-    full = "ADJUSTED AFTER PLANNING\n" + "\n".join(f"- {w}" for w in warnings)
-    return plan.model_copy(
-        update={
-            "summary": f"{note} Original plan: {plan.summary}".strip(),
-            "full_text": f"{full}\n\n{plan.full_text}",
-        }
-    )
+    wrote them, so neither describes a trade that is no longer there.
+    A second call (the position cap after the sale check) adds to the
+    same note rather than nesting one inside the other."""
+    summary, full_text = plan.summary, plan.full_text
+    lines = "\n".join(f"- {w}" for w in warnings)
+    if summary.startswith(_NOTE):
+        summary = _NOTE + " ".join(warnings) + " " + summary.removeprefix(_NOTE)
+    else:
+        summary = f"{_NOTE}{' '.join(warnings)} Original plan: {summary}".strip()
+    if full_text.startswith(_HEADER):
+        full_text = _HEADER + lines + "\n" + full_text.removeprefix(_HEADER)
+    else:
+        full_text = f"{_HEADER}{lines}\n\n{full_text}"
+    return plan.model_copy(update={"summary": summary, "full_text": full_text})

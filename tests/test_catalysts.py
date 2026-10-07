@@ -382,3 +382,18 @@ def test_cards_render_catalysts_in_html_and_pdf():
     assert html_out.count("Upcoming catalysts") == 2
     assert "FDA panel vote" in html_out
     assert render_pdf(sections, {}).startswith(b"%PDF")
+
+
+def test_catalyst_sources_the_reviewer_is_actually_given_are_kept():
+    """Seen dropped in the 2026-09/10 runs: the field name used as the
+    news prefix, and the risk-factor excerpt a holding review gets."""
+    kept, warnings = validate_catalysts(
+        [_cat("recent_news:N2"), _cat("risk_factors_10k"), _cat("recent_news:N9")],
+        news_ids={"N2"},
+        today=date(2026, 10, 7),
+    )
+    assert [c.source for c in kept] == ["recent_news:N2", "risk_factors_10k"]
+    assert len(warnings) == 1 and "'recent_news:N9'" in warnings[0]
+    # A bare field name points at no item.
+    kept, _ = validate_catalysts([_cat("recent_news")], news_ids={"N2"}, today=date(2026, 10, 7))
+    assert kept == []

@@ -370,11 +370,17 @@ SPOT_CHECK_MIN_FIELDS = 20
 
 
 def openrouter_host_problems(db: str, *, today: date) -> tuple[list[str], str]:
-    """(problems, summary) for the OpenRouter hosts: failed known-answer
-    checks, read quality below the floor, Claude agreement below it. A host
-    with no endpoint for its model is named in the summary, not a problem."""
+    """(problems, summary) for the OpenRouter hosts.
+
+    A host that failed its known-answer check, or whose reads fell below
+    the quality floor, is already skipped by every run (`excluded_hosts`):
+    it is named in the summary, not a problem — the doctor emailed FAILED
+    on 2026-10-05 for three hosts that were already out. It is a problem
+    when a model has no approved host left, or when Claude's spot checks
+    stop agreeing with a host, which nothing acts on by itself."""
     from ..openrouter import APPROVED_HOSTS
     from ..openrouter_hosts import (
+        excluded_hosts,
         failed_checks,
         host_quality,
         spot_check_summary,
@@ -382,15 +388,21 @@ def openrouter_host_problems(db: str, *, today: date) -> tuple[list[str], str]:
     )
 
     unavailable = unavailable_hosts(db, today=today)
-    problems = [
-        f"{model} on {host}: failed its last known-answer check"
+    skipped = [
+        f"{host} ({model}): failed its last known-answer check"
         for model, hosts in sorted(failed_checks(db, today=today).items())
         for host in sorted(hosts - unavailable.get(model, set()))
     ]
-    problems += [
-        f"{q['model']} on {q['provider']}: {q['problem']}"
+    skipped += [
+        f"{q['host']} ({q['model']}): {q['problem']}"
         for q in host_quality(db, today=today)
         if q["problem"]
+    ]
+    excluded = excluded_hosts(db, today=today)
+    problems = [
+        f"{model}: no usable host left — all {len(hosts)} approved hosts are skipped"
+        for model, hosts in sorted(APPROVED_HOSTS.items())
+        if hosts and set(hosts) <= excluded.get(model, set())
     ]
     for sc in spot_check_summary(db, today=today):
         if (
@@ -402,7 +414,8 @@ def openrouter_host_problems(db: str, *, today: date) -> tuple[list[str], str]:
                 f"{sc['agreed']}/{sc['compared']} fields"
             )
     hosts = sum(len(h) for h in APPROVED_HOSTS.values())
-    summary = f"{hosts} approved model/host pairs, none flagged"
+    summary = f"{hosts} approved model/host pairs"
+    summary += f"; skipped until they pass: {'; '.join(skipped)}" if skipped else ", none flagged"
     gone = [f"{h} ({m})" for m, hs in sorted(unavailable.items()) for h in sorted(hs)]
     if gone:
         summary += f"; no endpoint at the last check: {', '.join(gone)}"

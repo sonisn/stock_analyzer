@@ -92,3 +92,49 @@ def test_a_crashed_call_validator_keeps_the_plan_and_says_so():
     p, _ = _run(PLAN, apply_cc_plan_validation=_boom)
     assert p.state["cc_warnings"] == ["validation crashed: validator crashed"]
     assert p.state["rebalance_plan"] is not None
+
+
+def test_puts_are_checked_against_the_plan_after_dropped_sales():
+    """The put check counts sale proceeds as collateral; a sale the sale
+    validator drops must be gone before it looks."""
+    plan = RebalancePlan(
+        status="ACTION",
+        aggressiveness_applied="balanced",
+        actions=[
+            RebalanceAction(action="TRIM", ticker="TSLA", sizing="50 shares in IRA"),
+            RebalanceAction(action="ADD", ticker="NVDA", sizing="~$40,000 in IRA"),
+            RebalanceAction(action="SELL_PUT", ticker="AMD", sizing="1 contract"),
+        ],
+        full_text="plan prose",
+    )
+    seen = {}
+
+    def capture(plan, **kwargs):
+        seen["actions"] = [(a.action, a.ticker, a.sizing) for a in plan.actions]
+        return plan, []
+
+    class FakeRebalancer:
+        def __init__(self, *a, **k):
+            pass
+
+        def decide(self, *a, **k):
+            return plan
+
+    p = RebalancePipeline(Settings())
+    p.state.update(
+        {
+            "ranker_text": "#1 AMD — pick",
+            "holdings_positions": {"TSLA": {"units": 200.37, "value": 90_000.0}},
+            "covered_call_obligations": {"TSLA": {"contracts": 2, "shares_committed": 200.0}},
+            "account_cash": {"IRA": 21_404.0},
+            "harvest_candidates_obj": [],
+        }
+    )
+    with (
+        patch.object(plan_steps, "Rebalancer", FakeRebalancer),
+        patch.object(plan_steps, "_build_history_block", return_value=""),
+        patch.object(plan_steps, "apply_csp_plan_validation", capture),
+    ):
+        p.step_rebalance()
+    assert [t for _, t, _ in seen["actions"]] == ["NVDA", "AMD"]
+    assert seen["actions"][0][2].startswith("~$21,400 in IRA")
