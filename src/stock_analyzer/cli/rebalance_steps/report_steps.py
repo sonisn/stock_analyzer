@@ -140,6 +140,7 @@ class RebalanceReportSteps(PipelineBase):
             holdings_positions=self.state.get("holdings_positions", {}),
             holdings_technicals=self.state.get("holdings_technicals", {}),
             holdings_fundamentals=self.state.get("holdings_fundamentals", {}),
+            pick_fundamentals=self.state.get("fundamentals"),
             track_record_block=self.state.get("track_record_block", ""),
             track_record=self.state.get("track_record"),
             thesis_checks=self.state.get("thesis_checks"),

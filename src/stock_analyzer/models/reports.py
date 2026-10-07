@@ -28,6 +28,7 @@ SectionKind = Literal[
     # New structured-output kinds (Phase 4f) — renderer pulls fields from
     # `data` and produces a styled card / table instead of dumping prose.
     "pick_card",
+    "analyst_targets",
     "allocation_table",
     "rebalance_action_table",
     "holding_review_card",

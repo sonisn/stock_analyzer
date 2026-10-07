@@ -25,6 +25,7 @@ def format_html(
     chart_cids: dict[str, str] | None = None,
     health_html: str = "",
     first_tickers: list[str] | None = None,
+    ticker_extras: dict[str, str] | None = None,
 ) -> str:
     """Render the analyst report as HTML.
 
@@ -40,7 +41,10 @@ def format_html(
         # Holdings with a decision waiting come first, in urgency order.
         rank = {t: i for i, t in enumerate(first_tickers)}
         tickers.sort(key=lambda t: rank.get(t.symbol, len(rank)))
-    body_parts.extend(_render_ticker(t, chart_cids or {}) for t in tickers)
+    body_parts.extend(
+        _render_ticker(t, chart_cids or {}, (ticker_extras or {}).get(t.symbol, ""))
+        for t in tickers
+    )
     return _wrap_html(title, "\n".join(body_parts))
 
 
@@ -113,7 +117,7 @@ def _render_sentiment(text: str) -> str:
     )
 
 
-def _render_ticker(t: TickerSection, chart_cids: dict[str, str]) -> str:
+def _render_ticker(t: TickerSection, chart_cids: dict[str, str], extra: str = "") -> str:
     rows = "".join(
         f"<tr><th>{html.escape(label)}</th><td>{html.escape(value)}</td></tr>"
         for label, value in t.fields
@@ -129,6 +133,7 @@ def _render_ticker(t: TickerSection, chart_cids: dict[str, str]) -> str:
         f"<h2>{html.escape(t.symbol)} "
         f'<span class="company">{html.escape(t.name)}</span></h2>'
         f"{chart_img}"
+        f"{extra}"
         f"<table>{rows}</table>"
         "</section>"
     )

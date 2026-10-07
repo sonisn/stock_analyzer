@@ -272,6 +272,7 @@ class ReportSteps(PipelineBase):
             usage=TRACKER.report_data(),
             paper_ledger=self.state.get("paper_ledger"),
             thesis_checks=self.state.get("thesis_checks"),
+            fundamentals=self.state.get("fundamentals"),
         )
 
     def _deliver_report(

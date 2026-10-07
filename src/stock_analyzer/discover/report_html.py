@@ -18,6 +18,7 @@ from datetime import date
 from typing import Any
 
 from ..models.reports import Section
+from ..reporting.target_bar import analyst_target_html
 from .report_sections import (
     _FRAGILITY_COLORS,
     _LIKELIHOOD_COLOR,
@@ -1138,6 +1139,7 @@ _HTML_SECTION_RENDERERS: dict[str, Callable[[Section, dict[str, str]], str]] = {
     "holdings_dashboard": _holdings_dashboard_html,
     "sector_pie": lambda s, c: _svg_pie(s.pie_data) if s.pie_data else "",
     "pick_card": _data_html(_pick_card_html),
+    "analyst_targets": _data_html(analyst_target_html),
     "allocation_table": _data_html(_allocation_table_html),
     "rebalance_action_table": _data_html(_rebalance_action_table_html),
     "holding_review_card": _data_html(_holding_review_card_html),

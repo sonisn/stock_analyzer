@@ -163,6 +163,14 @@ def fetch_ticker_data(symbol: str) -> dict[str, Any]:
         "pe": f"{info.get('trailingPE'):.1f}" if info.get("trailingPE") else None,
         "dividend_yield": div_yield_str,
         "analyst_target": _fmt_money(info.get("targetMeanPrice")),
+        # Raw numbers for the email's target bar (reporting/target_bar.py).
+        "analyst_targets": {
+            "low": info.get("targetLowPrice"),
+            "mean": info.get("targetMeanPrice"),
+            "high": info.get("targetHighPrice"),
+            "count": info.get("numberOfAnalystOpinions"),
+            "rating": info.get("recommendationKey"),
+        },
         "analysts": _latest_recommendations(rec),
         "trend_7days": _trend_label(hist, 7),
         "trend_1mo": _trend_label(hist, 21),

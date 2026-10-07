@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..logging import get_logger
+from .target_bar import analyst_target_html, target_summary
 
 logger = get_logger(__name__)
 
@@ -1121,6 +1122,8 @@ def _stock_detail_html(ticker: str, data: dict[str, Any]) -> str:
         ("Analyst target", "analyst_target"),
         ("Dividend", "dividend_yield"),
     ):
+        if key == "analyst_target" and target_summary(data):
+            continue  # the target bar below says it, with the range
         value = data.get(key)
         if value:
             bits.append(f"{label} {html.escape(str(value))}")
@@ -1146,6 +1149,7 @@ def _stock_detail_html(ticker: str, data: dict[str, Any]) -> str:
             f'<img src="cid:{html.escape(str(data["chart_cid"]))}" '
             f'alt="{html.escape(ticker)} chart" style="max-width:100%">'
         )
+    parts.append(analyst_target_html(data))
     if data.get("view"):
         parts.append(f"<p><b>Long-term view:</b> {html.escape(str(data['view']))}</p>")
     return "".join(parts)

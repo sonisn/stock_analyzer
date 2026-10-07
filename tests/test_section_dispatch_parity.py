@@ -49,6 +49,12 @@ _FIXTURES: dict[str, dict[str, Any]] = {
     },
     "sector_pie": {"pie_data": [("Tech", 1.0), ("Auto", 2.0)]},
     "pick_card": {"data": {"ticker": "NVDA", "rank": 1, "one_liner": "x"}},
+    "analyst_targets": {
+        "data": {
+            "price_value": 100.0,
+            "analyst_targets": {"low": 80.0, "mean": 120.0, "high": 150.0},
+        }
+    },
     "allocation_table": {"data": {"allocations": [{"ticker": "X", "pct": 10.0, "rationale": "y"}]}},
     "rebalance_action_table": {
         "data": {"actions": [{"action": "SELL", "ticker": "X", "sizing": "all"}]}

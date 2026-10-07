@@ -588,21 +588,32 @@ def run_analysis(
     return text, tickers
 
 
-def build_email(result: str, health, chart_cids: dict[str, str]) -> tuple[str, str]:
+def build_email(
+    result: str,
+    health,
+    chart_cids: dict[str, str],
+    ticker_data: dict[str, dict] | None = None,
+) -> tuple[str, str]:
     """(subject, HTML body). With a health result, the email opens with the
     short "Decide today" list, the subject carries how many decisions are
-    waiting, and flagged holdings are listed first."""
+    waiting, and flagged holdings are listed first. Each holding with
+    analyst targets in `ticker_data` gets the target bar under its chart."""
     from ..reporting.health import (
         decision_count,
         flagged_tickers,
         render_decisions_html,
         render_health_html,
     )
+    from ..reporting.target_bar import analyst_target_html
 
+    extras = {t.upper(): analyst_target_html(d) for t, d in (ticker_data or {}).items()}
+    extras = {t: h for t, h in extras.items() if h}
     day = date.today().strftime("%b-%d")
     if health is None:
         subject = f"Portfolio Analysis - {day}"
-        return subject, format_html(result, title=subject, chart_cids=chart_cids)
+        return subject, format_html(
+            result, title=subject, chart_cids=chart_cids, ticker_extras=extras
+        )
     n = decision_count(health)
     subject = f"Portfolio {day}: " + (f"{n} to decide" if n else "nothing to decide")
     return subject, format_html(
@@ -611,6 +622,7 @@ def build_email(result: str, health, chart_cids: dict[str, str]) -> tuple[str, s
         chart_cids=chart_cids,
         health_html=render_decisions_html(health) + render_health_html(health),
         first_tickers=flagged_tickers(health),
+        ticker_extras=extras,
     )
 
 
@@ -851,7 +863,7 @@ def main() -> None:
         if s.get("details") and s["ticker"] in charts:
             s["details"]["chart_cid"] = _chart_cid(s["ticker"])
 
-    subject, body = build_email(result, health, chart_cids)
+    subject, body = build_email(result, health, chart_cids, agent.ticker_data)
     SmtpServer().send_email(
         settings.email_to,
         subject,

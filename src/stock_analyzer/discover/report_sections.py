@@ -782,6 +782,7 @@ def build_sections(
     usage: dict[str, Any] | None = None,
     paper_ledger: dict[str, Any] | None = None,
     thesis_checks: list[dict[str, Any]] | None = None,
+    fundamentals: dict[str, dict[str, Any]] | None = None,
 ) -> list[Section]:
     # Prefer the structured Phase 4 objects when present; fall back to
     # parsing the free-text variants so legacy callers / partial runs
@@ -841,6 +842,7 @@ def build_sections(
         redteam_text=redteam_text,
         sizer_text=sizer_text,
         pick_catalysts=pick_catalysts,
+        fundamentals=fundamentals,
     )
 
     s.append(Section(kind="page_break"))
@@ -936,6 +938,15 @@ def _context_sections(
     return ctx
 
 
+def append_analyst_targets(s: list[Section], fundamentals: dict[str, Any] | None) -> None:
+    """The analysts' low/average/high targets against today's price."""
+    from ..reporting.target_bar import from_fundamentals
+
+    data = from_fundamentals(fundamentals)
+    if data:
+        s.append(Section(kind="analyst_targets", data=data))
+
+
 def append_pick_cards(
     s: list[Section],
     *,
@@ -947,8 +958,10 @@ def append_pick_cards(
     redteam_text: str,
     sizer_text: str,
     pick_catalysts: dict[str, list[dict[str, Any]]] | None,
+    fundamentals: dict[str, dict[str, Any]] | None = None,
 ) -> None:
-    """Per-pick cards. When structured outputs are present, emit a single
+    """Per-pick cards, each followed by its chart and the analysts' target
+    bar (reporting/target_bar.py) when `fundamentals` has targets for it. When structured outputs are present, emit a single
     rich pick_card section per ticker (renderer composes rank pill +
     conviction badge + fragility chip + allocation + bull/bear prose).
     Otherwise fall back to the legacy heading + preformatted layout."""
@@ -981,9 +994,11 @@ def append_pick_cards(
                 )
             )
             s.append(Section(kind="image", image_ticker=ticker))
+            append_analyst_targets(s, (fundamentals or {}).get(ticker))
         else:
             s.append(Section(kind="heading", text=ticker, level=2))
             s.append(Section(kind="image", image_ticker=ticker))
+            append_analyst_targets(s, (fundamentals or {}).get(ticker))
             s.append(Section(kind="heading", text="Bull case", level=3))
             s.append(Section(kind="preformatted", text=pick_blocks.get(ticker, "(missing)")))
             s.append(Section(kind="heading", text="Bear case (red-team)", level=3))

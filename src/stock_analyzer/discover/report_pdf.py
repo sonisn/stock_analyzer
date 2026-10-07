@@ -38,6 +38,7 @@ from reportlab.platypus import (
 
 from ..logging import get_logger
 from ..models.reports import Section
+from ..reporting.target_bar import analyst_target_text
 from .report_html import (
     _GRID,
     _INK,
@@ -1461,6 +1462,11 @@ _PDF_SECTION_RENDERERS: dict[str, Callable[..., list[Any]]] = {
         _spaced(_pdf_holdings_dashboard(s.holdings), 6) if s.holdings else []
     ),
     "sector_pie": lambda s, c, st: _spaced(_pdf_sector_pie(s.pie_data), 6) if s.pie_data else [],
+    "analyst_targets": lambda s, c, st: (
+        _spaced(Paragraph(html.escape(analyst_target_text(s.data)), st["BodyText"]), 4)
+        if s.data
+        else []
+    ),
     "allocation_table": _data_panel(_pdf_allocation_table),
     "rebalance_action_table": _data_panel(_pdf_rebalance_action_table),
     "holding_review_card": _data_panel(_pdf_holding_review_card),

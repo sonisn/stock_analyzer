@@ -9,6 +9,7 @@ from ..models.rebalance import RebalancePlan
 from ..models.reports import PreMortem, Section
 from ..models.track_record import TrackRecord
 from .report_sections import (
+    append_analyst_targets,
     append_thesis_check_section,
     append_track_record_section,
     append_usage_section,
@@ -566,6 +567,7 @@ def append_csp_section(
 def append_holding_review_sections(
     sections: list[Section],
     holdings_reviews: dict[str, Any],
+    fundamentals: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Per-holding reviews", level=1))
@@ -593,10 +595,12 @@ def append_holding_review_sections(
                     },
                 )
             )
+            append_analyst_targets(sections, (fundamentals or {}).get(ticker))
         else:
             text = review or ""
             sections.append(Section(kind="heading", text=ticker, level=2))
             sections.append(Section(kind="preformatted", text=text))
+            append_analyst_targets(sections, (fundamentals or {}).get(ticker))
 
 
 def append_discover_appendix(
@@ -610,6 +614,7 @@ def append_discover_appendix(
     ranker_output: object = None,
     redteam_output: object = None,
     sizer_output: object = None,
+    fundamentals: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     # The structured objects have to travel with the text. Without them
     # `build_sections` falls back to re-parsing prose: "At a glance" reads
@@ -628,6 +633,7 @@ def append_discover_appendix(
         ranker_output=ranker_output,
         redteam_output=redteam_output,
         sizer_output=sizer_output,
+        fundamentals=fundamentals,
     )
     sections.append(Section(kind="page_break"))
     sections.append(Section(kind="heading", text="Discover picks (input to rebalancer)", level=1))
@@ -691,6 +697,7 @@ def build_rebalance_sections(
     ranker_output: object = None,
     redteam_output: object = None,
     sizer_output: object = None,
+    pick_fundamentals: dict[str, dict[str, Any]] | None = None,
 ) -> list[Section]:
     """Rebalance-specific layout — status banner + metrics + dashboard +
     sector pie at the top, then the LLM's plan + per-holding reviews +
@@ -748,7 +755,7 @@ def build_rebalance_sections(
         plan_failure=plan_failure,
     )
     append_harvest_section(sections, harvest_candidates)
-    append_holding_review_sections(sections, holdings_reviews)
+    append_holding_review_sections(sections, holdings_reviews, holdings_fundamentals)
     append_discover_appendix(
         sections,
         ranker_text=ranker_text,
@@ -759,6 +766,7 @@ def build_rebalance_sections(
         ranker_output=ranker_output,
         redteam_output=redteam_output,
         sizer_output=sizer_output,
+        fundamentals=pick_fundamentals,
     )
     append_usage_section(sections, usage)
     return sections
