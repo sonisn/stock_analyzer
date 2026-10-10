@@ -107,6 +107,24 @@ def test_sue_scales_the_latest_change_by_the_past_spread():
     assert sh.sue(quarters, date(2025, 1, 1)) is None  # stale
 
 
+def test_five_year_growth_needs_positive_ends_and_a_full_trailing_year():
+    assert math.isclose(sh.cagr(1.0, 2.0**5, 5), 1.0)
+    assert sh.cagr(-1.0, 2.0, 5) is None and sh.cagr(1.0, 0.0, 5) is None
+    quarters = [(date(2023, 3, 31), 1.0), (date(2023, 6, 30), 1.0), (date(2023, 9, 30), 1.0)]
+    assert sh.ttm_eps(quarters, date(2023, 12, 31)) is None
+    quarters.append((date(2023, 12, 31), 2.0))
+    assert sh.ttm_eps(quarters, date(2024, 1, 31)) == 5.0
+    assert sh.ttm_eps(quarters, date(2025, 1, 31)) is None  # stale
+    # A gap: four quarter ends spanning more than a year.
+    assert (
+        sh.ttm_eps([quarters[0], *quarters[2:], (date(2024, 3, 31), 1.0)], date(2024, 4, 30))
+        is None
+    )
+    seen = {date(2019, 1, 31): 1, date(2019, 2, 28): 1}
+    assert sh._years_before(date(2024, 1, 31), 5, seen) == date(2019, 1, 31)
+    assert sh._years_before(date(2024, 3, 29), 5, seen) is None
+
+
 def test_newey_west_matches_plain_t_without_lags():
     x = np.array([0.1, 0.2, -0.1, 0.3, 0.0, 0.15])
     plain = x.mean() / (x.std() / math.sqrt(len(x)))
@@ -154,11 +172,20 @@ def test_screen_measures_use_the_screens_own_rules():
             "debt_to_equity": [0.3, 1.0],
             "roe": [0.25, 0.05],
             "gross_profitability": [0.4, 0.1],
+            "gross_margin": [0.6, 0.6],
+            "gross_margin_change": [0.01, 0.0],
             "sue": [1.0, 0.0],
+            "revenue_cagr_5y": [0.30, 0.40],
+            "eps_cagr_5y": [0.20, None],
         }
     )
     out = fs.screen_measures(fund)
     assert out["passes_rules"].to_list() == [True, False]
+    # Both must clear the bar; a missing EPS rate fails.
+    assert out["growth_15"].to_list() == [True, False]
+    assert out["growth_25"].to_list() == [False, False]
+    assert out["gm_40"].to_list() == [True, True]
+    assert out["growth_15_gm_40"].to_list() == [True, False]
     assert out["screen_points"][0] == 45.0  # full marks on all four parts
     assert out["low_debt"].to_list() == [-0.3, -1.0]
 
@@ -204,17 +231,18 @@ def test_a_band_keeps_only_companies_of_that_size_on_each_date():
                     "debt_to_equity": 0.5,
                     "roe": 0.2,
                     "gross_profitability": 0.3,
+                    "gross_margin": rng.normal(0.45, 0.15),
+                    "gross_margin_change": rng.normal(0.0, 0.02),
                     "sue": rng.normal(),
+                    "revenue_cagr_5y": rng.normal(0.15, 0.1),
+                    "eps_cagr_5y": rng.normal(0.15, 0.1),
                 }
             )
             labels.append(
                 {
                     "date": day,
                     "ticker": f"T{i}",
-                    **{
-                        c: rng.normal()
-                        for c in ("fwd_126", "fwd_126_badj", "fwd_252", "fwd_252_badj")
-                    },
+                    **{c: rng.normal() for h in fs.HORIZONS for c in (f"fwd_{h}", f"fwd_{h}_badj")},
                 }
             )
     fund, lab = pl.DataFrame(rows), pl.DataFrame(labels)
@@ -223,3 +251,17 @@ def test_a_band_keeps_only_companies_of_that_size_on_each_date():
     assert everything["results"][0].names == 90 and everything["results"][0].large is not None
     assert mid["results"][0].names == 45 and mid["results"][0].large is None
     assert "only companies worth $2B-$20B" in fs.format_fundamentals(mid)
+
+
+def test_a_horizon_longer_than_the_months_cover_is_too_short():
+    rng = np.random.default_rng(3)
+    rows = []
+    for m in range(60):  # five years of month-ends
+        day = date(2015 + m // 12, m % 12 + 1, 1)
+        for i in range(50):
+            signal = rng.normal()
+            rows.append({"date": day, "ticker": f"T{i}", "m": signal, "fwd": signal + rng.normal()})
+    frame = pl.DataFrame(rows)
+    assert fs.evaluate(frame, "m", "fwd", 252).verdict == "works"  # five 1-year periods
+    five_years = fs.evaluate(frame, "m", "fwd", 1260)  # one 5-year period
+    assert five_years.periods == 1.0 and five_years.verdict == "too short"

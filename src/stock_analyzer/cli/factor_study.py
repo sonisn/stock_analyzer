@@ -1,5 +1,5 @@
 """`factor-study` — fifteen years of month-ends: which fundamentals rank the
-next six to twelve months' returns, and does sizing by volatility help?
+next six months' to five years' returns, and does sizing by volatility help?
 
     uv run factor-study                  # both studies
     uv run factor-study --part risk      # prices only: seconds once bars are on disk

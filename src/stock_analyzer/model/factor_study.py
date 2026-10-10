@@ -44,7 +44,12 @@ from ..data.frames import DATE
 from .dataset import PricePanel, forward_returns
 from .features import panel_features
 
-HORIZONS = (126, 252)
+# Sessions ahead: six months, one, three and five years. The long ones
+# overlap heavily month to month, so each is also graded by how many
+# non-overlapping periods it spans (MIN_PERIODS).
+HORIZONS = (126, 252, 756, 1260)
+HORIZON_NAMES = {126: "6 mo", 252: "1 y", 756: "3 y", 1260: "5 y"}
+MIN_PERIODS = 3  # fewer independent periods than this is too short to judge
 LARGE_THEN_CAP = 20e9  # the survivorship check: already this big on the date
 # Market-cap bands on the date itself, for `--band`. Mid caps are less
 # watched than the S&P 500, the reason to test there; they are also where
@@ -102,11 +107,19 @@ class FactorResult:
     second_half: float | None
     spread: float | None  # top-quintile minus bottom-quintile mean outcome, in %
     large: FactorResult | None = None  # the same, among companies already large
+    horizon: int = 0
+
+    @property
+    def periods(self) -> float:
+        """Non-overlapping horizons the months span."""
+        return self.months * 21 / self.horizon if self.horizon else float(self.months)
 
     @property
     def own_verdict(self) -> str:
         if self.mean_ic is None or self.t is None:
             return "no data"
+        if self.periods < MIN_PERIODS:
+            return "too short"
         halves = (self.first_half or 0) * (self.second_half or 0) > 0
         if abs(self.t) >= 2 and halves:
             return "works" if self.mean_ic > 0 else "WRONG WAY"
@@ -147,7 +160,9 @@ def evaluate(frame: pl.DataFrame, factor: str, label: str, horizon: int) -> Fact
         bucket = np.ceil(ranks / len(ranks) * QUINTILES)
         spreads.append(float(b[ok][bucket == QUINTILES].mean() - b[ok][bucket == 1].mean()))
     if not ics:
-        return FactorResult(factor, label, 0, 0, None, None, None, None, None, None)
+        return FactorResult(
+            factor, label, 0, 0, None, None, None, None, None, None, horizon=horizon
+        )
     ics.sort()
     values = np.array([v for _, v in ics])
     half = len(values) // 2
@@ -162,6 +177,7 @@ def evaluate(frame: pl.DataFrame, factor: str, label: str, horizon: int) -> Fact
         first_half=float(values[:half].mean()) if half else None,
         second_half=float(values[half:].mean()) if half else None,
         spread=float(np.mean(spreads)) * 100,
+        horizon=horizon,
     )
 
 
@@ -242,8 +258,21 @@ FUNDAMENTAL_FACTORS: tuple[str, ...] = (
     "low_debt",  # -debt_to_equity
     "roe",
     "gross_profitability",
+    "gross_margin",
+    "gross_margin_change",  # this year's gross margin less last year's
     "sue",
+    "revenue_cagr_5y",
+    "eps_cagr_5y",
 )
+# Pass/fail rules, each graded as passed-minus-failed: the screen's hard
+# rules, and sales and EPS both compounding at least so fast for 5 years.
+RULES: dict[str, str] = {
+    "gm_40": "Gross margin >= 40%",
+    "passes_rules": "Screen hard rules",
+    "growth_25": "5y sales AND EPS growth >= 25%/yr",
+    "growth_15": "5y sales AND EPS growth >= 15%/yr",
+    "growth_15_gm_40": "5y growth >= 15%/yr AND gross margin >= 40%",
+}
 EXCLUDED_SECTORS = ("Financial Services",)  # bank cash flow and margins mean little
 
 
@@ -276,10 +305,24 @@ def screen_measures(fund: pl.DataFrame) -> pl.DataFrame:
             and row["roe"] >= screen.MIN_RETURN_ON_EQUITY
             and (de is None or de <= screen.MAX_DEBT_TO_EQUITY)
         )
+
+    def both_grew(rate: float) -> pl.Expr:
+        # A name without five years of positive figures counts as failing,
+        # as it would in a live filter.
+        return ((pl.col("revenue_cagr_5y") >= rate) & (pl.col("eps_cagr_5y") >= rate)).fill_null(
+            False
+        )
+
     return fund.with_columns(
         pl.Series("screen_points", points, dtype=pl.Float64),
         pl.Series("passes_rules", passes, dtype=pl.Boolean),
         (-pl.col("debt_to_equity")).alias("low_debt"),
+        (pl.col("gross_margin") >= 0.40).fill_null(False).alias("gm_40"),
+        both_grew(0.25).alias("growth_25"),
+        both_grew(0.15).alias("growth_15"),
+        (both_grew(0.15) & (pl.col("gross_margin") >= 0.40))
+        .fill_null(False)
+        .alias("growth_15_gm_40"),
     )
 
 
@@ -292,6 +335,38 @@ def _winsor(frame: pl.DataFrame, columns: list[str]) -> pl.DataFrame:
             for c in columns
         ]
     )
+
+
+def _rule_spread(frame: pl.DataFrame, rule: str) -> dict[int, dict[str, Any]]:
+    """Per horizon: mean excess return of names passing `rule` vs failing,
+    and the Newey-West t of the monthly difference."""
+    out = {}
+    for h in HORIZONS:
+        monthly = (
+            frame.drop_nulls(f"fwd_{h}")
+            .group_by(DATE, rule)
+            .agg(pl.col(f"fwd_{h}").mean(), pl.len().alias("n"))
+            .pivot(on=rule, index=DATE, values=[f"fwd_{h}", "n"])
+            .drop_nulls()
+            .sort(DATE)
+        )
+        if (
+            monthly.is_empty()
+            or "n_true" not in monthly.columns
+            or "n_false" not in monthly.columns
+        ):
+            continue
+        diff = (monthly[f"fwd_{h}_true"] - monthly[f"fwd_{h}_false"]).to_numpy()
+        out[h] = {
+            "months": len(diff),
+            "periods": len(diff) * 21 / h,
+            "passed_avg": float(monthly["n_true"].to_numpy().mean()),
+            "failed_avg": float(monthly["n_false"].to_numpy().mean()),
+            "passed_pct": float(monthly[f"fwd_{h}_true"].to_numpy().mean()) * 100,
+            "failed_pct": float(monthly[f"fwd_{h}_false"].to_numpy().mean()) * 100,
+            "t": newey_west_t(diff, h // 21),
+        }
+    return out
 
 
 def fundamentals_study(
@@ -324,27 +399,10 @@ def fundamentals_study(
                 if large is not None:
                     r.large = evaluate(large, f, label, h)
                 results.append(r)
-    rules = {}
-    for h in HORIZONS:
-        monthly = (
-            frame.drop_nulls(f"fwd_{h}")
-            .group_by(DATE, "passes_rules")
-            .agg(pl.col(f"fwd_{h}").mean(), pl.len().alias("n"))
-            .pivot(on="passes_rules", index=DATE, values=[f"fwd_{h}", "n"])
-            .drop_nulls()
-            .sort(DATE)
-        )
-        if monthly.is_empty():
-            continue
-        diff = (monthly[f"fwd_{h}_true"] - monthly[f"fwd_{h}_false"]).to_numpy()
-        rules[h] = {
-            "months": len(diff),
-            "passed_avg": float(monthly["n_true"].to_numpy().mean()),
-            "failed_avg": float(monthly["n_false"].to_numpy().mean()),
-            "passed_pct": float(monthly[f"fwd_{h}_true"].to_numpy().mean()) * 100,
-            "failed_pct": float(monthly[f"fwd_{h}_false"].to_numpy().mean()) * 100,
-            "t": newey_west_t(diff, h // 21),
-        }
+    # A month where nothing passes drops out, so the growth rules start
+    # once five years of filings exist.
+    rules = {rule: _rule_spread(frame, rule) for rule in RULES}
+    rules_large = {rule: _rule_spread(large, rule) for rule in RULES} if large is not None else {}
     coverage = {
         f: float(frame[f].is_not_null().to_numpy().mean())
         for f in factors
@@ -355,6 +413,7 @@ def fundamentals_study(
         "universe": universe,
         "results": results,
         "rules": rules,
+        "rules_large": rules_large,
         "coverage": coverage,
         "start": frame[DATE].min(),
         "end": frame[DATE].max(),
@@ -526,8 +585,12 @@ def format_fundamentals(study: dict[str, Any]) -> str:
         f"'large then' = the same among companies already ${LARGE_THEN_CAP / 1e9:.0f}B+ on the "
         "date, where a verdict must hold too (else 'survivorship?').",
         "",
+        f"Labels: fwd_126 = 6 months, fwd_252 = 1 year, fwd_756 = 3 years, fwd_1260 = 5 years "
+        f"(cumulative); 'periods' = non-overlapping horizons covered, under {MIN_PERIODS} is "
+        "'too short'.",
+        "",
         f"{'measure':<20}{'label':<14}{'IC':>7}{'t':>7}{'IC>0':>6}{'1st/2nd half':>16}"
-        f"{'Q5-Q1':>9}{'names':>7}{'large then':>15}  verdict",
+        f"{'Q5-Q1':>9}{'names':>7}{'periods':>8}{'large then':>15}  verdict",
     ]
     for r in study["results"]:
         big = r.large
@@ -536,15 +599,28 @@ def format_fundamentals(study: dict[str, Any]) -> str:
             f"{r.factor:<20}{r.label:<14}{_f(r.mean_ic, '+.3f'):>7}{_f(r.t, '+.1f'):>7}"
             f"{_f(r.positive, '.0%'):>6}"
             f"{_f(r.first_half, '+.3f') + ' / ' + _f(r.second_half, '+.3f'):>16}"
-            f"{_f(r.spread, '+.1f') + '%':>9}{r.names:>7.0f}{large_then:>15}  {r.verdict}"
+            f"{_f(r.spread, '+.1f') + '%':>9}{r.names:>7.0f}{r.periods:>8.1f}{large_then:>15}"
+            f"  {r.verdict}"
         )
-    lines += ["", "Screen hard rules (passed minus failed, mean excess return over SPY):"]
-    for h, r in study["rules"].items():
-        lines.append(
-            f"  {h} sessions: passed {r['passed_pct']:+.1f}% (~{r['passed_avg']:.0f} names) vs "
-            f"failed {r['failed_pct']:+.1f}% (~{r['failed_avg']:.0f}); "
-            f"difference t {_f(r['t'], '+.1f')} over {r['months']} months"
-        )
+    lines += ["", "Rules (passed vs failed, mean excess return over SPY):"]
+    rules_large = study.get("rules_large", {})
+    for rule, by_h in study["rules"].items():
+        lines.append(f" {RULES[rule]}:")
+        for h, r in by_h.items():
+            short = "  TOO SHORT" if r["periods"] < MIN_PERIODS else ""
+            lines.append(
+                f"  {HORIZON_NAMES.get(h, f'{h} sessions'):>5}: passed {r['passed_pct']:+.1f}% "
+                f"(~{r['passed_avg']:.0f} names) vs failed {r['failed_pct']:+.1f}% "
+                f"(~{r['failed_avg']:.0f}); difference t {_f(r['t'], '+.1f')} over "
+                f"{r['months']} months = {r['periods']:.1f} periods{short}"
+            )
+            big = rules_large.get(rule, {}).get(h)
+            if big:
+                lines.append(
+                    f"         large then: passed {big['passed_pct']:+.1f}% "
+                    f"(~{big['passed_avg']:.0f}) vs failed {big['failed_pct']:+.1f}%; "
+                    f"t {_f(big['t'], '+.1f')}"
+                )
     lines += ["", "Coverage (share of name-months with the measure):"]
     lines.append("  " + ", ".join(f"{k} {v:.0%}" for k, v in study["coverage"].items()))
     return "\n".join(lines)

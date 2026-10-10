@@ -315,6 +315,36 @@ def sue(quarters: list[tuple[date, float]], day: date) -> float | None:
     return None if spread < MIN_EPS_SPREAD else changes[0] / spread
 
 
+GROWTH_YEARS = 5
+
+
+def ttm_eps(quarters: list[tuple[date, float]], day: date) -> float | None:
+    """Sum of the latest four quarters' EPS, if they span about a year and
+    the latest is not stale."""
+    if len(quarters) < 4 or (day - quarters[-1][0]).days > STALE_DAYS:
+        return None
+    last = quarters[-4:]
+    if not 250 <= (last[-1][0] - last[0][0]).days <= 300:
+        return None  # a missing quarter: four ends that span more than a year
+    return sum(v for _, v in last)
+
+
+def cagr(then: float | None, now: float | None, years: int) -> float | None:
+    """Compound yearly growth; None unless both ends are positive (a loss
+    turning to a profit has no growth rate)."""
+    if then is None or now is None or then <= 0 or now <= 0:
+        return None
+    return (now / then) ** (1 / years) - 1
+
+
+def _years_before(day: date, years: int, seen: dict[date, Any]) -> date | None:
+    """The latest earlier date in `seen` at most `years` years before `day`
+    and within a month of it."""
+    target = date(day.year - years, day.month, 1)
+    near = [d for d in seen if target <= d <= target + timedelta(days=40)]
+    return max(near) if near else None
+
+
 class Shares:
     """Cover-page shares outstanding, summed across share classes within a
     filing; the latest filing's total as of a date, carried through any
@@ -416,6 +446,19 @@ def _ratio(a: float | None, b: float | None) -> float | None:
     return a / b
 
 
+def _gross(flows: dict[str, float | None]) -> float | None:
+    """Gross profit as tagged, else revenue less cost of revenue."""
+    if flows["gross_profit"] is not None:
+        return flows["gross_profit"]
+    if flows["revenue"] is not None and flows["cost_of_revenue"] is not None:
+        return flows["revenue"] - flows["cost_of_revenue"]
+    return None
+
+
+def _gross_margin(gross: float | None, revenue: float | None) -> float | None:
+    return gross / revenue if gross is not None and revenue and revenue > 0 else None
+
+
 def company_rows(
     ticker: str,
     body: dict[str, Any],
@@ -430,6 +473,8 @@ def company_rows(
     eps = Known(_facts(body, "us-gaap", EPS_TAGS, "USD/shares"))
     shares = Shares(body, list(splits))
     rows = []
+    # (revenue, EPS) as known at each earlier month-end, for the 5-year growth.
+    past: dict[date, tuple[float | None, float | None]] = {}
     for day in month_ends:
         for k in (*flows.values(), *instants.values(), eps):
             k.advance(day)
@@ -437,9 +482,10 @@ def company_rows(
         val = {k: (v[1] if v else None) for k, v in t.items()}
         bal = {k: latest_instant(known, day) for k, known in instants.items()}
         revenue, revenue_before = val["revenue"], (t["revenue"] or (None, None, None))[2]
-        gross = val["gross_profit"]
-        if gross is None and revenue is not None and val["cost_of_revenue"] is not None:
-            gross = revenue - val["cost_of_revenue"]
+        before = {k: (v[2] if v else None) for k, v in t.items()}
+        gross = _gross(val)
+        margin = _gross_margin(gross, revenue)
+        margin_before = _gross_margin(_gross(before), revenue_before)
         fcf = None
         if val["cfo"] is not None:
             fcf = val["cfo"] - abs(val["capex"] or 0.0)
@@ -454,6 +500,10 @@ def company_rows(
         growth = None
         if revenue is not None and revenue_before and revenue_before > 0:
             growth = revenue / revenue_before - 1
+        quarters = quarterly_eps(eps.periods)
+        eps_ttm = ttm_eps(quarters, day)
+        past[day] = (revenue, eps_ttm)
+        then = past.get(_years_before(day, GROWTH_YEARS, past))
         rows.append(
             {
                 DATE: day,
@@ -469,7 +519,13 @@ def company_rows(
                 "debt_to_equity": _ratio(debt, equity) if equity and equity > 0 else None,
                 "roe": _ratio(val["net_income"], equity) if equity and equity > 0 else None,
                 "gross_profitability": _ratio(gross, bal["assets"]),
-                "sue": sue(quarterly_eps(eps.periods), day),
+                "gross_margin": margin,
+                "gross_margin_change": margin - margin_before
+                if margin is not None and margin_before is not None
+                else None,
+                "sue": sue(quarters, day),
+                "revenue_cagr_5y": cagr(then[0], revenue, GROWTH_YEARS) if then else None,
+                "eps_cagr_5y": cagr(then[1], eps_ttm, GROWTH_YEARS) if then else None,
             }
         )
     return rows
@@ -487,7 +543,11 @@ COLUMNS: dict[str, Any] = {
     "debt_to_equity": pl.Float64,
     "roe": pl.Float64,
     "gross_profitability": pl.Float64,
+    "gross_margin": pl.Float64,
+    "gross_margin_change": pl.Float64,
     "sue": pl.Float64,
+    "revenue_cagr_5y": pl.Float64,
+    "eps_cagr_5y": pl.Float64,
 }
 
 
@@ -578,6 +638,7 @@ __all__ = [
     "Known",
     "Shares",
     "build_panel",
+    "cagr",
     "company_facts",
     "company_rows",
     "current_gross_profitability",
@@ -588,4 +649,5 @@ __all__ = [
     "splits_of",
     "sue",
     "ttm",
+    "ttm_eps",
 ]
