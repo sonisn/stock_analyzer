@@ -344,6 +344,11 @@ class Settings(BaseSettings):
     core_target_pct: float = 0.0
     core_fund: str = "VOO"
     core_step_pct: float = 10.0
+    # The moonshot basket (discover/moonshot.py, `uv run moonshot` only —
+    # no other run reads these): this share of the portfolio over
+    # `moonshot_slots` equal small-company bets, held ten years. 0 = off.
+    moonshot_target_pct: float = 0.0
+    moonshot_slots: int = 20
     asset_location_min_drag_usd: float = 150.0
     asset_location_max_breakeven_years: float = 3.0
 

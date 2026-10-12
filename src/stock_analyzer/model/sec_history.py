@@ -109,16 +109,19 @@ def _cache_path(cache_dir: str, cik: int) -> Path:
     return Path(cache_dir).expanduser() / "sec_facts" / f"CIK{cik:010d}.json.gz"
 
 
-def company_facts(cik: int, cache_dir: str, *, refresh: bool = False) -> dict[str, Any] | None:
-    """The SEC company-facts JSON for `cik`, from the disk cache when fresh
-    enough; None when the SEC has none (a 404) or the request fails."""
+def company_facts(
+    cik: int, cache_dir: str, *, refresh: bool = False, max_age_days: float = FACTS_MAX_AGE_DAYS
+) -> dict[str, Any] | None:
+    """The SEC company-facts JSON for `cik`, from the disk cache when no
+    older than `max_age_days`; None when the SEC has none (a 404) or the
+    request fails."""
     from ..data.sec_edgar import _HTTP
     from ..http_client import ClientError, HttpClientError
 
     path = _cache_path(cache_dir, cik)
     if path.exists() and not refresh:
         age_days = (time.time() - path.stat().st_mtime) / 86400
-        if age_days <= FACTS_MAX_AGE_DAYS:
+        if age_days <= max_age_days:
             try:
                 with gzip.open(path, "rt") as f:
                     return json.load(f)

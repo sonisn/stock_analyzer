@@ -126,6 +126,7 @@ uv run rebalance-portfolio        # review holdings + plan
 uv run analyze-portfolio          # one-off analyst-style report
 uv run analyze-insiders           # insider + political trade signals
 uv run read-filings               # SEC filings -> facts (GLM-5.3 on OpenRouter)
+uv run moonshot screen            # small-company basket candidates (no LLM)
 uv run dashboard --open           # one HTML page of everything on record
 uv run ops doctor                 # free check of every key, model id and source
 uv run stock-analyzer --help      # every command in one list
@@ -355,6 +356,49 @@ graded a second time among companies already $20B+ on the date, and a
 verdict that only holds across all names reads "survivorship?" (the first
 run's "operating margin points the wrong way" was exactly that). The report is printed
 and saved under `~/.stock_analyzer/reports/`.
+
+## Moonshot basket
+
+```bash
+uv run moonshot screen                              # candidates for the open slots
+uv run moonshot add ACME                            # you bought it: it joins the basket
+uv run moonshot add ACME --price 12.40              # with your own entry price
+uv run moonshot remove ACME --reason "revenue down two years"
+uv run moonshot list                                # members and open slots
+uv run moonshot check                               # members' filings against the sell rules
+```
+
+A small, separate bet on a 10x-20x winner, set by `MOONSHOT_TARGET_PCT`
+(5) of the portfolio over `MOONSHOT_SLOTS` (20) equal slots, filled from
+**new cash only** and held ten years. Free data only (Yahoo's screener and
+bar store, SEC company facts and submissions); no LLM calls.
+
+**It is kept apart from every other run.** The daily, weekly, rebalance and
+discover runs neither read nor change the basket; nothing they suggest
+knows which stocks are in it. The holding rules below are yours to keep —
+if the rebalancer suggests trimming a basket stock or writing a call on
+it, that suggestion does not know about the basket.
+
+Why a basket and not a pick: a 20-bagger study (2026-10-12; 4,530 listed
+US stocks, SEC filings as known each December 2012-2020) found a 20x over
+ten years in 0.7% of stocks and over five years in 0.11% — and no rule
+picked them. The traits that raised the odds (small, near break-even,
+fast-growing, issuing some shares) raised the odds of losing half just as
+much. The median 20x winner fell 56% on the way, and 40% were still under
+2x after three years. So: many equal bets, no selling on price.
+
+| Rule | |
+|---|---|
+| Entry (`screen`) | market cap $150M-$2B; revenue growth >= 25%; operating margin -20% to +5%; gross margin >= 40% or rising; share count up <= 10% in a year (split-adjusted); >= 2 years of cash at the current burn; >= $2M traded a day; has revenue |
+| Spread | at most 3 per SEC industry; biotech (SIC 2833-2836, 8731) at most a quarter of the slots; smallest first |
+| Holding | no trim on a drop, no adding (slots stay equal), no options on a member; trim back to 5% only once one stock passes 5% of the whole portfolio |
+| Selling (`check`) | only from the filings: under a year of cash, a going-concern doubt (from `read-filings`), shares up 15%+ in each of two years, or revenue down two years running |
+| Refill | once a year, in December: sell what `check` flags (the losses offset gains), fill open slots from a new `screen` |
+
+The screen proposes; a stock is a member only after `moonshot add`.
+Members live in the `moonshot_basket` table; a removed member keeps its
+row with the date and reason. `check` re-reads a member's SEC facts once
+they are a week old.
 
 ## Grading the system's own forecasts
 
@@ -1075,6 +1119,7 @@ runs don't re-download it:
 | `sec_events` | late-filing notices, shelves and offerings, planned insider sales (Form 144) and Schedule 13Ds on holdings; 13Ds across the universe | a few thousand small rows a year |
 | `openrouter_spend`, `openrouter_host_checks` | what OpenRouter billed per day/model/stage; each host's weekly known-answer check | a few rows a day |
 | `earnings_events` | clear earnings beats anywhere in the market and reports by past picks, with the reaction, the revision and the verdict (`earnings-watch`) | tens of rows a week in earnings season; dropped after 365 days |
+| `moonshot_basket` | the moonshot basket's members, with entry date and price, and why any were removed (`moonshot`) | at most ~20 rows a year |
 
 Tax lots, cash flows and dividends read the stored activity history, so a
 purchase older than the brokerage API's window no longer drops out of lot

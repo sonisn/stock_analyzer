@@ -72,6 +72,18 @@ def _load_ticker_map() -> dict[str, int]:
     return _TICKER_TO_CIK
 
 
+def company_sic(cik: int) -> tuple[int | None, str]:
+    """(SIC code, its description) from the SEC submissions file; (None, "")
+    when the request fails or the company has none."""
+    try:
+        sub = _HTTP.get_json(_SUBMISSIONS_URL.format(cik=cik))
+    except HttpClientError as e:
+        logger.warning("SEC submissions fetch failed for CIK %s: %s", cik, e)
+        return None, ""
+    raw = str(sub.get("sic") or "").strip()
+    return (int(raw) if raw.isdigit() else None), str(sub.get("sicDescription") or "")
+
+
 def _latest_filing_url(cik: int, form_type: str) -> tuple[str, str] | None:
     """Return (filing_date, primary_doc_url) for the latest filing of the
     given form type (e.g. '10-K' or '10-Q'), or None."""

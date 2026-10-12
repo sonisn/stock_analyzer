@@ -767,3 +767,17 @@ __all__ = [
     "ModelVersion",
     "PipelineStep",
 ]
+
+
+class MoonshotMember(SQLModel, table=True):
+    """The moonshot basket's members (discover/moonshot.py), the investor's
+    own choices. A removed member keeps its row, with the date and why, so
+    the basket's ten-year record includes what it sold."""
+
+    __tablename__ = "moonshot_basket"
+
+    ticker: str = Field(primary_key=True)
+    added_on: str  # ISO date
+    entry_price: float | None = None
+    removed_on: str | None = None  # ISO date; None while held
+    removed_reason: str | None = None

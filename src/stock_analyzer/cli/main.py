@@ -40,6 +40,7 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
     ),
     "ibd": ("ibd", "ibd-ratings", "IBD-style ratings, bases and market direction"),
     "read-filings": ("filings", "read-filings", "SEC 10-Q/10-K facts via open models"),
+    "moonshot": ("moonshot", "moonshot", "moonshot basket: screen, members, sell checks"),
     "ops": ("ops", "ops", "backup / doctor / alert"),
 }
 
