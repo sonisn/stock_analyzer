@@ -665,13 +665,16 @@ def holding_filings(settings: Settings, tickers: list[str], *, today: date) -> l
     client = client_from_settings(settings)
     if client is None or not settings.holding_filing_alerts:
         return []
+    watched = frozenset(settings.event_watch_tickers)
     try:
         found = new_holding_filings(
             client,
             settings.discover_db_path,
-            tickers,
+            # A watched company's filings count whether or not it is held.
+            [*tickers, *(t for t in watched if t not in tickers)],
             today=today,
             model=settings.openrouter_reader_model,
+            watched=watched,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Holding filing check failed (%s)", e)
@@ -679,6 +682,34 @@ def holding_filings(settings: Settings, tickers: list[str], *, today: date) -> l
     for item in found:
         logger.info("New holding filing: %s", summary_line(item))
     return found
+
+
+def watch_events(settings: Settings, *, today: date) -> list[dict]:
+    """News events for EVENT_WATCH_TICKERS (reporting/event_watch.py), read
+    on the bulk open model. [] when none are watched, without an OpenRouter
+    key, or on any failure — the other alerts still go out."""
+    if not settings.event_watch_tickers:
+        return []
+    from ..data.sec_edgar import load_ticker_titles
+    from ..openrouter import client_from_settings
+    from ..reporting.event_watch import new_watch_events
+
+    client = client_from_settings(settings)
+    if client is None:
+        return []
+    try:
+        titles = load_ticker_titles()
+        names = {t: titles.get(t) or t for t in settings.event_watch_tickers}
+        return new_watch_events(
+            client,
+            settings.discover_db_path,
+            names,
+            today=today,
+            model=settings.openrouter_bulk_model,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Event watch failed (%s)", e)
+        return []
 
 
 def holding_alerts(
@@ -723,7 +754,8 @@ def holding_alerts(
         thesis = {c["ticker"]: c for c in _thesis_checks(db, set(dropped))}
         add_context(drops, series, db=db, sectors=sectors, etf_for=etf_for, thesis=thesis)
     filings = holding_filings(settings, tickers, today=today)
-    alert = build_alert(drops, near, filings)
+    events = watch_events(settings, today=today)
+    alert = build_alert(drops, near, filings, events)
     if alert is None:
         logger.info("Holding alerts: nothing unusual today")
         return

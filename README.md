@@ -1120,6 +1120,7 @@ runs don't re-download it:
 | `openrouter_spend`, `openrouter_host_checks` | what OpenRouter billed per day/model/stage; each host's weekly known-answer check | a few rows a day |
 | `earnings_events` | clear earnings beats anywhere in the market and reports by past picks, with the reaction, the revision and the verdict (`earnings-watch`) | tens of rows a week in earnings season; dropped after 365 days |
 | `moonshot_basket` | the moonshot basket's members, with entry date and price, and why any were removed (`moonshot`) | at most ~20 rows a year |
+| `watch_news` | every headline the evening event watch read for `EVENT_WATCH_TICKERS`, with what the model kept | a few rows a day per watched stock |
 
 Tax lots, cash flows and dividends read the stored activity history, so a
 purchase older than the brokerage API's window no longer drops out of lot
@@ -1227,6 +1228,32 @@ the whole $2B+ universe. A holder the reader calls activist (board seats,
 a sale, a buyback, a strategy change — not an asset manager's routine
 "engagement") makes the stock a discover idea source for 60 days
 (`activist_13d`, no score bonus). About $5 a year in all.
+
+### Watched companies: news events
+
+Some companies announce what matters to their stock — a customer, a
+regulator's approval, a contract, a reactor milestone — as press releases,
+not SEC filings: Oklo filed three 8-Ks between June and October 2026 while
+its customer and DOE news went out on Business Wire only. For the tickers
+in `EVENT_WATCH_TICKERS` (held or not), the same evening alert also
+carries:
+
+- **News events** (`data/event_news.py`, `reporting/event_watch.py`):
+  Google News headlines naming the company from the last three days
+  (free, no key) that name an event and don't read as commentary —
+  "FERC rejects Oklo complaint" stays, "Is Oklo the next trillion-dollar
+  stock?" goes. The new ones are read in one call on
+  `OPENROUTER_BULK_MODEL` (GLM-5.3-Flash, about $0.0005 a day), which
+  drops price and sector moves, groups repeats of the same event, and
+  says what happened and why it could matter. Headlines only: open the
+  link before acting on one. Every headline read is kept in `watch_news`,
+  so none is emailed twice.
+- **Press-release 8-Ks** (items 7.01 and 8.01), which other holdings leave
+  to the weekly email, read like a material 8-K.
+
+```bash
+EVENT_WATCH_TICKERS=OKLO        # comma-separated; empty = off
+```
 
 ## Scheduled jobs and upkeep
 

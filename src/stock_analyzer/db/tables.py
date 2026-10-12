@@ -781,3 +781,24 @@ class MoonshotMember(SQLModel, table=True):
     entry_price: float | None = None
     removed_on: str | None = None  # ISO date; None while held
     removed_reason: str | None = None
+
+
+class WatchNews(SQLModel, table=True):
+    """Every headline the evening event watch has read for a watched stock
+    (reporting/event_watch.py), kept or not — what stops one being read or
+    emailed twice. A few rows a day per watched stock."""
+
+    __tablename__ = "watch_news"
+
+    key: str = Field(primary_key=True)  # sha1 of ticker + normalised title
+    ticker: str = Field(index=True)
+    published: str = ""  # ISO date
+    title: str = ""
+    source: str = ""
+    url: str = ""
+    read_on: str = ""  # ISO date
+    reader_model: str = ""
+    event: bool = False  # kept as an event (or a repeat of one)
+    kind: str = ""
+    what: str = ""
+    why: str = ""

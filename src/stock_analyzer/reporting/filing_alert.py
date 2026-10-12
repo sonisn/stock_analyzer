@@ -59,6 +59,9 @@ logger = get_logger(__name__)
 
 LOOKBACK_DAYS = 4
 PERIODIC = ("10-Q", "10-K", "20-F", "40-F")
+# Press-release 8-Ks: routine for most holdings, but where a watched
+# company (EVENT_WATCH_TICKERS) files its customer and milestone news.
+WATCH_8K_ITEMS = {"7.01": "press release", "8.01": "other event"}
 
 
 def _seen(db: str) -> set[str]:
@@ -76,8 +79,10 @@ def new_holding_filings(
     *,
     today: date,
     model: str,
+    watched: frozenset[str] = frozenset(),
 ) -> list[dict[str, Any]]:
     """Read the holdings' unread filings; one dict per filing for the email.
+    A `watched` ticker's press-release 8-Ks (WATCH_8K_ITEMS) count too.
     Stops quietly at the daily OpenRouter cap (the rest comes tomorrow)."""
     from ..cli.filings import store
 
@@ -94,7 +99,9 @@ def new_holding_filings(
                     item = read_event(client, db, f, model=model, today=today)
                 elif f["form"] in PERIODIC:
                     item = _periodic(client, db, f, model=model, today=today, store=store)
-                elif set(f["items"]) & set(MATERIAL_8K_ITEMS):
+                elif set(f["items"]) & set(MATERIAL_8K_ITEMS) or (
+                    ticker in watched and set(f["items"]) & set(WATCH_8K_ITEMS)
+                ):
                     item = _eightk(client, db, f, model=model, today=today)
                 else:
                     continue
@@ -320,7 +327,8 @@ def subject_part(item: dict[str, Any]) -> str:
         return f"{f['ticker']} {EVENT_LABELS.get(item['event'], f['form'])}"
     if item["kind"] == "periodic":
         return f"{f['ticker']} {f['form']}"
-    labels = [MATERIAL_8K_ITEMS[i] for i in f["items"] if i in MATERIAL_8K_ITEMS]
+    names = {**WATCH_8K_ITEMS, **MATERIAL_8K_ITEMS}
+    labels = [names[i] for i in f["items"] if i in names]
     return f"{f['ticker']} 8-K ({', '.join(labels[:2])})"
 
 
@@ -426,7 +434,8 @@ def filing_block(item: dict[str, Any]) -> str:
         rows.append(f"<small>Quotes verified in the filing: {_e(p.get('quotes_verified'))}</small>")
     else:
         s = item["summary"]
-        items = ", ".join(f"{i} {MATERIAL_8K_ITEMS.get(i, '')}".strip() for i in f["items"])
+        names = {**WATCH_8K_ITEMS, **MATERIAL_8K_ITEMS}
+        items = ", ".join(f"{i} {names.get(i, '')}".strip() for i in f["items"])
         rows = [f"<b>{_e(f['ticker'])}</b> — {link} (items {_e(items)})"]
         if s.get("headline"):
             rows.append(f"<b>{_e(s['headline'])}</b>")

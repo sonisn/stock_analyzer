@@ -176,6 +176,12 @@ class Settings(BaseSettings):
     # executive change…), read on OPENROUTER_READER_MODEL the evening it
     # appears and put in the same alert email (reporting/filing_alert.py).
     holding_filing_alerts: bool = True
+    # Company events for these tickers in the same evening alert, held or
+    # not (reporting/event_watch.py): new customers, approvals, contracts,
+    # denials — from Google News headlines read on OPENROUTER_BULK_MODEL,
+    # and their 8-K press releases (items 7.01/8.01), which other holdings
+    # leave to the weekly email. Empty = off.
+    event_watch_tickers: Annotated[tuple[str, ...], NoDecode] = ()
     # Whether the daily email proposes stocks you do NOT own: the "Ideas
     # for new money" blocks and the "reinvest the proceeds in X" tail on
     # a sale line. Off leaves every action on a current holding intact —
@@ -371,6 +377,13 @@ class Settings(BaseSettings):
     def _split_options_accounts(cls, v: object) -> object:
         if isinstance(v, str):
             return tuple(t.strip() for t in v.split(",") if t.strip())
+        return v
+
+    @field_validator("event_watch_tickers", mode="before")
+    @classmethod
+    def _split_event_watch(cls, v: object) -> object:
+        if isinstance(v, str):
+            return tuple(t.strip().upper() for t in v.split(",") if t.strip())
         return v
 
     @field_validator("options_denylist", mode="before")

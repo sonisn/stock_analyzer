@@ -172,19 +172,31 @@ def build_alert(
     drops: list[Drop],
     calls: list[CallNear],
     filings: list[dict[str, Any]] | None = None,
+    events: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str] | None:
     """(subject, html body), or None when there is nothing to say.
-    `filings` are a holding's new SEC filings (reporting/filing_alert.py)."""
+    `filings` are a holding's new SEC filings (reporting/filing_alert.py),
+    `events` a watched company's news events (reporting/event_watch.py)."""
+    from . import event_watch
     from .filing_alert import filing_block, subject_part
 
     filings = filings or []
-    if not drops and not calls and not filings:
+    events = events or []
+    if not drops and not calls and not filings and not events:
         return None
     parts = [f"{d.ticker} {d.change_pct:+.0f}%" for d in drops]
     parts += [f"{c.ticker} near call strike" for c in calls]
     parts += [subject_part(f) for f in filings]
+    parts += [event_watch.subject_part(e) for e in events]
     subject = "Holding alert: " + ", ".join(parts)
     body = ["<html><body style='font-family:sans-serif;max-width:640px'>"]
+    if events:
+        body.append("<h3>Company news</h3>")
+        body += [event_watch.event_block(e) for e in events]
+        body.append(
+            "<p><i>From headlines, read by an open model: open the link before "
+            "acting on one.</i></p>"
+        )
     if filings:
         body.append("<h3>New SEC filings</h3>")
         body += [filing_block(f) for f in filings]
