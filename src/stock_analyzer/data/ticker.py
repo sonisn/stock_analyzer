@@ -157,6 +157,7 @@ def fetch_ticker_data(symbol: str) -> dict[str, Any]:
         "quote_type": info.get("quoteType"),
         "price": _fmt_money(price),
         "price_value": float(price) if price else None,
+        "prev_close_value": float(prev_close) if prev_close else None,
         "pct_today": _fmt_pct(pct_today),
         "market_cap": _fmt_money(info.get("marketCap")),
         "range_52w": range_52w,

@@ -774,7 +774,8 @@ def snapshot_only(settings: Settings, *, today: date) -> None:
     tickers, _ = listed_tickers(holdings)
     series = closing_series([*tickers, "SPY"], today=today)
     quotes = {t: bars[-1][1] for t, bars in series.items() if t in tickers}
-    prices, notes = reconcile_prices(holdings, quotes)
+    prev_closes = {t: bars[-2][1] for t, bars in series.items() if t in tickers and len(bars) > 1}
+    prices, notes = reconcile_prices(holdings, quotes, prev_closes=prev_closes)
     for note in notes:
         logger.info("Snapshot price note: %s", note)
     record_portfolio_snapshot(settings, holdings, prices=prices)
@@ -823,7 +824,11 @@ def main() -> None:
     # One price per ticker — the live quotes the run just fetched — so a
     # stale brokerage feed can't inflate the value, the sector weights or
     # the snapshot the quarterly vs-SPY return is built from.
-    prices, price_notes = reconcile_prices(holdings, quotes_from_ticker_data(agent.ticker_data))
+    prices, price_notes = reconcile_prices(
+        holdings,
+        quotes_from_ticker_data(agent.ticker_data),
+        prev_closes=quotes_from_ticker_data(agent.ticker_data, "prev_close_value"),
+    )
     # A broker that has stopped syncing reports July's shares, cash and
     # prices as if they were today's, so name the account instead of
     # quietly valuing stale data.

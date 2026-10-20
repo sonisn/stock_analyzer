@@ -77,3 +77,17 @@ def test_price_notes_reach_the_email():
 
     h = build_portfolio_health(HOLDINGS, prices={"BE": 265.63}, data_notes=["BE priced +12% off"])
     assert "BE priced +12% off" in render_health_html(h)
+
+
+def test_a_broker_pricing_at_the_previous_close_is_not_called_stale():
+    """The Traditional IRA quotes yesterday's close all day (OKLO $30.01
+    on 10/16 = the 10/15 close); that lag is not a stale feed."""
+    holdings = {"Traditional IRA": [{"ticker": "OKLO", "units": 100, "price": 30.01}]}
+    prices, notes = reconcile_prices(holdings, {"OKLO": 27.97}, prev_closes={"OKLO": 30.01})
+    assert prices["OKLO"] == 27.97  # still valued at the live quote
+    assert notes == []
+
+
+def test_a_price_matching_neither_close_is_still_flagged():
+    _, notes = reconcile_prices(HOLDINGS, LIVE, prev_closes={"BE": 266.00})
+    assert any("HSA" in n and "BE" in n for n in notes)
