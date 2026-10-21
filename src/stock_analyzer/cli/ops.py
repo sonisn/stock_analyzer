@@ -7,8 +7,11 @@
   ops restore [NAME]         download and check an off-site backup (the newest
                              by default); --apply swaps it in, saving the current
                              database first
-  ops doctor                 check every key, model id and data source for free,
-                             and free space on the disks the data lives on
+  ops doctor                 check every key, model id and data source for free
+                             (chart-img: one test render), free space on the
+                             disks, and whether the last runs fell short
+  ops catch-up [--dry-run]   run the scheduled jobs missed while the machine was
+                             down (cron runs this at boot)
   ops universe               rescan US stocks >= $2B and rewrite the discover
                              universe (~/.stock_analyzer/us_2b_universe.txt,
                              preferred over the bundled copy)
@@ -31,6 +34,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .. import run_health
 from ..config import Settings
 from ..logging import get_logger
 
@@ -538,6 +542,25 @@ def _data_checks(settings: Settings) -> list[Check]:
 
         return check
 
+    def chart_img_check() -> str:
+        """One real render a week: a key that is set can still be refused
+        (it was, from 2026-10-14, and only the missing charts showed it).
+        The free plan allows far more than one a week."""
+        from ..data import chart_img
+
+        key = os.getenv("CHART_IMG_API_KEY")
+        if not key:
+            raise RuntimeError("CHART_IMG_API_KEY not set — the email draws its charts locally")
+        try:
+            png = chart_img._fetch("NASDAQ:AAPL", key)
+        except chart_img._KeyRefused:
+            raise RuntimeError(
+                "key refused (401/403) — renew it; the email draws its charts locally until then"
+            ) from None
+        if not png:
+            raise RuntimeError("no chart returned (see the warning above)")
+        return f"rendered a test chart ({len(png) // 1024} KB)"
+
     return [
         ("Database", database_check),
         (".env permissions", env_file_check),
@@ -548,7 +571,7 @@ def _data_checks(settings: Settings) -> list[Check]:
         ("SMTP", smtp_check),
         ("Exa", key_only("EXA_API_KEY")),
         ("Tavily", key_only("TAVILY_API_KEY")),
-        ("chart-img", key_only("CHART_IMG_API_KEY")),
+        ("chart-img", chart_img_check),
     ]
 
 
@@ -558,6 +581,7 @@ def doctor(settings: Settings) -> int:
     for name, check in [
         *_data_checks(settings),
         *_state_checks(),
+        ("Last scheduled runs", run_health.doctor_check),
         *_offsite_checks(settings),
         *_disk_checks(settings),
         *_llm_checks(settings),
@@ -590,6 +614,8 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="also replace the live database with it (the current one is saved first)",
     )
+    c = sub.add_parser("catch-up", help="run the scheduled jobs missed while the machine was down")
+    c.add_argument("--dry-run", action="store_true", help="list them without running")
     sub.add_parser(
         "universe", help="rescan US stocks >= $2B with the quality rules (the nightly job does too)"
     )
@@ -621,6 +647,10 @@ def main(argv: list[str] | None = None) -> None:
         else:
             print("Not applied. To replace the live database with it, rerun with --apply")
             print("(the current database is saved first; best when no scheduled job is running).")
+    elif args.cmd == "catch-up":
+        from ..catch_up import catch_up
+
+        catch_up(Path(__file__).resolve().parents[3] / "logs", dry_run=args.dry_run)
     elif args.cmd == "universe":
         from ..data.universe_base import refresh_us_2b
 

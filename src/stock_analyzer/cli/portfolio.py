@@ -626,6 +626,22 @@ def build_email(
     )
 
 
+def _record_run_health(
+    agent: PortfolioAgent, tickers: list[str], extra: list[str], charts: dict[str, bytes]
+) -> list[str]:
+    """Count what the email carries against what it should (run_health.py)."""
+    from ..run_health import record, shortfalls
+
+    data = agent.ticker_data or {}
+    # A money-market fund has no chart; an unknown holding is expected to.
+    chartable = [t for t in tickers if t not in data or is_equity(data[t])] + extra
+    # A holding without data is in agent.failures, named.
+    delivered = {"charts": (len([t for t in chartable if t in charts]), len(chartable))}
+    problems = shortfalls(delivered, agent.failures)
+    record("portfolio", delivered, problems)
+    return problems
+
+
 def _chart_cid(ticker: str) -> str:
     # Periods/dashes are valid in CIDs but normalize for safety.
     return "chart-" + ticker.replace(".", "-").replace("/", "-")
@@ -891,6 +907,9 @@ def main() -> None:
     standouts = attach_standout_details(health, agent)
     extra = [t for t in dict.fromkeys(ideas + standouts) if t not in tickers]
     charts = fetch_charts(tickers + extra)
+    problems = _record_run_health(agent, tickers, extra, charts)
+    if problems and health is not None:
+        health.data_notes.append("this run fell short: " + "; ".join(problems))
     chart_cids = {t: _chart_cid(t) for t in charts}
     inline_images = {_chart_cid(t): data for t, data in charts.items()}
     for ticker in ideas:

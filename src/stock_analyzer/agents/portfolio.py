@@ -116,6 +116,9 @@ class PortfolioAgent:
         self.facts: dict[str, dict[str, str]] = {}
         self.views_written = 0
         self.views_reused = 0
+        # What this run fell back on, by step (run_health.py): a fallback
+        # keeps the email going but must not go unnoticed.
+        self.failures: dict[str, list[str]] = {}
 
     def run_analysis(
         self,
@@ -129,6 +132,7 @@ class PortfolioAgent:
         self.ticker_data, self.stored_views = {}, {}
         self.ranked_news, self.facts = {}, {}
         self.views_written = self.views_reused = 0
+        self.failures = {}
         logger.info(
             "Running analysis for %d tickers (max_workers=%d)",
             len(stocks),
@@ -170,6 +174,7 @@ class PortfolioAgent:
             self.stored_views[ticker] = load_view(self.db_path, ticker)
         except Exception as e:  # noqa: BLE001
             logger.warning("Data fetch for %s failed (%s) — placeholder in the email", ticker, e)
+            self._failed("stock data", ticker)
 
     def _rank_all_news(self, stocks: list[str]) -> None:
         """Phase 2: one batched rerank for every holding at once."""
@@ -192,6 +197,7 @@ class PortfolioAgent:
         except Exception as e:  # noqa: BLE001
             logger.warning("News ranking failed (%s) — blocks go out without news", e)
             self.ranked_news = {}
+            self._failed("news ranking", type(e).__name__)
 
     def _collect_facts(self, stocks: list[str]) -> None:
         """Phase 3: estimate revisions for every holding, and for the ones
@@ -212,6 +218,7 @@ class PortfolioAgent:
         except Exception as e:  # noqa: BLE001
             logger.warning("Could not fetch company facts (%s)", e)
             self.facts = {}
+            self._failed("company facts", type(e).__name__)
 
     @staticmethod
     def _aggregate_positions(
@@ -243,6 +250,7 @@ class PortfolioAgent:
             return self._run_sentiment() or "Social/Economic Sentiment: unavailable today."
         except Exception as e:  # noqa: BLE001
             logger.warning("Market sentiment failed (%s) — email goes without it", e)
+            self._failed("market sentiment", type(e).__name__)
             return "Social/Economic Sentiment: unavailable today."
 
     def _safe_ticker(self, ticker: str) -> str:
@@ -250,7 +258,12 @@ class PortfolioAgent:
             return self._run_ticker(ticker) or self._unavailable_block(ticker, "empty reply")
         except Exception as e:  # noqa: BLE001
             logger.warning("Analysis for %s failed (%s) — placeholder in the email", ticker, e)
+            self._failed("stock analysis", ticker)
             return self._unavailable_block(ticker, type(e).__name__)
+
+    def _failed(self, step: str, what: str) -> None:
+        # Threads append here; list.append is atomic under the GIL.
+        self.failures.setdefault(step, []).append(what)
 
     @staticmethod
     def _unavailable_block(ticker: str, why: str) -> str:
