@@ -9,6 +9,10 @@ to disk so repeated runs are instant.
 
 Requests are serialized with a 2-second pacing gap — that is the free-tier
 limit (parallel fetches were getting 429-throttled).
+
+Any stock chart-img does not deliver — no key, the key refused, a failed
+request — is drawn locally instead (`local_chart`), so the email never goes
+out without charts again.
 """
 
 from __future__ import annotations
@@ -132,6 +136,11 @@ def _build_payload(symbol: str) -> dict:
     }
 
 
+class _KeyRefused(Exception):
+    """chart-img answered 401/403: the key itself is refused, so every
+    further request would fail the same way."""
+
+
 def fetch_chart(symbol: str, *, api_key: str | None = None) -> bytes | None:
     """Fetch a single chart PNG by `EXCHANGE:SYMBOL`. Returns None on any
     failure (never raises). Callers should resolve plain tickers first."""
@@ -139,6 +148,14 @@ def fetch_chart(symbol: str, *, api_key: str | None = None) -> bytes | None:
     if not key:
         logger.warning("CHART_IMG_API_KEY not set; skipping chart for %s", symbol)
         return None
+    try:
+        return _fetch(symbol, key)
+    except _KeyRefused:
+        return None
+
+
+def _fetch(symbol: str, key: str) -> bytes | None:
+    """`fetch_chart`, except a refused key raises `_KeyRefused`."""
 
     body = json.dumps(_build_payload(symbol)).encode("utf-8")
     try:
@@ -159,33 +176,56 @@ def fetch_chart(symbol: str, *, api_key: str | None = None) -> bytes | None:
         )
     except HttpClientError as e:
         logger.warning("chart-img request failed for %s: %s", symbol, e)
+        if e.status in (401, 403):
+            raise _KeyRefused from e
     return None
 
 
 def fetch_charts(tickers: list[str]) -> dict[str, bytes]:
     """Fetch charts for many tickers sequentially with a 2-second pacing gap.
     Returned dict is keyed by the raw ticker (not the resolved EXCHANGE:SYMBOL),
-    so callers can match it to their existing per-ticker rendering."""
+    so callers can match it to their existing per-ticker rendering.
+
+    Stocks chart-img does not deliver are drawn locally. A refused key stops
+    the chart-img calls at the first 401/403 instead of paying the pacing gap
+    on every ticker for the same answer."""
     if not tickers:
         return {}
+    from .local_chart import render_charts
+
     key = os.getenv("CHART_IMG_API_KEY")
     if not key:
-        logger.warning("CHART_IMG_API_KEY not set; skipping all charts")
-        return {}
+        logger.warning("CHART_IMG_API_KEY not set; drawing charts locally")
 
     exchange_cache = _load_exchange_cache()
     out: dict[str, bytes] = {}
+    missing: list[str] = []
     try:
         for ticker in tickers:
             symbol = _resolve_symbol(ticker, exchange_cache)
             if not symbol:
                 logger.info("Skipping chart for %s — no listed exchange", ticker)
                 continue
+            if not key:
+                missing.append(ticker)
+                continue
             # Per-call pacing is owned by the HttpClient's rate limiter.
-            data = fetch_chart(symbol, api_key=key)
+            try:
+                data = _fetch(symbol, key)
+            except _KeyRefused:
+                logger.warning(
+                    "chart-img refused the key (CHART_IMG_API_KEY expired or revoked?) "
+                    "— drawing the remaining charts locally"
+                )
+                key = None
+                missing.append(ticker)
+                continue
             if data:
                 out[ticker] = data
+            else:
+                missing.append(ticker)
     finally:
         _save_exchange_cache(exchange_cache)
     logger.info("Fetched %d/%d charts from chart-img", len(out), len(tickers))
+    out.update(render_charts(missing))
     return out
