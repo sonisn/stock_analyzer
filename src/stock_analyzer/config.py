@@ -250,10 +250,13 @@ class Settings(BaseSettings):
     discover_rebalance_aggressiveness: Aggressiveness = "balanced"
 
     # ---- Behavior ---------------------------------------------------------
-    # Daily email: reuse each stock's long-term view until it is this old,
+    # Weekly email: reuse each stock's long-term view until it is this old,
     # the price moves this much, or the company reports (agents/stock_views.py).
-    stock_view_max_age_days: int = 7
-    stock_view_move_pct: float = 8.0
+    # 7 days / 8% suited a daily email; weekly, every view was 7 days old and
+    # all 14 were rewritten each Wednesday. A holding moves 12%+ in about
+    # one week in seven.
+    stock_view_max_age_days: int = 28
+    stock_view_move_pct: float = 12.0
     use_cached_analysis: bool = True
     insider_lookback_days: int = 5
 

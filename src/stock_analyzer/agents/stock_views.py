@@ -8,11 +8,11 @@ one batched call for the whole portfolio; and the model is asked for a
 stock's 2-3 sentence long-term view only when:
 
   - there is no stored view for the stock,
-  - the stored view is STOCK_VIEW_MAX_AGE_DAYS old (default 7),
-  - the price moved STOCK_VIEW_MOVE_PCT or more since it (default 8%), or
+  - the stored view is STOCK_VIEW_MAX_AGE_DAYS old (default 28),
+  - the price moved STOCK_VIEW_MOVE_PCT or more since it (default 12%), or
   - the company reported earnings since it was written.
 
-Otherwise yesterday's view is shown with its date. For a 3-5 year view
+Otherwise the last view is shown with its date. For a 3-5 year view
 this changes nothing that matters and removes most daily model calls.
 
 The block also drops headlines an earlier email already carried, and when
