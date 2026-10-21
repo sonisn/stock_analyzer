@@ -62,6 +62,11 @@ from ..db.session import exec_sql, get_session
 HORIZON_DAYS = 126  # trading days ≈ 6 months
 SCREEN_TOP = 10  # the screen's own choice: its top names by score per run
 CALIBRATION_MIN_PICKS = 50  # below this a conviction split is noise
+# The quarterly verdict on the model step (`model_step_verdict`), fixed
+# before the first six-month results so they can't be tuned to them.
+VERDICT_MIN_PICKS = 30
+VERDICT_MIN_COHORTS = 2
+VERDICT_MARGIN_PTS = 2.0  # pooled gap vs the screen's top, in points over SPY
 HIGH_CONVICTION = 7  # conviction runs 1-10; the picks so far sit at 5-8
 # The Analyst's score bands, as validate-screen groups the ranker's conviction.
 ANALYST_BANDS: tuple[tuple[str, int, int], ...] = (
@@ -302,6 +307,53 @@ def _vs_screen(
                     f"All · {pool_name}" if split else "All", [k for k in keys if k[1] == pool_name]
                 )
             )
+    return out
+
+
+def model_step_verdict(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """Is the model step choosing better names than the screen's own top
+    SCREEN_TOP? From `vs_screen` rows: {"verdict": "too early" | "adding
+    value" | "not adding value" | "undecided", "text", "picks", "cohorts",
+    "won", "gap_pts"}.
+
+    Each month's cohort is one test: the picks beat the screen's top in it
+    or they didn't. A verdict needs VERDICT_MIN_PICKS graded picks over
+    VERDICT_MIN_COHORTS months, two in three months going one way, and a
+    pooled gap of VERDICT_MARGIN_PTS — one good month is not a finding."""
+    months = [
+        r for r in rows if not r["cohort"].startswith("All") and r.get("picks") and r.get("top")
+    ]
+    picks = sum(r["picks"]["picks"] for r in months)
+    out: dict[str, Any] = {"picks": picks, "cohorts": len(months), "won": 0, "gap_pts": None}
+    if picks < VERDICT_MIN_PICKS or len(months) < VERDICT_MIN_COHORTS:
+        out["verdict"] = "too early"
+        out["text"] = (
+            f"{picks} pick(s) graded over {len(months)} month(s); a verdict needs "
+            f"{VERDICT_MIN_PICKS}+ over {VERDICT_MIN_COHORTS}+ months."
+        )
+        return out
+    won = sum(r["picks"]["excess_pct"] > r["top"]["excess_pct"] for r in months)
+    n_top = sum(r["top"]["picks"] for r in months)
+    gap = (
+        sum(r["picks"]["excess_pct"] * r["picks"]["picks"] for r in months) / picks
+        - sum(r["top"]["excess_pct"] * r["top"]["picks"] for r in months) / n_top
+    )
+    out.update(won=won, gap_pts=gap)
+    tally = f"The picks beat the screen's top {SCREEN_TOP} in {won} of {len(months)} months"
+    gap_s = f"{gap:+.1f} points a pick over six months"
+    if won * 3 >= len(months) * 2 and gap >= VERDICT_MARGIN_PTS:
+        out["verdict"] = "adding value"
+        out["text"] = f"{tally}, {gap_s}. Keep the model choosing names."
+    elif won * 3 <= len(months) and gap <= -VERDICT_MARGIN_PTS:
+        out["verdict"] = "not adding value"
+        out["text"] = (
+            f"{tally}, {gap_s}. The screen alone chose better: consider letting its score "
+            "choose names and keeping the model for bear cases and sizing, which saves most "
+            "of the discover cost."
+        )
+    else:
+        out["verdict"] = "undecided"
+        out["text"] = f"{tally}, {gap_s} — no clear difference yet."
     return out
 
 

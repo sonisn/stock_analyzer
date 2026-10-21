@@ -95,6 +95,19 @@ def plan_section(settings: Settings, holdings: dict, today: date) -> str:
         return ""
 
 
+def model_step_section(settings: Settings, today: date) -> str:
+    """Six-month picks against the screen's own top names, with a verdict.
+    Never blocks the review."""
+    from ..discover.pick_scorecard import pick_scorecard
+    from ..reporting.quarterly import render_model_step_html
+
+    try:
+        return render_model_step_html(pick_scorecard(settings.discover_db_path, today=today))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Model-step section failed (%s)", e)
+        return ""
+
+
 def build_review(settings: Settings, today: date) -> tuple[str, str]:
     """(subject, HTML) for the quarter before `today`."""
     from ..data.brokerage import fetch_portfolio_holdings
@@ -135,6 +148,7 @@ def build_review(settings: Settings, today: date) -> tuple[str, str]:
         performance_html=performance_section(settings, start=start, today=today),
         options_html=options_section(settings, start=start, end=end, label=label),
         plan_html=plan_section(settings, holdings, today),
+        model_step_html=model_step_section(settings, today),
     )
     scored = [g for g in graded if g["edge_pct"] is not None]
     good = sum(1 for g in scored if g["edge_pct"] >= 0)

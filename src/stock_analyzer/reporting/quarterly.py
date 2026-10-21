@@ -390,6 +390,7 @@ def render_quarterly_html(
     performance_html: str = "",
     options_html: str = "",
     plan_html: str = "",
+    model_step_html: str = "",
 ) -> str:
     from .html import _wrap_html
 
@@ -404,6 +405,8 @@ def render_quarterly_html(
         parts.append(options_html)
     if plan_html:
         parts.append(plan_html)
+    if model_step_html:
+        parts.append(model_step_html)
     if not graded:
         parts.append("<p>No suggestions were recorded last quarter.</p>")
     else:
@@ -449,3 +452,27 @@ def render_quarterly_html(
     if health_html:
         parts.append(health_html)
     return _wrap_html(f"Quarterly review — {label}", "".join(parts))
+
+
+_VERDICT_COLORS = {
+    "adding value": "#15803d",
+    "not adding value": "#9c1010",
+    "undecided": "#92400e",
+    "too early": "#6b7280",
+}
+
+
+def render_model_step_html(card: dict[str, Any]) -> str:
+    """The verdict on the discover model step, with the month-by-month
+    table behind it (pick_scorecard.model_step_verdict)."""
+    from ..discover.pick_scorecard import model_step_verdict
+    from .health import _vs_screen_html
+
+    rows = card.get("vs_screen") or []
+    v = model_step_verdict(rows)
+    color = _VERDICT_COLORS[v["verdict"]]
+    return (
+        '<section class="health"><h2>Is the AI pick step worth it?</h2>'
+        f'<p><b style="color:{color}">{html.escape(v["verdict"].upper())}</b> — '
+        f"{html.escape(v['text'])}</p>" + _vs_screen_html(rows) + "</section>"
+    )
