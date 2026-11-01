@@ -21,6 +21,7 @@ from stock_analyzer.db.retention import (
 )
 from stock_analyzer.db.session import get_session
 from stock_analyzer.db.tables import BrokerageActivity, TickerReference
+from tests.clock import frozen_date
 
 TODAY = date(2026, 9, 18)
 
@@ -76,13 +77,8 @@ def test_sync_fetches_only_new_activity_per_account(db, monkeypatch):
     assert len(sizes) == 4 and max(sizes) < 400  # compact: nested payloads dropped
 
 
-class _FrozenDate(date):
-    """`date.today()` pinned to TODAY, so the 2026 activity stays inside
-    the 400-day cash window."""
-
-    @classmethod
-    def today(cls) -> date:
-        return TODAY
+# `date.today()` pinned to TODAY, so the 2026 activity stays inside the 400-day cash window.
+_FrozenDate = frozen_date(TODAY)
 
 
 def test_readers_use_full_stored_history(db, monkeypatch):

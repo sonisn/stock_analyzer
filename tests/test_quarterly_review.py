@@ -13,7 +13,7 @@ from stock_analyzer.db.repository import (
     insert_run,
     record_suggestions,
 )
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.reporting.health import build_portfolio_health, suggestion_rows
 from stock_analyzer.reporting.quarterly import (
     collect_suggestions,
@@ -136,7 +136,8 @@ def _seed(db: str) -> None:
             sonnet_model="s",
             cash_budget=None,
         )
-        s.exec(
+        exec_sql(
+            s,
             text("UPDATE runs SET run_at='2026-08-10T10:00:00' WHERE id=:i"),
             params={"i": run_id},
         )

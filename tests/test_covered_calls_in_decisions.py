@@ -8,6 +8,8 @@ positions were fully committed, and nothing outside the rebalancer knew.
 
 from __future__ import annotations
 
+from typing import Any
+
 from stock_analyzer.reporting.health import (
     assignment_items,
     build_portfolio_health,
@@ -19,7 +21,7 @@ from stock_analyzer.reporting.health import (
 
 HOLDINGS = {"Traditional IRA": [{"ticker": "NVDA", "units": 401, "price": 222.27}]}
 
-CALLS = {
+CALLS: dict[str, Any] = {
     "NVDA": {
         "contracts": 4,
         "shares_committed": 400.0,

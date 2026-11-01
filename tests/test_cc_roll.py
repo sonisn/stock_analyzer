@@ -10,6 +10,7 @@ back at the ask.
 from __future__ import annotations
 
 from datetime import date, timedelta
+from typing import Any
 
 from stock_analyzer.discover.cc_roll import (
     best_roll,
@@ -50,7 +51,7 @@ CURRENT = _q(400.0, NEAR, 19.00, 19.55, delta=0.39)
 
 
 def _args(chain, **over):
-    base = {
+    base: dict[str, Any] = {
         "ticker": "TSLA",
         "account": "Traditional IRA",
         "contracts": 2,
@@ -108,6 +109,7 @@ def test_the_soonest_paying_roll_wins_not_the_biggest_credit():
         ]
     )
     best = best_roll(roll_candidates(**_args(chain)))
+    assert best is not None
     assert best.to_expiry == date(2027, 9, 17)
     assert round(best.net_usd, 2) == 110.0
 
@@ -115,6 +117,7 @@ def test_the_soonest_paying_roll_wins_not_the_biggest_credit():
 def test_a_roll_that_costs_money_is_only_offered_when_nothing_pays():
     chain = _chain([CURRENT, _q(600.0, date(2027, 3, 19), 15.00, 16.00)])
     best = best_roll(roll_candidates(**_args(chain)))
+    assert best is not None
     assert best.net_per_share < 0
 
 

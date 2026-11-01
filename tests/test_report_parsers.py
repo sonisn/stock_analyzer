@@ -16,11 +16,11 @@ from stock_analyzer.discover.report import (
     parse_rebalance_status,
     parse_verdict,
 )
-from stock_analyzer.models.llm import HoldingReview
+from stock_analyzer.models.llm import HoldingReview, Verdict
 from stock_analyzer.models.rebalance import RebalanceAction, RebalancePlan
 
 
-def _hr(verdict: str, confidence: int) -> HoldingReview:
+def _hr(verdict: Verdict, confidence: int) -> HoldingReview:
     return HoldingReview(
         ticker="AAPL",
         verdict=verdict,

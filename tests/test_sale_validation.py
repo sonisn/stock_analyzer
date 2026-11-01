@@ -13,7 +13,7 @@ from stock_analyzer.discover.sale_validation import (
     free_shares,
     validate_sales,
 )
-from stock_analyzer.models.rebalance import RebalanceAction, RebalancePlan
+from stock_analyzer.models.rebalance import RebalanceAction, RebalanceActionType, RebalancePlan
 
 # The live book on 2026-09-20.
 POSITIONS = {
@@ -34,7 +34,7 @@ OBLIGATIONS = {
 }
 
 
-def _plan(*actions: tuple[str, str, str]) -> RebalancePlan:
+def _plan(*actions: tuple[RebalanceActionType, str, str]) -> RebalancePlan:
     return RebalancePlan(
         status="ACTION",
         aggressiveness_applied="balanced",

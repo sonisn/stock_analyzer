@@ -29,6 +29,7 @@ from stock_analyzer.discover.report_pdf import render_pdf
 from stock_analyzer.models.market import OptionChain, OptionQuote
 from stock_analyzer.models.portfolio import CspCandidate
 from stock_analyzer.models.rebalance import CashSecuredPut, RebalanceAction, RebalancePlan
+from tests.clock import frozen_date
 
 TODAY = date(2026, 9, 18)
 EXP = TODAY + timedelta(days=35)  # inside the 30-45 DTE band
@@ -395,7 +396,9 @@ def test_tradier_both_sides(monkeypatch):
 
     with patch.object(HttpClient, "get_json", side_effect=_json):
         both = TradierChain().fetch("X", dte_min=30, dte_max=45, kind="both")
+        assert both is not None
         calls = TradierChain().fetch("X", dte_min=30, dte_max=45)
+        assert calls is not None
     assert [q.strike for q in both.calls] == [260.0]
     assert [(q.strike, q.delta) for q in both.puts] == [(220.0, -0.2)]
     assert calls.puts == []
@@ -466,12 +469,8 @@ def test_fetch_recent_picks(tmp_path: Path):
     assert [(t, r) for t, r, _ in out] == [("A2", 1), ("B2", 2), ("A1", 1), ("B1", 2)]
 
 
-class _FrozenDate(date):
-    """`date.today()` pinned to TODAY, so the fixed EXP stays 35 days out."""
-
-    @classmethod
-    def today(cls) -> date:
-        return TODAY
+# `date.today()` pinned to TODAY, so the fixed EXP stays 35 days out.
+_FrozenDate = frozen_date(TODAY)
 
 
 def test_csp_data_pipeline_offline(monkeypatch):
@@ -521,7 +520,7 @@ def test_rebalance_workflow_has_csp_step():
 
 def test_split_shares_stay_put_candidates_when_cc_side_known():
     picks = [("SPLT", 1, "2026-09-17"), ("CC", 2, "2026-09-17")]
-    positions = {"SPLT": {"units": 110}, "CC": {"units": 200}}
+    positions: dict[str, dict[str, float]] = {"SPLT": {"units": 110}, "CC": {"units": 200}}
     out = eligible_csp_tickers(
         picks,
         positions=positions,
@@ -683,11 +682,11 @@ def test_puts_below_the_yield_floor_never_reach_the_rebalancer():
     eligible = {"NVDA": _cand(), "AMD": _cand("AMD")}
     ready = {"NVDA": _chain(puts=[rich, thin]), "AMD": _chain("AMD", puts=[thin])}
 
-    kept, chains = _drop_low_yield_puts(eligible, ready, settings, today=TODAY)
+    kept, chains = _drop_low_yield_puts(eligible, ready, settings, today=TODAY)  # ty: ignore[invalid-argument-type]
     assert list(kept) == ["NVDA"]  # AMD had nothing worth the cash
     assert [q.strike for q in chains["NVDA"].puts] == [145.0]
     off = SimpleNamespace(csp_min_annualized_yield_pct=0.0)
-    assert _drop_low_yield_puts(eligible, ready, off, today=TODAY)[0] == eligible
+    assert _drop_low_yield_puts(eligible, ready, off, today=TODAY)[0] == eligible  # ty: ignore[invalid-argument-type]
 
 
 def test_a_put_the_money_market_would_beat_is_dropped_from_the_plan():

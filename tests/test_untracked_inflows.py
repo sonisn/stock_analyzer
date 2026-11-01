@@ -17,6 +17,7 @@ from stock_analyzer.data import transactions
 from stock_analyzer.db.repository import fetch_snapshots, record_snapshot, snapshot_accounts
 from stock_analyzer.db.session import get_session
 from stock_analyzer.reporting.performance import account_change_flows, time_weighted_return
+from tests.clock import frozen_date
 
 D = date
 
@@ -125,7 +126,7 @@ def test_the_401k_does_not_beat_the_market():
         (D(2026, 9, 20), 504_495.65),  # the plan joins the feed
         (D(2026, 9, 28), 505_225.65),  # one payday, nothing else
     ]
-    breakdown = [
+    breakdown: list[tuple[date, dict[str, dict[str, float]] | None]] = [
         (D(2026, 9, 18), {"IRA": {"value": 500_000.0, "cash": 0.0}}),
         (
             D(2026, 9, 20),
@@ -168,9 +169,5 @@ def test_empty_accounts_are_still_recorded():
     }
 
 
-class _FrozenDate(date):
-    """`date.today()` pinned, so the lookback window is stable."""
-
-    @classmethod
-    def today(cls) -> date:
-        return D(2026, 9, 20)
+# `date.today()` pinned, so the lookback window is stable.
+_FrozenDate = frozen_date(D(2026, 9, 20))

@@ -11,7 +11,7 @@ from stock_analyzer.db.repository import (
     insert_run,
     insert_run_outputs,
 )
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 
 RANKER = """\
 PICK 1: NVDA — AI franchise.
@@ -78,8 +78,9 @@ def test_backfill_fills_only_nulls_and_is_idempotent(tmp_path):
     assert backfill_pick_forecasts(db) == {"conviction": 1, "time_horizon": 2, "entry_price": 2}
     assert backfill_pick_forecasts(db) == {"conviction": 0, "time_horizon": 0, "entry_price": 0}
     with get_session(db) as session:
-        rows = session.exec(
-            text("SELECT ticker, conviction, time_horizon, entry_price FROM picks ORDER BY rank")
+        rows = exec_sql(
+            session,
+            text("SELECT ticker, conviction, time_horizon, entry_price FROM picks ORDER BY rank"),
         ).all()
     assert rows == [
         ("NVDA", 7, "6-12 months", 120.5),

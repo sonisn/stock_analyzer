@@ -132,7 +132,7 @@ def test_every_section_kind_renders_in_both_html_and_pdf():
     notice by eyeballing a real run."""
     body_open, body_close = "<body>", "</body>"
     for kind, fields in _FIXTURES.items():
-        section = Section(kind=kind, **fields)  # type: ignore[arg-type]
+        section = Section(kind=kind, **fields)  # ty: ignore[invalid-argument-type]
         # Provide a CID + chart bytes so `image` kind has something to draw.
         cids = {"NVDA": "chart-NVDA"} if kind == "image" else {}
         chart_bytes = {"NVDA": b"\x89PNG\r\n\x1a\n"} if kind == "image" else {}

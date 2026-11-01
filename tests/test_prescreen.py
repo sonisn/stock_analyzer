@@ -3,11 +3,13 @@ names eliminated before their fundamentals were ever fetched."""
 
 from __future__ import annotations
 
+from typing import Any
+
 from stock_analyzer.cli.discover import DiscoverPipeline
 from stock_analyzer.config import Settings
 from stock_analyzer.discover.screen import passes_hard_filter, passes_trend_gate
 
-UPTREND = {
+UPTREND: dict[str, Any] = {
     "price": 100.0,
     "sma_50": 95.0,
     "sma_200": 85.0,
@@ -17,7 +19,7 @@ UPTREND = {
     "dist_from_52w_high": -0.10,
 }
 
-DOWNTREND = {
+DOWNTREND: dict[str, Any] = {
     **UPTREND,
     "above_200dma": False,
     "ma_alignment_50_200": False,

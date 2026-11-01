@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
+from typing import Any
 
-import pandas as pd
 import polars as pl
 
 from stock_analyzer.data import universe_base as ub
@@ -33,7 +33,9 @@ def _q(
         "marketCap": cap,
         "regularMarketPrice": price,
         "averageDailyVolume3Month": vol,
-        "firstTradeDateMilliseconds": int(pd.Timestamp(listed).timestamp() * 1000),
+        "firstTradeDateMilliseconds": int(
+            datetime.fromisoformat(listed).replace(tzinfo=UTC).timestamp() * 1000
+        ),
     }
 
 
@@ -121,7 +123,7 @@ def _passes(f):
         "rs_6mo": 0.1,
         "dist_from_52w_high": -0.05,
     }
-    base = {
+    base: dict[str, Any] = {
         "market_cap": 7e9,
         "revenue_growth_yoy": 0.5,
         "debt_to_equity": 0.1,

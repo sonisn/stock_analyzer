@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Any
 
 from stock_analyzer.discover.cc_eligibility import (
     apply_earnings_filter,
@@ -10,7 +11,7 @@ from stock_analyzer.discover.cc_eligibility import (
     eligible_holdings_per_account,
     round_lot_coverage,
 )
-from stock_analyzer.models.llm import HoldingReview
+from stock_analyzer.models.llm import HoldingReview, Verdict
 from stock_analyzer.models.market import OptionChain, OptionQuote
 from stock_analyzer.models.portfolio import EligibleHolding
 
@@ -29,7 +30,7 @@ def _splits_entry(account: str, tax_status: str, units: int) -> dict[str, object
     }
 
 
-def _splits(ticker_to_splits: dict[str, list[dict[str, object]]]) -> dict[str, dict[str, object]]:
+def _splits(ticker_to_splits: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, object]]:
     """Mimic the position_splits shape produced by _build_position_splits."""
     out: dict[str, dict[str, object]] = {}
     for ticker, splits in ticker_to_splits.items():
@@ -249,7 +250,7 @@ def test_earnings_filter_empty_chain():
     assert filtered.calls == []
 
 
-def _review(verdict: str, confidence: int) -> HoldingReview:
+def _review(verdict: Verdict, confidence: int) -> HoldingReview:
     return HoldingReview(
         ticker="NVDA",
         verdict=verdict,
@@ -277,7 +278,7 @@ def _elig_list(
         EligibleHolding(
             ticker=ticker,
             account=account,
-            tax_status=tax_status,  # type: ignore[arg-type]
+            tax_status=tax_status,  # ty: ignore[invalid-argument-type]
             shares_held=shares,
             open_short_call_contracts=open_short_call_contracts,
             available_shares=available,
@@ -287,7 +288,7 @@ def _elig_list(
 
 
 def test_context_block_basic():
-    positions = {"NVDA": {"units": 400}}
+    positions: dict[str, dict[str, float]] = {"NVDA": {"units": 400}}
     elig = {"NVDA": _elig_list("NVDA", 400, open_short_call_contracts=1)}
     coverage = round_lot_coverage(positions, spots={"NVDA": 235.0})
     chain = _chain("NVDA", ["2026-06-20"])
@@ -308,7 +309,7 @@ def test_context_block_basic():
 
 
 def test_context_block_marks_unavailable_chain():
-    positions = {"AAPL": {"units": 200}}
+    positions: dict[str, dict[str, float]] = {"AAPL": {"units": 200}}
     elig = {"AAPL": _elig_list("AAPL", 200)}
     coverage = round_lot_coverage(positions, spots={"AAPL": 215.0})
     block = build_cc_context_block(
@@ -323,7 +324,7 @@ def test_context_block_marks_unavailable_chain():
 
 
 def test_context_block_round_lot_section():
-    positions = {"TSLA": {"units": 335}, "AAPL": {"units": 215}}
+    positions: dict[str, dict[str, float]] = {"TSLA": {"units": 335}, "AAPL": {"units": 215}}
     elig = {
         "TSLA": _elig_list("TSLA", 335),
         "AAPL": _elig_list("AAPL", 215),
@@ -381,7 +382,7 @@ def test_context_block_truncates_at_size_cap():
         trim_pct=None,
         full_text="x",
     )
-    positions = {"BIG": {"units": 400}}
+    positions: dict[str, dict[str, float]] = {"BIG": {"units": 400}}
     elig = {"BIG": _elig_list("BIG", 400)}
     coverage = round_lot_coverage(positions, spots={"BIG": 100.0})
     # Use the per-ticker review string (which doesn't include
@@ -453,7 +454,7 @@ def test_format_chain_row_handles_nan():
 def test_context_block_renders_iv_hv_regime_when_provided():
     from stock_analyzer.models.portfolio import IvHvRegime
 
-    positions = {"NVDA": {"units": 400}}
+    positions: dict[str, dict[str, float]] = {"NVDA": {"units": 400}}
     elig = {"NVDA": _elig_list("NVDA", 400)}
     coverage = round_lot_coverage(positions, spots={"NVDA": 235.0})
     iv_hv_regimes = {
@@ -479,7 +480,7 @@ def test_context_block_renders_iv_hv_regime_when_provided():
 
 
 def test_context_block_marks_iv_hv_regime_unknown_when_no_data():
-    positions = {"NVDA": {"units": 400}}
+    positions: dict[str, dict[str, float]] = {"NVDA": {"units": 400}}
     elig = {"NVDA": _elig_list("NVDA", 400)}
     coverage = round_lot_coverage(positions, spots={"NVDA": 235.0})
     block = build_cc_context_block(
@@ -715,7 +716,7 @@ def test_call_writing_honours_the_options_account_allowlist():
     # trade options.
     from stock_analyzer.discover.cc_eligibility import eligible_holdings_per_account
 
-    splits = {
+    splits: dict[str, dict[str, object]] = {
         "BE": {
             "splits": [
                 {"account": "Traditional IRA", "tax_status": "tax_advantaged", "units": 300},

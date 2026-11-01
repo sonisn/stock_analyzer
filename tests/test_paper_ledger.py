@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import text
 
 from stock_analyzer.db.repository import insert_pick, insert_run, insert_run_outputs
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.discover.paper_ledger import (
     Tranche,
     build_ledger,
@@ -73,8 +73,10 @@ def _seed_run(db, run_at: str, tickers: list[str], sizer: str = "") -> None:
             sonnet_model="s",
             cash_budget=None,
         )
-        session.exec(
-            text("UPDATE runs SET run_at = :r WHERE id = :i"), params={"r": run_at, "i": run_id}
+        exec_sql(
+            session,
+            text("UPDATE runs SET run_at = :r WHERE id = :i"),
+            params={"r": run_at, "i": run_id},
         )
         for rank, t in enumerate(tickers, start=1):
             insert_pick(
@@ -214,6 +216,7 @@ def test_chart_model_plots_return_on_invested_capital():
             "invested": [1000.0, 2000.0],
         }
     )
+    assert model is not None
     (picks_name, picks, _), (spy_name, spy, _) = model["series"]
     assert (picks_name, spy_name) == ("Picks", "SPY")
     assert picks == pytest.approx([0.0, 10.0])  # $2,200 on $2,000 in, not +120%

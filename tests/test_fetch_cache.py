@@ -11,6 +11,7 @@ import polars as pl
 from stock_analyzer.cli import earnings_watch
 from stock_analyzer.config import Settings
 from stock_analyzer.data import bar_store, eps_revisions, fetch_cache, fundamentals
+from tests.clock import frozen_date
 
 
 def _counting(answers):
@@ -174,12 +175,8 @@ def test_a_cached_answer_is_repriced_to_a_later_close():
     assert (row["quote_price"], row["quote_date"]) == (120.0, "2026-09-25")
 
 
-class _FrozenDate(date):
-    """`date.today()` pinned before the 2026-10-27 report in the fixture."""
-
-    @classmethod
-    def today(cls) -> date:
-        return date(2026, 9, 30)
+# `date.today()` pinned before the 2026-10-27 report in the fixture.
+_FrozenDate = frozen_date(date(2026, 9, 30))
 
 
 def test_fundamentals_are_one_request_and_carry_the_next_report(monkeypatch):
@@ -199,6 +196,7 @@ def test_fundamentals_are_one_request_and_carry_the_next_report(monkeypatch):
 
     monkeypatch.setattr(fundamentals.yf_gateway, "ticker_call", call)
     row = fundamentals.fetch_fundamentals("X")
+    assert row is not None
     assert asked == ["fundamentals.info"]
     assert row["operating_cash_flow"] == 4e8 and row["quote_price"] == 50.0
     assert row["next_earnings"] and row["next_earnings"].startswith("2026-10-2")

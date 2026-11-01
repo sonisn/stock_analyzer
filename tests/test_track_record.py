@@ -25,7 +25,7 @@ import polars as pl
 import pytest
 from sqlalchemy import text
 
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.db.track_record import fetch_recent_sell_runs
 from stock_analyzer.discover import track_record as tr
 from tests.bars import bars, days
@@ -110,7 +110,7 @@ def _score(
             ticker=ticker,
             pick_date=pick_date.isoformat(),
             age_days=age_days,
-            direction=direction,  # type: ignore[arg-type]
+            direction=direction,  # ty: ignore[invalid-argument-type]
         ),
         ticker_df,
         spy_df,
@@ -423,7 +423,8 @@ def test_measure_track_record_counts_unmeasurable_instead_of_hiding_it():
         db_path = os.path.join(td, "discover.db")
         old = (datetime.now() - timedelta(days=120)).isoformat(timespec="seconds")
         with get_session(db_path) as session:
-            result = session.exec(
+            result = exec_sql(
+                session,
                 text(
                     "INSERT INTO runs (run_at, kind, universe_size, survivors, "
                     "picks, opus_model, sonnet_model) VALUES (:run_at, 'discover', 1, 1, "
@@ -433,7 +434,8 @@ def test_measure_track_record_counts_unmeasurable_instead_of_hiding_it():
             )
             rid = result.lastrowid
             for rank, ticker in ((1, "NVDA"), (2, "MCAH")):
-                session.exec(
+                exec_sql(
+                    session,
                     text(
                         "INSERT INTO picks (run_id, rank, ticker, ranker_text, "
                         "bear_case_text, allocation_text) "
@@ -472,7 +474,8 @@ def test_fetch_recent_sells_excludes_hold_includes_sell_and_trim():
         db_path = os.path.join(td, "discover.db")
         now = (datetime.now() - timedelta(days=30)).isoformat(timespec="seconds")
         with get_session(db_path) as session:
-            result = session.exec(
+            result = exec_sql(
+                session,
                 text(
                     "INSERT INTO runs (run_at, kind, universe_size, survivors, "
                     "picks, opus_model, sonnet_model) VALUES (:run_at, 'rebalance', 0, 0, 0, "
@@ -487,7 +490,8 @@ def test_fetch_recent_sells_excludes_hold_includes_sell_and_trim():
                 ("GOOGL", "HOLD"),
                 ("MSFT", None),
             ]:
-                session.exec(
+                exec_sql(
+                    session,
                     text(
                         "INSERT INTO holdings_reviews (run_id, ticker, verdict, "
                         "confidence, review_text) VALUES (:rid, :ticker, :verdict, 7, '')"

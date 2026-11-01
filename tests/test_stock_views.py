@@ -124,8 +124,8 @@ def _bare_agent(tmp_path: Path, *, reranker=None) -> PortfolioAgent:
     agent.ticker_data, agent.stored_views = {}, {}
     agent.ranked_news, agent.facts = {}, {}
     agent.views_written = agent.views_reused = 0
-    agent.ticker_agent = _FakeAgent()
-    agent.news_reranker = reranker or _FakeReranker()
+    agent.ticker_agent = _FakeAgent()  # ty: ignore[invalid-assignment]
+    agent.news_reranker = reranker or _FakeReranker()  # ty: ignore[invalid-assignment]
     return agent
 
 
@@ -144,12 +144,12 @@ def test_view_written_once_then_reused(tmp_path: Path, monkeypatch):
 
     first = _block(agent)
     second = _block(agent)
-    assert agent.ticker_agent.calls == 1
+    assert agent.ticker_agent.calls == 1  # ty: ignore[unresolved-attribute]
     assert (agent.views_written, agent.views_reused) == (1, 1)
     assert "AI networking" in first and "(view from" in second
     data["price"] = 120.0  # +20%: rewritten
     _block(agent)
-    assert agent.ticker_agent.calls == 2
+    assert agent.ticker_agent.calls == 2  # ty: ignore[unresolved-attribute]
 
 
 def test_post_earnings_check():

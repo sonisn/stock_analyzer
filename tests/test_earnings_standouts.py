@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 import pandas as pd
 import polars as pl
@@ -10,7 +11,7 @@ import pytest
 from sqlalchemy import text
 
 from stock_analyzer.data import frames
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.discover import earnings_standouts as es
 from stock_analyzer.reporting.health import build_portfolio_health, render_health_html
 from tests.bars import bars, bdays
@@ -62,11 +63,11 @@ def test_only_beats_and_past_picks_are_stored_once(tmp_path):
         _row("OTC"),  # beat, but not an SEC-listed ticker
         {**_row("LATER"), "eps_actual": None},  # hasn't reported yet
     ]
-    kwargs = dict(picks={"PICK"}, listed={"BEAT", "MEH", "PICK", "LATER"})
+    kwargs: dict[str, Any] = dict(picks={"PICK"}, listed={"BEAT", "MEH", "PICK", "LATER"})
     assert es.record_reports(db, rows, **kwargs) == 2
     assert es.record_reports(db, rows, **kwargs) == 0
     with get_session(db) as session:
-        stored = {t for (t,) in session.exec(text("SELECT ticker FROM earnings_events")).all()}
+        stored = {t for (t,) in exec_sql(session, text("SELECT ticker FROM earnings_events")).all()}
     assert stored == {"BEAT", "PICK"}
 
 
@@ -100,7 +101,7 @@ def test_a_night_by_night_run_confirms_only_the_real_standout(tmp_path):
         asked.append(ticker)
         return records[ticker]
 
-    common = dict(
+    common: dict[str, Any] = dict(
         calendar=calendar,
         closes=_closes({"GOOD": 0.09, "FLAT": 0.02, "NOREV": 0.10, "FLUKE": 0.1, "SHRINK": 0.1}),
         estimate_change=revisions.get,
@@ -120,7 +121,9 @@ def test_a_night_by_night_run_confirms_only_the_real_standout(tmp_path):
     assert sorted(asked) == ["FLUKE", "GOOD", "SHRINK"]
 
     with get_session(db) as session:
-        status = dict(session.exec(text("SELECT ticker, status FROM earnings_events")).all())
+        status = {
+            t: s for t, s in exec_sql(session, text("SELECT ticker, status FROM earnings_events"))
+        }
     assert status == {
         "GOOD": "standout",
         "FLAT": "no",
@@ -324,7 +327,7 @@ def test_standout_email_lists_analyst_work_or_says_none():
             }
         ],
     }
-    base = {"ticker": "GOOD", "report_date": "2026-10-20"}
+    base: dict[str, Any] = {"ticker": "GOOD", "report_date": "2026-10-20"}
     body = render_health_html(
         build_portfolio_health({}, standouts=lambda: [{**base, "analysts": analysts}])
     )

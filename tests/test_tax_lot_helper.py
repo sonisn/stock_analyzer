@@ -7,13 +7,16 @@ plus the aggregate `if_all_sold_today` rollup.
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 from stock_analyzer.discover.tax_lot_helper import (
     _compute_lot_impact,
     enrich_tax_lots_with_impact,
 )
 
 # A 100-share lot bought at $50 ($5000 cost basis).
-_LOT_100SH_50 = {"units": 100, "price_per_share": 50.0, "total_cost": 5000.0}
+_LOT_100SH_50: dict[str, Any] = {"units": 100, "price_per_share": 50.0, "total_cost": 5000.0}
 
 
 # --- gains / losses, taxable accounts -------------------------------------
@@ -164,7 +167,7 @@ def test_long_term_starts_the_day_after_the_anniversary():
             "Brokerage",
             today,
             coerce_date=date.fromisoformat,
-            logger=None,
+            logger=logging.getLogger(__name__),
         )
 
     assert lot(date(2026, 1, 10)).is_long_term is False  # anniversary: still short-term

@@ -10,13 +10,15 @@ subtly wrong — these tests pin the three repair rules.
 
 from __future__ import annotations
 
+from typing import Any
+
 from stock_analyzer.discover.reviewer import _repair_verdict_inconsistencies
 from stock_analyzer.models.llm import HoldingReview
 
 
 def _make_review(**overrides) -> HoldingReview:
     """Build a HoldingReview with sensible defaults; override per test."""
-    base = dict(
+    base: dict[str, Any] = dict(
         ticker="AAPL",
         verdict="HOLD",
         confidence=7,

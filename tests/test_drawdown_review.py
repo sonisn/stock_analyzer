@@ -3,12 +3,14 @@ cost is flagged for a thesis re-check — its verdict is never changed."""
 
 from __future__ import annotations
 
+from typing import Any
+
 from stock_analyzer.discover.rebalance_holdings import flag_drawdown_reviews
 from stock_analyzer.models.llm import HoldingReview
 
 
 def _review(ticker: str = "AAPL", **overrides) -> HoldingReview:
-    base = dict(
+    base: dict[str, Any] = dict(
         ticker=ticker,
         verdict="HOLD",
         confidence=7,

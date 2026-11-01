@@ -92,7 +92,7 @@ def test_plan_add_on_a_harvest_ticker_is_flagged():
     [c] = _find([_split("Brokerage", 100, 100.0)], 50.0)
     plan = SimpleNamespace(actions=[SimpleNamespace(action="ADD", ticker="XYZ")])
     [c] = flag_plan_conflicts([c], plan)
-    assert c.plan_conflict.startswith("plan says ADD XYZ")
+    assert (c.plan_conflict or "").startswith("plan says ADD XYZ")
 
 
 def test_report_section_renders():

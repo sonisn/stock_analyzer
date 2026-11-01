@@ -65,6 +65,8 @@ def _body(
 
 def test_snapshot_reads_growth_margins_dilution_and_runway_as_filed():
     s = ms.snapshot(_body(), today=TODAY)
+    assert s.revenue_growth is not None and s.operating_margin is not None
+    assert s.gross_margin_change is not None and s.dilution is not None
     assert (s.revenue, s.revenue_1y, s.revenue_2y) == (170.0, 130.0, 100.0)
     assert round(s.revenue_growth, 3) == round(170 / 130 - 1, 3)
     assert round(s.operating_margin, 3) == round(-5 / 170, 3)
@@ -76,9 +78,11 @@ def test_snapshot_reads_growth_margins_dilution_and_runway_as_filed():
 def test_snapshot_does_not_read_a_split_as_a_share_issue():
     # 104 shares a year ago, a 2-for-1 in June 2025, 216 on today's cover page.
     body = _body(shares=(100.0, 104.0, 216.0))
-    assert ms.snapshot(body, today=TODAY).dilution > 1  # without the split: "108%"
+    unsplit = ms.snapshot(body, today=TODAY).dilution
+    assert unsplit is not None and unsplit > 1  # without the split: "108%"
     s = ms.snapshot(body, today=TODAY, splits=[(date(2025, 6, 1), 2.0)])
     assert (s.shares, s.shares_1y, s.shares_2y) == (216.0, 208.0, 200.0)
+    assert s.dilution is not None
     assert round(s.dilution, 3) == round(216 / 208 - 1, 3)
 
 

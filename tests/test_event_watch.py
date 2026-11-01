@@ -111,15 +111,17 @@ def test_new_events_are_read_once_and_repeats_grouped(tmp_path, monkeypatch):
         ("regulatory", "Utility Dive"),
     ]
     assert [a["source"] for a in got[0]["also"]] == ["Reuters"]
-    sent = c._http.bodies[0]["messages"][1]["content"]  # type: ignore[attr-defined]
+    sent = c._http.bodies[0]["messages"][1]["content"]  # ty: ignore[unresolved-attribute]
     assert "Company: Oklo Inc. (OKLO)" in sent and "3. [2026-10-10] Utility Dive" in sent
 
     # The next evening the same headlines are neither read nor sent again.
     again = _client(tmp_path, [])
     assert ew.new_watch_events(again, db, {"OKLO": "Oklo"}, today=TODAY, model="z-ai/m") == []
-    assert again._http.bodies == []  # type: ignore[attr-defined]
+    assert again._http.bodies == []  # ty: ignore[unresolved-attribute]
 
-    subject, body = build_alert([], [], [], got)
+    alert = build_alert([], [], [], got)
+    assert alert is not None
+    subject, body = alert
     assert subject == "Holding alert: OKLO customer, OKLO regulatory"
     assert "<h3>Company news</h3>" in body and "▲ customer" in body
     assert "Also reported by" in body and "open the link before acting" in body

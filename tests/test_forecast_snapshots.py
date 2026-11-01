@@ -8,7 +8,7 @@ import pandas as pd
 from sqlalchemy import text
 
 from stock_analyzer.data import forecast_snapshots as fs
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.db.tables import EarningsEvent, StockView
 from tests.test_pick_scorecard import _run
 
@@ -43,8 +43,9 @@ def test_stores_one_row_per_ticker_per_day(tmp_path):
     again = fs.record_snapshots(db, today=TODAY, tickers=tickers, fetch=_forecast)
     assert again == {"stored": 0, "no_forecast": 1, "already": 2}
     with get_session(db) as session:
-        rows = session.exec(
-            text("SELECT ticker, eps_next_year, target_mean FROM forecast_snapshots ORDER BY 1")
+        rows = exec_sql(
+            session,
+            text("SELECT ticker, eps_next_year, target_mean FROM forecast_snapshots ORDER BY 1"),
         ).all()
     assert [tuple(r) for r in rows] == [("ANET", 5.0, 120.0), ("AVGO", 5.0, 120.0)]
 
@@ -64,6 +65,7 @@ def test_fetch_reads_yahoo_shapes(monkeypatch):
         fs.yf_gateway, "ticker_call", lambda t, what, fn, default=None: answers[what]
     )
     row = fs.fetch_forecast("ANET")
+    assert row is not None
     assert row["eps_current_year"] == 22.8 and row["eps_next_year"] == 24.9
     assert row["revenue_next_year"] == 16.2e9 and row["analysts"] == 28
     assert row["target_mean"] == 241.0 and row["recommendation_mean"] is None

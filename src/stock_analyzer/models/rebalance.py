@@ -89,12 +89,15 @@ class CashSecuredPut(BaseModel):
         return self.est_premium_per_share * 100.0 * self.contracts
 
 
+RebalanceActionType = Literal["SELL", "TRIM", "ADD", "BUY", "WRITE_CALL", "SELL_PUT"]
+
+
 class RebalanceAction(BaseModel):
     """One action line in an ACTION plan."""
 
     model_config = ConfigDict(frozen=True)
 
-    action: Literal["SELL", "TRIM", "ADD", "BUY", "WRITE_CALL", "SELL_PUT"]
+    action: RebalanceActionType
     ticker: str
     sizing: str = Field(..., description="e.g. 'full position', '25%', '~$3,400'.")
 

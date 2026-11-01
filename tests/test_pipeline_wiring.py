@@ -499,7 +499,7 @@ def test_decide_includes_cc_context_in_prompt():
             )
 
     r = Rebalancer.__new__(Rebalancer)
-    r.agent = _StubAgent()
+    r.agent = _StubAgent()  # ty: ignore[invalid-assignment]
     cc_block = "===\nCOVERED-CALL CONTEXT\n===\nTICKER: NVDA\n  Shares held: 400"
     r.decide(
         holdings_reviews={},
@@ -531,7 +531,7 @@ def test_decide_omits_cc_block_when_empty():
             )
 
     r = Rebalancer.__new__(Rebalancer)
-    r.agent = _StubAgent()
+    r.agent = _StubAgent()  # ty: ignore[invalid-assignment]
     r.decide(
         holdings_reviews={},
         picks_text="",
@@ -817,4 +817,4 @@ def test_every_pipeline_step_is_a_bound_step_method():
         for item in pipeline(Settings()).steps():
             for step in item.steps if isinstance(item, Parallel) else (item,):
                 assert inspect.signature(step.run).parameters == {}, step.name
-                assert step.run.__name__.startswith("step_"), step.name
+                assert step.run.__name__.startswith("step_"), step.name  # ty: ignore[unresolved-attribute]

@@ -122,7 +122,7 @@ _PAYLOADS = {t: {} for t in ["A", "B", "C", "D"]}  # screen-score order
 
 def test_deep_model_gets_top_tickers_and_light_the_rest():
     deep, light = _FakeAnalyst("deep"), _FakeAnalyst("light")
-    out = analyze_tiered(deep, light, _PAYLOADS, {"A", "B"})
+    out = analyze_tiered(deep, light, _PAYLOADS, {"A", "B"})  # ty: ignore[invalid-argument-type]
     assert sorted(deep.seen) == ["A", "B"]
     assert sorted(light.seen) == ["C", "D"]
     assert list(out) == ["A", "B", "C", "D"]  # order preserved for the Ranker
@@ -131,21 +131,21 @@ def test_deep_model_gets_top_tickers_and_light_the_rest():
 
 def test_light_failures_are_retried_on_deep_model():
     deep, light = _FakeAnalyst("deep"), _FakeAnalyst("light", fail={"D"})
-    out = analyze_tiered(deep, light, _PAYLOADS, {"A"})
+    out = analyze_tiered(deep, light, _PAYLOADS, {"A"})  # ty: ignore[invalid-argument-type]
     assert out["D"] == "deep:D"
     assert sorted(deep.seen) == ["A", "D"]
 
 
 def test_no_light_model_sends_everything_to_deep():
     deep = _FakeAnalyst("deep")
-    out = analyze_tiered(deep, None, _PAYLOADS, set())
+    out = analyze_tiered(deep, None, _PAYLOADS, set())  # ty: ignore[invalid-argument-type]
     assert sorted(deep.seen) == ["A", "B", "C", "D"]
     assert len(out) == 4
 
 
 def test_deep_failures_are_simply_dropped():
     deep = _FakeAnalyst("deep", fail={"A"})
-    out = analyze_tiered(deep, _FakeAnalyst("light"), _PAYLOADS, {"A"})
+    out = analyze_tiered(deep, _FakeAnalyst("light"), _PAYLOADS, {"A"})  # ty: ignore[invalid-argument-type]
     assert "A" not in out
     assert list(out) == ["B", "C", "D"]
 

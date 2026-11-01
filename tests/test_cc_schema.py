@@ -73,7 +73,7 @@ def test_option_write_frozen():
         assignment_probability=0.36,
     )
     with pytest.raises(ValidationError):
-        ow.strike = 270.0  # type: ignore[misc]
+        ow.strike = 270.0  # ty: ignore[invalid-assignment]
 
 
 def test_rebalance_action_accepts_write_call():
@@ -83,7 +83,7 @@ def test_rebalance_action_accepts_write_call():
 
 def test_rebalance_action_rejects_unknown():
     with pytest.raises(ValidationError):
-        RebalanceAction(action="ROLL", ticker="NVDA", sizing="x")  # type: ignore[arg-type]
+        RebalanceAction(action="ROLL", ticker="NVDA", sizing="x")  # ty: ignore[invalid-argument-type]
 
 
 def test_rebalance_plan_option_writes_default_empty():
@@ -135,7 +135,7 @@ def test_eligible_holding_requires_account():
     from stock_analyzer.models.portfolio import EligibleHolding
 
     with pytest.raises(ValidationError):
-        EligibleHolding(
+        EligibleHolding(  # ty: ignore[missing-argument]
             ticker="NVDA",
             shares_held=250,
             open_short_call_contracts=0,
@@ -167,7 +167,7 @@ def test_optionwrite_requires_account():
     from stock_analyzer.models.rebalance import OptionWrite
 
     with pytest.raises(ValidationError):
-        OptionWrite(
+        OptionWrite(  # ty: ignore[missing-argument]
             ticker="NVDA",
             strike=260.0,
             expiry="2026-06-20",

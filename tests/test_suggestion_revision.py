@@ -38,7 +38,7 @@ def _rows(db: str) -> list[dict]:
         return [
             dict(run_id=r, detail=d, source=src, action=a, ticker=t)
             for r, d, src, a, t in s.exec(
-                select(
+                select(  # ty: ignore[no-matching-overload]
                     Suggestion.run_id,
                     Suggestion.detail,
                     Suggestion.source,

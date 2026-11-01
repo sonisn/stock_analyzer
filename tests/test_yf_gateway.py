@@ -133,7 +133,7 @@ def test_concurrency_never_exceeds_the_cap(monkeypatch: pytest.MonkeyPatch):
     lock = threading.Lock()
     state = {"now": 0, "peak": 0}
 
-    def work(symbol: str) -> str:
+    def work(symbol: str) -> str | None:
         def _hit() -> str:
             with lock:
                 state["now"] += 1

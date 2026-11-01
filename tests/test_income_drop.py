@@ -35,8 +35,10 @@ def test_a_10k_compares_twelve_months():
 
 
 def test_describe_flags_big_drops_and_losses_only():
-    assert idr.describe("operating income", 695e6, 1_243e6).startswith("operating income -44%")
-    assert "swung to a $-20M loss" in idr.describe("net income", -20e6, 300e6)
+    assert (idr.describe("operating income", 695e6, 1_243e6) or "").startswith(
+        "operating income -44%"
+    )
+    assert "swung to a $-20M loss" in (idr.describe("net income", -20e6, 300e6) or "")
     assert idr.describe("net income", 800e6, 1_000e6) is None  # -20% is not enough
     assert idr.describe("net income", -50e6, -10e6) is None  # no base to fall from
     assert idr.describe("net income", 1e6, 3e6) is None  # too small to measure
@@ -62,10 +64,12 @@ def test_risk_factor_change_measures_and_describes():
     word = [chr(97 + i) * 3 for i in range(20)]  # "aaa", "bbb", ...: digits aren't words
     base = [f"Our business faces the {w} risk from competition and regulation today." for w in word]
     same = compare(" ".join(base), " ".join(base))
+    assert same is not None
     assert same["kept"] == 1.0 and same["cosine"] == 1.0
     new = [f"A new {w} cyber threat could disrupt our operations badly." for w in word[:12]]
     got = compare(" ".join(base[:8] + new), " ".join(base))
+    assert got is not None
     assert got["kept"] == 0.4
-    assert "heavily rewritten" in describe({**got, "prior_filed_on": "2025-02-20"})
-    assert "about as usual" in describe({"kept": 0.72, "prior_filed_on": "2025-02-20"})
+    assert "heavily rewritten" in (describe({**got, "prior_filed_on": "2025-02-20"}) or "")
+    assert "about as usual" in (describe({"kept": 0.72, "prior_filed_on": "2025-02-20"}) or "")
     assert compare("too short.", " ".join(base)) is None

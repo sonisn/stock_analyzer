@@ -45,7 +45,8 @@ def test_prune_logs_deletes_only_old_log_files(tmp_path):
     old_ts = datetime(2026, 6, 1).timestamp()
     os.utime(old, (old_ts, old_ts))
     os.utime(other, (old_ts, old_ts))
-    os.utime(fresh, (datetime(2026, 9, 24).timestamp(),) * 2)
+    ts = datetime(2026, 9, 24).timestamp()
+    os.utime(fresh, (ts, ts))
 
     assert ops.prune_logs([str(tmp_path), str(tmp_path / "missing")], 90, now=now) == 1
     assert sorted(p.name for p in tmp_path.iterdir()) == ["fresh.log", "old.txt"]
@@ -60,7 +61,7 @@ def test_alert_mails_the_tail_of_the_log(tmp_path):
         email_to = "me@example.com"
 
     with patch("stock_analyzer.reporting.smtp.SmtpServer") as smtp:
-        ops.alert(_Settings(), "portfolio", str(log), 1)
+        ops.alert(_Settings(), "portfolio", str(log), 1)  # ty: ignore[invalid-argument-type]
 
     to, subject, body = smtp.return_value.send_email.call_args.args
     assert subject == "stock-analyzer: portfolio FAILED"
@@ -80,7 +81,7 @@ def test_doctor_counts_failures_without_stopping(capsys):
         patch.object(ops, "_offsite_checks", return_value=[]),
         patch.object(ops, "_openrouter_checks", return_value=[]),
     ):
-        assert ops.doctor(object()) == 2
+        assert ops.doctor(object()) == 2  # ty: ignore[invalid-argument-type]
     out = capsys.readouterr().out
     assert "ok    A: fine" in out
     assert "FAIL  B: RuntimeError: no key" in out
@@ -91,7 +92,7 @@ def test_disk_space_fails_below_ten_percent_or_fifty_gb():
 
     tb = 1e12
     assert disk_space_problem(int(3 * tb), int(2 * tb)) is None
-    assert "only 250 GB free" in disk_space_problem(int(3 * tb), int(0.25 * tb))  # < 10%
+    assert "only 250 GB free" in (disk_space_problem(int(3 * tb), int(0.25 * tb)) or "")  # < 10%
     assert disk_space_problem(int(0.4 * tb), int(60e9)) is None  # 15%, over the floor
     assert disk_space_problem(int(0.4 * tb), int(45e9)) is not None  # under 50 GB
 
@@ -102,11 +103,11 @@ def test_the_doctor_flags_a_missing_or_stale_universe(tmp_path):
     from stock_analyzer.cli.ops import universe_file_problem
 
     path = tmp_path / "us_2b_universe.txt"
-    assert "missing" in universe_file_problem(path, now=1e9)
+    assert "missing" in (universe_file_problem(path, now=1e9) or "")
     path.write_text("NVDA\n")
     os.utime(path, (1e9, 1e9))
     assert universe_file_problem(path, now=1e9 + 2 * 86400) is None
-    assert "8 days ago" in universe_file_problem(path, now=1e9 + 8 * 86400)
+    assert "8 days ago" in (universe_file_problem(path, now=1e9 + 8 * 86400) or "")
 
 
 def test_a_backup_goes_off_site_and_old_copies_there_are_pruned(tmp_path):

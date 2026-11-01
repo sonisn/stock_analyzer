@@ -9,6 +9,7 @@ could not tell an absent plan from one that recommended nothing.
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 import pytest
 
@@ -22,7 +23,7 @@ TRUNCATED = '{"status":"ACTION","aggressiveness_applied":"balanced","summary":"s
 
 
 def _sections(**kw):
-    base = dict(
+    base: dict[str, Any] = dict(
         rebalance_text="",
         holdings_reviews={},
         ranker_text="",
@@ -112,7 +113,7 @@ def test_the_per_put_cap_explains_itself():
     """The live case: $20,847 at a 25% cap reaches a $52 strike, and the
     cheapest put on offer needs $11,601."""
     s = Settings()
-    note = _blocked_note({"COP": object()}, {"COP": _Chain([116.0])}, 20847.0, s)
+    note = _blocked_note({"COP": object()}, {"COP": _Chain([116.0])}, 20847.0, s)  # ty: ignore[invalid-argument-type]
     assert "$5,211" in note or "$5,212" in note
     assert "$52" in note
     assert "COP at $11,600" in note
@@ -120,12 +121,12 @@ def test_the_per_put_cap_explains_itself():
 
 
 def test_a_missing_chain_is_reported_as_such():
-    note = _blocked_note({"COP": object()}, {}, 20847.0, Settings())
+    note = _blocked_note({"COP": object()}, {}, 20847.0, Settings())  # ty: ignore[invalid-argument-type]
     assert "No put chain came back" in note
 
 
 def test_a_fitting_strike_blames_the_delta_band_instead():
-    note = _blocked_note({"X": object()}, {"X": _Chain([20.0])}, 20847.0, Settings())
+    note = _blocked_note({"X": object()}, {"X": _Chain([20.0])}, 20847.0, Settings())  # ty: ignore[invalid-argument-type]
     assert "delta band" in note
     assert "CSP_MAX_PCT_PER_PUT" not in note
 

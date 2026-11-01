@@ -64,7 +64,8 @@ def test_deterministic_calls_send_temperature_zero_except_to_claude():
 
 def test_prompt_caching_is_a_claude_setting():
     cached = deterministic_settings(cache_instructions=True)
-    assert model_settings_for("claude", cached)["anthropic_cache_instructions"] is True
+    claude = model_settings_for("claude", cached)
+    assert claude["anthropic_cache_instructions"] is True  # ty: ignore[invalid-key]
     assert "anthropic_cache_instructions" not in model_settings_for("gemini", cached)
 
 
@@ -180,20 +181,20 @@ def _outage():
 
 def test_run_with_fallback_uses_primary_when_it_succeeds():
     primary = _FakeAgent("claude")
-    assert run_with_fallback(primary, lambda: _FakeAgent("gemini"), "prompt") == "ok"
+    assert run_with_fallback(primary, lambda: _FakeAgent("gemini"), "prompt") == "ok"  # ty: ignore[invalid-argument-type]
     assert primary.calls == 1
 
 
 def test_run_with_fallback_retries_on_fallback_after_an_outage():
     primary = _FakeAgent("claude", error=_outage())
     fallback = _FakeAgent("gemini", result="fallback-ok")
-    assert run_with_fallback(primary, lambda: fallback, "prompt") == "fallback-ok"
+    assert run_with_fallback(primary, lambda: fallback, "prompt") == "fallback-ok"  # ty: ignore[invalid-argument-type]
     assert (primary.calls, fallback.calls) == (1, 1)
 
 
 def test_run_with_fallback_reraises_when_no_fallback_given():
     with pytest.raises(ModelHTTPError):
-        run_with_fallback(_FakeAgent("claude", error=_outage()), None, "prompt")
+        run_with_fallback(_FakeAgent("claude", error=_outage()), None, "prompt")  # ty: ignore[invalid-argument-type]
 
 
 @pytest.mark.parametrize(
@@ -207,7 +208,7 @@ def test_run_with_fallback_reraises_when_no_fallback_given():
 def test_errors_the_fallback_would_repeat_are_not_retried(error):
     fallback = _FakeAgent("gemini")
     with pytest.raises(type(error)):
-        run_with_fallback(_FakeAgent("claude", error=error), lambda: fallback, "prompt")
+        run_with_fallback(_FakeAgent("claude", error=error), lambda: fallback, "prompt")  # ty: ignore[invalid-argument-type]
     assert fallback.calls == 0
 
 
@@ -222,6 +223,7 @@ def test_fallback_builder_skips_a_missing_or_same_provider_fallback():
     assert fallback_builder(("claude", "claude-sonnet-5"), "claude", build) is None
     make = fallback_builder(("gemini", "gemini-pro-latest"), "claude", build)
     assert built == []  # built only when the primary fails
+    assert make is not None
     assert make() == "agent" and built == [("gemini", "gemini-pro-latest")]
 
 
@@ -232,6 +234,7 @@ def test_each_call_closes_its_client_on_its_own_loop():
 
     async def use():
         async with llm.open_model("claude", "claude-haiku-4-5") as model:
+            assert model.provider is not None
             client = model.provider.client
             assert not client.is_closed()
         return client

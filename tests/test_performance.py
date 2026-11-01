@@ -17,6 +17,7 @@ from stock_analyzer.reporting.performance import (
     time_weighted_return,
 )
 from tests.bars import bars, bdays
+from tests.clock import frozen_date
 
 D = date
 
@@ -73,13 +74,9 @@ def _client_with(activities):
     return client
 
 
-class _FrozenDate(date):
-    """`date.today()` pinned so the fixture's 2026 activity stays inside
-    the 400-day window (it fell out from Aug 2027)."""
-
-    @classmethod
-    def today(cls) -> date:
-        return date(2026, 9, 30)
+# `date.today()` pinned so the fixture's 2026 activity stays inside the
+# 400-day window (it fell out from Aug 2027).
+_FrozenDate = frozen_date(date(2026, 9, 30))
 
 
 def test_cash_activity_flows_and_dividends(monkeypatch):

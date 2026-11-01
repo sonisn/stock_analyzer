@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 from stock_analyzer.data import insider_buying as ib
 from stock_analyzer.reporting.health import (
@@ -85,7 +86,7 @@ def test_fetch_keeps_only_open_market_purchases(monkeypatch):
 
 
 def test_new_clusters_show_in_the_email_and_the_ledger():
-    cluster = {
+    cluster: dict[str, Any] = {
         "ticker": "KMI",
         "buyers": 3,
         "value_usd": 250_000.0,

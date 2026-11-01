@@ -7,7 +7,7 @@ from stock_analyzer.models.portfolio import RoundLotCoverage
 
 
 def test_basic_split_and_stub():
-    positions = {
+    positions: dict[str, dict[str, float]] = {
         "TSLA": {"units": 335, "avg_buy_price": 250},
         "AAPL": {"units": 215, "avg_buy_price": 150},
         "NVDA": {"units": 100, "avg_buy_price": 235},  # exactly a round lot, no stub
@@ -41,7 +41,7 @@ def test_basic_split_and_stub():
 
 
 def test_missing_spot_falls_back_to_zero_dollar_values():
-    positions = {"FOO": {"units": 150}}
+    positions: dict[str, dict[str, float]] = {"FOO": {"units": 150}}
     out = round_lot_coverage(positions, spots={})
     rec = out["FOO"]
     assert rec.round_lots == 1

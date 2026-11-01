@@ -37,8 +37,10 @@ def test_pair_over_cap_scaled_down_proportionally_pct():
     pairs = [CorrelatedPair(ticker_a="NVDA", ticker_b="AMD", shared_driver="AI capex")]
     result = enforce_correlation_caps(output, pairs, max_combined_pct=35.0)
     by_ticker = {a.ticker: a for a in result.allocations}
-    assert by_ticker["NVDA"].allocation_pct == by_ticker["AMD"].allocation_pct
-    assert abs(by_ticker["NVDA"].allocation_pct + by_ticker["AMD"].allocation_pct - 35.0) < 1e-6
+    nvda, amd = by_ticker["NVDA"].allocation_pct, by_ticker["AMD"].allocation_pct
+    assert nvda is not None and amd is not None
+    assert nvda == amd
+    assert abs(nvda + amd - 35.0) < 1e-6
     assert len(result.concentration_warnings) == 1
     assert "CORRELATION CAP" in result.concentration_warnings[0]
 
@@ -49,10 +51,12 @@ def test_pair_over_cap_scaled_down_proportionally_usd_budget():
     # budget 10_000 -> 60% + 40% = 100%, cap at 35% combined
     result = enforce_correlation_caps(output, pairs, cash_budget=10_000.0, max_combined_pct=35.0)
     by_ticker = {a.ticker: a for a in result.allocations}
-    total_usd = by_ticker["NVDA"].allocation_usd + by_ticker["AMD"].allocation_usd
+    nvda, amd = by_ticker["NVDA"].allocation_usd, by_ticker["AMD"].allocation_usd
+    assert nvda is not None and amd is not None
+    total_usd = nvda + amd
     assert abs(total_usd - 3500.0) < 1e-6
     # ratio preserved: NVDA:AMD was 60:40
-    assert abs(by_ticker["NVDA"].allocation_usd / total_usd - 0.6) < 1e-6
+    assert abs(nvda / total_usd - 0.6) < 1e-6
 
 
 def test_unknown_ticker_pair_ignored():

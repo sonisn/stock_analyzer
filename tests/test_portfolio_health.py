@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from stock_analyzer.cli.portfolio import build_email
 from stock_analyzer.reporting.health import (
     build_portfolio_health,
@@ -36,7 +38,7 @@ Price: 75
 
 
 def _health(**overrides):
-    kwargs = dict(
+    kwargs: dict[str, Any] = dict(
         sector_of=lambda t: {"DOWN": "Technology", "NEAR": "Technology", "OK": "Energy"},
         held_thesis_checks=lambda held: [
             {

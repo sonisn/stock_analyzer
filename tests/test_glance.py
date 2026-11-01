@@ -75,6 +75,7 @@ def test_discover_report_opens_with_the_glance_and_ends_with_history():
     assert kinds.index(("heading", "Open picks: thesis check")) > first_card
     glance = sections[glance_at + 1 : glance_at + 8]
     table = next(x for x in glance if x.kind == "table")
+    assert table.table_rows is not None
     assert table.table_rows[0][:4] == ["ANET", "30%", "8/10", "3/3"]
     assert table.table_rows[1][:4] == ["AMP", "$4,000", "8/10", "—"]
     para = " ".join(x.text for x in glance if x.kind == "para")

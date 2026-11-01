@@ -5,6 +5,7 @@ from __future__ import annotations
 import calendar
 from datetime import date, timedelta
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -207,6 +208,7 @@ def test_projection_centres_on_the_assumed_return_not_the_history():
         monthly_contribution=0,
         expected_return=0.07,
     )
+    assert p is not None
     # AAA's history averages ~40%/yr; the median must reflect ~7%, less
     # volatility drag, not that.
     assert 100_000 < p.p50 < 100_000 * 1.07**5
@@ -215,7 +217,7 @@ def test_projection_centres_on_the_assumed_return_not_the_history():
 
 def test_concentration_widens_the_range_and_costs_odds():
     r = _returns()
-    kw = dict(
+    kw: dict[str, Any] = dict(
         returns=r,
         start_value=100_000,
         months=60,
@@ -224,6 +226,9 @@ def test_concentration_widens_the_range_and_costs_odds():
         target=150_000,
     )
     hot = gp.project(weights={"AAA": 1.0}, **kw)
+    assert hot is not None
+    assert hot.odds is not None
+    assert hot.spy_odds is not None
     assert hot.annual_volatility > hot.spy_annual_volatility
     assert hot.p90 - hot.p10 > 0
     assert hot.odds < hot.spy_odds
@@ -232,7 +237,7 @@ def test_concentration_widens_the_range_and_costs_odds():
 
 def test_needed_contribution_really_gives_the_target_odds():
     r = _returns()
-    kw = dict(
+    kw: dict[str, Any] = dict(
         weights={"AAA": 0.5, "SPY": 0.5},
         returns=r,
         start_value=100_000,
@@ -241,8 +246,13 @@ def test_needed_contribution_really_gives_the_target_odds():
         target=200_000,
     )
     first = gp.project(monthly_contribution=0, **kw)
+    assert first is not None
+    assert first.needed_contribution is not None
+    assert first.odds is not None
     assert first.odds < gp.TARGET_ODDS
     again = gp.project(monthly_contribution=first.needed_contribution + 1, **kw)
+    assert again is not None
+    assert again.odds is not None
     assert again.odds >= gp.TARGET_ODDS - 0.005
 
 
@@ -255,6 +265,7 @@ def test_young_holdings_are_filled_with_spy_and_named():
         monthly_contribution=0,
         expected_return=0.07,
     )
+    assert p is not None
     assert p.filled_from_spy == ("YNG",)
 
 

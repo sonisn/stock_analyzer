@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from stock_analyzer.data import hedge_funds_13f as hf
+from stock_analyzer.db.session import exec_sql
 from stock_analyzer.reporting.health import build_portfolio_health, render_health_html
 
 FUND = next(iter(hf.FUNDS))  # Berkshire Hathaway's CIK
@@ -72,7 +73,8 @@ def test_only_the_latest_four_quarters_are_kept(tmp_path):
 
     with get_session(db) as session:
         kept = sorted(
-            p for (p,) in session.exec(text("SELECT DISTINCT period FROM fund_positions")).all()
+            p
+            for (p,) in exec_sql(session, text("SELECT DISTINCT period FROM fund_positions")).all()
         )
     assert kept == quarters[1:]
 

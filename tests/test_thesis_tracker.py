@@ -8,7 +8,7 @@ import polars as pl
 from sqlalchemy import text
 
 from stock_analyzer.db.repository import insert_pick, insert_pick_catalysts, insert_run
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.discover.report_html import render_html_email
 from stock_analyzer.discover.report_pdf import render_pdf
 from stock_analyzer.discover.report_sections import append_thesis_check_section
@@ -160,7 +160,8 @@ def test_load_open_picks_keeps_latest_thesis_per_ticker(tmp_path):
                 sonnet_model="s",
                 cash_budget=None,
             )
-            session.exec(
+            exec_sql(
+                session,
                 text("UPDATE runs SET run_at = :r WHERE id = :i"),
                 params={"r": run_at, "i": run_id},
             )

@@ -126,6 +126,7 @@ def test_an_offering_says_what_is_sold_and_the_dilution(tmp_path, monkeypatch):
     }
     c = _client(tmp_path, [(json.dumps(offering), 0.002)])
     item = fa.read_event(c, db, _filing("OKLO", "424B5", "o"), model="x/m", today=TODAY)
+    assert item is not None
     block = fa.filing_block(item)
     assert "common (at-the-market program), $1.00B" in block
     assert "Shares outstanding +26.0% in a year" in block
@@ -135,8 +136,9 @@ def test_late_filing_needs_no_model(tmp_path):
     db = str(tmp_path / "t.db")
     c = _client(tmp_path, [])
     item = fa.read_event(c, db, _filing("XYZ", "NT 10-Q", "n"), model="x/m", today=TODAY)
+    assert item is not None
     assert "cannot file its report on time" in fa.filing_block(item)
-    assert c._http.bodies == []  # type: ignore[attr-defined]
+    assert c._http.bodies == []  # ty: ignore[unresolved-attribute]
 
 
 def test_dashboard_sec_highlights_carry_pack_release_and_events(tmp_path):

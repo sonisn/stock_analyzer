@@ -1347,7 +1347,7 @@ rclone remotes with the saved passwords first.
 
 ```bash
 uv run pytest -q -n 4      # -n: spread over 4 workers (pytest-xdist)
-uv run ty check src        # type check
+uv run ty check src tests  # type check
 ```
 
 1,100+ tests covering the high-stakes math (tax-lot computation, verdict

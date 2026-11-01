@@ -8,6 +8,7 @@ $41.8B against $127.0B in the filings, and read ANET's 2025-12-31
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 import pytest
 
@@ -58,7 +59,7 @@ def test_ratios_and_amounts_are_formatted_differently():
 
 def test_a_foreign_issuers_balance_sheet_is_flagged():
     assert flag_non_usd_fundamentals("TSM", {"debt_to_equity": 42.16}) is not None
-    assert "currency" in flag_non_usd_fundamentals("TSM", {"debt_to_equity": 42.16})
+    assert "currency" in (flag_non_usd_fundamentals("TSM", {"debt_to_equity": 42.16}) or "")
     assert flag_non_usd_fundamentals("NVDA", {"debt_to_equity": 0.17}) is None
     assert flag_non_usd_fundamentals("X", {}) is None
 
@@ -94,7 +95,7 @@ def test_filed_values_replace_the_derived_ones(filed):
 def test_a_stale_filing_is_left_alone(filed):
     # BE's newest quarter was 2026-03-31 on 2026-09-20 — 173 days.
     filed({"BE": {"free_cash_flow": 2.0e8, "period_end": "2026-03-31"}})
-    rows = {"BE": {"free_cash_flow": 5.3e8}}
+    rows: dict[str, dict[str, Any]] = {"BE": {"free_cash_flow": 5.3e8}}
     fund._overlay_filed_values(rows, as_of=date(2026, 9, 20))
     assert rows["BE"]["free_cash_flow"] == 5.3e8
     assert "173d old" in rows["BE"]["filed_note"]
@@ -103,7 +104,7 @@ def test_a_stale_filing_is_left_alone(filed):
 
 def test_an_uncovered_ticker_is_untouched(filed):
     filed({})  # TSM is a foreign private issuer: no SEC XBRL
-    rows = {"TSM": {"free_cash_flow": 7.3e11, "debt_to_equity": 42.16}}
+    rows: dict[str, dict[str, Any]] = {"TSM": {"free_cash_flow": 7.3e11, "debt_to_equity": 42.16}}
     fund._overlay_filed_values(rows)
     assert rows["TSM"]["free_cash_flow"] == 7.3e11
     assert any("currency" in f for f in rows["TSM"]["data_reconciliation_flags"])

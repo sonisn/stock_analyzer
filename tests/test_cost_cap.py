@@ -77,6 +77,7 @@ def test_analyst_plan_downgrades_before_dropping_names():
     deep = set(order[:4])
     sonnet, haiku = "claude-sonnet-4-6", "claude-haiku-4-5"
     per_haiku = estimate_cost(haiku, 35_000 + len(ANALYST_INSTRUCTIONS), EXPECTED_OUTPUT_TOKENS)
+    assert per_haiku is not None
 
     keep, new_deep, notes = plan_under_budget(order, chars, deep, sonnet, haiku, None)
     assert (keep, new_deep, notes) == (order, deep, [])
@@ -97,7 +98,7 @@ def test_analyst_plan_downgrades_before_dropping_names():
 def test_ranker_skips_extra_rounds_it_cannot_afford():
     ranker = Ranker([("claude", "claude-opus-4-7"), ("claude", "claude-opus-4-7")])
     outputs = iter([_output(["AAPL", "MSFT"]), _output(["NVDA"])])
-    ranker._rank_once = lambda agent, *a, **k: next(outputs)  # type: ignore[method-assign]
+    ranker._rank_once = lambda agent, *a, **k: next(outputs)  # ty: ignore[invalid-assignment]
     BUDGET.configure(0.40)  # 25% reserve leaves $0.30, below one Opus round
     result = ranker.rank({"AAPL": "analysis " * 1000}, "")
     assert [p.ticker for p in result.picks] == ["AAPL", "MSFT"]

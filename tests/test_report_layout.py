@@ -6,6 +6,8 @@ blank page from a duplicate page_break) — this file pins the fix."""
 
 from __future__ import annotations
 
+from typing import Any
+
 from stock_analyzer.discover.report_sections import _primary_reject_reason, build_sections
 from stock_analyzer.models.llm import CorrelatedPair, RankerOutput, RankerPick
 from stock_analyzer.models.reports import Section
@@ -52,13 +54,17 @@ def _candidate(ticker: str, passed: bool, fail_reasons: list[str] | None = None)
     }
 
 
-_BASE_KWARGS = dict(
+_BASE_KWARGS: dict[str, Any] = dict(
     ranker_text="",
     redteam_text="",
     sizer_text="",
     universe_size=10,
     holdings_summary="",
 )
+
+
+def _kwargs(**overrides: Any) -> dict[str, Any]:
+    return {**_BASE_KWARGS, **overrides}
 
 
 # --- _primary_reject_reason --------------------------------------------------
@@ -116,7 +122,7 @@ def test_rejected_candidates_grouped_into_pie_and_short_lists():
 
     pie_sections = [s for s in tail if s.kind == "sector_pie"]
     assert len(pie_sections) == 1
-    pie_data = dict(pie_sections[0].pie_data)
+    pie_data = dict(pie_sections[0].pie_data or [])
     assert pie_data == {"Below 200-day average": 3.0, "Revenue growth too slow": 2.0}
 
     # Grouped into 2 short paragraphs, NOT 5 one-per-ticker paragraphs.
@@ -145,7 +151,7 @@ def test_no_consecutive_page_breaks_around_allocation_summary():
     candidates = [_candidate("NVDA", True)]
     sections = build_sections(
         candidates=candidates,
-        **{**_BASE_KWARGS, "ranker_text": "PICK 1: NVDA — x", "ranker_output": _ranker_output()},
+        **_kwargs(ranker_text="PICK 1: NVDA — x", ranker_output=_ranker_output()),
     )
     kinds = [s.kind for s in sections]
     for i in range(len(kinds) - 1):
@@ -161,7 +167,7 @@ def test_correlation_notes_empty_pairs_shows_clean_none():
     candidates = [_candidate("NVDA", True)]
     sections = build_sections(
         candidates=candidates,
-        **{**_BASE_KWARGS, "ranker_text": "PICK 1: NVDA — x", "ranker_output": _ranker_output()},
+        **_kwargs(ranker_text="PICK 1: NVDA — x", ranker_output=_ranker_output()),
     )
     idx = next(
         i
@@ -178,11 +184,10 @@ def test_correlation_notes_with_pairs_renders_each_pair():
     candidates = [_candidate("NVDA", True)]
     sections = build_sections(
         candidates=candidates,
-        **{
-            **_BASE_KWARGS,
-            "ranker_text": "PICK 1: NVDA — x",
-            "ranker_output": _ranker_output(pairs=[pair]),
-        },
+        **_kwargs(
+            ranker_text="PICK 1: NVDA — x",
+            ranker_output=_ranker_output(pairs=[pair]),
+        ),
     )
     idx = next(
         i
@@ -198,11 +203,10 @@ def test_correlation_notes_no_structured_output_falls_back_to_text_parse():
     candidates = [_candidate("NVDA", True)]
     sections = build_sections(
         candidates=candidates,
-        **{
-            **_BASE_KWARGS,
-            "ranker_text": "PICK 1: NVDA — x\ntrailing prose",
-            "ranker_output": None,
-        },
+        **_kwargs(
+            ranker_text="PICK 1: NVDA — x\ntrailing prose",
+            ranker_output=None,
+        ),
     )
     idx = next(
         i
@@ -238,7 +242,7 @@ def test_holdings_without_rows_falls_back_to_preformatted():
     candidates = [_candidate("NVDA", True)]
     sections = build_sections(
         candidates=candidates,
-        **{**_BASE_KWARGS, "holdings_summary": "- NVDA: 10 shares @ avg $100.00"},
+        **_kwargs(holdings_summary="- NVDA: 10 shares @ avg $100.00"),
     )
     idx = next(
         i

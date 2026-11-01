@@ -12,7 +12,7 @@ from dateutil.relativedelta import relativedelta
 from sqlalchemy import text
 
 from stock_analyzer.db.repository import insert_candidate, insert_run
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.model.dataset import PricePanel, build_dataset, forward_excess
 from stock_analyzer.model.labels import label_candidates
 from stock_analyzer.model.ranker_model import (
@@ -117,7 +117,9 @@ def test_live_scoring_and_persistence(tmp_path):
     model = load_active_model(db)
     assert model is not None and model.version == version
 
-    feats = {f"T{i}": {"rs_1mo": i / 10, "rs_3mo": 0.0} for i in range(6)}
+    feats: dict[str, dict[str, float | None]] = {
+        f"T{i}": {"rs_1mo": i / 10, "rs_3mo": 0.0} for i in range(6)
+    }
     pct = score_percentiles(ActiveModel(1, 21, {"rs_1mo": 1.0, "rs_3mo": 0.5}), feats)
     assert pct["T5"] == 100 and pct["T0"] == pytest.approx(100 / 6)
     assert score_percentiles(model, dict(list(feats.items())[:3])) == {}
@@ -138,7 +140,8 @@ def test_label_backfill_writes_matured_outcomes_once(tmp_path):
             sonnet_model="s",
             cash_budget=None,
         )
-        session.exec(
+        exec_sql(
+            session,
             text("UPDATE runs SET run_at = :r WHERE id = :i"),
             params={"r": run_day.isoformat(), "i": run_id},
         )
@@ -159,10 +162,11 @@ def test_label_backfill_writes_matured_outcomes_once(tmp_path):
     assert label_candidates(db, fetch_panel=lambda t: p) == 2  # 21d and 63d both closed
     assert label_candidates(db, fetch_panel=lambda t: p) == 0
     with get_session(db) as session:
-        row = session.exec(
+        row = exec_sql(
+            session,
             text(
                 "SELECT entry_date, exit_date, excess_pct FROM candidate_outcomes WHERE horizon_days = 21"
-            )
+            ),
         ).one()
     c, s, days = p.close["T0"], p.spy["SPY"], p.close["date"]
     assert row[0] == str(days[101]) and row[1] == str(days[122])
@@ -188,7 +192,8 @@ def test_label_backfill_stops_asking_for_tickers_yahoo_never_priced(tmp_path, mo
                 sonnet_model="s",
                 cash_budget=None,
             )
-            session.exec(
+            exec_sql(
+                session,
                 text("UPDATE runs SET run_at = :r WHERE id = :i"),
                 params={"r": run_day.isoformat(), "i": run_id},
             )
@@ -258,7 +263,7 @@ def test_screen_uses_only_an_accepted_model_and_shadows_the_rest(tmp_path, accep
         ModelResult(21, "gated", {"rs_1mo": 1.0}, {}, "2020-01-01", "2024-01-01", accepted),
     )
     pipe = DiscoverPipeline.__new__(DiscoverPipeline)
-    pipe.settings = SimpleNamespace(discover_db_path=db)
+    pipe.settings = SimpleNamespace(discover_db_path=db)  # ty: ignore[invalid-assignment]
     cands = _candidates()
     tech = {c["ticker"]: {"model_features": {"rs_1mo": i / 10}} for i, c in enumerate(cands)}
     pipe._apply_model_scores(cands, tech)
@@ -300,7 +305,7 @@ def test_candidate_snapshot_keeps_numeric_fields_only(tmp_path):
         )
         insert_candidate_snapshot(session, run_id, "BBB", {"sector": "Tech"})  # nothing numeric
     with get_session(db) as session:
-        rows = session.exec(text("SELECT ticker, data FROM candidate_snapshots")).all()
+        rows = exec_sql(session, text("SELECT ticker, data FROM candidate_snapshots")).all()
     assert [r[0] for r in rows] == ["AAA"]
     assert json.loads(rows[0][1]) == {
         "forward_pe": 23.46,
@@ -316,12 +321,13 @@ def test_beta_adjusted_label_removes_market_exposure():
     spy = pl.DataFrame({"date": idx, "SPY": 100 * np.cumprod(1 + spy_r)})
     # Day-by-day 2x SPY with no stock-specific return: pure market exposure.
     close = pl.DataFrame({"date": idx, "LEV": 50 * np.cumprod(1 + 2 * spy_r)})
-    vol = pl.DataFrame({"date": idx, "LEV": rng.integers(1e6, 2e6, 600).astype(float)})
+    vol = pl.DataFrame({"date": idx, "LEV": rng.integers(1_000_000, 2_000_000, 600).astype(float)})
     data = build_dataset(PricePanel(close, close, vol, spy)).filter(pl.col("fwd_21").is_not_nan())
     assert data["beta_252"].mean() == pytest.approx(2.0, abs=1e-6)
     # Plain excess credits the leverage; the beta-neutral label mostly doesn't
     # (what is left is compounding, a small fraction of the excess).
-    assert data["fwd_21"].abs().mean() > 5 * data["fwd_21_badj"].abs().mean()
+    plain, badj = data.select(pl.col("fwd_21", "fwd_21_badj").abs().mean()).row(0)
+    assert plain > 5 * badj
 
 
 def test_shadow_scores_are_graded_against_realized_outcomes(tmp_path):

@@ -7,6 +7,7 @@ from datetime import date
 
 import numpy as np
 import polars as pl
+import pytest
 
 from stock_analyzer.model import factor_study as fs
 from stock_analyzer.model import sec_history as sh
@@ -39,13 +40,17 @@ REVENUE = [
 def test_ttm_from_year_to_date_and_only_what_was_filed():
     known = sh.Known(sh._facts(_body(REVENUE), "us-gaap", ("Revenues",), "USD"))
     known.advance(date(2024, 6, 15))  # the H1 2024 10-Q is not out yet
-    end, now, before = sh.latest_ttm(known, date(2024, 6, 15))
+    ttm = sh.latest_ttm(known, date(2024, 6, 15))
+    assert ttm is not None
+    end, now, before = ttm
     assert (end, now) == (date(2023, 12, 31), 400.0)
     assert before == 300.0
     # Seven months on with nothing newer filed, the year is stale.
     assert sh.latest_ttm(known, date(2024, 7, 31)) is None
     known.advance(date(2024, 8, 31))
-    end, now, before = sh.latest_ttm(known, date(2024, 8, 31))
+    ttm = sh.latest_ttm(known, date(2024, 8, 31))
+    assert ttm is not None
+    end, now, before = ttm
     # 220 this half + 400 last year - 180 the same half a year earlier.
     assert (end, now, before) == (date(2024, 6, 30), 440.0, 340.0)
 
@@ -108,7 +113,7 @@ def test_sue_scales_the_latest_change_by_the_past_spread():
 
 
 def test_five_year_growth_needs_positive_ends_and_a_full_trailing_year():
-    assert math.isclose(sh.cagr(1.0, 2.0**5, 5), 1.0)
+    assert sh.cagr(1.0, 2.0**5, 5) == pytest.approx(1.0, rel=1e-9)
     assert sh.cagr(-1.0, 2.0, 5) is None and sh.cagr(1.0, 0.0, 5) is None
     quarters = [(date(2023, 3, 31), 1.0), (date(2023, 6, 30), 1.0), (date(2023, 9, 30), 1.0)]
     assert sh.ttm_eps(quarters, date(2023, 12, 31)) is None
@@ -128,10 +133,11 @@ def test_five_year_growth_needs_positive_ends_and_a_full_trailing_year():
 def test_newey_west_matches_plain_t_without_lags():
     x = np.array([0.1, 0.2, -0.1, 0.3, 0.0, 0.15])
     plain = x.mean() / (x.std() / math.sqrt(len(x)))
-    assert math.isclose(fs.newey_west_t(x, 0), plain, rel_tol=1e-9)
+    assert fs.newey_west_t(x, 0) == pytest.approx(plain, rel=1e-9)
     # Positively autocorrelated series: overlap inflates the plain t.
     y = np.repeat([0.1, -0.05, 0.2, 0.05], 6)
-    assert fs.newey_west_t(y, 6) < fs.newey_west_t(y, 0)
+    t6, t0 = fs.newey_west_t(y, 6), fs.newey_west_t(y, 0)
+    assert t6 is not None and t0 is not None and t6 < t0
 
 
 def test_a_measure_that_ranks_outcomes_works_and_noise_does_not():
@@ -152,6 +158,8 @@ def test_a_measure_that_ranks_outcomes_works_and_noise_does_not():
             )
     frame = pl.DataFrame(rows)
     good = fs.evaluate(frame, "good", "fwd_126", 126)
+    assert good.mean_ic is not None
+    assert good.spread is not None
     assert good.verdict == "works" and good.mean_ic > 0.3 and good.spread > 0
     assert fs.evaluate(frame, "noise", "fwd_126", 126).verdict == "no edge"
     flipped = frame.with_columns((-pl.col("good")).alias("bad"))

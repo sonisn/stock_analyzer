@@ -76,7 +76,9 @@ def test_alert_email_explains_itself_and_is_silent_when_nothing_happened():
         "events": [{"issue": "material weakness", "category": "material_weakness"}],
         "filing": "10-Q for 2026-06-30",
     }
-    subject, body = build_alert([d], [])
+    alert = build_alert([d], [])
+    assert alert is not None
+    subject, body = alert
     assert subject == "Holding alert: BE -21%"
     for text in (
         "3.2x its usual",

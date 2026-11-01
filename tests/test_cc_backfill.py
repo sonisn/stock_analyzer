@@ -36,7 +36,7 @@ def test_parse_sizing_with_comma():
 def test_parse_sizing_rejects_garbage():
     assert _parse_sizing("not a sizing string") is None
     assert _parse_sizing("") is None
-    assert _parse_sizing(None) is None  # type: ignore[arg-type]
+    assert _parse_sizing(None) is None  # ty: ignore[invalid-argument-type]
 
 
 def _chain(

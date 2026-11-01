@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from typing import Any
 
 import pytest
 
@@ -19,7 +20,7 @@ from stock_analyzer.openrouter import APPROVED_HOSTS, NoApprovedHostError, OpenR
 from .test_filing_reader import FACTS_OK, FILING, SECTIONS, HTTPError, _client
 
 TODAY = date(2026, 9, 28)
-CANARY_OK = {
+CANARY_OK: dict[str, Any] = {
     "guidance": {"direction": "raised", "quote": "We are raising our full-year revenue outlook"},
     "demand": {"direction": "accelerating", "quote": ""},
     "caveats": [
@@ -45,7 +46,7 @@ def test_calls_are_limited_to_the_approved_hosts_left(tmp_path):
     c = _client(tmp_path, [(json.dumps(FACTS_OK), 0.01)])
     c.excluded = {"z-ai/glm-5.3": {"morph"}}
     fr.read_filing(c, FILING, SECTIONS, model="z-ai/glm-5.3")
-    only = c._http.bodies[0]["provider"]["only"]  # type: ignore[attr-defined]
+    only = c._http.bodies[0]["provider"]["only"]  # ty: ignore[unresolved-attribute]
     assert only == [h for h in APPROVED_HOSTS["z-ai/glm-5.3"] if h != "morph"]
 
     c.excluded = {"z-ai/glm-5.3": set(APPROVED_HOSTS["z-ai/glm-5.3"])}
@@ -64,7 +65,7 @@ def test_known_answer_check_fails_masked_input_and_excludes_the_host(tmp_path):
     assert [ch.passed for ch in checks] == [i != 1 for i in range(len(hosts))]
     assert checks[1].detail == "quotes 2/3 match the text sent; redaction placeholder in the reply"
     # Each check was pinned to its host, with no fallback to another.
-    first = c._http.bodies[0]["provider"]  # type: ignore[attr-defined]
+    first = c._http.bodies[0]["provider"]  # ty: ignore[unresolved-attribute]
     assert first["only"] == [hosts[0]] and first["allow_fallbacks"] is False
     assert c.excluded == {"z-ai/glm-5.3": {hosts[1]}}
     # Stored, so the next process skips it too — until a later check passes.
@@ -86,14 +87,14 @@ def test_a_host_with_no_endpoint_is_skipped_but_not_a_doctor_failure(tmp_path):
     hosts = APPROVED_HOSTS["z-ai/glm-5.3"]
     c = _client(tmp_path, [(json.dumps(CANARY_OK), 0.003)] * (len(hosts) - 1))
     c.db_path = db
-    post = c._http.post_json  # type: ignore[attr-defined]
+    post = c._http.post_json  # ty: ignore[unresolved-attribute]
 
     def post_json(url, json):  # noqa: A002
         if json["provider"]["only"] == [hosts[0]]:
             raise HTTPError(404, "No endpoints found for the request with quantization")
         return post(url, json)
 
-    c._http.post_json = post_json  # type: ignore[attr-defined]
+    c._http.post_json = post_json  # ty: ignore[unresolved-attribute]
     checks = oh.run_canaries(c, db, ["z-ai/glm-5.3"], today=TODAY)
     assert checks[0].detail.startswith("unavailable:") and not checks[0].passed
     assert all(ch.passed for ch in checks[1:])

@@ -4,6 +4,7 @@ produce the same numbers, and agree with the screen's own indicators."""
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -80,7 +81,12 @@ def test_beta_of_a_levered_copy_is_the_leverage():
 
 
 def test_trend_gate_matches_screen_rules():
-    ok = {"px_vs_sma200": 0.1, "sma50_vs_sma200": 0.05, "rs_6mo": 0.02, "dist_from_52w_high": -0.1}
+    ok: dict[str, Any] = {
+        "px_vs_sma200": 0.1,
+        "sma50_vs_sma200": 0.05,
+        "rs_6mo": 0.02,
+        "dist_from_52w_high": -0.1,
+    }
     assert passes_trend_gate(ok)
     assert not passes_trend_gate({**ok, "dist_from_52w_high": -0.35})
     assert not passes_trend_gate({**ok, "rs_6mo": None})

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from datetime import date
 
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.discover.evidence import WEIGHTS, evidence_scores, hidden_from_model
 from stock_analyzer.discover.pick_scorecard import evidence_of, pick_scorecard
 from tests.test_pick_scorecard import _outcome, _run
@@ -51,7 +51,8 @@ def test_scorecard_grades_the_evidence_top_beside_the_picks(tmp_path, monkeypatc
         )
         session.flush()  # the rows must exist before the raw UPDATE
         for t, ev in (("PICK", 20.0), ("EV", 95.0), ("LOW", 40.0)):
-            session.exec(
+            exec_sql(
+                session,
                 text(
                     "UPDATE candidates SET score_breakdown = :b WHERE run_id = :r AND ticker = :t"
                 ),

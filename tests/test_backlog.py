@@ -12,17 +12,14 @@ from datetime import date
 import pytest
 
 from stock_analyzer.data import backlog as bl
+from tests.clock import frozen_date
 
 CIK = 1730168
 
 
-class _FrozenDate(date):
-    """`date.today()` pinned near the fixtures' 2026 filings: past
-    MAX_FACT_AGE_DAYS after them (Feb 2027) every book reads as stale."""
-
-    @classmethod
-    def today(cls) -> date:
-        return date(2026, 10, 1)
+# `date.today()` pinned near the fixtures' 2026 filings: past MAX_FACT_AGE_DAYS
+# after them (Feb 2027) every book reads as stale.
+_FrozenDate = frozen_date(date(2026, 10, 1))
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +59,7 @@ def sec(monkeypatch):
 def test_the_latest_book_and_its_growth(sec):
     sec(AVGO_FACTS)
     rec = bl.fetch_rpo("AVGO", as_of=date(2026, 9, 20))
+    assert rec is not None
     assert rec["value"] == 179.2e9
     assert rec["period_end"] == "2026-08-02" and rec["filed"] == "2026-09-10"
     assert round(rec["qoq_pct"]) == 9  # 164.6 -> 179.2
@@ -73,6 +71,7 @@ def test_nothing_filed_after_the_as_of_date_is_used(sec):
     # 2026-06-01; using it in a backtest would be look-ahead.
     sec(AVGO_FACTS)
     rec = bl.fetch_rpo("AVGO", as_of=date(2026, 6, 1))
+    assert rec is not None
     assert rec["value"] == 45.0e9
     assert rec["filed"] == "2026-03-11"
 
@@ -87,6 +86,7 @@ def test_an_amended_filing_replaces_the_quarter_it_restates(sec):
         )
     )
     rec = bl.fetch_rpo("AVGO", as_of=date(2026, 9, 20))
+    assert rec is not None
     assert rec["value"] == 160.0e9  # the later filing wins
 
 
@@ -255,7 +255,7 @@ def _step(monkeypatch, survivors, books, *, boom=False):
 
     monkeypatch.setattr(backlog, "batch_rpo", fake_batch)
     wf = _FakeWorkflow(survivors)
-    return DiscoverPipeline.step_contracted_book(wf), wf
+    return DiscoverPipeline.step_contracted_book(wf), wf  # ty: ignore[invalid-argument-type]
 
 
 def test_the_step_fetches_books_for_survivors(monkeypatch):
@@ -364,7 +364,7 @@ def test_the_screen_fetches_books_only_for_names_it_will_score(monkeypatch):
         settings=SimpleNamespace(discover_trend_gate="soft"),
     )
     books = DiscoverPipeline._screen_books(
-        wf,
+        wf,  # ty: ignore[invalid-argument-type]
         {"OK": {"good": True}, "FAILS": {"good": False}, "PRESCREENED": {"good": True}},
         {t: {"price": 1.0} for t in ("OK", "FAILS", "PRESCREENED", "NODATA")},
         {"PRESCREENED": ["drawdown"]},

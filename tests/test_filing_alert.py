@@ -90,13 +90,13 @@ def test_new_filings_are_read_once_and_routine_8ks_skipped(tmp_path, monkeypatch
         ("periodic", "q1"),
         ("8-K", "k1"),
     ]
-    sent = c._http.bodies[1]["messages"][1]["content"]  # type: ignore[attr-defined]
+    sent = c._http.bodies[1]["messages"][1]["content"]  # ty: ignore[unresolved-attribute]
     assert "2.02 (results)" in sent and "EXHIBIT 99" in sent and "Press release" in sent
 
     # The next evening: both are stored, nothing is read or sent again.
     again = _client(tmp_path, [])
     assert fa.new_holding_filings(again, db, ["ABC"], today=TODAY, model="x/m") == []
-    assert again._http.bodies == []  # type: ignore[attr-defined]
+    assert again._http.bodies == []  # ty: ignore[unresolved-attribute]
 
 
 def test_the_cap_stops_the_check_without_losing_what_was_read(tmp_path, monkeypatch):
@@ -131,7 +131,9 @@ def test_email_shows_the_filing_with_its_link_and_what_changed():
         },
     }
     eightk = {"kind": "8-K", "filing": _filing("8-K", "k1", ["2.02"]), "summary": EIGHTK}
-    subject, body = build_alert([], [], [periodic, eightk])
+    alert = build_alert([], [], [periodic, eightk])
+    assert alert is not None
+    subject, body = alert
     assert subject == "Holding alert: ABC 10-Q, ABC 8-K (results)"
     for text in (
         "New SEC filings",

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from stock_analyzer.discover.position_cap import cap_positions
 from stock_analyzer.discover.sale_validation import note_adjustments
-from stock_analyzer.models.rebalance import RebalanceAction, RebalancePlan
+from stock_analyzer.models.rebalance import RebalanceAction, RebalanceActionType, RebalancePlan
 
 # A $500k book: $100k cash, NVDA at $150k (30%).
 POSITIONS = {
@@ -15,7 +15,7 @@ POSITIONS = {
 CASH = 100_000.0
 
 
-def _plan(*actions: tuple[str, str, str]) -> RebalancePlan:
+def _plan(*actions: tuple[RebalanceActionType, str, str]) -> RebalancePlan:
     return RebalancePlan(
         status="ACTION",
         aggressiveness_applied="balanced",

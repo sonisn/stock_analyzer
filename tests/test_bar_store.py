@@ -125,7 +125,8 @@ def test_a_new_dividend_or_split_downloads_the_whole_history(event):
     assert fake.history.call_count == 2
     assert fake.history.call_args.kwargs["start"] == FROM.isoformat()
     assert out["Close"][0] == 90.0
-    assert bar_store.load("KO").frame["Close"][0] == 90.0
+    ko = bar_store.load("KO")
+    assert ko is not None and ko.frame["Close"][0] == 90.0
 
 
 def test_an_event_already_stored_does_not_refetch_every_day():
@@ -185,7 +186,8 @@ def test_a_longer_window_than_stored_downloads_it():
     with patch.object(yf_gateway.yf, "Ticker", return_value=fake):
         yf_gateway.daily_bars("NVDA", start=far)
     assert fake.history.call_args.kwargs["start"] == far.isoformat()
-    assert bar_store.load("NVDA").requested_from == far
+    nvda = bar_store.load("NVDA")
+    assert nvda is not None and nvda.requested_from == far
 
 
 def test_store_off_means_no_files(monkeypatch: pytest.MonkeyPatch, tmp_path):
@@ -198,7 +200,9 @@ def test_store_off_means_no_files(monkeypatch: pytest.MonkeyPatch, tmp_path):
 
 
 def test_an_unreadable_file_is_a_cache_miss():
-    path = bar_store.store_dir() / "NVDA.parquet"
+    store = bar_store.store_dir()
+    assert store is not None
+    path = store / "NVDA.parquet"
     path.parent.mkdir(parents=True)
     path.write_bytes(b"not parquet")
     assert bar_store.load("NVDA") is None

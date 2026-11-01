@@ -59,7 +59,7 @@ def _isolate_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     from stock_analyzer.config import Settings
 
-    monkeypatch.setitem(Settings.model_config, "env_file", None)
+    monkeypatch.setitem(Settings.model_config, "env_file", None)  # ty: ignore[invalid-argument-type]
 
 
 @pytest.fixture(autouse=True)

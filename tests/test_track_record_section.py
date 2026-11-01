@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from stock_analyzer.discover.report_html import render_html_email
 from stock_analyzer.discover.report_pdf import render_pdf
 from stock_analyzer.discover.report_sections import append_track_record_section
 from stock_analyzer.models.track_record import (
+    Direction,
     DirectionStats,
     HorizonStats,
     PickReturn,
@@ -31,7 +34,7 @@ def _stats(n: int, alpha: float | None, beta_adj: float | None = None) -> Direct
     )
 
 
-def _pick(ticker: str, alpha: float, direction: str = "buy", horizon: int = 90) -> PickReturn:
+def _pick(ticker: str, alpha: float, direction: Direction = "buy", horizon: int = 90) -> PickReturn:
     return PickReturn(
         ticker=ticker,
         pick_date="2026-05-01",
@@ -65,7 +68,7 @@ def _record(picks: list[PickReturn], **overrides) -> TrackRecord:
         ],
         decisions=picks,
     )
-    fields = dict(
+    fields: dict[str, Any] = dict(
         n_picks_total=len(picks) + 2,
         n_mature=8,
         n_pending=1,

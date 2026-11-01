@@ -113,7 +113,7 @@ def test_llm_sees_facts_not_page_furniture():
 def test_a_cash_sweep_is_never_a_covered_call_candidate():
     from stock_analyzer.discover.cc_eligibility import eligible_holdings_per_account
 
-    splits = {
+    splits: dict[str, dict[str, object]] = {
         "SPAXX": {"splits": [{"account": "Traditional IRA", "units": 20846}]},
         "NVDA": {"splits": [{"account": "Traditional IRA", "units": 500}]},
     }

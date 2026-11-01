@@ -18,7 +18,7 @@ import pytest
 from sqlalchemy import text
 
 from stock_analyzer.db.repository import insert_pick, insert_run
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.discover import calibration as cal
 from stock_analyzer.models.calibration import (
     CalibrationRecord,
@@ -59,7 +59,8 @@ def _seed_pick(
             cash_budget=None,
         )
         # insert_run stamps "now"; rewrite it so the pick has the age we want.
-        session.exec(
+        exec_sql(
+            session,
             text("UPDATE runs SET run_at = :run_at WHERE id = :rid"),
             params={"run_at": run_at, "rid": run_id},
         )
@@ -336,7 +337,8 @@ def test_legacy_picks_without_a_forecast_are_counted_separately():
         db_path = os.path.join(td, "discover.db")
         run_at = (datetime.now() - timedelta(days=300)).isoformat(timespec="seconds")
         with get_session(db_path) as session:
-            result = session.exec(
+            result = exec_sql(
+                session,
                 text(
                     "INSERT INTO runs (run_at, kind, universe_size, survivors, "
                     "picks, opus_model, sonnet_model) "
@@ -345,7 +347,8 @@ def test_legacy_picks_without_a_forecast_are_counted_separately():
                 params={"run_at": run_at},
             )
             rid = result.lastrowid
-            session.exec(
+            exec_sql(
+                session,
                 text(
                     "INSERT INTO picks (run_id, rank, ticker, ranker_text) "
                     "VALUES (:rid, 1, 'OLD', '')"

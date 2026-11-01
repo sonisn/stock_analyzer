@@ -20,6 +20,7 @@ FILINGS = [
 
 def test_filings_name_the_form_and_link_it():
     line = filings_line(FILINGS)
+    assert line is not None
     assert line.startswith("10-Q filed Sep 10 — quarterly report (https://sec/10q)")
     assert "8-K filed Sep 02 — material event (https://sec/8k)" in line
     assert "8k-old" not in line  # only the two newest
@@ -33,8 +34,8 @@ def test_estimates_read_the_next_year_number():
     assert estimates_line({"next_year_up_30d": 6, "next_year_down_30d": 1}) == (
         "Next-year EPS: 6 up / 1 down in 30 days — analysts raising"
     )
-    assert "cutting" in estimates_line({"next_year_up_30d": 1, "next_year_down_30d": 9})
-    assert "holding" in estimates_line({"next_year_up_30d": 2, "next_year_down_30d": 2})
+    assert "cutting" in (estimates_line({"next_year_up_30d": 1, "next_year_down_30d": 9}) or "")
+    assert "holding" in (estimates_line({"next_year_up_30d": 2, "next_year_down_30d": 2}) or "")
     assert estimates_line({"next_year_up_30d": 0, "next_year_down_30d": 0}) is None
     assert estimates_line(None) is None
 
@@ -67,7 +68,7 @@ def test_labels_start_with_a_letter():
 
 
 def test_dates_are_read_as_dates_not_strings():
-    assert "Sep 02" in filings_line([{"form": "8-K", "filed_on": "2026-09-02", "url": "u"}])
+    assert "Sep 02" in (filings_line([{"form": "8-K", "filed_on": "2026-09-02", "url": "u"}]) or "")
     assert date.fromisoformat("2026-09-02").strftime("%b %d") == "Sep 02"
 
 

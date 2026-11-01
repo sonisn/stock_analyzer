@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 import pytest
 
@@ -19,6 +20,7 @@ GOAL = date(2050, 1, 1)
 
 def test_the_required_return_is_the_one_that_lands_on_the_target():
     needed = required_return(490_876, 2_690, 280, 10_000_000)
+    assert needed is not None
     assert needed == pytest.approx(0.117, abs=0.001)
     assert future_value(490_876, 2_690, 280, needed) == pytest.approx(10_000_000, rel=1e-6)
 
@@ -45,18 +47,20 @@ def test_falling_value_raises_the_return_needed():
         goal_date=GOAL,
         monthly=2_690,
     )
+    assert pace is not None
     assert pace["needed"] > pace["was"]
     assert pace["since"] == date(2026, 9, 21)
 
 
 def test_one_stored_total_has_no_drift_yet():
     pace = goal_pace([(date(2026, 9, 26), 480_000)], target=1e7, goal_date=GOAL, monthly=0)
+    assert pace is not None
     assert pace["was"] is None and pace["since"] is None
     assert goal_pace([], target=1e7, goal_date=GOAL, monthly=0) is None
 
 
 def _line(**pace):
-    base = {"target": 1e7, "goal_date": GOAL, "monthly": 2_690, "value": 490_876}
+    base: dict[str, Any] = {"target": 1e7, "goal_date": GOAL, "monthly": 2_690, "value": 490_876}
     return _goal_pace_html(PortfolioHealth(goal_pace={**base, **pace}))
 
 

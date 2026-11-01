@@ -45,6 +45,7 @@ def test_only_open_market_buys_and_sells_inside_the_window_are_kept():
         ),
     ):
         trades = form4.fetch_form4_trades(["NVDA", "AVGO", "912345AB1"], days=7, today=TODAY)
+        assert trades is not None
 
     assert [(t["ticker"], t["side"]) for t in trades] == [("AVGO", "BUY"), ("NVDA", "SELL")]
     assert trades[1]["shares"] == 10000
@@ -84,6 +85,7 @@ def test_a_news_outage_is_named_and_the_form4s_still_arrive():
         patch.object(cli, "InsiderAgent") as agent,
     ):
         report = cli.run_analysis(_settings())
+        assert report is not None
 
     agent.assert_not_called()  # nothing for the model to summarize
     assert report.startswith("===")
@@ -114,6 +116,7 @@ def test_news_coverage_still_goes_through_the_model():
     ):
         agent.return_value.run.return_value = "=== HEADER ===\n\nNotable Congressional Trades:\n- x"
         report = cli.run_analysis(_settings())
+        assert report is not None
 
     assert report.startswith("=== HEADER ===")
     assert "Form 4 Filings" in report

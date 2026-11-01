@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from typing import Any
 
 import pytest
 from sqlmodel import select
@@ -136,11 +137,11 @@ def _client(tmp_path, replies, cap=2.0) -> OpenRouter:
     import httpx2
 
     c = OpenRouter("k", str(tmp_path / "t.db"), daily_cap_usd=cap)
-    c._http = _Http(replies)  # type: ignore[attr-defined]
+    c._http = _Http(replies)  # ty: ignore[unresolved-attribute]
 
     def handle(request):
         try:
-            data = c._http.post_json(str(request.url), json.loads(request.content))  # type: ignore[attr-defined]
+            data = c._http.post_json(str(request.url), json.loads(request.content))  # ty: ignore[unresolved-attribute]
         except HTTPError as e:
             return httpx2.Response(e.status, json={"error": {"message": str(e), "code": e.status}})
         return httpx2.Response(200, json=data)
@@ -158,7 +159,7 @@ def test_daily_cap_counts_billed_spend_across_clients(tmp_path):
     b = _client(tmp_path, [("{}", 0.009)], cap=0.02)
     with pytest.raises(BudgetExceededError):
         b.complete("S", "z-ai/glm-5.3-flash", "sys", "x" * 10_000, max_tokens=3000)
-    body = a._http.bodies[0]  # type: ignore[attr-defined]
+    body = a._http.bodies[0]  # ty: ignore[unresolved-attribute]
     assert body["response_format"] == {"type": "json_object"} and body["temperature"] == 0.0
 
 
@@ -166,13 +167,13 @@ def test_unknown_model_is_priced_high_for_the_cap(tmp_path):
     assert openrouter.worst_case_cost("x/unknown", 350_000, 1000) == pytest.approx(0.3 + 0.015)
 
 
-FACTS_OK = {
+FACTS_OK: dict[str, Any] = {
     "guidance": {"direction": "raised", "quote": "Revenue grew 20% on strong AI demand."},
     "liquidity": {"concern": False, "quote": ""},
     "caveats": [],
     "tone": "positive",
 }
-FACTS_FLAGGED = {
+FACTS_FLAGGED: dict[str, Any] = {
     **FACTS_OK,
     "caveats": [
         {
@@ -183,7 +184,7 @@ FACTS_FLAGGED = {
         }
     ],
 }
-FILING = {
+FILING: dict[str, Any] = {
     "ticker": "ABC",
     "form": "10-Q",
     "filed_on": "2026-08-01",
@@ -198,7 +199,7 @@ def test_read_sends_fp8_routing_and_retries_an_empty_answer(tmp_path):
     c = _client(tmp_path, [("", 0.01), (json.dumps(FACTS_OK), 0.002)])
     read = fr.read_filing(c, FILING, SECTIONS, model="z-ai/glm-5.3")
     assert read.facts == FACTS_OK and read.cost_usd == pytest.approx(0.012)
-    first, second = c._http.bodies  # type: ignore[attr-defined]
+    first, second = c._http.bodies  # ty: ignore[unresolved-attribute]
     assert first["provider"]["quantizations"] == ["fp8", "bf16", "fp16"]
     assert first["reasoning"] == {"effort": "low"} and second["reasoning"] == {"enabled": False}
     assert not read.flagged and (read.quotes_checked, read.quotes_found) == (1, 1)
@@ -206,7 +207,7 @@ def test_read_sends_fp8_routing_and_retries_an_empty_answer(tmp_path):
 
 def test_retry_keeps_thinking_on_where_the_host_requires_it(tmp_path):
     c = _client(tmp_path, [("", 0.001), (json.dumps(FACTS_OK), 0.002)])
-    http = c._http  # type: ignore[attr-defined]
+    http = c._http  # ty: ignore[unresolved-attribute]
     real = http.post_json
     calls = []
 
@@ -233,7 +234,7 @@ def test_tier_b_escalates_a_flagged_bulk_read_to_the_reader(tmp_path):
     better = filings.read_tiered(c, item, tier="B", reader_model="x/big", bulk_model="x/flash")
     assert better.reader_model == "x/big" and better.escalated_from == "x/flash"
     assert better.cost_usd == pytest.approx(0.011)
-    models = [b["model"] for b in c._http.bodies]  # type: ignore[attr-defined]
+    models = [b["model"] for b in c._http.bodies]  # ty: ignore[unresolved-attribute]
     assert models == ["x/flash", "x/big"]
 
     c = _client(tmp_path, [(json.dumps(FACTS_FLAGGED), 0.01)])
@@ -245,12 +246,12 @@ def test_tier_b_sends_an_empty_or_failed_bulk_read_straight_to_the_reader(tmp_pa
     item = (FILING, SECTIONS)
     c = _client(tmp_path, [("", 0.001), (json.dumps(FACTS_OK), 0.01)])
     r = filings.read_tiered(c, item, tier="B", reader_model="x/big", bulk_model="x/flash")
-    assert [b["model"] for b in c._http.bodies] == ["x/flash", "x/big"]  # type: ignore[attr-defined]
+    assert [b["model"] for b in c._http.bodies] == ["x/flash", "x/big"]  # ty: ignore[unresolved-attribute]
     assert r.facts == FACTS_OK and r.escalated_from == "x/flash"
     assert r.cost_usd == pytest.approx(0.011)
 
     c = _client(tmp_path, [(json.dumps(FACTS_OK), 0.01)])
-    http = c._http  # type: ignore[attr-defined]
+    http = c._http  # ty: ignore[unresolved-attribute]
     real = http.post_json
 
     def post_json(url, json):  # noqa: A002
@@ -268,10 +269,10 @@ def test_a_filed_income_drop_escalates_a_clean_bulk_read(tmp_path):
     item = ({**FILING, "income_drops": [drop]}, SECTIONS)
     c = _client(tmp_path, [(json.dumps(FACTS_OK), 0.001), (json.dumps(FACTS_OK), 0.01)])
     r = filings.read_tiered(c, item, tier="B", reader_model="x/big", bulk_model="x/flash")
-    assert [b["model"] for b in c._http.bodies] == ["x/flash", "x/big"]  # type: ignore[attr-defined]
+    assert [b["model"] for b in c._http.bodies] == ["x/flash", "x/big"]  # ty: ignore[unresolved-attribute]
     assert r.escalated_from == "x/flash" and r.flag_reasons == [drop]
     # The reader is told what the figures say.
-    prompt = c._http.bodies[1]["messages"][-1]["content"]  # type: ignore[attr-defined]
+    prompt = c._http.bodies[1]["messages"][-1]["content"]  # ty: ignore[unresolved-attribute]
     assert "Income as filed (XBRL): operating income -44%" in prompt
 
 
@@ -295,7 +296,7 @@ def test_recheck_drops_rereads_only_stored_bulk_reads_that_dropped(tmp_path, mon
     )
     tiers = {"AAA": "B", "BBB": "B"}
     assert filings.run(settings, tiers, today=date(2026, 9, 27), recheck_drops=True) == 0
-    assert [b["model"] for b in c._http.bodies] == ["x/big"]  # type: ignore[attr-defined]
+    assert [b["model"] for b in c._http.bodies] == ["x/big"]  # ty: ignore[unresolved-attribute]
     with get_session(db) as s:
         row = s.exec(select(FilingFacts).where(FilingFacts.ticker == "BBB")).one()
         got = (row.reader_model, row.escalated_from, row.flag_reasons)
@@ -320,7 +321,7 @@ def test_store_keeps_two_filings_per_stock(tmp_path):
 
 def test_run_promotes_tier_a_bulk_reads_and_skips_what_is_current(tmp_path, monkeypatch):
     db = str(tmp_path / "t.db")
-    filing = {**FILING, "accession": "acc-1"}
+    filing: dict[str, Any] = {**FILING, "accession": "acc-1"}
     for ticker, model in (("AAA", "x/flash"), ("BBB", "x/flash")):
         f = {**filing, "ticker": ticker, "accession": f"{ticker}-1"}
         filings.store(
@@ -454,7 +455,7 @@ def test_candidate_snapshot_keeps_the_filing_facts():
     added: list = []
     session = SimpleNamespace(add=added.append)
     insert_candidate_snapshot(
-        session,  # type: ignore[arg-type]
+        session,  # ty: ignore[invalid-argument-type]
         1,
         "AAA",
         {"market_cap": 5e9},
@@ -478,7 +479,7 @@ def test_helper_agent_on_openrouter_falls_back_but_never_past_the_cap(tmp_path):
     c = _client(tmp_path, [('{"AVGO": [2]}', 0.001)])
     agent = OpenRouterAgent("Rerank", "z-ai/glm-5.3", "sys", client=c, json_mode=True)
     assert agent.run("news").content == '{"AVGO": [2]}'
-    body = c._http.bodies[0]  # type: ignore[attr-defined]
+    body = c._http.bodies[0]  # ty: ignore[unresolved-attribute]
     routing = {k: v for k, v in body["provider"].items() if k != "only"}
     assert routing == HELPER_EXTRA["provider"] and body["response_format"]
 
@@ -501,7 +502,7 @@ def test_reader_calls_go_only_to_approved_hosts(tmp_path):
     c = _client(tmp_path, [(json.dumps(FACTS_OK), 0.005), (json.dumps(FACTS_OK), 0.001)])
     fr.read_filing(c, FILING, SECTIONS, model="z-ai/glm-5.3")
     fr.read_filing(c, FILING, SECTIONS, model="z-ai/glm-5.3-flash")
-    big, flash = c._http.bodies  # type: ignore[attr-defined]
+    big, flash = c._http.bodies  # ty: ignore[unresolved-attribute]
     assert big["provider"]["only"] == ["io-net", "morph", "novita", "baidu"]
     assert big["provider"]["quantizations"] == ["fp8", "bf16", "fp16"]
     assert "akashml" not in flash["provider"]["only"]
@@ -597,7 +598,11 @@ def test_a_40f_takes_the_exhibit_titled_as_its_mda(monkeypatch):
     }
     monkeypatch.setattr(se._HTTP, "get_json", lambda url: index)
     monkeypatch.setattr(se, "fetch_filing_text", lambda url: docs.get(url.rsplit("/", 1)[1], ""))
-    filing = {"accession": "a", "form": "40-F", "url": "https://x/data/1/000/cover.htm"}
+    filing: dict[str, Any] = {
+        "accession": "a",
+        "form": "40-F",
+        "url": "https://x/data/1/000/cover.htm",
+    }
     got = se.exhibit_sections(filing, max_chars={"mda": 100_000, "risks": 100_000})
     assert got["mda"].startswith("MANAGEMENT'S DISCUSSION") and "Copper prices" in got["risks"]
 

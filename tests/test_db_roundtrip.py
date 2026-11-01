@@ -19,7 +19,7 @@ from stock_analyzer.db.repository import (
     insert_run_outputs,
     insert_scorecard,
 )
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.db.tables import (
     Candidate,
     HoldingReviewRow,
@@ -97,6 +97,9 @@ def test_roundtrip_through_repository(tmp_path: Path) -> None:
         cand = s.exec(
             select(Candidate).where(Candidate.run_id == run_id, Candidate.ticker == "NVDA")
         ).one()
+        assert cand.fail_reasons is not None
+        assert cand.score_components is not None
+        assert cand.sources is not None
         assert cand.passed_filter == 1
         assert json.loads(cand.fail_reasons) == []
         assert json.loads(cand.score_components) == {
@@ -121,6 +124,7 @@ def test_roundtrip_through_repository(tmp_path: Path) -> None:
         assert hr.confidence == 8
 
         ro = s.exec(select(RunOutput).where(RunOutput.run_id == run_id)).one()
+        assert ro.dashboard_data is not None
         assert ro.ranker_full == "r"
         assert json.loads(ro.dashboard_data) == {"x": 1, "y": [2, 3]}
 
@@ -171,7 +175,7 @@ def test_schema_is_created_once_even_from_several_threads(tmp_path):
 
     def touch(_):
         with get_session(db) as session:
-            return session.exec(text("SELECT COUNT(*) FROM runs")).one()[0]
+            return exec_sql(session, text("SELECT COUNT(*) FROM runs")).one()[0]
 
     with ThreadPoolExecutor(max_workers=8) as ex:
         assert list(ex.map(touch, range(8))) == [0] * 8
@@ -181,5 +185,5 @@ def test_connections_use_wal_and_wait_for_a_busy_writer(tmp_path):
     from sqlalchemy import text
 
     with get_session(str(tmp_path / "wal.db")) as session:
-        assert session.exec(text("PRAGMA journal_mode")).one()[0] == "wal"
-        assert session.exec(text("PRAGMA busy_timeout")).one()[0] == 10000
+        assert exec_sql(session, text("PRAGMA journal_mode")).one()[0] == "wal"
+        assert exec_sql(session, text("PRAGMA busy_timeout")).one()[0] == 10000

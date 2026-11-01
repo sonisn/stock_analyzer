@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
+from typing import Any
 
 import numpy as np
 import polars as pl
@@ -46,7 +47,8 @@ def test_the_latest_quarter_counts_twice_in_rs():
     """Same 12-month gain; the stock that made it lately is stronger."""
     early = np.concatenate([_trend(190, 100, 150), np.full(64, 150.0)])
     late = np.concatenate([np.full(190, 100.0), _trend(64, 100, 150)])
-    assert ibd.rs_strength(late) > ibd.rs_strength(early)
+    late_rs, early_rs = ibd.rs_strength(late), ibd.rs_strength(early)
+    assert late_rs is not None and early_rs is not None and late_rs > early_rs
     assert ibd.rs_strength(np.ones(100)) is None  # under a year
 
 
@@ -204,6 +206,7 @@ def test_eps_growth_over_the_same_quarter_a_year_before():
     ]
     years = [(date(2022, 12, 31), 2.0), (date(2025, 12, 31), 4.0)]
     g = eps_growth(q, years, today=date(2026, 8, 15))
+    assert g is not None
     assert g["q1_growth"] == pytest.approx(1.0)
     assert g["q2_growth"] == pytest.approx(0.5)
     assert g["cagr_3y"] == pytest.approx(2 ** (1 / 3) - 1)
@@ -212,7 +215,8 @@ def test_eps_growth_over_the_same_quarter_a_year_before():
 
 def test_growth_off_a_near_zero_base_is_not_a_number():
     q = [(date(2025, 6, 30), 0.001), (date(2026, 6, 30), 1.0)]
-    assert eps_growth(q, [], today=date(2026, 8, 1))["q1_growth"] is None
+    no_prior = eps_growth(q, [], today=date(2026, 8, 1))
+    assert no_prior is not None and no_prior["q1_growth"] is None
 
 
 def test_an_empty_concept_falls_back_to_the_latest_tag_in_company_facts(monkeypatch):
@@ -274,6 +278,7 @@ def test_yahoo_reports_are_dated_to_the_quarter_before_and_summed_into_years():
     assert quarters[0][0] == date(2021, 12, 31) and quarters[-1] == (date(2026, 6, 30), 2.0)
     assert years[-1] == (date(2026, 6, 30), 7.0)  # Q3 2025 at 1.0 + three at 2.0
     g = eps_growth(quarters, years, today=date(2026, 8, 15))
+    assert g is not None
     assert g["q1_growth"] == pytest.approx(1.0) and g["cagr_3y"] is not None
     # Half-yearly reporters get quarters but no summed years.
     assert (
@@ -510,7 +515,7 @@ def test_the_chart_is_six_months_on_spys_calendar_with_an_rs_line(monkeypatch):
 def test_the_page_has_both_tabs_and_says_when_ratings_are_missing():
     from stock_analyzer.dashboard_page import render_page
 
-    base = dict(
+    base: dict[str, Any] = dict(
         generated="2026-09-27",
         latest_run=1,
         holdings=[],
@@ -711,7 +716,8 @@ def test_eps_as_of_uses_only_what_was_filed_by_then():
     assert (
         growth_as_of(facts, date(2026, 4, 15)) is None
     )  # the 2026 quarter was not out yet (and 2025's is stale)
-    assert growth_as_of(facts, date(2026, 5, 2))["q1_growth"] == pytest.approx(1.0)
+    then = growth_as_of(facts, date(2026, 5, 2))
+    assert then is not None and then["q1_growth"] == pytest.approx(1.0)
 
 
 # --- leaders into discover, and the view map ------------------------------------------
@@ -986,7 +992,7 @@ def test_the_group_chart_is_an_equal_weight_index_against_spy(monkeypatch):
 def test_news_is_fetched_for_holdings_top_leaders_and_near_buy_points():
     from stock_analyzer.cli.ibd import NEWS_TOP, featured
 
-    rows = [
+    rows: list[dict[str, Any]] = [
         {
             "ticker": f"T{i}",
             "composite": 99 if i < 30 else 98,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 from stock_analyzer.discover import goal_projection as gp
 from stock_analyzer.discover.core_satellite import check_core, core_block, core_status
@@ -21,6 +22,7 @@ POSITIONS = {
 def test_core_is_off_by_default_and_counts_every_index_fund():
     assert core_status(POSITIONS, 30_000, fund="VOO", target_pct=0) is None
     s = core_status(POSITIONS, 30_000, fund="voo", target_pct=40)
+    assert s is not None
     assert s.fund == "VOO" and s.holdings == ("FXAIX",)
     assert s.total_value == 500_000 and round(s.core_pct, 1) == 4.0
     assert s.shortfall_usd == 180_000
@@ -78,7 +80,7 @@ def test_more_core_means_calmer_and_better_odds_for_a_hot_portfolio():
 
 def test_plan_check_shows_the_mixes_and_marks_the_target():
     r = _returns()
-    kw = dict(
+    kw: dict[str, Any] = dict(
         returns=r,
         start_value=100_000,
         months=60,

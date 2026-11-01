@@ -37,7 +37,7 @@ def _fetcher(frames: dict[str, pl.DataFrame]):
         calls.append(ticker)
         return frames.get(ticker)
 
-    fetch.calls = calls  # type: ignore[attr-defined]
+    fetch.calls = calls  # ty: ignore[unresolved-attribute]
     return fetch
 
 

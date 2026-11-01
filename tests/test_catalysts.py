@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from typing import Any
 
 import pytest
 
@@ -27,7 +28,7 @@ TODAY = date(2026, 9, 17)
 
 
 def _cat(source: str = "news:N1", expected_date: str | None = "2026-10-20", **kw) -> Catalyst:
-    base = dict(
+    base: dict[str, Any] = dict(
         event="Q3 earnings",
         expected_date=expected_date,
         direction="uncertain",
@@ -84,7 +85,7 @@ def test_news_sorted_newest_first_with_stable_ids_and_trimmed_fields():
             ]
         ]
     )
-    items = fetch_ticker_news("NVDA", "NVIDIA", client=client)
+    items = fetch_ticker_news("NVDA", "NVIDIA", client=client)  # ty: ignore[invalid-argument-type]
     assert [i["source"] for i in items] == ["cnbc.com", "reuters.com", "wsj.com"]
     assert [i["id"] for i in items] == ["N1", "N2", "N3"]
     assert all(len(i["snippet"]) == 400 for i in items)
@@ -95,7 +96,7 @@ def test_news_sorted_newest_first_with_stable_ids_and_trimmed_fields():
 
 def test_falls_back_to_unfiltered_search_when_premium_domains_empty():
     client = _FakeTavily([[], [_result("https://smallcapnews.com/x")]])
-    items = fetch_ticker_news("TINY", client=client)
+    items = fetch_ticker_news("TINY", client=client)  # ty: ignore[invalid-argument-type]
     assert len(client.calls) == 2
     assert "include_domains" not in client.calls[1]
     assert items[0]["source"] == "smallcapnews.com"
@@ -103,7 +104,7 @@ def test_falls_back_to_unfiltered_search_when_premium_domains_empty():
 
 def test_search_error_returns_empty_without_spending_a_retry():
     client = _FakeTavily([RuntimeError("connection reset")])
-    assert fetch_ticker_news("NVDA", client=client) == []
+    assert fetch_ticker_news("NVDA", client=client) == []  # ty: ignore[invalid-argument-type]
     assert len(client.calls) == 1
 
 
@@ -113,7 +114,7 @@ _QUOTA_MSG = "This request exceeds your plan's set usage limit."
 def test_quota_error_raises_instead_of_returning_empty():
     client = _FakeTavily([RuntimeError(_QUOTA_MSG)])
     with pytest.raises(TavilyQuotaExceeded):
-        fetch_ticker_news("NVDA", client=client)
+        fetch_ticker_news("NVDA", client=client)  # ty: ignore[invalid-argument-type]
 
 
 def _use_fakes(monkeypatch, tavily=None, finnhub_news=None):
@@ -298,7 +299,7 @@ def test_ranker_prompt_carries_each_candidates_catalysts():
         captured["prompt"] = prompt
         return _Result()
 
-    ranker._run_round = _fake_round  # type: ignore[method-assign]
+    ranker._run_round = _fake_round  # ty: ignore[invalid-assignment]
     ranker._rank_once(
         ranker._agents[0],
         {"NVDA": _report("NVDA", [_cat(event="Blackwell ramp update")]), "AMD": _report("AMD")},

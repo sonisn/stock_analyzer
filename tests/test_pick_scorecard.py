@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
 from sqlalchemy import text
 
 from stock_analyzer.db.repository import insert_candidate, insert_pick, insert_run
-from stock_analyzer.db.session import get_session
+from stock_analyzer.db.session import exec_sql, get_session
 from stock_analyzer.db.tables import CandidateOutcome
 from stock_analyzer.discover.pick_scorecard import pick_scorecard
 from stock_analyzer.model.labels import label_candidates
@@ -32,8 +33,10 @@ def _run(
         sonnet_model="s",
         cash_budget=None,
     )
-    session.exec(
-        text("UPDATE runs SET run_at = :r WHERE id = :i"), params={"r": run_at, "i": run_id}
+    exec_sql(
+        session,
+        text("UPDATE runs SET run_at = :r WHERE id = :i"),
+        params={"r": run_at, "i": run_id},
     )
     for ticker in [*picks, *others]:
         insert_candidate(
@@ -105,14 +108,15 @@ def test_labels_only_the_picks_including_six_months(tmp_path):
 
     assert label_candidates(db, fetch_panel=lambda t: p, only_picks=True) == 3
     with get_session(db) as session:
-        rows = session.exec(
-            text("SELECT ticker, horizon_days FROM candidate_outcomes ORDER BY horizon_days")
+        rows = exec_sql(
+            session,
+            text("SELECT ticker, horizon_days FROM candidate_outcomes ORDER BY horizon_days"),
         ).all()
     assert [tuple(r) for r in rows] == [("T0", 21), ("T0", 63), ("T0", 126)]
 
 
 def test_scorecard_renders_in_the_health_block():
-    sc = {
+    sc: dict[str, Any] = {
         "horizon": 126,
         "cohorts": [
             {
@@ -148,7 +152,7 @@ def test_picks_from_different_universes_are_never_blended():
     from stock_analyzer.discover.pick_scorecard import _summarize
 
     eras = ((date.min, "S&P 500"), (date(2026, 9, 27), "US >= $2B quality"))
-    entries = [
+    entries: list[tuple[str, date, float | None, float | None]] = [
         ("AAA", date(2026, 9, 20), 10.0, 4.0),
         ("BBB", date(2026, 9, 28), 2.0, 4.0),  # same month, new universe
         ("CCC", date(2026, 10, 5), 8.0, 4.0),
@@ -230,7 +234,7 @@ def test_screen_comparison_and_calibration_render():
             "beat_spy": 0.5,
         }
 
-    sc = {
+    sc: dict[str, Any] = {
         "horizon": 126,
         "cohorts": [{**c(-8.0, 22), "cohort": "May 2026"}],
         "overall": None,
