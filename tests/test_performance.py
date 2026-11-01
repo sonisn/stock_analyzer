@@ -73,7 +73,17 @@ def _client_with(activities):
     return client
 
 
+class _FrozenDate(date):
+    """`date.today()` pinned so the fixture's 2026 activity stays inside
+    the 400-day window (it fell out from Aug 2027)."""
+
+    @classmethod
+    def today(cls) -> date:
+        return date(2026, 9, 30)
+
+
 def test_cash_activity_flows_and_dividends(monkeypatch):
+    monkeypatch.setattr(transactions, "date", _FrozenDate)
     acts = [
         {"type": "CONTRIBUTION", "amount": 4000, "trade_date": "2026-08-27T04:00:00Z"},
         {"type": "WITHDRAWAL", "amount": -4000, "trade_date": "2026-08-31T04:00:00Z"},

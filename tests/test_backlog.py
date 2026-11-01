@@ -16,6 +16,20 @@ from stock_analyzer.data import backlog as bl
 CIK = 1730168
 
 
+class _FrozenDate(date):
+    """`date.today()` pinned near the fixtures' 2026 filings: past
+    MAX_FACT_AGE_DAYS after them (Feb 2027) every book reads as stale."""
+
+    @classmethod
+    def today(cls) -> date:
+        return date(2026, 10, 1)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_today(monkeypatch):
+    monkeypatch.setattr(bl, "date", _FrozenDate)
+
+
 def _facts(rows):
     return {"units": {"USD": rows}}
 
