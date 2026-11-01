@@ -80,13 +80,15 @@ def main(argv: list[str] | None = None) -> None:
         from ..model.labels import grade_shadow_scores
 
         g = grade_shadow_scores(db, horizon=21)
-        if not g["runs"]:
+        if not g["dates"]:
             print("No run has both shadow percentiles and a closed 21-day window yet.")
             return
         print(
-            f"{g['runs']} runs, {g['names']} names: mean per-run IC "
-            f"{g['mean_ic']:+.3f}, positive in {g['hit_rate']:.0%} of runs "
-            f"(needs several months of runs before it means much)"
+            f"{g['dates']} run dates ({g['runs']} runs), {g['names']} names: mean per-date IC "
+            f"{g['mean_ic']:+.3f}, positive on {g['hit_rate']:.0%} of dates.\n"
+            f"Independent 21-day windows so far: {g['windows']} — overlapping windows "
+            f"share most of their days, so this, not the run count, is the evidence "
+            f"(needs 6+ before it means much)"
         )
 
     def screen() -> None:

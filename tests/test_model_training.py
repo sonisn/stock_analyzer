@@ -332,7 +332,9 @@ def test_shadow_scores_are_graded_against_realized_outcomes(tmp_path):
 
     db = str(tmp_path / "g.db")
     with get_session(db) as session:
-        for run in range(2):
+        # Runs 0 and 1: re-runs on one day (one observation). Run 2: a
+        # month later, outcomes reversed.
+        for run in range(3):
             run_id = insert_run(
                 session,
                 universe_size=6,
@@ -357,21 +359,80 @@ def test_shadow_scores_are_graded_against_realized_outcomes(tmp_path):
                     sector=None,
                     price=None,
                 )
-                # Run 0: outcomes follow the percentile; run 1: reversed.
-                excess = float(i if run == 0 else -i)
+                excess = float(i if run < 2 else -i)
+                entry, exit_ = (
+                    ("2026-01-02", "2026-02-02") if run < 2 else ("2026-02-03", "2026-03-04")
+                )
                 session.add(
                     CandidateOutcome(
                         run_id=run_id,
                         ticker=f"T{i}",
                         horizon_days=21,
-                        entry_date="2026-01-02",
-                        exit_date="2026-02-02",
+                        entry_date=entry,
+                        exit_date=exit_,
                         return_pct=excess,
                         spy_return_pct=0.0,
                         excess_pct=excess,
                     )
                 )
     g = grade_shadow_scores(db, horizon=21)
-    assert (g["runs"], g["names"]) == (2, 12)
+    assert (g["runs"], g["dates"], g["windows"], g["names"]) == (3, 2, 2, 12)
     assert g["mean_ic"] == pytest.approx(0.0) and g["hit_rate"] == 0.5
     assert json.dumps(g)  # plain JSON-able numbers for the email
+
+
+def test_shadow_windows_count_only_non_overlapping_dates(tmp_path):
+    from stock_analyzer.db.tables import CandidateOutcome
+    from stock_analyzer.model.labels import grade_shadow_scores
+
+    db = str(tmp_path / "w.db")
+    # Weekly entry dates; a 21-day window closes ~a month later, so the
+    # 2nd-4th overlap the 1st and only the 5th starts a new window.
+    dates = [
+        ("2026-01-05", "2026-02-04"),
+        ("2026-01-12", "2026-02-11"),
+        ("2026-01-20", "2026-02-19"),
+        ("2026-01-26", "2026-02-25"),
+        ("2026-02-05", "2026-03-09"),
+    ]
+    with get_session(db) as session:
+        for entry, exit_ in dates:
+            run_id = insert_run(
+                session,
+                universe_size=5,
+                survivors=5,
+                picks=0,
+                opus_model="o",
+                sonnet_model="s",
+                cash_budget=None,
+            )
+            for i in range(5):
+                insert_candidate(
+                    session,
+                    run_id,
+                    f"T{i}",
+                    passed_filter=True,
+                    fail_reasons=[],
+                    score=50.0,
+                    score_components={},
+                    score_breakdown={"model": {"version": 1, "percentile": i * 20.0}},
+                    sources=[],
+                    conviction=0,
+                    sector=None,
+                    price=None,
+                )
+                session.add(
+                    CandidateOutcome(
+                        run_id=run_id,
+                        ticker=f"T{i}",
+                        horizon_days=21,
+                        entry_date=entry,
+                        exit_date=exit_,
+                        return_pct=float(i),
+                        spy_return_pct=0.0,
+                        excess_pct=float(i),
+                    )
+                )
+    g = grade_shadow_scores(db, horizon=21)
+    assert (g["dates"], g["windows"]) == (5, 2)
+    assert g["mean_ic"] == pytest.approx(1.0) and g["hit_rate"] == 1.0

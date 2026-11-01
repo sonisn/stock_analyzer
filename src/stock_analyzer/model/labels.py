@@ -174,33 +174,68 @@ def label_candidates(
 def grade_shadow_scores(db_path: str, horizon: int = 21) -> dict[str, float | int | None]:
     """Live, truly out-of-sample check of the model: the percentile each
     run recorded for its survivors (score_breakdown["model"]) against the
-    excess return those names then realized. Per-run Spearman IC, averaged."""
+    excess return those names then realized. Spearman IC per entry date,
+    averaged.
+
+    Grading is per entry date, not per run: same-day re-runs share one
+    price window, so counting each would repeat one observation (Sep 2026:
+    9 "runs" were 2 dates). A name on several of a day's runs keeps its
+    latest run's row. `windows` counts dates whose windows don't overlap —
+    the number of independent observations behind the mean."""
     with get_session(db_path) as session:
         rows = exec_sql(
             session,
             text(
-                "SELECT c.run_id, c.score_breakdown, o.excess_pct FROM candidates c "
+                "SELECT c.run_id, c.ticker, c.score_breakdown, o.entry_date, o.exit_date, "
+                "o.excess_pct FROM candidates c "
                 "JOIN candidate_outcomes o ON o.run_id = c.run_id AND o.ticker = c.ticker "
                 "WHERE o.horizon_days = :h AND c.score_breakdown LIKE '%\"model\"%'"
             ),
             params={"h": horizon},
         ).all()
-    frame = pl.DataFrame(
-        [
-            (run_id, (json.loads(bd).get("model") or {}).get("percentile"), excess)
-            for run_id, bd, excess in rows
-        ],
-        schema={"run_id": pl.Int64, "pct": pl.Float64, "excess": pl.Float64},
-        orient="row",
-    ).drop_nulls()
-    ics = []
-    for _, g in frame.group_by("run_id"):
-        if g.height >= 5:
-            ic = g.select(pl.corr(pl.col("pct").rank(), pl.col("excess").rank())).item()
-            if ic is not None and not np.isnan(ic):
-                ics.append(ic)
+    frame = (
+        pl.DataFrame(
+            [
+                (
+                    run_id,
+                    ticker,
+                    (json.loads(bd).get("model") or {}).get("percentile"),
+                    str(entry),
+                    str(exit_),
+                    excess,
+                )
+                for run_id, ticker, bd, entry, exit_, excess in rows
+            ],
+            schema={
+                "run_id": pl.Int64,
+                "ticker": pl.String,
+                "pct": pl.Float64,
+                "entry": pl.String,
+                "exit": pl.String,
+                "excess": pl.Float64,
+            },
+            orient="row",
+        )
+        .drop_nulls()
+        .sort("run_id")
+    )
+    runs = frame["run_id"].n_unique()
+    frame = frame.unique(subset=["entry", "ticker"], keep="last", maintain_order=True)
+    ics: list[float] = []
+    windows, window_end = 0, ""
+    for (entry,), g in frame.sort("entry").group_by("entry", maintain_order=True):
+        if g.height < 5:
+            continue
+        ic = g.select(pl.corr(pl.col("pct").rank(), pl.col("excess").rank())).item()
+        if ic is None or np.isnan(ic):
+            continue
+        ics.append(ic)
+        if entry >= window_end:
+            windows, window_end = windows + 1, g["exit"].max()
     return {
-        "runs": len(ics),
+        "runs": runs,
+        "dates": len(ics),
+        "windows": windows,
         "names": frame.height,
         "mean_ic": float(np.mean(ics)) if ics else None,
         "hit_rate": float(np.mean([ic > 0 for ic in ics])) if ics else None,
