@@ -466,9 +466,20 @@ def test_fetch_recent_picks(tmp_path: Path):
     assert [(t, r) for t, r, _ in out] == [("A2", 1), ("B2", 2), ("A1", 1), ("B1", 2)]
 
 
-def test_csp_data_pipeline_offline():
+class _FrozenDate(date):
+    """`date.today()` pinned to TODAY, so the fixed EXP stays 35 days out."""
+
+    @classmethod
+    def today(cls) -> date:
+        return TODAY
+
+
+def test_csp_data_pipeline_offline(monkeypatch):
     from stock_analyzer.config import Settings
-    from stock_analyzer.discover import rebalance_csp
+    from stock_analyzer.discover import cc_eligibility, csp_eligibility, rebalance_csp
+
+    for module in (rebalance_csp, csp_eligibility, cc_eligibility):
+        monkeypatch.setattr(module, "date", _FrozenDate)
 
     state = {
         "cash_balance": 110_000.0,
