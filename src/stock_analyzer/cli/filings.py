@@ -9,7 +9,7 @@ can reach the deciding models — ~500 of the ~1,900 in the $2B+ universe
      Their latest earnings 8-K (the press release, where guidance is — a
      10-Q seldom states it) is read too, once the filings are done.
   B. stocks that passed the screen's hard filter in the last ELIGIBLE_DAYS
-     (90), read by the bulk model (GLM-5.3-Flash). A bulk read
+     (90), read by the bulk model (DeepSeek V4.1 Flash). A bulk read
      that reports a serious event, or fails, is read again on the reader
      model, and that read replaces it — as is one whose filing shows
      operating or net income down 25%+ in its own XBRL figures

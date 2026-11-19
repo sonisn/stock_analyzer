@@ -711,7 +711,7 @@ def holding_filings(settings: Settings, tickers: list[str], *, today: date) -> l
 
 def watch_events(settings: Settings, *, today: date) -> list[dict]:
     """News events for EVENT_WATCH_TICKERS (reporting/event_watch.py), read
-    on the bulk open model. [] when none are watched, without an OpenRouter
+    on OPENROUTER_NEWS_MODEL. [] when none are watched, without an OpenRouter
     key, or on any failure — the other alerts still go out."""
     if not settings.event_watch_tickers:
         return []
@@ -730,7 +730,7 @@ def watch_events(settings: Settings, *, today: date) -> list[dict]:
             settings.discover_db_path,
             names,
             today=today,
-            model=settings.openrouter_bulk_model,
+            model=settings.openrouter_news_model,
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("Event watch failed (%s)", e)

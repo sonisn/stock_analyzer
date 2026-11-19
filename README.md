@@ -25,7 +25,7 @@ run to **SQLite** for cross-run track-record scoring, and dump the
 full analysis to the log so you never lose a run to an email failure.
 
 Open models over OpenRouter do the **reading**, never the deciding:
-GLM-5.3 and GLM-5.3-Flash turn every $2B+ company's latest 10-Q/10-K and
+GLM-5.3 and DeepSeek V4.1 Flash turn every $2B+ company's latest 10-Q/10-K and
 earnings press release into quoted facts for the deciding models (see
 [SEC filings, read by open models](#sec-filings-read-by-open-models)),
 and GLM-5.3 writes the insider summary and ranks the news.
@@ -171,7 +171,8 @@ ranking):
 
 - `OPENROUTER_API_KEY` — open models over OpenRouter
   (`OPENROUTER_READER_MODEL`=z-ai/glm-5.3, `OPENROUTER_BULK_MODEL`=
-  z-ai/glm-5.3-flash, `OPENROUTER_DAILY_CAP_USD`=2 across every process)
+  deepseek/deepseek-v4.1-flash-1017, `OPENROUTER_NEWS_MODEL`=z-ai/glm-5.3-flash,
+  `OPENROUTER_DAILY_CAP_USD`=2 across every process)
 - `RERANK_PROVIDER` / `INSIDER_PROVIDER` = `openrouter` with
   `RERANK_MODEL` / `INSIDER_MODEL` = `z-ai/glm-5.3` puts those roles on
   GLM-5.3 (the insider summary falls back to `LLM_PROVIDER` if OpenRouter
@@ -1147,7 +1148,7 @@ quote that is checked against the filing text.
 - **Tier A** (holdings, recent picks and shortlists, market leaders) is
   read by `OPENROUTER_READER_MODEL` (GLM-5.3, ~$0.01 a filing); **tier B**
   (the other screen-eligible stocks) by `OPENROUTER_BULK_MODEL`
-  (GLM-5.3-Flash, ~$0.002). A bulk read is re-read on GLM-5.3 when it
+  (DeepSeek V4.1 Flash, ~$0.0017; GLM-5.3-Flash until 2026-11-19). A bulk read is re-read on GLM-5.3 when it
   flags an event, fails, or when the filing's own XBRL figures show
   operating or net income down 25%+ (`data/income_drop.py`, free).
 - Tier A's latest **earnings press release** (8-K item 2.02) is read too —
@@ -1243,7 +1244,7 @@ carries:
   (free, no key) that name an event and don't read as commentary —
   "FERC rejects Oklo complaint" stays, "Is Oklo the next trillion-dollar
   stock?" goes. The new ones are read in one call on
-  `OPENROUTER_BULK_MODEL` (GLM-5.3-Flash, about $0.0005 a day), which
+  `OPENROUTER_NEWS_MODEL` (GLM-5.3-Flash, about $0.0005 a day), which
   drops price and sector moves, groups repeats of the same event, and
   says what happened and why it could matter. Headlines only: open the
   link before acting on one. Every headline read is kept in `watch_news`,
@@ -1278,7 +1279,7 @@ The schedule (New York time):
 | Weekdays 4:15 PM | `run_dashboard.sh` | rebuild the dashboard | — |
 | Weekdays 6:30 PM | `run_snapshot.sh` | silent value snapshot; emails only on an unusual drop, a call near its strike, or a held stock's new filing | GLM-5.3 (filings) |
 | Weekdays 10:00 PM | `run_earnings_watch.sh` | earnings standouts, insider clusters, cache warm-up | — |
-| **Saturday 11:00 PM** | `run_filings.sh` | host checks, then the week's SEC filings | GLM-5.3 / Flash |
+| **Saturday 11:00 PM** | `run_filings.sh` | host checks, then the week's SEC filings | GLM-5.3 / DeepSeek Flash |
 | Sunday 8:00 PM | `run_doctor.sh` | `ops doctor` | — |
 | Daily 2:00 AM | `run_backup.sh` | database backup, off-site copy | — |
 | 1st of month 11:00 AM | `run_model_review.sh` | forward-return model review email | — |

@@ -43,6 +43,7 @@ _PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
     # records the billed cost OpenRouter returns. (2026-09-27)
     "z-ai/glm-5.3": (1.4, 4.4),
     "z-ai/glm-5.3-flash": (0.15, 0.6),
+    "deepseek/deepseek-v4.1-flash-1017": (0.12, 0.6),  # (2026-11-19)
 }
 # Cache reads bill at ~0.1x the input rate, 5-minute cache writes at 1.25x.
 _CACHE_READ_MULT = 0.1

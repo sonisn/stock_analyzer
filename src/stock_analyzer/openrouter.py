@@ -68,6 +68,16 @@ APPROVED_HOSTS: dict[str, list[str]] = {
         "z-ai",
         "morph",
     ],
+    # The bulk filing reader since 2026-11-19. Cheapest fp8 hosts at the
+    # time; Pearl Research served all 46 test reads (100% quotes found).
+    # The others start on the known-answer check like any new host.
+    "deepseek/deepseek-v4.1-flash-1017": [
+        "pearl-research",
+        "deepinfra",
+        "morph",
+        "stepfun",
+        "streamlake",
+    ],
 }
 # OpenRouter's slug → the provider name its replies carry.
 HOST_NAMES: dict[str, str] = {
@@ -82,6 +92,9 @@ HOST_NAMES: dict[str, str] = {
     "parasail": "Parasail",
     "z-ai": "Z.AI",
     "akashml": "AkashML",
+    "pearl-research": "Pearl Research",
+    "deepinfra": "DeepInfra",
+    "stepfun": "StepFun",
 }
 
 

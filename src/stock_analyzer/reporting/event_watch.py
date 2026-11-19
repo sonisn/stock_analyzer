@@ -5,7 +5,7 @@ Each evening (cli/portfolio.holding_alerts) for every watched ticker:
   1. the last few days of Google News headlines naming the company that
      look like an event (data/event_news.looks_like_event);
   2. the ones not seen before are read in ONE call on the bulk open model
-     (OPENROUTER_BULK_MODEL, GLM-5.3-Flash, ~$0.0005), which keeps only
+     (OPENROUTER_NEWS_MODEL, GLM-5.3-Flash, ~$0.0005), which keeps only
      those that report something happening to the company — not a sector
      move, a price move or commentary — groups repeats of the same event,
      and says in a line what happened and why it could matter;

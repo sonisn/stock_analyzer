@@ -5,10 +5,15 @@ the same ten filings (2026-09-27):
 
   - GLM-5.3 (92% field agreement with Claude, ~$0.0125 a filing) for the
     stocks acted on: holdings, picks, the shortlist, market leaders;
-  - GLM-5.3-Flash (83%, ~$0.002) for the rest of the universe. A Flash
-    read that reports a serious event is read again on GLM-5.3, which is
-    what replaces it (cli/filings.py), so nothing reaches a decision on
-    the cheaper read alone.
+  - a cheaper bulk model for the rest of the universe: GLM-5.3-Flash (83%,
+    ~$0.002) until 2026-11-19, then DeepSeek V4.1 Flash (Oct 17 snapshot):
+    86% with Claude on the same filings and 91% field agreement with
+    GLM-5.3 on 40 recent ones (every quote found, all usable), ~$0.0017.
+    Its weakest field is demand direction (31/40 with GLM-5.3); it missed
+    AMZN's OpenAI stake, which GLM-5.3 caught. A bulk read that reports
+    a serious event is read again on GLM-5.3, which is what replaces it
+    (cli/filings.py), so nothing reaches a decision on the cheaper read
+    alone.
 
 Every field is backed by a quote, checked against the filing text in code
 — a quote that isn't there is how an invented number shows up.

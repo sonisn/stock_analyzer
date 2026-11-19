@@ -48,7 +48,13 @@ class Settings(BaseSettings):
     # processes (table `openrouter_spend`), so a loop can't run up a bill.
     openrouter_api_key: str | None = None
     openrouter_reader_model: str = "z-ai/glm-5.3"
-    openrouter_bulk_model: str = "z-ai/glm-5.3-flash"
+    # DeepSeek V4.1 Flash (Oct 17 snapshot) since 2026-11-19: 86% field
+    # agreement with Claude against GLM-5.3-Flash's 83%, 91% with GLM-5.3
+    # on 40 recent filings, ~$0.0017 a read (agents/filing_reader.py).
+    openrouter_bulk_model: str = "deepseek/deepseek-v4.1-flash-1017"
+    # The evening event watch's headline read (reporting/event_watch.py) —
+    # its own setting, since DeepSeek was tested on filings, not headlines.
+    openrouter_news_model: str = "z-ai/glm-5.3-flash"
     openrouter_daily_cap_usd: float = 2.0
 
     # ---- LLM selection ----------------------------------------------------
@@ -178,7 +184,7 @@ class Settings(BaseSettings):
     holding_filing_alerts: bool = True
     # Company events for these tickers in the same evening alert, held or
     # not (reporting/event_watch.py): new customers, approvals, contracts,
-    # denials — from Google News headlines read on OPENROUTER_BULK_MODEL,
+    # denials — from Google News headlines read on OPENROUTER_NEWS_MODEL,
     # and their 8-K press releases (items 7.01/8.01), which other holdings
     # leave to the weekly email. Empty = off.
     event_watch_tickers: Annotated[tuple[str, ...], NoDecode] = ()

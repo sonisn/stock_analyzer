@@ -36,7 +36,7 @@
 # + 13F + universe rescan + screen fetch cache, no LLM, no email.
 0    2,3     *    *         2-6  NY_AT=22:00 /home/sonisnehal/stock_analyzer/scripts/run_earnings_watch.sh
 # 11:00 PM NY, Saturdays (UTC Sun): the week's new SEC filings read into facts for
-# the deciding models (GLM-5.3 / GLM-5.3-Flash via OpenRouter, $5 cap).
+# the deciding models (GLM-5.3 / DeepSeek V4.1 Flash via OpenRouter, $5 cap).
 0    3,4     *    *         0    NY_AT=23:00 /home/sonisnehal/stock_analyzer/scripts/run_filings.sh
 # 8:00 PM NY, Sundays (UTC Mon): health check of keys, logins, model ids and disk space; alerts on failure.
 0    0,1     *    *         1    NY_AT=20:00 /home/sonisnehal/stock_analyzer/scripts/run_doctor.sh
