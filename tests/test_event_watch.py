@@ -144,3 +144,38 @@ def test_watched_companies_get_their_press_release_8ks(tmp_path, monkeypatch):
     )
     assert [i["filing"]["accession"] for i in got] == ["k9"]
     assert fa.subject_part(got[0]) == "ABC 8-K (other event)"
+
+
+def test_unreadable_reply_leaves_headlines_for_tomorrow(tmp_path, monkeypatch):
+    """A thinking model that spends its output on reasoning returns nothing;
+    that is not "no events" — the headlines must be read again tomorrow."""
+    db = str(tmp_path / "t.db")
+    _feed(monkeypatch)
+    empty = _client(tmp_path, [("", 0.001)])
+    empty.db_path = db
+    assert ew.new_watch_events(empty, db, {"OKLO": "Oklo Inc."}, today=TODAY, model="x/m") == []
+    retry = _client(tmp_path, [(json.dumps(READ), 0.0005)])
+    retry.db_path = db
+    got = ew.new_watch_events(retry, db, {"OKLO": "Oklo Inc."}, today=TODAY, model="x/m")
+    assert [e["kind"] for e in got] == ["customer", "regulatory"]
+
+
+def test_watched_companies_add_held_companies_not_funds():
+    from types import SimpleNamespace
+
+    from stock_analyzer.cli.portfolio import watched_companies
+
+    titles = {
+        "OKLO": "Oklo Inc.",
+        "NVDA": "NVIDIA CORP",
+        "SPY": "SPDR S&P 500 ETF TRUST",
+        "QQQM": "Invesco NASDAQ 100 Index Fund",
+    }
+    held = ["NVDA", "OKLO", "SPY", "QQQM", "VOO", "SPAXX"]
+    on = SimpleNamespace(event_watch_tickers=("OKLO",), event_watch_holdings=True)
+    off = SimpleNamespace(event_watch_tickers=("OKLO",), event_watch_holdings=False)
+    assert watched_companies(on, held, titles) == {  # ty: ignore[invalid-argument-type]
+        "OKLO": "Oklo Inc.",
+        "NVDA": "NVIDIA CORP",
+    }
+    assert watched_companies(off, held, titles) == {"OKLO": "Oklo Inc."}  # ty: ignore[invalid-argument-type]

@@ -103,7 +103,12 @@ def read_headlines(
     reply = client.complete(
         "EventWatch", model, INSTRUCTIONS, prompt, max_tokens=MAX_TOKENS, extra=READER_EXTRA
     )
-    parsed = parse_json_object(reply.text) or {}
+    parsed = parse_json_object(reply.text)
+    if parsed is None or not isinstance(parsed.get("events"), list):
+        # An empty or cut-off reply (a thinking model can spend its whole
+        # output on reasoning) is not "no events": raising keeps the
+        # headlines unstored, so tomorrow's run reads them again.
+        raise ValueError(f"unreadable reply on {model}: {reply.text[:80]!r}")
     out = []
     for e in parsed.get("events") or []:
         if not isinstance(e, dict):

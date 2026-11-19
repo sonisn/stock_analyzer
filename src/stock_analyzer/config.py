@@ -188,6 +188,11 @@ class Settings(BaseSettings):
     # and their 8-K press releases (items 7.01/8.01), which other holdings
     # leave to the weekly email. Empty = off.
     event_watch_tickers: Annotated[tuple[str, ...], NoDecode] = ()
+    # Also watch every company held (funds and money-market sweeps are
+    # left out): ~13 headline reads an evening, ~$0.03 a month on
+    # GLM-5.3-Flash. Their 8-K press releases still wait for the weekly
+    # email; only EVENT_WATCH_TICKERS get those the same evening.
+    event_watch_holdings: bool = True
     # Whether the daily email proposes stocks you do NOT own: the "Ideas
     # for new money" blocks and the "reinvest the proceeds in X" tail on
     # a sale line. Off leaves every action on a current holding intact —

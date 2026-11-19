@@ -13,6 +13,7 @@ falls far past its usual move, a written call nears its strike
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 
 from dotenv import load_dotenv
@@ -709,11 +710,31 @@ def holding_filings(settings: Settings, tickers: list[str], *, today: date) -> l
     return found
 
 
-def watch_events(settings: Settings, *, today: date) -> list[dict]:
-    """News events for EVENT_WATCH_TICKERS (reporting/event_watch.py), read
-    on OPENROUTER_NEWS_MODEL. [] when none are watched, without an OpenRouter
-    key, or on any failure — the other alerts still go out."""
-    if not settings.event_watch_tickers:
+_FUND_TITLE = re.compile(r"\b(ETF|FUNDS?|INDEX)\b", re.IGNORECASE)
+
+
+def watched_companies(
+    settings: Settings, held: list[str], titles: dict[str, str]
+) -> dict[str, str]:
+    """{ticker: company name} for the news watch: EVENT_WATCH_TICKERS, then
+    (EVENT_WATCH_HOLDINGS) each holding that is a company — one with an SEC
+    company title that doesn't read as a fund. VOO, SPAXX and the like have
+    no company news worth an alert."""
+    out = {t: titles.get(t) or t for t in settings.event_watch_tickers}
+    if settings.event_watch_holdings:
+        for t in held:
+            title = titles.get(t)
+            if t not in out and title and not _FUND_TITLE.search(title):
+                out[t] = title
+    return out
+
+
+def watch_events(settings: Settings, held: list[str], *, today: date) -> list[dict]:
+    """News events for the watched companies (watched_companies;
+    reporting/event_watch.py), read on OPENROUTER_NEWS_MODEL. [] when none
+    are watched, without an OpenRouter key, or on any failure — the other
+    alerts still go out."""
+    if not settings.event_watch_tickers and not settings.event_watch_holdings:
         return []
     from ..data.sec_edgar import load_ticker_titles
     from ..openrouter import client_from_settings
@@ -723,8 +744,9 @@ def watch_events(settings: Settings, *, today: date) -> list[dict]:
     if client is None:
         return []
     try:
-        titles = load_ticker_titles()
-        names = {t: titles.get(t) or t for t in settings.event_watch_tickers}
+        names = watched_companies(settings, held, load_ticker_titles())
+        if not names:
+            return []
         return new_watch_events(
             client,
             settings.discover_db_path,
@@ -779,7 +801,7 @@ def holding_alerts(
         thesis = {c["ticker"]: c for c in _thesis_checks(db, set(dropped))}
         add_context(drops, series, db=db, sectors=sectors, etf_for=etf_for, thesis=thesis)
     filings = holding_filings(settings, tickers, today=today)
-    events = watch_events(settings, today=today)
+    events = watch_events(settings, tickers, today=today)
     alert = build_alert(drops, near, filings, events)
     if alert is None:
         logger.info("Holding alerts: nothing unusual today")

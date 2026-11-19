@@ -1121,7 +1121,7 @@ runs don't re-download it:
 | `openrouter_spend`, `openrouter_host_checks` | what OpenRouter billed per day/model/stage; each host's weekly known-answer check | a few rows a day |
 | `earnings_events` | clear earnings beats anywhere in the market and reports by past picks, with the reaction, the revision and the verdict (`earnings-watch`) | tens of rows a week in earnings season; dropped after 365 days |
 | `moonshot_basket` | the moonshot basket's members, with entry date and price, and why any were removed (`moonshot`) | at most ~20 rows a year |
-| `watch_news` | every headline the evening event watch read for `EVENT_WATCH_TICKERS`, with what the model kept | a few rows a day per watched stock |
+| `watch_news` | every headline the evening event watch read (`EVENT_WATCH_TICKERS` and held companies), with what the model kept | a few rows a day per watched stock |
 
 Tax lots, cash flows and dividends read the stored activity history, so a
 purchase older than the brokerage API's window no longer drops out of lot
@@ -1248,12 +1248,21 @@ carries:
   drops price and sector moves, groups repeats of the same event, and
   says what happened and why it could matter. Headlines only: open the
   link before acting on one. Every headline read is kept in `watch_news`,
-  so none is emailed twice.
+  so none is emailed twice. An empty or cut-off reply stores nothing, so
+  those headlines are read again the next evening.
+
+  With `EVENT_WATCH_HOLDINGS=true` (the default since 2026-11-19) every
+  company you hold gets the news events too — funds and sweeps (VOO,
+  SPAXX) are skipped — at ~13 reads an evening, about $0.03 a month.
+  DeepSeek V4.1 Flash was tried for this read and kept off it: its
+  thinking ran out of output room on 2 of 13 holdings and it cost ~6x
+  GLM-5.3-Flash here, since a headline read is mostly thinking.
 - **Press-release 8-Ks** (items 7.01 and 8.01), which other holdings leave
   to the weekly email, read like a material 8-K.
 
 ```bash
 EVENT_WATCH_TICKERS=OKLO        # comma-separated; empty = off
+EVENT_WATCH_HOLDINGS=true       # news events for every company held too
 ```
 
 ## Scheduled jobs and upkeep
