@@ -119,3 +119,28 @@ def test_verdict_adding_value_and_undecided():
     assert model_step_verdict(good)["verdict"] == "adding value"
     mixed = [_month("Nov 2026", 6, 1), _month("Dec 2026", -4, 1)]
     assert model_step_verdict(mixed)["verdict"] == "undecided"
+
+
+def test_portfolio_health_flags_missing_headlines(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Yahoo's news endpoint broke under yfinance 1.7 and three weekly emails
+    went out with no company news while the run reported healthy."""
+    from types import SimpleNamespace
+
+    from stock_analyzer.cli.portfolio import _record_run_health
+
+    recorded: list[tuple] = []
+    monkeypatch.setattr(run_health, "record", lambda *a, **k: recorded.append(a))
+
+    def check(news_for: set[str]) -> list[str]:
+        data: dict[str, dict] = {
+            t: {"news": [{"title": "x"}] if t in news_for else []} for t in "ABCD"
+        }
+        data["SPAXX"] = {"quote_type": "MONEYMARKET", "news": []}
+        agent = SimpleNamespace(ticker_data=data, failures={})
+        charts = dict.fromkeys("ABCD", b"png")
+        return _record_run_health(agent, [*data], [], charts)  # ty: ignore[invalid-argument-type]
+
+    assert check(set()) == ["headlines 0/4"]
+    assert recorded[-1][1]["headlines"] == (0, 4)
+    assert check({"A"}) == ["headlines 1/4"]
+    assert check({"A", "B"}) == []  # a quiet week for half the book is normal

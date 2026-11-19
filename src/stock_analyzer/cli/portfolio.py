@@ -638,6 +638,15 @@ def _record_run_health(
     # A holding without data is in agent.failures, named.
     delivered = {"charts": (len([t for t in chartable if t in charts]), len(chartable))}
     problems = shortfalls(delivered, agent.failures)
+    # Headlines: a quiet week leaves a few holdings without news, so only
+    # most of them coming back empty is a fault — Yahoo's news endpoint
+    # broke under yfinance 1.7 (Nov 2026) and three emails went out with
+    # no company news while every run reported healthy.
+    equities = [t for t, d in data.items() if is_equity(d)]
+    with_news = sum(1 for t in equities if data[t].get("news"))
+    delivered["headlines"] = (with_news, len(equities))
+    if equities and with_news < len(equities) / 2:
+        problems.append(f"headlines {with_news}/{len(equities)}")
     record("portfolio", delivered, problems)
     return problems
 
