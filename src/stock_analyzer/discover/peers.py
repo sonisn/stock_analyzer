@@ -81,7 +81,7 @@ class PeerFinder:
     def __init__(
         self,
         provider: Provider = "claude",
-        model: str = "claude-haiku-4-5",
+        model: str = "claude-haiku-5-5",
         *,
         fallback: tuple[Provider, str] | None = None,
     ):

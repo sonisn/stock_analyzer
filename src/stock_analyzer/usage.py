@@ -26,16 +26,22 @@ _PRICES_PER_MTOK: dict[str, tuple[float, float]] = {
     "claude-opus-4-8": (5.0, 25.0),
     "claude-opus-4-7": (5.0, 25.0),
     "claude-opus-4-6": (5.0, 25.0),
+    "claude-sonnet-5-5": (2.0, 10.0),
     "claude-sonnet-5": (2.0, 10.0),
     "claude-sonnet-4-6": (3.0, 15.0),
+    # Haiku 5.5: prompts over 100K tokens bill $0.50/$2.50.
+    "claude-haiku-5-5": (0.10, 0.50),
     "claude-haiku-4-5": (1.0, 5.0),
-    # OpenAI and Google list rates (2026-09-27). The Gemini alias moves with
-    # Google's newest Pro, so it takes the 3.1 Pro rate, the dearer of the
-    # two it could be; prompts over 200k tokens bill higher still.
+    # OpenAI and Google list rates (2026-09-27; GPT-6.2 2026-11-19). The
+    # Gemini alias moves with Google's newest Pro and Google doesn't say
+    # which one it is now, so it takes the dearest Gemini 4 rate (neon,
+    # $3/$15) to keep the cap estimate on the high side.
+    "gpt-6.2-astra": (8.0, 40.0),
+    "gpt-6.2-astra-pro": (8.0, 40.0),
     "gpt-6-astra": (10.0, 50.0),
     "gpt-6-astra-pro": (10.0, 50.0),
     "gpt-6-sol": (2.0, 10.0),
-    "gemini-pro-latest": (2.0, 12.0),
+    "gemini-pro-latest": (3.0, 15.0),
     "gemini-3.1-pro-preview": (2.0, 12.0),
     "gemini-2.5-pro": (1.25, 10.0),
     # OpenRouter: the dearest fp8 host's rate (reads route to fp8 hosts,

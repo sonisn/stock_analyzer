@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # Override any single role via the `*_provider`/`*_model` vars below;
     # unset roles fall back to the defaults.
     llm_provider: Provider = "claude"
-    llm_model: str = "claude-haiku-4-5"
+    llm_model: str = "claude-haiku-5-5"
     sentiment_provider: Provider | None = None
     sentiment_model: str | None = None
     ticker_provider: Provider | None = None
@@ -97,12 +97,12 @@ class Settings(BaseSettings):
     # Models per stage — Opus for big-stakes reasoning, Sonnet for
     # per-candidate analysis, Haiku for any cheap data prep.
     discover_opus_model: str = "claude-opus-5-5"
-    discover_sonnet_model: str = "claude-sonnet-5"
+    discover_sonnet_model: str = "claude-sonnet-5-5"
     # Two-tier per-candidate analysis: the top `discover_analyst_deep_count`
     # survivors by screen score go to the Sonnet model, the rest to this
     # cheaper model (retried on Sonnet if it fails). A count of 0 or a blank
     # model sends every survivor to Sonnet.
-    discover_haiku_model: str = "claude-haiku-4-5"
+    discover_haiku_model: str = "claude-haiku-5-5"
     discover_analyst_deep_count: int = 10
     # `NoDecode` tells pydantic-settings to skip its default JSON parse for
     # complex types so the raw "AAPL,NVDA" string reaches our validator below.
@@ -238,7 +238,7 @@ class Settings(BaseSettings):
     discover_ranker_providers: str = "claude,gemini,openai"
     discover_ranker_models: str = ""
     discover_gemini_model: str = "gemini-pro-latest"
-    discover_openai_model: str = "gpt-6-astra"
+    discover_openai_model: str = "gpt-6.2-astra"
     # Red-team critiques the ranker's picks from outside whatever blind
     # spots the ranker's own provider(s) might share — default to a
     # different provider than the primary Claude pipeline for that reason.

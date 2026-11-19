@@ -54,7 +54,11 @@ def test_the_ranker_consensus_models_are_priced():
     t = UsageTracker()
     t.record("Ranker", "gpt-6-astra", _metrics(inp=24_272, out=11_697))
     t.record("Ranker", "gemini-pro-latest", _metrics(inp=25_801, out=12_223))
-    assert t.total_cost() == (pytest.approx(0.8277 + 0.1983, abs=1e-3), True)
+    # Gemini at the dearest Gemini 4 rate ($3/$15) since 2026-11-19.
+    assert t.total_cost() == (pytest.approx(0.8277 + 0.2607, abs=1e-3), True)
+    # Its successor, gpt-6.2-astra ($8/$40), is priced too.
+    t.record("Ranker", "gpt-6.2-astra", _metrics(inp=24_272, out=11_697))
+    assert t.total_cost() == (pytest.approx(0.8277 + 0.2607 + 0.6621, abs=1e-3), True)
 
 
 def test_rows_sorted_most_expensive_first():
