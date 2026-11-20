@@ -106,24 +106,22 @@ def parse_feed(xml_text: str) -> list[dict[str, Any]]:
 
 def company_query(name: str) -> str:
     """The search phrase for a company: its name without the legal suffix,
-    quoted ("Oklo Inc." -> "Oklo")."""
-    words = [w for w in re.split(r"[\s,]+", name) if w]
-    while words and words[-1].lower().rstrip(".") in {
-        "inc",
-        "corp",
-        "corporation",
-        "co",
-        "ltd",
-        "plc",
-        "holdings",
-        "group",
-        "company",
-        "sa",
-        "nv",
-        "ag",
-    }:
-        words.pop()
+    quoted ("Oklo Inc." -> "Oklo"). SEC titles' state/country tags ("/UK",
+    "/DE/") go too. "Holdings"/"Group" stay when they'd leave one word:
+    "ARM HOLDINGS PLC /UK" -> "ARM HOLDINGS", since a bare "ARM" matched
+    no headline and would match every "rotation arm"."""
+    words = [w for w in re.split(r"[\s,]+", name) if w and not w.startswith("/")]
+    while words:
+        last = words[-1].lower().rstrip(".")
+        if last in _LEGAL_FORMS or (last in _DESCRIPTIVE and len(words) > 2):
+            words.pop()
+        else:
+            break
     return f'"{" ".join(words)}"'
+
+
+_LEGAL_FORMS = {"&", "inc", "corp", "corporation", "co", "ltd", "plc", "company", "sa", "nv", "ag"}
+_DESCRIPTIVE = {"holdings", "group"}
 
 
 def fetch_events(name: str, *, today: date, days: int = LOOKBACK_DAYS) -> list[dict[str, Any]]:

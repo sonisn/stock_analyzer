@@ -59,6 +59,9 @@ def test_event_headlines_stay_and_commentary_goes():
 def test_query_and_feed():
     assert en.company_query("Oklo Inc.") == '"Oklo"'
     assert en.company_query("REPUBLIC SERVICES, INC.") == '"REPUBLIC SERVICES"'
+    assert en.company_query("ARM HOLDINGS PLC /UK") == '"ARM HOLDINGS"'
+    assert en.company_query("Carlyle Group Inc.") == '"Carlyle Group"'
+    assert en.company_query("KKR & Co. Inc. /DE/") == '"KKR"'
     items = en.parse_feed(FEED)
     assert items[0]["title"] == "FERC rejects Oklo complaint on PJM study cycle"
     assert items[0]["source"] == "Utility Dive" and items[0]["published"] == date(2026, 10, 10)

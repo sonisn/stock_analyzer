@@ -712,6 +712,10 @@ def holding_filings(settings: Settings, tickers: list[str], *, today: date) -> l
 
 _FUND_TITLE = re.compile(r"\b(ETF|FUNDS?|INDEX)\b", re.IGNORECASE)
 
+# Holdings the press calls by another name than their SEC title: the title
+# found 6 TSM and 1 SpaceX headline(s) on 2026-11-20 where these found 17 and 28.
+_PRESS_NAME = {"TSM": "TSMC", "SPCX": "SpaceX"}
+
 
 def watched_companies(
     settings: Settings, held: list[str], titles: dict[str, str]
@@ -725,7 +729,7 @@ def watched_companies(
         for t in held:
             title = titles.get(t)
             if t not in out and title and not _FUND_TITLE.search(title):
-                out[t] = title
+                out[t] = _PRESS_NAME.get(t, title)
     return out
 
 
