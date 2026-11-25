@@ -202,6 +202,7 @@ def test_the_output_budget_reaches_the_request():
     assert agent.agent.model_settings == {
         "max_tokens": r.REBALANCER_MAX_OUTPUT_TOKENS,
         "thinking": "high",
+        "anthropic_cache": True,
     }
 
 

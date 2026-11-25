@@ -156,8 +156,17 @@ def model_settings_for(provider: Provider, s: CallSettings) -> ModelSettings:
     sends_temperature = provider == "gemini" or (provider == "openai" and s.thinking is None)
     if s.temperature is not None and sends_temperature:
         out["temperature"] = s.temperature
-    if s.cache_instructions and provider == "claude":
-        out["anthropic_cache_instructions"] = True
+    if provider == "claude":
+        # Automatic caching on every Claude call: a top-level
+        # `cache_control={"type": "ephemeral"}` (5-minute TTL), which the API
+        # places on the last cacheable block and moves forward as an output
+        # retry or tool loop grows the conversation. Prefixes under the
+        # model's minimum simply don't cache (no charge, no error).
+        out["anthropic_cache"] = True
+        if s.cache_instructions:
+            # An explicit breakpoint on the shared system prompt, so a fan-out
+            # whose user messages differ still reuses it.
+            out["anthropic_cache_instructions"] = True
     return ModelSettings(**out)
 
 

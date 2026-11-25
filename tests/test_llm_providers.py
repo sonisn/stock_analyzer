@@ -41,7 +41,7 @@ class _Out(BaseModel):
 def test_claude_reasoning_sends_thinking_effort_and_no_temperature():
     s = model_settings_for("claude", reasoning_settings("high", max_tokens=1234, temperature=0.3))
     # Pydantic AI turns `thinking` into adaptive thinking at that effort.
-    assert s == {"max_tokens": 1234, "thinking": "high"}
+    assert s == {"max_tokens": 1234, "thinking": "high", "anthropic_cache": True}
 
 
 def test_openai_reasoning_sends_no_temperature():
@@ -57,7 +57,10 @@ def test_gemini_reasoning_keeps_its_temperature():
 
 def test_deterministic_calls_send_temperature_zero_except_to_claude():
     # Claude gets the 8k ceiling a plain answer always had, not the model max.
-    assert model_settings_for("claude", deterministic_settings()) == {"max_tokens": 8192}
+    assert model_settings_for("claude", deterministic_settings()) == {
+        "max_tokens": 8192,
+        "anthropic_cache": True,
+    }
     assert model_settings_for("openai", deterministic_settings()) == {"temperature": 0}
     assert model_settings_for("gemini", deterministic_settings()) == {"temperature": 0}
 
@@ -67,6 +70,14 @@ def test_prompt_caching_is_a_claude_setting():
     claude = model_settings_for("claude", cached)
     assert claude["anthropic_cache_instructions"] is True  # ty: ignore[invalid-key]
     assert "anthropic_cache_instructions" not in model_settings_for("gemini", cached)
+
+
+def test_every_claude_call_asks_for_automatic_caching():
+    # Top-level cache_control={"type": "ephemeral"} on every Claude request.
+    for s in (deterministic_settings(), reasoning_settings("high")):
+        assert model_settings_for("claude", s)["anthropic_cache"] is True  # ty: ignore[invalid-key]
+        for other in ("openai", "gemini"):
+            assert "anthropic_cache" not in model_settings_for(other, s)
 
 
 def test_an_unknown_effort_is_refused():
