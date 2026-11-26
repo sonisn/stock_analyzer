@@ -155,6 +155,10 @@ class Settings(BaseSettings):
     risk_group_min_corr: float = 0.5
     risk_vol_ref: float = 0.45
     risk_trim_step_pct: float = 10.0
+    # Off (the investor's call, 2026-11-26): an over-cap group only blocks
+    # buys and steers new money elsewhere — nothing is sold for
+    # concentration alone. On: trims toward the group cap are asked for too.
+    risk_group_trims: bool = False
     # The after-close snapshot emails when the portfolio first closes this
     # far below its 1-year high, then again at each further step (percent).
     # 0 turns it off (reporting/portfolio_drawdown.py).

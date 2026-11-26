@@ -90,11 +90,21 @@ def test_off_switches_and_the_rebalance_block():
     c = assess(VALUES, _book(), max_group_pct=100, ref_vol=0)
     assert not c.over_groups and not c.over_vol
     assert rebalance_block(c, step_pct=10, core_fund="VOO") == ""
+    # Default: the group is never sold for concentration alone; BE's
+    # volatility cap still asks for a trim.
     c = assess(VALUES, _book())
     block = rebalance_block(c, step_pct=10, core_fund="VOO")
-    assert "No BUY or ADD of these names" in block and "~$80,000" in block
+    assert "No BUY or ADD of these names" in block and "Do NOT TRIM or SELL them" in block
+    assert "TRIM toward the volatility caps above" in block and "~$80,000" in block
+    assert as_dict(c)["groups"][0]["over"] is True and as_dict(c)["group_trims"] is False
+    # Group only, no volatile stock over its cap: no trim instruction at all.
+    calm = assess(VALUES, _book(), ref_vol=0)
+    assert "TRIM toward" not in rebalance_block(calm, step_pct=10, core_fund="VOO")
+    # Trims switched on.
+    c = assess(VALUES, _book(), group_trims=True)
+    block = rebalance_block(c, step_pct=10, core_fund="VOO")
+    assert "TRIM toward these caps" in block and "Do NOT TRIM" not in block
     assert "VOO" in block and "tax-advantaged" in block
-    assert as_dict(c)["groups"][0]["over"] is True
 
 
 def test_a_holding_without_history_is_left_out_not_guessed():
@@ -213,6 +223,7 @@ def test_attribution_and_the_alert_body():
     assert subject == "Portfolio down 21% from its high (-$100,883)"
     assert "SPY over the same days: -7.1%" in body and "NVDA</b> -25.0%" in body
     assert "81% of the portfolio" in body and "Market in correction" in body
+    assert "No sale is suggested" in body
     assert "GOOGL" not in body.split("Where it went")[1].split("</ul>")[0]
 
 
@@ -251,11 +262,18 @@ def test_the_weekly_email_names_the_concentration_decision():
         "spy_pct": -7.3,
     }
     h.market = {"status": "Market in correction", "detail": "QQQ 16% off the high"}
-    items = decision_items(h)
-    texts = [i["text"] for i in items]
-    assert any("BE, NVDA move together and are 81%" in t and "Traditional IRA" in t for t in texts)
-    assert any(t.startswith("BE swings 112% a year") for t in texts)
-    assert "into VOO" in texts[0] or any("into VOO" in t for t in texts)
+    # Default: no sale for concentration — information (priority 4) only.
+    items = {i["label"]: i for i in decision_items(h)}
+    group = items["CONCENTRATED"]
+    assert group["priority"] == 4 and "No sale suggested" in group["text"]
+    assert "BE, NVDA move together and are 81%" in group["text"] and "VOO" in group["text"]
+    assert items["TOO VOLATILE"]["priority"] == 3
+    assert items["TOO VOLATILE"]["text"].startswith("BE swings 112% a year")
+    # Trims on: an action, from the tax-free account first.
+    h.concentration = {**h.concentration, "group_trims": True}
+    group = next(i for i in decision_items(h) if i["label"] == "CONCENTRATED")
+    assert group["priority"] == 3 and "Traditional IRA first" in group["text"]
+    h.concentration = {**h.concentration, "group_trims": False}
     page = render_health_html(h)
     assert "21.5% below" in page and "SPY -7.3%" in page and "CONCENTRATED" in page
     assert "poor time to sell" in page

@@ -159,9 +159,15 @@ def build_alert(
                 if g.get("worst_drop_pct")
                 else ""
             )
-            + ". That, more than the market, is what sets how far the total falls. The "
-            f"fix is size: trim toward the cap in the IRA (no tax) into {html.escape(core_fund)} "
-            "at the next rebalance, a step at a time.</p>"
+            + ". That, more than the market, is what sets how far the total falls. "
+            + (
+                "The fix is size: trim toward the cap in the IRA (no tax) into "
+                f"{html.escape(core_fund)} at the next rebalance, a step at a time.</p>"
+                if conc.get("group_trims")
+                else "No sale is suggested for that alone: new money goes to "
+                f"{html.escape(core_fund)} and holdings outside the group until it is back "
+                "under the cap.</p>"
+            )
         )
     over_vol = [v for v in conc.get("vol_caps") or [] if v.get("over")]
     if over_vol:

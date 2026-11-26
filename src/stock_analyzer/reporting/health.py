@@ -616,8 +616,14 @@ def _concentration_html(h: PortfolioHealth) -> str:
             rows,
         )
         + '<p style="font-size:13px;color:#6b7280">Position sizing, not a view on the companies. '
-        "Trim toward the cap a step at a time, in the IRA/401(k)/HSA first (no tax); the "
-        "rebalance does this and blocks new buys into the group.</p>"
+        + (
+            "Trim toward the cap a step at a time, in the IRA/401(k)/HSA first (no tax); the "
+            "rebalance does this and blocks new buys into the group.</p>"
+            if c.get("group_trims")
+            else "No sale for concentration alone: the rebalance blocks new buys into the "
+            "group and puts new money elsewhere. A stock over its volatility cap is still "
+            "trimmed.</p>"
+        )
     )
 
 
@@ -1833,7 +1839,7 @@ def _concentration_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
         worst = g.get("worst_drop_pct")
         where = _tax_free_accounts(h, g["tickers"])
         yield _item(
-            3,
+            3 if c.get("group_trims") else 4,
             None,
             "CONCENTRATED",
             f"{names} move together and are {g['pct']:.0f}% of the portfolio (cap "
@@ -1844,9 +1850,14 @@ def _concentration_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
                 if worst
                 else ""
             )
-            + f". Trim ~{_money(g['trim_usd'])} toward the cap over the next rebalances"
-            + (f", in {', '.join(where)} first (no tax)" if where else "")
-            + f", into {core}. Sizing, not a verdict on the companies.",
+            + (
+                f". Trim ~{_money(g['trim_usd'])} toward the cap over the next rebalances"
+                + (f", in {', '.join(where)} first (no tax)" if where else "")
+                + f", into {core}. Sizing, not a verdict on the companies."
+                if c.get("group_trims")
+                else f". No sale suggested: put new money into {core} and holdings outside "
+                "this group, not into it, until it is back under the cap."
+            ),
         )
     for v in c.get("vol_caps") or []:
         if v.get("over"):

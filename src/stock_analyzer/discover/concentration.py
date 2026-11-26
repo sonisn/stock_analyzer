@@ -83,6 +83,11 @@ class Concentration:
     total: float
     max_group_pct: float
     groups: list[Group] = field(default_factory=list)
+    # False (the default, the investor's call 2026-11-26): an over-cap group
+    # blocks new buys and steers new money elsewhere, but no holding is sold
+    # for concentration alone — sales stay for broken theses. The volatility
+    # cap still asks for trims.
+    group_trims: bool = False
     vol_caps: list[VolCap] = field(default_factory=list)
 
     @property
@@ -216,6 +221,7 @@ def assess(
     max_position_pct: float = 35.0,
     ref_vol: float = 0.45,
     exclude: set[str] | frozenset[str] = frozenset(),
+    group_trims: bool = False,
 ) -> Concentration:
     """Groups and volatility caps for `values` ({ticker: market value}).
     `total` is the whole portfolio (positions + cash); defaults to the sum
@@ -223,7 +229,7 @@ def assess(
     both, never guessed."""
     values = {t.upper(): float(v) for t, v in values.items() if v and v > 0}
     total = float(total) if total else sum(values.values())
-    out = Concentration(total=total, max_group_pct=max_group_pct)
+    out = Concentration(total=total, max_group_pct=max_group_pct, group_trims=group_trims)
     if total <= 0:
         return out
     skip = {t.upper() for t in exclude} | BROAD_FUNDS
@@ -275,6 +281,7 @@ def as_dict(c: Concentration) -> dict[str, Any]:
     return {
         "total": c.total,
         "max_group_pct": c.max_group_pct,
+        "group_trims": c.group_trims,
         "groups": [
             {
                 "tickers": g.tickers,
@@ -324,6 +331,13 @@ def rebalance_block(c: Concentration, *, step_pct: float, core_fund: str) -> str
                 else ""
             )
             + f". Over the cap by ${g.trim_usd:,.0f}. No BUY or ADD of these names."
+            + (
+                ""
+                if c.group_trims
+                else " Do NOT TRIM or SELL them for concentration alone (the investor sells only "
+                "on a broken thesis): bring the share down by putting idle cash and new money "
+                "into the core fund and holdings outside the group."
+            )
         )
     for v in c.over_vol:
         lines.append(
@@ -331,8 +345,11 @@ def rebalance_block(c: Concentration, *, step_pct: float, core_fund: str) -> str
             f"(not the plain single-stock cap); it is {v.pct:.0f}% (${v.value:,.0f}), "
             f"${v.trim_usd:,.0f} over."
         )
+    if not c.group_trims and not c.over_vol:
+        return "\n".join(lines)
     lines.append(
-        f"TRIM toward these caps this rebalance, up to ~${step:,.0f} in total "
+        f"TRIM toward {'these caps' if c.group_trims else 'the volatility caps above'} "
+        f"this rebalance, up to ~${step:,.0f} in total "
         f"({step_pct:g}% of the portfolio; the rest at later rebalances). Sell in tax-advantaged "
         "accounts (IRA, 401(k), HSA) first, where a sale owes no tax; the most over-cap and "
         "most volatile names first; respect shares promised to written calls. Proceeds go to "
@@ -381,6 +398,7 @@ def load_and_assess(
         max_position_pct=settings.rebalance_max_position_pct,
         ref_vol=settings.risk_vol_ref,
         exclude={settings.core_fund},
+        group_trims=settings.risk_group_trims,
     )
     for g in result.over_groups:
         log.info(
