@@ -128,6 +128,13 @@ class PortfolioHealth:
     market_checks: list[dict[str, Any]] = field(default_factory=list)
     # Direction of the sectors you hold (reporting/leaders.held_sector_trends).
     sector_trends: list[dict[str, Any]] = field(default_factory=list)
+    # Correlated groups and volatility caps (discover/concentration.as_dict).
+    concentration: dict[str, Any] = field(default_factory=dict)
+    # The whole portfolio's fall from its 1-year high, with SPY over the
+    # same days (cli/portfolio.portfolio_drawdown_for).
+    portfolio_drawdown: dict[str, Any] = field(default_factory=dict)
+    # The latest IBD-style market status (ibd_market): context, not a signal.
+    market: dict[str, Any] = field(default_factory=dict)
     # Accounts the broker has stopped syncing. Not a footnote like the
     # notes above — until the connection is restored every number for
     # that account describes the day it went dark, so it leads the email.
@@ -449,6 +456,8 @@ _BADGE = {
     "AT RISK": ("#8a4a00", "#fff4e0"),
     "OFF TRACK": ("#9c1010", "#fde4e4"),
     "TAX": ("#8a4a00", "#fff4e0"),
+    "CONCENTRATED": ("#9c1010", "#fde4e4"),
+    "TOO VOLATILE": ("#8a4a00", "#fff4e0"),
 }
 
 
@@ -476,11 +485,13 @@ def render_health_html(h: PortfolioHealth) -> str:
         _thesis_html(h),
         _market_checks_html(h),
         _over_cap_html(h),
+        _concentration_html(h),
         _harvest_html(h),
     ]
     parts = [
         '<section class="health"><h2>Portfolio health</h2>',
         _snapshot_html(h),
+        _risk_strip_html(h),
         _goal_pace_html(h),
         _sector_trends_html(h),
         *alerts,
@@ -528,6 +539,86 @@ def render_health_html(h: PortfolioHealth) -> str:
         )
     parts.append("</section>")
     return "".join(parts)
+
+
+def _risk_strip_html(h: PortfolioHealth) -> str:
+    """One line: how far the portfolio is below its high next to SPY, and
+    the market status — read as context, not as a reason to trade."""
+    parts = []
+    d = h.portfolio_drawdown
+    if d and d.get("pct", 0) >= 1:
+        spy = (
+            f" (SPY {d['spy_pct']:+.1f}% over the same days)"
+            if d.get("spy_pct") is not None
+            else ""
+        )
+        parts.append(
+            f"<b>{d['pct']:.1f}% below</b> the {_money(d['peak'])} high of "
+            f"{html.escape(str(d['peak_day']))}{spy}"
+        )
+    m = h.market
+    if m and m.get("status"):
+        parts.append(
+            f"market: <b>{html.escape(m['status'])}</b>"
+            + (f" ({html.escape(m['detail'])})" if m.get("detail") else "")
+            + (
+                " — historically a poor time to sell and an average-or-better time to keep "
+                "buying in steps"
+                if m["status"] == "Market in correction"
+                else ""
+            )
+        )
+    if not parts:
+        return ""
+    return '<p style="font-size:13px">' + " · ".join(parts) + ".</p>"
+
+
+def _concentration_html(h: PortfolioHealth) -> str:
+    """Groups of holdings that move together, and stocks too big for how
+    much they swing."""
+    c = h.concentration
+    groups = [g for g in c.get("groups") or [] if g.get("over")]
+    vols = [v for v in c.get("vol_caps") or [] if v.get("over")]
+    if not groups and not vols:
+        return ""
+    rows = []
+    for g in groups:
+        worst = g.get("worst_drop_pct")
+        rows.append(
+            [
+                _badge("CONCENTRATED"),
+                html.escape(", ".join(g["tickers"])),
+                f"{g['pct']:.0f}% (cap {c['max_group_pct']:g}%)",
+                (f"-{worst:.0f}% / {_money(-g['loss_at_worst_usd'])}" if worst else "—"),
+                _money(g["trim_usd"]),
+            ]
+        )
+    for v in vols:
+        rows.append(
+            [
+                _badge("TOO VOLATILE"),
+                f"{html.escape(v['ticker'])} (swings {v['vol_pct']:.0f}%/yr)",
+                f"{v['pct']:.0f}% (cap {v['cap_pct']:g}%)",
+                "—",
+                _money(v["trim_usd"]),
+            ]
+        )
+    return (
+        "<h3>Concentration: how much rides on one bet</h3>"
+        + _table(
+            [
+                "",
+                "Holdings",
+                "Share of portfolio",
+                "Past-year worst fall, at today's size",
+                "Over by",
+            ],
+            rows,
+        )
+        + '<p style="font-size:13px;color:#6b7280">Position sizing, not a view on the companies. '
+        "Trim toward the cap a step at a time, in the IRA/401(k)/HSA first (no tax); the "
+        "rebalance does this and blocks new buys into the group.</p>"
+    )
 
 
 def _goal_pace_html(h: PortfolioHealth) -> str:
@@ -1548,6 +1639,7 @@ def decision_items(h: PortfolioHealth) -> list[dict[str, Any]]:
         *_harvest_items(h, dest),
         *_add_on_items(h),
         *_sector_items(h),
+        *_concentration_items(h),
     ]
     items.sort(key=lambda i: i["priority"])
     return items
@@ -1716,6 +1808,56 @@ def _add_on_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
             f"{a['ticker']} is {-a['off_high_pct']:.0f}% below its 52-week high with its "
             f"long-term case intact — a candidate for new money." + headroom_clause(h, a["ticker"]),
         )
+
+
+def _tax_free_accounts(h: PortfolioHealth, tickers: list[str]) -> list[str]:
+    """Accounts holding any of `tickers` where a sale owes no tax."""
+    marks = ("IRA", "401", "HSA", "ROTH")
+    out: list[str] = []
+    for t in tickers:
+        for acct in h.units_by_account.get(t, {}):
+            if any(m in acct.upper() for m in marks) and acct not in out:
+                out.append(acct)
+    return out
+
+
+def _concentration_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:
+    c = h.concentration
+    core = c.get("core_fund") or "the core index fund"
+    for g in c.get("groups") or []:
+        if not g.get("over"):
+            continue
+        names = ", ".join(g["tickers"][:5]) + (
+            f" +{len(g['tickers']) - 5} more" if len(g["tickers"]) > 5 else ""
+        )
+        worst = g.get("worst_drop_pct")
+        where = _tax_free_accounts(h, g["tickers"])
+        yield _item(
+            3,
+            None,
+            "CONCENTRATED",
+            f"{names} move together and are {g['pct']:.0f}% of the portfolio (cap "
+            f"{c['max_group_pct']:g}%)"
+            + (
+                f"; their worst fall this past year, {worst:.0f}%, would cost "
+                f"{_money(g['loss_at_worst_usd'])} at today's size"
+                if worst
+                else ""
+            )
+            + f". Trim ~{_money(g['trim_usd'])} toward the cap over the next rebalances"
+            + (f", in {', '.join(where)} first (no tax)" if where else "")
+            + f", into {core}. Sizing, not a verdict on the companies.",
+        )
+    for v in c.get("vol_caps") or []:
+        if v.get("over"):
+            yield _item(
+                3,
+                v["ticker"],
+                "TOO VOLATILE",
+                f"{v['ticker']} swings {v['vol_pct']:.0f}% a year and is {v['pct']:.0f}% of the "
+                f"portfolio; a stock that volatile is capped at {v['cap_pct']:g}%. Trim "
+                f"~{_money(v['trim_usd'])} at the next rebalance.",
+            )
 
 
 def _sector_items(h: PortfolioHealth) -> Iterator[dict[str, Any]]:

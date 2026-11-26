@@ -818,6 +818,115 @@ def holding_alerts(
     logger.info("Holding alert sent: %s", subject)
 
 
+def stored_totals(settings: Settings) -> list[tuple[date, float]]:
+    """[(day, total)] from portfolio_snapshots, oldest first."""
+    from ..db.repository import fetch_snapshots
+    from ..db.session import get_session
+
+    with get_session(settings.discover_db_path) as session:
+        return [
+            (date.fromisoformat(str(s.day)[:10]), float(s.total)) for s in fetch_snapshots(session)
+        ]
+
+
+def portfolio_drawdown_for(settings: Settings, *, today: date) -> dict:
+    """The weekly email's drawdown line: {pct, loss, peak, peak_day, spy_pct},
+    or {} when there is no history or the portfolio is near its high."""
+    from ..reporting.portfolio_drawdown import change_between, drawdown
+
+    try:
+        dd = drawdown(stored_totals(settings))
+        if dd is None or dd.pct < 1:
+            return {}
+        spy = closing_series(["SPY"], today=today).get("SPY") or []
+        return {
+            "pct": dd.pct,
+            "loss": dd.loss,
+            "peak": dd.peak,
+            "peak_day": dd.peak_day.isoformat(),
+            "spy_pct": change_between(spy, dd.peak_day, dd.day),
+        }
+    except Exception as e:  # noqa: BLE001 — one line of the email, not a dependency
+        logger.warning("Portfolio drawdown unavailable (%s)", e)
+        return {}
+
+
+def concentration_for(settings: Settings, health) -> dict:
+    """Correlated groups and volatility caps (discover/concentration.py) as
+    plain data for the email, or {}."""
+    from ..discover.concentration import as_dict, load_and_assess
+
+    if health is None or not health.values:
+        return {}
+    try:
+        result = load_and_assess(
+            health.values, total=sum(health.values.values()), settings=settings
+        )
+    except Exception as e:  # noqa: BLE001 — one section of the email, not a dependency
+        logger.warning("Concentration check unavailable (%s)", e)
+        return {}
+    return {**as_dict(result), "core_fund": settings.core_fund} if result is not None else {}
+
+
+def drawdown_alert(
+    settings: Settings,
+    holdings: dict[str, list[dict]],
+    *,
+    prices: dict[str, float],
+    today: date,
+) -> None:
+    """Email the evening the whole portfolio first falls another step below
+    its 1-year high (reporting/portfolio_drawdown.py). Silent otherwise."""
+    from ..discover.concentration import as_dict, load_and_assess
+    from ..reporting.health import aggregate_positions
+    from ..reporting.portfolio_drawdown import (
+        attribution,
+        build_alert,
+        change_between,
+        drawdown,
+        latest_market,
+    )
+
+    if settings.portfolio_drawdown_alert_pct <= 0:
+        return
+    dd = drawdown(
+        stored_totals(settings),
+        threshold=settings.portfolio_drawdown_alert_pct,
+        step=settings.portfolio_drawdown_step_pct,
+    )
+    if dd is None or dd.day != today or not dd.is_new_step:
+        if dd is not None:
+            logger.info(
+                "Portfolio %.1f%% below its %s high — no new alert step", dd.pct, dd.peak_day
+            )
+        return
+    positions = aggregate_positions(holdings, prices)
+    units = {t: float(p["units"]) for t, p in positions.items() if p.get("units")}
+    values = {t: float(p["value"]) for t, p in positions.items() if p.get("value")}
+    closes = yf_gateway.daily_closes(
+        [*units, "SPY"], dd.peak_day - timedelta(days=7), what="drawdown_alert"
+    )
+    series = {
+        t.upper(): list(zip(c["date"].to_list(), c["Close"].to_list(), strict=True))
+        for t, c in closes.items()
+        if c.height
+    }
+    conc = load_and_assess(values, total=dd.total, settings=settings)
+    subject, body = build_alert(
+        dd,
+        spy_pct=change_between(series.get("SPY") or [], dd.peak_day, dd.day),
+        movers=attribution(units, series, dd.peak_day, dd.day),
+        concentration=as_dict(conc) if conc is not None else None,
+        market=latest_market(settings.discover_db_path),
+        core_fund=settings.core_fund,
+    )
+    if not settings.email_to:
+        print(subject)
+        return
+    SmtpServer().send_email(settings.email_to, subject, body, content_type="html")
+    logger.info("Drawdown alert sent: %s", subject)
+
+
 def snapshot_only(settings: Settings, *, today: date) -> None:
     """Record today's portfolio value at the closing prices, then check for
     an unusual drop worth an email. No model calls."""
@@ -841,6 +950,10 @@ def snapshot_only(settings: Settings, *, today: date) -> None:
         record_prices(db, record_tickers(db, tickers), today=today)
     except Exception as e:  # noqa: BLE001 — the snapshot is already stored
         logger.warning("Price record failed (%s)", e)
+    try:
+        drawdown_alert(settings, holdings, prices=prices, today=today)
+    except Exception as e:  # noqa: BLE001 — the snapshot is already stored
+        logger.warning("Portfolio drawdown check failed (%s)", e)
     if not settings.holding_alerts:
         return
     try:
@@ -930,6 +1043,11 @@ def main() -> None:
         health.goal_pace = goal_pace_for(settings)
         health.market_checks = market_checks_for(settings, list(health.values))
         health.sector_trends = sector_trends_for(settings, health)
+        health.concentration = concentration_for(settings, health)
+        health.portfolio_drawdown = portfolio_drawdown_for(settings, today=date.today())
+        from ..reporting.portfolio_drawdown import latest_market
+
+        health.market = latest_market(settings.discover_db_path) or {}
     if not settings.email_to:
         logger.error("EMAIL_TO not set; printing report instead of emailing")
         print(result)

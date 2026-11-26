@@ -142,7 +142,42 @@ class RebalancePlanSteps(PipelineBase):
             held_tickers=list(self.state.get("holdings_positions") or {}),
         )
 
+    def _concentration(self) -> Any:
+        """Correlated groups and volatility caps for the held book
+        (discover/concentration.py), computed once per run; None when the
+        closes can't be read."""
+        if "concentration" in self.state:
+            return self.state["concentration"]
+        from ...discover.concentration import load_and_assess
+
+        positions = self.state.get("holdings_positions") or {}
+        values = {t: float((p or {}).get("value") or 0.0) for t, p in positions.items()}
+        total = sum(v for v in values.values() if v > 0) + float(
+            self.state.get("cash_balance") or 0.0
+        )
+        try:
+            result = load_and_assess(values, total=total, settings=self.settings)
+        except Exception as e:  # noqa: BLE001 — a limit lost is named, not fatal
+            logger.warning("Concentration check failed (%s)", e)
+            result = None
+        self.state["concentration"] = result
+        return result
+
     def _core_block(self) -> str:
+        block = self._core_fund_block()
+        from ...discover.concentration import rebalance_block
+
+        conc = self._concentration()
+        risk = (
+            rebalance_block(
+                conc, step_pct=self.settings.risk_trim_step_pct, core_fund=self.settings.core_fund
+            )
+            if conc is not None
+            else ""
+        )
+        return "\n\n".join(b for b in (block, risk) if b)
+
+    def _core_fund_block(self) -> str:
         status = core_status(
             self.state.get("holdings_positions") or {},
             self.state.get("cash_balance"),
@@ -220,7 +255,18 @@ class RebalancePlanSteps(PipelineBase):
                 t: (v or {}).get("price") for t, v in (self.state.get("technicals") or {}).items()
             },
             accounts=list(account_cash),
+            **self._concentration_caps(),
         )
+
+    def _concentration_caps(self) -> dict[str, Any]:
+        conc = self._concentration()
+        if conc is None:
+            return {}
+        return {
+            "ticker_max_pct": {v.ticker: v.cap_pct for v in conc.vol_caps},
+            "groups": [g.tickers for g in conc.groups],
+            "max_group_pct": conc.max_group_pct,
+        }
 
     def _validate_covered_calls(self, plan: Any) -> Any:
         """Check WRITE_CALLs against the fetched chains. A crash keeps the

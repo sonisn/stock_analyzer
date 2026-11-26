@@ -143,6 +143,23 @@ class Settings(BaseSettings):
     # Largest share of the portfolio any one stock may reach after a
     # rebalance (percent). The rebalancer's prompt and its examples follow it.
     rebalance_max_position_pct: float = 25.0
+    # Concentration limits (discover/concentration.py), from daily closes:
+    # holdings whose 6-month daily returns correlate at RISK_GROUP_MIN_CORR
+    # or more form one group, held to RISK_GROUP_MAX_PCT of the portfolio
+    # (100 = off) — sectors missed that BE, NVDA, TSLA, AVGO… were one bet
+    # at 81% (Nov 2026: -26% vs SPY -11%). A stock swinging more than
+    # RISK_VOL_REF a year gets the single-stock cap scaled by REF/vol (0 =
+    # off). Buys past either are cut in code; trims toward them are asked
+    # for at most RISK_TRIM_STEP_PCT of the portfolio per rebalance.
+    risk_group_max_pct: float = 50.0
+    risk_group_min_corr: float = 0.5
+    risk_vol_ref: float = 0.45
+    risk_trim_step_pct: float = 10.0
+    # The after-close snapshot emails when the portfolio first closes this
+    # far below its 1-year high, then again at each further step (percent).
+    # 0 turns it off (reporting/portfolio_drawdown.py).
+    portfolio_drawdown_alert_pct: float = 10.0
+    portfolio_drawdown_step_pct: float = 5.0
     discover_max_sector_new_pct: float = 50.0
     # Tax-loss harvesting candidates in the rebalance report: a taxable
     # position slice qualifies when its unrealized loss is at least this
